@@ -1,0 +1,94 @@
+afkd 0.2.123 · ● Running 5s · 9 up · 1 down                                            0 tok · $0.00
+CPU             ▁   1% · Mem             ▁ 1.5G/31G · Net ↓           ▁  483/s ↑           ▁  414/s 
+                                                                                                    
+Service                          State                 Trigger              Last Activity   Next Run
+  🧹 janitor                     ■ Stopping 1s         Every 1h                                     
+⊟ 📦 ops                         ✕ Crashed                                  2s                      
+├─ 🔹 nightly                    ● Idle                Every 1h                             59m 54s 
+├─ 🔷 sleeper                    ▶ Busy 2s             Every 1h             2s                      
+├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
+└─ ⊟ 📦 db        ┌ Force-stop ─────────────────────────────────────────────────┐                   
+   └─ 🔹 vacuum   │                                                             │           59m 54s 
+  🔹 🔒archivist  │  Force-stop 1 stuck service?                                │           59m 54s 
+  🔹 noisy        │                                                             │           59m 58s 
+  🔸 flaky        │    🧹 janitor                                               │           59m 58s 
+  🔹 deep         │                                                             │           59m 54s 
+  🔹 spare        │  Force kills the running work & abandons the wedged thread  │           59m 54s 
+                  │  The service reclaims once the abandoned thread finishes    │                   
+Queue             │                                                             │sm   Held   Waiting
+🧵 heavy (high)   │  y force  n cancel                                          │     1      0      
+                  │                                                             │                   
+                  └─────────────────────────────────────────────────────────────┘                   
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+s start       r restart    o output      g/G first/last  / find    Ctrl+R reload                    
+x force-stop  + widen      i info        v flat                    ? help                           
+t trigger     - narrow     Enter peek    b busy ○                  q quit                           
+
+── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
+nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnncccccccccccccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnrbbbbbbbbbbbbrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnn
+rrrrrrnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
+rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
+rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
+rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
+rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
+rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnrnnnnnnnnnnnrrrrrrrn
+nnnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnrnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnnnnnnnnrnnbnlllllnnbnllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bnllllllllllllbnlllllllllllbnllllllllllllbbbnllllllllllllbnllllllllbbbbbbnllllllnnnnnnnnnnnnnnnnnnnn
+bnllllllllllllbnlllllllllllbnllllllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bnllllllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnn
+
+── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddd...............................................................ddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

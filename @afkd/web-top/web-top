@@ -1,0 +1,671 @@
+#!/usr/bin/env python3
+"""@afkd/web-top — an afkd companion that relays the control wire to a browser.
+
+The daemon starts this program, hands it the control socket it already bound and the
+settings its `plugin @afkd/web-top { … }` block carried, and from there this is a **relay**
+and nothing else: every subscriber gets its **own** attach to the daemon, every frame that
+attach reads is forwarded verbatim as one SSE `data:` line, and the operator's intents come
+back the other way as `command` frames on that same attach.
+
+It folds nothing, keeps no model and holds no replay ring. That is the whole design: the
+daemon serves each connection its own `meta.snapshot`, so a second browser is a second
+attach rather than a second reader of one mid-stream. The dashboard is painted in the
+browser, by later cards — this card ships the process side and a placeholder page.
+
+Standard library only, so it installs on a host with no toolchain.
+"""
+
+import http.server
+import json
+import os
+import socket
+import stat
+import sys
+import threading
+import urllib.parse
+
+# This plugin's own name, as the manifest spells it and every sentence it writes names it.
+NAME = "@afkd/web-top"
+
+# The plugin protocol the `hello` is compared on, and the control wire's own version. Two
+# different integers in afkd; both are 1 today, and each is compared by equality.
+PLUGIN_PROTO = 1
+WIRE_PROTO = 1
+
+# The most bytes either end buffers for one JSONL frame — the bound the daemon holds too.
+MAX_LINE = 64 * 1024
+
+# What an unwritten setting means. A block naming this companion with nothing in it must
+# still come up, which is the first thing anybody tries. 8770 is the example companion's,
+# so the two can be run side by side.
+DEFAULT_PORT = 8771
+DEFAULT_BIND = "127.0.0.1"
+DEFAULT_MAX_CLIENTS = 8
+# How many log lines the page's fold keeps per service. `LOG_RING_CAPACITY` in
+# `crates/tui/src/logring.rs` — the terminal dashboard's own bound, so a browser and a
+# terminal watching the same daemon scroll back the same distance.
+DEFAULT_LOG_LINES = 2000
+
+# How long an idle stream waits before it writes a comment, so a proxy in the middle never
+# reads the quiet as a dead connection. It is also the attach's socket timeout: the reader
+# wakes on it, writes the comment, and goes back to the same partial line.
+KEEPALIVE_S = 15.0
+
+# How long the shutdown waits for open streams to take their final event. A browser that
+# stopped reading must not hold the drain, so this is a ceiling, not a join.
+STREAM_DRAIN_S = 1.0
+
+# The verbs `POST /command` composes a frame for, split by what each one carries
+# (`crates/app/src/proto.rs`, `enum Command`). Nothing outside these reaches the socket.
+SERVICE_VERBS = ("start", "stop", "restart", "fire", "force")
+GLOBAL_VERBS = ("reload", "status", "doctor", "validate")
+OPTIONAL_SERVICE_VERBS = ("runs",)
+VOCABULARY = SERVICE_VERBS + GLOBAL_VERBS + OPTIONAL_SERVICE_VERBS
+
+# What the listener serves out of its own directory, by extension. An allowlist rather than
+# a denylist: this process runs unconfined with the daemon's privileges, so the set of
+# things a browser can read out of it is written down rather than inferred.
+STATIC_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+}
+
+# The directory this program was installed into — the static root, and the only one.
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def die(sentence):
+    """One sentence on stderr and exit 1 — never a traceback.
+
+    The daemon's restart policy owns what happens next; this program does not
+    second-guess it.
+    """
+    print(sentence, file=sys.stderr, flush=True)
+    raise SystemExit(1)
+
+
+# --- settings ----------------------------------------------------------------------
+
+
+def setting_int(settings, key, default, low, high):
+    """One setting as an integer in range, or a named fault.
+
+    Every value arrives as a **string**: afkd lowers a scalar to a JSON string and a bare
+    key with no value to `true`, and omits an unwritten key entirely. So the coercion and
+    the default live in one place, and `port` written as a word is a sentence rather than
+    a traceback four frames later.
+    """
+    raw = settings.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+        die("%s: setting `%s` must be an integer, not %r" % (NAME, key, raw))
+    try:
+        value = int(raw)
+    except ValueError:
+        die("%s: setting `%s` must be an integer, not %r" % (NAME, key, raw))
+    if not low <= value <= high:
+        die("%s: setting `%s` must be between %d and %d, not %d"
+            % (NAME, key, low, high, value))
+    return value
+
+
+def setting_str(settings, key, default):
+    """One setting as a non-empty string, or a named fault."""
+    raw = settings.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, str) or not raw.strip():
+        die("%s: setting `%s` must be a non-empty string, not %r" % (NAME, key, raw))
+    return raw.strip()
+
+
+def setting_dir(settings, key, default):
+    """One setting as a non-empty **absolute** path, or a named fault.
+
+    It is not required to exist: a run corpus is made by the daemon the first time a
+    service fires, and a relay that refused to start on an empty home would be a worse
+    answer than one that finds nothing to read.
+    """
+    value = setting_str(settings, key, default)
+    if not os.path.isabs(value):
+        die("%s: setting `%s` must be an absolute path, not %r" % (NAME, key, value))
+    return value
+
+
+# --- the attaches ------------------------------------------------------------------
+
+
+class Overflow(Exception):
+    """A wire line past `MAX_LINE`, which a conforming daemon cannot produce."""
+
+
+class Attach:
+    """One subscriber's own connection to the daemon.
+
+    The reader is the stream's own handler thread and the writer is whichever
+    `POST /command` thread names this attach's id, so `send_lock` is what keeps two tabs
+    from interleaving half a frame. `buf` is the partial line a keepalive must not lose.
+    """
+
+    def __init__(self, sock):
+        self.sock = sock
+        # The handle a `POST /command` names to reach **this** attach. Unguessable, so one
+        # browser cannot drive another's stream by counting.
+        self.id = os.urandom(8).hex()
+        self.send_lock = threading.Lock()
+        self.buf = bytearray()
+
+    def send(self, frame):
+        blob = (json.dumps(frame) + "\n").encode("utf-8")
+        with self.send_lock:
+            self.sock.sendall(blob)
+
+    def readline(self):
+        """One wire line without its newline, or `None` at end of stream.
+
+        Hand-rolled rather than `sock.makefile()`, because the keepalive is a socket
+        timeout on a **partially read** line: the caller writes its comment and calls this
+        again, and `buf` is what makes that lossless. An over-cap line raises rather than
+        being buffered whole — the bound both ends hold.
+        """
+        while True:
+            end = self.buf.find(b"\n")
+            # The cap is judged on the **line**, not on what one `recv` happened to
+            # deliver: a read that brings the terminator and 80 KiB of body in the same
+            # chunk must still refuse it.
+            if end > MAX_LINE or (end < 0 and len(self.buf) > MAX_LINE):
+                raise Overflow(
+                    "the daemon sent a line past the %d-byte cap the wire fixes" % MAX_LINE
+                )
+            if end >= 0:
+                line = bytes(self.buf[:end])
+                del self.buf[: end + 1]
+                return line
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                return None
+            self.buf.extend(chunk)
+
+    def shutdown(self):
+        """End the blocking read this attach's stream thread is sitting in."""
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            # Already gone — the daemon closed it, or the stream thread got there first.
+            pass
+
+    def close(self):
+        self.shutdown()
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+class Attaches:
+    """Every live attach, behind one lock, with the `max_clients` ceiling inside it.
+
+    The ceiling is checked **under** the lock on purpose: two `GET /stream`s arriving
+    together must not both take the last slot.
+    """
+
+    def __init__(self, max_clients):
+        self.cond = threading.Condition()
+        self.max_clients = max_clients
+        self.live = {}
+
+    def open(self, sock):
+        """Register a connected socket as an attach, or `None` if the ceiling is full."""
+        attach = Attach(sock)
+        with self.cond:
+            if len(self.live) >= self.max_clients:
+                return None
+            self.live[attach.id] = attach
+            return attach
+
+    def close(self, attach):
+        with self.cond:
+            self.live.pop(attach.id, None)
+            self.cond.notify_all()
+        attach.close()
+
+    def get(self, stream_id):
+        # Only a string is ever a key here, and a body is whatever a client posted: a
+        # lookup on an unhashable value would be a traceback rather than a 404.
+        if not isinstance(stream_id, str):
+            return None
+        with self.cond:
+            return self.live.get(stream_id)
+
+    def shutdown_all(self):
+        """Wake every stream thread by ending its read, leaving each to retire itself.
+
+        The registry is deliberately **not** cleared here: its emptying is what
+        [`drained`] waits on, so a stream that has taken its final event is the thing that
+        counts, not a socket that was closed under one.
+        """
+        with self.cond:
+            attaches = list(self.live.values())
+        for attach in attaches:
+            attach.shutdown()
+
+    def drained(self, timeout):
+        with self.cond:
+            return self.cond.wait_for(lambda: not self.live, timeout=timeout)
+
+
+class Relay:
+    """What the handler threads share: where the daemon is, who is attached, and the latch.
+
+    There is nothing else — no folded board, no cached frame. The **page** folds, in
+    `fold.mjs`; this process forwards. `runs_dir` is read, range-checked and held here for
+    the cards that paint run trees; nothing opens anything under it yet, and `log_lines` is
+    likewise only carried — it is handed to the page on its `stream` event, because the ring
+    it bounds lives in the browser.
+    """
+
+    def __init__(self, socket_path, runs_dir, max_clients, log_lines):
+        self.socket_path = socket_path
+        self.runs_dir = runs_dir
+        self.log_lines = log_lines
+        self.attaches = Attaches(max_clients)
+        self.stopping = threading.Event()
+
+    def dial(self):
+        """A fresh connection to the daemon, with the keepalive as its read timeout."""
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(KEEPALIVE_S)
+        sock.connect(self.socket_path)
+        return sock
+
+
+# --- the listener ------------------------------------------------------------------
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    """Three routes: the static files beside this program, `GET /stream`, `POST /command`.
+
+    `relay` is set on the server.
+    """
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        # Deliberately silent. After the handshake both streams are pumped into the daemon
+        # log under this plugin's tag, and a page a browser polls would write a line there
+        # every couple of seconds forever. Faults still speak: `log_error` is the one
+        # BaseHTTPRequestHandler calls for a request it could not serve.
+        pass
+
+    def log_error(self, fmt, *args):
+        sys.stderr.write("%s: %s\n" % (NAME, fmt % args))
+        sys.stderr.flush()
+
+    # -- routes --
+
+    def do_GET(self):
+        route = self.route()
+        if route == "/stream":
+            self.stream()
+        else:
+            self.static(route)
+
+    def do_POST(self):
+        if self.route() != "/command":
+            self.fault(404, "no route %s; commands go to POST /command" % self.path)
+            return
+        body = self.body()
+        if body is None:
+            return
+        attach = self.server.relay.attaches.get(body.get("stream"))
+        if attach is None:
+            # The stream is how a command reaches **this** client's own attach, so an id
+            # that names none is a 404 rather than a frame on somebody else's socket.
+            self.fault(404, "no open stream %r; open GET /stream and post the id it deals "
+                            "you" % (body.get("stream"),))
+            return
+        frame = self.frame(body)
+        if frame is None:
+            return
+        try:
+            attach.send(frame)
+        except OSError as err:
+            self.fault(502, "the daemon would not take the command: %s" % err)
+            return
+        # The daemon's answer arrives on this client's own stream, which is the whole point
+        # of keying by stream id.
+        self.respond(200, "application/json", b'{"ok":true}')
+
+    def route(self):
+        """The request path, without its query and percent-decoded.
+
+        Decoding **before** the checks is load-bearing: `%2e%2e%2f` is a traversal the
+        allowlist below would otherwise read as one innocent segment.
+        """
+        return urllib.parse.unquote(self.path.split("?", 1)[0])
+
+    # -- the static files --
+
+    def static(self, route):
+        """One file from this program's own directory, by an allowlisted extension.
+
+        A single path segment, so there is no directory to walk out of: a nested path, a
+        `..`, the manifest, the README and this program itself are each a 404.
+
+        The NUL check sits with the other name checks rather than with the read below on
+        purpose: an embedded null raises `ValueError`, not the `OSError` the read catches,
+        so `/%00.html` would leave here as a traceback on stderr — which is the daemon's
+        log — instead of as this route's one refusing sentence.
+        """
+        name = "index.html" if route == "/" else route[1:]
+        extension = os.path.splitext(name)[1]
+        if ("/" in name or "\0" in name or name.startswith(".")
+                or extension not in STATIC_TYPES):
+            self.fault(404, "no route %s; this relay serves %s, GET /stream and "
+                            "POST /command" % (route, ", ".join(sorted(STATIC_TYPES))))
+            return
+        try:
+            with open(os.path.join(HERE, name), "rb") as handle:
+                body = handle.read()
+        except OSError:
+            self.fault(404, "no file %s beside this relay" % name)
+            return
+        self.respond(200, STATIC_TYPES[extension], body)
+
+    # -- the stream --
+
+    def stream(self):
+        """One subscriber: its own attach, its own handshake, its own snapshot.
+
+        The connection is dialled **before** the headers go out, so a daemon that will not
+        take another client is a 503 with a sentence rather than a half-open event stream
+        the browser has to time out on.
+        """
+        relay = self.server.relay
+        try:
+            sock = relay.dial()
+        except OSError as err:
+            self.fault(503, "cannot attach to the control socket afkd named: %s" % err)
+            return
+        attach = relay.attaches.open(sock)
+        if attach is None:
+            sock.close()
+            self.fault(503, "this relay is already serving %d subscribers; close a tab or "
+                            "raise `max_clients`" % relay.attaches.max_clients)
+            return
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            # The id first, so a page can post a command the moment it has one — before
+            # the welcome, which is the slower half. `log_lines` rides along because the
+            # page's fold needs it before the first frame arrives.
+            hello = {"id": attach.id, "log_lines": relay.log_lines}
+            self.event("stream", json.dumps(hello).encode("utf-8"))
+            if self.handshake(attach):
+                self.forward(attach)
+        except OSError:
+            # A browser tab that went away — a broken pipe or a reset connection, both
+            # `OSError`. There is nothing to report: the subscriber is simply gone.
+            return
+        finally:
+            relay.attaches.close(attach)
+
+    def handshake(self, attach):
+        """Phase 1 on this subscriber's own attach; whether phase 2 follows.
+
+        The daemon's reply crosses **verbatim** as its own event rather than as a `data:`
+        line, which is what keeps "every `data:` line is a phase-2 frame" exactly true.
+        """
+        attach.send({"afkd": "hello", "proto": WIRE_PROTO})
+        line = self.read(attach)
+        if line is None:
+            return False
+        try:
+            reply = json.loads(line.decode("utf-8", "replace"))
+            tag = reply.get("afkd") if isinstance(reply, dict) else None
+        except ValueError:
+            tag = None
+        if tag == "welcome":
+            self.event("welcome", line)
+            return True
+        if tag == "reject":
+            self.event("refused", line)
+            return False
+        self.event("error", json.dumps(
+            {"message": "the daemon answered the handshake with neither a welcome nor a "
+                        "refusal"}).encode("utf-8"))
+        return False
+
+    def forward(self, attach):
+        """Every frame the daemon writes, verbatim, one `data:` line each."""
+        while True:
+            line = self.read(attach)
+            if line is None:
+                return
+            self.write(b"data: " + line + b"\n\n")
+
+    def read(self, attach):
+        """The next wire line, or `None` once this stream is over.
+
+        Every way it can end writes the browser its own event first — a stopping daemon, a
+        closed socket and an over-cap line are three different sentences, and a page that
+        reopens wants to know which one it got.
+        """
+        relay = self.server.relay
+        while True:
+            if relay.stopping.is_set():
+                self.event("bye", b"{}")
+                return None
+            try:
+                line = attach.readline()
+            except socket.timeout:
+                # Quiet is not death: the comment goes out and the same partial line is
+                # read on.
+                self.write(b": keepalive\n\n")
+                continue
+            except Overflow as err:
+                # Nothing on stderr: a conforming daemon cannot produce this, and the
+                # browser is the party that needs telling.
+                self.event("error", json.dumps({"message": str(err)}).encode("utf-8"))
+                return None
+            except OSError:
+                line = None
+            if line is None:
+                if relay.stopping.is_set():
+                    self.event("bye", b"{}")
+                else:
+                    self.event("closed", json.dumps(
+                        {"reason": "daemon"}).encode("utf-8"))
+                return None
+            return line
+
+    # -- the command body --
+
+    def body(self):
+        """The `POST /command` body as an object, or `None` once the fault is written."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.fault(400, "Content-Length is not a number")
+            return None
+        if length > MAX_LINE:
+            self.fault(400, "a command body is capped at %d bytes" % MAX_LINE)
+            return None
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8", "replace"))
+        except ValueError:
+            self.fault(400, "the command body is not JSON")
+            return None
+        if not isinstance(body, dict):
+            self.fault(400, "the command body is not an object")
+            return None
+        return body
+
+    def frame(self, body):
+        """The `command` frame `body` asks for, or `None` once the fault is written.
+
+        The frame is **composed** here rather than forwarded, so a client cannot smuggle a
+        field of its own onto the wire, and a verb this relay does not know reaches the
+        socket as nothing at all.
+        """
+        verb = body.get("command")
+        service = body.get("service")
+        if verb in SERVICE_VERBS:
+            if not isinstance(service, str) or not service:
+                self.fault(400, "`%s` needs a service" % verb)
+                return None
+            return {"type": "command", "command": verb, "service": service}
+        if verb in GLOBAL_VERBS:
+            return {"type": "command", "command": verb}
+        if verb in OPTIONAL_SERVICE_VERBS:
+            if service is None:
+                return {"type": "command", "command": verb}
+            if not isinstance(service, str) or not service:
+                self.fault(400, "`%s` takes one service or none, not %r" % (verb, service))
+                return None
+            return {"type": "command", "command": verb, "service": service}
+        self.fault(400, "the control wire has no command %r; it has %s"
+                   % (verb, ", ".join(VOCABULARY)))
+        return None
+
+    # -- replies --
+
+    def event(self, name, payload):
+        self.write(b"event: " + name.encode("utf-8") + b"\ndata: " + payload + b"\n\n")
+
+    def write(self, blob):
+        self.wfile.write(blob)
+        self.wfile.flush()
+
+    def respond(self, status, content_type, body):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def fault(self, status, sentence):
+        self.respond(status, "text/plain; charset=utf-8", (sentence + "\n").encode("utf-8"))
+
+
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    # A browser tab that vanishes leaves a half-open connection; the listener must come
+    # straight back on a restart rather than sitting in TIME_WAIT.
+    allow_reuse_address = True
+
+
+# --- the two ends ------------------------------------------------------------------
+
+
+def watch_stdin(httpd, relay, ready):
+    """EOF on stdin is the daemon saying stop.
+
+    afkd says nothing more on that pipe after the `hello`, so the next thing to arrive is
+    the close. The latch goes up, every attach's read is ended so its stream wakes and
+    takes a final `bye`, and the listener goes — all well inside the daemon's five-second
+    grace, because a `systemctl stop` must not look like a crash.
+    """
+    sys.stdin.readline()
+    relay.stopping.set()
+    relay.attaches.shutdown_all()
+    # Bounded, and a poll rather than a join: a browser that stopped reading must not hold
+    # the drain.
+    relay.attaches.drained(STREAM_DRAIN_S)
+    # `shutdown()` is only meaningful once `serve_forever` owns the socket.
+    ready.wait()
+    httpd.shutdown()
+
+
+def hello():
+    """Phase 0: the one line afkd sends, checked, or a named fault.
+
+    The read itself is the 60 s deadline — afkd is the only writer on this pipe and it
+    writes immediately — and the line is capped the way every other frame is.
+    """
+    line = sys.stdin.readline(MAX_LINE + 1)
+    if not line:
+        die("%s: afkd closed stdin before sending its `hello`" % NAME)
+    if len(line) > MAX_LINE:
+        die("%s: afkd's `hello` line is past the %d-byte cap the wire fixes"
+            % (NAME, MAX_LINE))
+    try:
+        call = json.loads(line)
+    except ValueError:
+        die("%s: afkd's `hello` line is not JSON: %s" % (NAME, line.strip()))
+    if not isinstance(call, dict) or call.get("call") != "hello":
+        die("%s: expected a `hello` call from afkd, got %s" % (NAME, line.strip()))
+    if call.get("proto") != PLUGIN_PROTO:
+        die("%s: plugin protocol skew: this plugin speaks v%s, afkd speaks v%s"
+            % (NAME, PLUGIN_PROTO, call.get("proto")))
+    return call
+
+
+def named_socket(call):
+    """The socket path out of the `hello`, as a path.
+
+    It never resolves the path itself: a companion under a relocated afkd home must reach
+    the daemon that started it, and the only way to be sure is to be told.
+    """
+    path = call.get("socket")
+    if not isinstance(path, str) or not path:
+        die("%s: afkd's `hello` named no control socket" % NAME)
+    return path
+
+
+def check_socket(path):
+    """That the path afkd named really is a socket, before anything is served.
+
+    Checked rather than dialled: a probe connection would show up in the daemon's own
+    client log every time this companion starts. Deliberately **after** the settings, so a
+    misspelled `port` is named as the misspelled `port` rather than masked by whatever the
+    home looks like.
+    """
+    try:
+        if not stat.S_ISSOCK(os.stat(path).st_mode):
+            die("%s: the path afkd named is not a socket: %s" % (NAME, path))
+    except OSError as err:
+        die("%s: cannot reach the control socket afkd named: %s" % (NAME, err))
+
+
+def main():
+    call = hello()
+    socket_path = named_socket(call)
+    settings = call.get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+    port = setting_int(settings, "port", DEFAULT_PORT, 0, 65535)
+    bind = setting_str(settings, "bind", DEFAULT_BIND)
+    max_clients = setting_int(settings, "max_clients", DEFAULT_MAX_CLIENTS, 1, 64)
+    runs_dir = setting_dir(
+        settings, "runs_dir", os.path.join(os.path.dirname(socket_path), "runs")
+    )
+    log_lines = setting_int(settings, "log_lines", DEFAULT_LOG_LINES, 1, 100000)
+    check_socket(socket_path)
+
+    sys.stdout.write(json.dumps({"ok": True, "proto": PLUGIN_PROTO}) + "\n")
+    sys.stdout.flush()
+
+    relay = Relay(socket_path, runs_dir, max_clients, log_lines)
+    try:
+        httpd = Server((bind, port), Handler)
+    except OSError as err:
+        die("%s: cannot serve on %s:%d: %s" % (NAME, bind, port, err))
+    httpd.relay = relay
+
+    ready = threading.Event()
+    threading.Thread(target=watch_stdin, args=(httpd, relay, ready), daemon=True).start()
+
+    # The line an operator reads out of the daemon log, and the only place an ephemeral
+    # `port 0` announces what it got.
+    print("serving http://%s:%d" % (bind, httpd.server_address[1]), flush=True)
+    ready.set()
+    httpd.serve_forever(poll_interval=0.1)
+    httpd.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,80 @@
+{"type":"meta","meta":"snapshot","services":[{"name":"janitor","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🧹","description":"sweeps the scratch tree between passes","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3595384,"state_ms":4615,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::nightly","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"heavy","queue_priority":"high","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3595385,"state_ms":4614,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::sleeper","state":"busy","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":1501,"group":"ops","icon":"🔹","description":"","queue":"heavy","queue_priority":"normal","queue_parallelism":2,"orphan":false,"stale":false,"last_activity_ms":1496,"state_ms":1501,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::broken","state":"crashed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"state_ms":4613,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::db::vacuum","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops::db","icon":"🔹","description":"","queue":"heavy","queue_priority":"low","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3595387,"state_ms":4612,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"archivist","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":true,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3595384,"state_ms":4615,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"noisy","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3595385,"state_ms":4614,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"flaky","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3595386,"state_ms":4613,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"deep","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3595386,"state_ms":4613,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"spare","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3595385,"state_ms":4614,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":4617}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1560961024,"mem_total":32964694016,"rx_bps":483,"tx_bps":414}
+{"type":"event","event":"fire_started","service":"noisy"}
+{"type":"trace","service":"noisy","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"/tmp/afkd-fixture/bin/noise.sh","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":9,"second":14,"millis":801}}}
+{"type":"log","service":"noisy","stream":"stderr","line":"[noisy]           [RUN] run_cmd: /tmp/afkd-fixture/bin/noise.sh"}
+{"type":"log","service":"noisy","stream":"stdout","line":"[noisy]           [/tmp/afkd-fixture/bin/noise.sh] \u001b[31mred text\u001b[0m and a reset","node":1}
+{"type":"log","service":"noisy","stream":"stdout","line":"[noisy]           [/tmp/afkd-fixture/bin/noise.sh] \u001b]0;window title\u0007 an OSC residue","node":1}
+{"type":"log","service":"noisy","stream":"stdout","line":"[noisy]           [/tmp/afkd-fixture/bin/noise.sh] carriage\rreturn inside a line","node":1}
+{"type":"log","service":"noisy","stream":"stdout","line":"[noisy]           [/tmp/afkd-fixture/bin/noise.sh] a\ttab separated\tline","node":1}
+{"type":"log","service":"noisy","stream":"stdout","line":"[noisy]           [/tmp/afkd-fixture/bin/noise.sh] bidi ‮override","node":1}
+{"type":"log","service":"noisy","stream":"stdout","line":"[noisy]           [/tmp/afkd-fixture/bin/noise.sh] 検査サービス wide CJK","node":1}
+{"type":"log","service":"noisy","stream":"stdout","line":"[noisy]           [/tmp/afkd-fixture/bin/noise.sh] emoji 🔥 and a VS16 ⚙️","node":1}
+{"type":"log","service":"noisy","stream":"stdout","line":"[noisy]           [/tmp/afkd-fixture/bin/noise.sh] zero​width joiner","node":1}
+{"type":"log","service":"noisy","stream":"stderr","line":"[noisy]           [OK] run_cmd: /tmp/afkd-fixture/bin/noise.sh (exit 0, 1ms)"}
+{"type":"trace","service":"noisy","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":1,"out":{"out":"lines","n":8}}}
+{"type":"event","event":"fire_ok","service":"noisy","elapsed_ms":1}
+{"type":"event","event":"service_next_fire","service":"noisy","next_ms":3599999}
+{"type":"event","event":"fire_started","service":"flaky"}
+{"type":"trace","service":"flaky","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"exit 7","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":9,"second":14,"millis":850}}}
+{"type":"log","service":"flaky","stream":"stderr","line":"[flaky]           [RUN] run_cmd: exit 7"}
+{"type":"log","service":"flaky","stream":"stderr","line":"[flaky]           [ERR] run_cmd: exit 7 (exit 7, 1ms)"}
+{"type":"trace","service":"flaky","event":{"op":"closed","id":1,"status":"failed","elapsed_ms":1,"out":{"out":"lines","n":0}}}
+{"type":"event","event":"fire_failed","service":"flaky","reason":"command failed: exit 7","elapsed_ms":2}
+{"type":"event","event":"service_next_fire","service":"flaky","next_ms":3599999}
+{"type":"event","event":"service_stopping","service":"janitor"}
+{"type":"event","event":"service_paused","service":"janitor","paused":true}
+{"type":"event","event":"service_paused","service":"janitor","paused":false}
+{"type":"event","event":"service_armed","service":"janitor"}
+{"type":"event","event":"service_next_fire","service":"janitor","next_ms":3599999}
+{"type":"event","event":"service_paused","service":"ops::broken","paused":false}
+{"type":"trace","service":"ops::broken","event":{"op":"opened","node":{"id":2,"kind":"cmd","label":"exit 3","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":9,"second":15,"millis":2}}}
+{"type":"log","service":"ops::broken","stream":"stderr","line":"[ops::broken]     [RUN] run_cmd: exit 3"}
+{"type":"log","service":"ops::broken","stream":"stderr","line":"[ops::broken]     [ERR] run_cmd: exit 3 (exit 3, 3ms)"}
+{"type":"trace","service":"ops::broken","event":{"op":"closed","id":2,"status":"failed","elapsed_ms":3,"out":{"out":"lines","n":0}}}
+{"type":"log","service":"ops::broken","stream":"stderr","line":"[ops::broken] init failed, skipping its work: command failed: exit 3"}
+{"type":"event","event":"service_crashed","service":"ops::broken","reason":"command failed: exit 3","poisoned":false}
+{"type":"event","event":"service_crashed","service":"ops::broken","reason":"command failed: exit 3","poisoned":false}
+{"type":"event","event":"service_stopping","service":"ops::sleeper"}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1561706496,"mem_total":32964694016,"rx_bps":1169,"tx_bps":961}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1561706496,"mem_total":32964694016,"rx_bps":1980,"tx_bps":1956}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1561706496,"mem_total":32964694016,"rx_bps":8276,"tx_bps":5265}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1561706496,"mem_total":32964694016,"rx_bps":5208,"tx_bps":3268}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1561706496,"mem_total":32964694016,"rx_bps":1474,"tx_bps":665}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1561702400,"mem_total":32964694016,"rx_bps":358,"tx_bps":347}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1561702400,"mem_total":32964694016,"rx_bps":553,"tx_bps":347}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1570594816,"mem_total":32964694016,"rx_bps":422,"tx_bps":411}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":1570594816,"mem_total":32964694016,"rx_bps":640,"tx_bps":478}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1570594816,"mem_total":32964694016,"rx_bps":547,"tx_bps":414}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1570594816,"mem_total":32964694016,"rx_bps":2829,"tx_bps":3096}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1570557952,"mem_total":32964694016,"rx_bps":15731,"tx_bps":21034}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1570557952,"mem_total":32964694016,"rx_bps":2615,"tx_bps":823}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":1570557952,"mem_total":32964694016,"rx_bps":2049,"tx_bps":1223}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1570557952,"mem_total":32964694016,"rx_bps":906,"tx_bps":762}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1570557952,"mem_total":32964694016,"rx_bps":4803,"tx_bps":4142}
+{"type":"meta","meta":"host_load","cpu_pct":4,"mem_used":1592983552,"mem_total":32964694016,"rx_bps":16862,"tx_bps":187064}
+{"type":"meta","meta":"host_load","cpu_pct":5,"mem_used":1591611392,"mem_total":32964694016,"rx_bps":68634,"tx_bps":15631}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1586991104,"mem_total":32964694016,"rx_bps":1088,"tx_bps":1223}
+{"type":"log","service":"ops::sleeper","stream":"stderr","line":"[ops::sleeper]    [OK] run_cmd: echo holding; sleep 20 (exit 0, 20.01s)"}
+{"type":"trace","service":"ops::sleeper","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":20010,"out":{"out":"lines","n":1}}}
+{"type":"event","event":"fire_ok","service":"ops::sleeper","elapsed_ms":20012}
+{"type":"event","event":"service_next_fire","service":"ops::sleeper","next_ms":3599999}
+{"type":"event","event":"service_paused","service":"ops::sleeper","paused":true}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1572503552,"mem_total":32964694016,"rx_bps":753,"tx_bps":679}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"deep"}
+{"type":"event","event":"service_stopping","service":"flaky"}
+{"type":"event","event":"service_stopping","service":"ops::nightly"}
+{"type":"event","event":"service_stopping","service":"spare"}
+{"type":"event","event":"service_stopping","service":"archivist"}
+{"type":"event","event":"service_stopping","service":"ops::db::vacuum"}
+{"type":"event","event":"service_stopping","service":"janitor"}
+{"type":"event","event":"service_stopping","service":"noisy"}
+{"type":"event","event":"service_paused","service":"deep","paused":true}
+{"type":"event","event":"service_paused","service":"flaky","paused":true}
+{"type":"event","event":"service_paused","service":"ops::nightly","paused":true}
+{"type":"event","event":"service_paused","service":"spare","paused":true}
+{"type":"event","event":"service_paused","service":"archivist","paused":true}
+{"type":"event","event":"service_paused","service":"ops::db::vacuum","paused":true}
+{"type":"event","event":"service_paused","service":"janitor","paused":true}
+{"type":"event","event":"service_paused","service":"noisy","paused":true}

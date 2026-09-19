@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>afkd top</title>
+<!-- An empty data URI, so a browser does not ask for a favicon the allowlist refuses. -->
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dashboard.css">
+<!-- The probe the page measures its own cell with: a hundred `0`s in the grid's own face,
+     laid out but out of view. The advance is its width over a hundred, the line height its
+     height — measured rather than assumed, because the grid is sized in cells and a cell is
+     whatever this visitor's monospace stack turns out to be. -->
+<span id="probe">0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000</span>
+<!-- The grid takes focus so it can take keys: `tabindex` makes it focusable at all and
+     `autofocus` hands it the keyboard on load, so a page that just opened is already
+     pressable. Keys are captured, never stolen — `input.mjs` reads a keydown only while this
+     element is the document's active one, so the address bar and every browser chord keep
+     working. -->
+<div id="screen" tabindex="0" autofocus></div>
+<script type="module" src="/top.mjs"></script>

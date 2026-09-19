@@ -1,0 +1,94 @@
+afkd 0.2.123 · ● Running 12s · 8/10 up  
+CPU   1% · Mem 1.5G/31G                 
+                                        
+Service            State                
+  🧹 janitor       □ Stopped            
+⊟ 📦 ops           ✕ Crashed            
+├─ 🔹 nightly      ▷ Queued 2s          
+├─ 🔷 sleeper      ▶ Busy 4s            
+├─ 🔸 broken       ✕ Crashed            
+└─ ⊟ 📦 db                              
+   └─ 🔷 vacuum    ▶ Busy 5s            
+  🔹 🔒archivist   ● Idle               
+  🔹 noisy         ● Idle               
+  🔹 flaky         ● Idle               
+  🔹 deep          ● Idle               
+  🔹 spare         ● Idle               
+                                        
+Queue    Slots              Parallelism 
+🧵 he…   ▮▮ ╎ ∙             2           
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+? help                                  
+
+── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
+nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnn
+rrmmmmmmmmmmnnnnnnnmmmmmmmmmnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnn
+rrrnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrrrrnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnn
+rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnbbbbbnnnnnnnnnnnnnnbbbbbbbbbbbn
+nnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+
+── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+........................................
+dddd....ddddddd.........................
+........................................
+bbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb..
+sssssssssssssssssssDDDDDDDDDssssssssssss
+...................bbbbbbbbb............
+...................ddddddddddd..........
+...................bbbbbbbbb............
+...................bbbbbbbbb............
+........................................
+...................bbbbbbbbb............
+........................................
+........................................
+........................................
+........................................
+........................................
+........................................
+bbbbb....bbbbb..............bbbbbbbbbbb.
+.........bb...d.........................
+........................................
+........................................
+........................................
+........................................
+........................................
+........................................
+........................................
+........................................
+........................................
+........................................
+........................................

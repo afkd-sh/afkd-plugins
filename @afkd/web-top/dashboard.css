@@ -1,0 +1,177 @@
+/* The dashboard's own stylesheet: the product's palette, and a character grid to spend it on.
+ *
+ * The tones below are `crates/tui/src/palette.rs`'s truecolor arm, read off that file rather
+ * than invented — the nine `Hue` spellings afkd paints a terminal with, on the `#0d1117`
+ * ground every contrast figure in `docs/tui-style.md` §5 is measured against — plus three
+ * recession tones for the text that is not a status.
+ *
+ * It is **copied** from `web/src/styles/dashboard.css`'s `--term-*` ladder, not imported: the
+ * site does not ship to the plugin, the two are free to move apart, and a plugin that reached
+ * into the site's build would break the moment either moved. Two tones were resolved on the
+ * way across. The site carries `--term-off #8c949d` one step from the product's own
+ * `Hue::Muted #8b949e`, and `--term-title #fcfcfc` one step from `Hue::Bright #f0f6fc`; this
+ * file keeps the **product's** hex in both cases and drops the near-twin, so no reader has to
+ * wonder which of a pair is a typo. `layout.test.mjs` reads the nine straight out of the Rust
+ * and holds this file to them, so a rename there reddens here.
+ *
+ * Nothing in here decides anything. `layout.mjs` names a palette **role** per cell and
+ * `paint.mjs` turns that into a class; this file is the only place a role becomes a colour,
+ * which is what makes "every colour on the screen is one of the product's" a question a test
+ * can answer by reading one file. */
+
+:root {
+  /* The screen, and the band the cursor's row wears. The bar is a deliberate darkening of the
+     ANSI selection blue: every status fg it has to carry gains contrast on it. */
+  --term-bg: #0d1117;
+  --term-selection: #0d4a63;
+
+  /* The nine product hues, in `palette.rs`'s own order. */
+  --term-accent: #2eb8f8;
+  --term-accent-dim: #298ab9;
+  --term-caution: #d29922;
+  --term-alarm: #f85149;
+  --term-ok: #3fb950;
+  --term-idle: #b1bac4;
+  --term-muted: #8b949e;
+  --term-bright: #f0f6fc;
+
+  /* The three recession tones: ordinary body text, the footer legend's calm labels, and the
+     step below both that a dimmed cell — a stale age, a far countdown, a trend lane's older
+     history — recedes to. */
+  --term-ink: #c9d1d9;
+  --term-legend: #a0a6ae;
+  --term-recede: #777f8b;
+
+  /* The cell, in pixels. Written by `top.mjs` from its own probe on every measure; the
+     fallbacks are only what the first frame paints on before that lands.
+     Deliberately **not** `1ch`: `ch` is the first available font's `0` advance, which is not
+     always the advance the page actually draws with (a stack whose head font is mapped but
+     unavailable resolves `ch` against one face and paints with another — this host does
+     exactly that, 10px against 9). The page derives `(cols, rows)` from the probe, so sizing
+     a run against anything else lets the two arithmetics disagree and the row overrun by a
+     pixel a cell. One measurement, both uses. */
+  --cell-w: 8.4px;
+  --cell-h: 17.5px;
+}
+
+html {
+  background: var(--term-bg);
+  /* The grid is clipped, never scrolled: the layout already shed and clipped itself to the
+     viewport it was told about, so anything past this edge is a glyph the visitor's font drew
+     wider than the terminal budgets for it — not content to reach. Both elements, because a
+     `body` that clips still leaves the document scrollable. */
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  color: var(--term-ink);
+  background: var(--term-bg);
+  /* A monospace stack and nothing else: the grid is measured in cells, and a cell is this
+     face's advance. The page probes that advance rather than assuming one, so the stack may
+     resolve to whatever the visitor has — but it must resolve to something fixed-pitch, or
+     the probe measures an average and every row lies. */
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  line-height: 1.25;
+  /* The rows are pre-measured to the cell, so nothing may reflow them: no wrapping, no
+     ligature reshaping, no browser text inflation on a narrow phone. */
+  white-space: pre;
+  overflow: hidden;
+  font-variant-ligatures: none;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+}
+
+/* The screen. It fills the viewport and clips: the layout already shed and clipped itself to
+   the grid it was told about, so anything reaching this edge is a bug, not a scrollbar.
+ *
+ * Pinned out of flow rather than given `height: 100vh`, because the probe beside it is a
+ * *span*: the newline between the two in `index.html` is a text node, and a text node in a
+ * block container opens an anonymous line box — one cell of it — that pushed the whole screen
+ * down a row and left the last one hanging past the fold. Driving the real page is what found
+ * that; `inset: 0` makes it unreachable rather than fixing it once by deleting a newline. */
+#screen {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* The focus ring. The UA outline is drawn *outside* the box, and this box is the viewport, so
+   the default would be painted off-screen entirely — the one affordance saying "this grid has
+   the keyboard" would be invisible. An inset ring in the accent hue puts it back on the grid,
+   and `:focus-visible` keeps it off a pointer click, which is the convention every browser
+   holds. It costs no cell: an inset box-shadow paints over the ground, not in the flow. */
+#screen:focus {
+  outline: none;
+}
+
+#screen:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--term-accent-dim);
+}
+
+/* One row, one line. `height` rather than `line-height` alone so a row with no ink (the
+   spacer, a short body) occupies exactly the cell height the probe measured, and `overflow`
+   so a tall fallback glyph cannot grow the row under the ones below it. */
+.row {
+  height: var(--cell-h);
+  overflow: hidden;
+}
+
+/* One run of cells, and **the** reason this page is a grid rather than a paragraph.
+ *
+ * A browser does not lay a monospace grid out the way a terminal does. `ui-monospace` has no
+ * 🔹, no 🧵 and, on many hosts, no CJK, so each of those falls back to whatever face does —
+ * at whatever advance that face uses, which is not two cells. A row painted as plain text
+ * therefore drifts out of column at the first emoji, and every column right of it drifts with
+ * it. So the box is sized from the count `layout.mjs` measured (`--cells`, one per run) and
+ * the glyph is clipped into it: the terminal's own contract, where a cluster occupies the
+ * cells the layout reserved and a font that disagrees loses the overhang rather than the
+ * alignment. The cell is `--cell-w`, the page's own probed advance — the very number it
+ * derived `cols` from — so a row of `cols` cells is exactly the viewport wide. */
+.row > span {
+  display: inline-block;
+  width: calc(var(--cells, 0) * var(--cell-w));
+  overflow: hidden;
+  vertical-align: top;
+}
+
+/* The probe: a hundred `0`s in the grid's own face, laid out but invisible, from which the
+   page derives the cell advance and the line height. It must stay in flow — `display: none`
+   would measure nothing — so it is pulled out of view rather than hidden. */
+#probe {
+  position: absolute;
+  top: -1000px;
+  left: 0;
+  visibility: hidden;
+  white-space: pre;
+}
+
+/* The roles. One rule per role, named exactly as `layout.mjs` names it. */
+.fg-ink { color: var(--term-ink); }
+.fg-bright { color: var(--term-bright); }
+.fg-legend { color: var(--term-legend); }
+.fg-recede { color: var(--term-recede); }
+.fg-accent { color: var(--term-accent); }
+.fg-accent-dim { color: var(--term-accent-dim); }
+.fg-caution { color: var(--term-caution); }
+.fg-alarm { color: var(--term-alarm); }
+.fg-ok { color: var(--term-ok); }
+.fg-idle { color: var(--term-idle); }
+.fg-muted { color: var(--term-muted); }
+
+.bg-selection { background: var(--term-selection); }
+
+.bold { font-weight: 700; }
+
+/* A terminal's `DIM` is an SGR attribute laid *over* a colour, which a browser has no
+   equivalent for: `opacity` would blend a tone the palette does not contain, and that is
+   precisely what the palette scan exists to forbid. So dim is spelled as **one step down the
+   recession ladder**, and only where it carries signal on its own — over the three neutral
+   tones. Over a status hue it spells nothing: at truecolor the hue already carries the tier
+   (`Queued`/`Checking` are their own darker blue, `Stopped` its own grey), which is exactly
+   why `palette.rs` gave them one. */
+.fg-ink.dim { color: var(--term-recede); }
+.fg-legend.dim { color: var(--term-recede); }
+.fg-bright.dim { color: var(--term-legend); }

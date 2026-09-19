@@ -1,0 +1,56 @@
+{"type":"meta","meta":"snapshot","services":[{"name":"janitor","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🧹","description":"sweeps the scratch tree between passes","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596890,"state_ms":3109,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::nightly","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"heavy","queue_priority":"high","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3596891,"state_ms":3108,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::sleeper","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"heavy","queue_priority":"normal","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3596892,"state_ms":3107,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::broken","state":"crashed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"state_ms":3107,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::db::vacuum","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops::db","icon":"🔹","description":"","queue":"heavy","queue_priority":"low","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3596891,"state_ms":3108,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"archivist","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":true,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596894,"state_ms":3105,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"noisy","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596891,"state_ms":3108,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"flaky","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596893,"state_ms":3106,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"deep","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596892,"state_ms":3107,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"spare","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596893,"state_ms":3106,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":3111}
+{"type":"meta","meta":"host_load","cpu_pct":2,"mem_used":1591238656,"mem_total":32964694016,"rx_bps":21054,"tx_bps":8948}
+{"type":"event","event":"fire_started","service":"ops::nightly"}
+{"type":"trace","service":"ops::nightly","event":{"op":"opened","node":{"id":1,"kind":"workflow","label":"nightly_pass","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":3,"millis":736}}}
+{"type":"event","event":"step_entered","service":"ops::nightly","breadcrumb":"run_workflow nightly_pass"}
+{"type":"log","service":"ops::nightly","stream":"stderr","line":"[ops::nightly]    [wf] run_workflow nightly_pass: start"}
+{"type":"trace","service":"ops::nightly","event":{"op":"opened","node":{"id":2,"parent":1,"kind":"cmd","label":"echo collecting","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":3,"millis":738}}}
+{"type":"log","service":"ops::nightly","stream":"stderr","line":"[ops::nightly]    [RUN] run_cmd: echo collecting"}
+{"type":"log","service":"ops::nightly","stream":"stdout","line":"[ops::nightly]    [echo] collecting","node":2}
+{"type":"log","service":"ops::nightly","stream":"stderr","line":"[ops::nightly]    [OK] run_cmd: echo collecting (exit 0, 0ms)"}
+{"type":"trace","service":"ops::nightly","event":{"op":"closed","id":2,"status":"ok","elapsed_ms":0,"out":{"out":"lines","n":1}}}
+{"type":"trace","service":"ops::nightly","event":{"op":"opened","node":{"id":3,"parent":1,"kind":"agent","label":"scribe","detail":"prompt=summarise..."},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":3,"millis":740}}}
+{"type":"event","event":"step_entered","service":"ops::nightly","breadcrumb":"▶ scribe"}
+{"type":"log","service":"ops::nightly","stream":"stderr","line":"[ops::nightly]    [RUN] run_agent: scribe  prompt=summarise..."}
+{"type":"log","service":"ops::nightly","stream":"stderr","line":"[ops::nightly]    [OK] run_agent: scribe  prompt=summarise... (3 turns, 0ms, 1600 tok, $0.04)"}
+{"type":"event","event":"agent_finished","service":"ops::nightly","turns":3,"tokens":1600,"cost":0.0412}
+{"type":"trace","service":"ops::nightly","event":{"op":"closed","id":3,"status":"ok","elapsed_ms":0,"cost":0.0412,"turns":3,"tokens":1600}}
+{"type":"log","service":"ops::nightly","stream":"stderr","line":"[ops::nightly]    [wf] run_workflow nightly_pass: finished (3ms, $0.04)"}
+{"type":"trace","service":"ops::nightly","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":3,"cost":0.0412,"turns":3,"tokens":1600}}
+{"type":"event","event":"fire_ok","service":"ops::nightly","elapsed_ms":5}
+{"type":"event","event":"service_next_fire","service":"ops::nightly","next_ms":3599999}
+{"type":"event","event":"fire_started","service":"ops::db::vacuum"}
+{"type":"trace","service":"ops::db::vacuum","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"echo vacuuming; sleep 12","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":3,"millis":784}}}
+{"type":"log","service":"ops::db::vacuum","stream":"stderr","line":"[ops::db::vacuum] [RUN] run_cmd: echo vacuuming; sleep 12"}
+{"type":"event","event":"fire_started","service":"ops::sleeper"}
+{"type":"trace","service":"ops::sleeper","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"echo holding; sleep 20","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":3,"millis":785}}}
+{"type":"log","service":"ops::sleeper","stream":"stderr","line":"[ops::sleeper]    [RUN] run_cmd: echo holding; sleep 20"}
+{"type":"log","service":"ops::db::vacuum","stream":"stdout","line":"[ops::db::vacuum] [echo] vacuuming","node":1}
+{"type":"log","service":"ops::sleeper","stream":"stdout","line":"[ops::sleeper]    [echo] holding","node":1}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1591988224,"mem_total":32964694016,"rx_bps":817,"tx_bps":679}
+{"type":"event","event":"service_queued","service":"ops::nightly","queue":"heavy"}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1591369728,"mem_total":32964694016,"rx_bps":2541,"tx_bps":2421}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"flaky"}
+{"type":"event","event":"service_stopping","service":"spare"}
+{"type":"event","event":"service_stopping","service":"janitor"}
+{"type":"event","event":"service_stopping","service":"ops::nightly"}
+{"type":"event","event":"service_stopping","service":"deep"}
+{"type":"event","event":"service_stopping","service":"ops::db::vacuum"}
+{"type":"event","event":"service_stopping","service":"ops::sleeper"}
+{"type":"event","event":"service_stopping","service":"archivist"}
+{"type":"event","event":"service_stopping","service":"noisy"}
+{"type":"event","event":"service_paused","service":"flaky","paused":true}
+{"type":"event","event":"service_paused","service":"spare","paused":true}
+{"type":"event","event":"service_paused","service":"janitor","paused":true}
+{"type":"event","event":"service_paused","service":"deep","paused":true}
+{"type":"event","event":"service_paused","service":"archivist","paused":true}
+{"type":"event","event":"service_paused","service":"noisy","paused":true}
+{"type":"event","event":"service_next_fire","service":"ops::nightly","next_ms":3599999}
+{"type":"event","event":"service_paused","service":"ops::nightly","paused":true}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1588404224,"mem_total":32964694016,"rx_bps":1820,"tx_bps":906}
+{"type":"meta","meta":"host_load","cpu_pct":2,"mem_used":1563877376,"mem_total":32964694016,"rx_bps":2177,"tx_bps":689}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1559371776,"mem_total":32964694016,"rx_bps":909,"tx_bps":611}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1560117248,"mem_total":32964694016,"rx_bps":841,"tx_bps":1102}
+{"type":"meta","meta":"host_load","cpu_pct":2,"mem_used":1559867392,"mem_total":32964694016,"rx_bps":16919,"tx_bps":9542}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1559859200,"mem_total":32964694016,"rx_bps":4862,"tx_bps":19113}

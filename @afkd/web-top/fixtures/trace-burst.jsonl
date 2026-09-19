@@ -1,0 +1,66 @@
+{"type":"meta","meta":"snapshot","services":[{"name":"janitor","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🧹","description":"sweeps the scratch tree between passes","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596890,"state_ms":3109,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::nightly","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"heavy","queue_priority":"high","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3596891,"state_ms":3108,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::sleeper","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"heavy","queue_priority":"normal","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3596893,"state_ms":3106,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::broken","state":"crashed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"state_ms":3106,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops::db::vacuum","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops::db","icon":"🔹","description":"","queue":"heavy","queue_priority":"low","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3596891,"state_ms":3108,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"archivist","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":true,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596894,"state_ms":3105,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"noisy","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596894,"state_ms":3105,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"flaky","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596892,"state_ms":3107,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"deep","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596893,"state_ms":3106,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"spare","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3596892,"state_ms":3107,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":3111}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1551720448,"mem_total":32964694016,"rx_bps":2104,"tx_bps":2076}
+{"type":"event","event":"fire_started","service":"deep"}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":1,"kind":"workflow","label":"deep_pass","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":47}}}
+{"type":"event","event":"step_entered","service":"deep","breadcrumb":"run_workflow deep_pass"}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [wf] run_workflow deep_pass: start"}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":2,"parent":1,"kind":"parallel","label":"in_parallel","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":48}}}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":3,"parent":2,"kind":"cmd","label":"echo left","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":48}}}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":4,"parent":2,"kind":"cmd","label":"echo right","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":48}}}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [RUN] run_cmd: echo left"}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [RUN] run_cmd: echo right"}
+{"type":"log","service":"deep","stream":"stdout","line":"[deep]            [echo] left","node":3}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [OK] run_cmd: echo left (exit 0, 1ms)"}
+{"type":"trace","service":"deep","event":{"op":"closed","id":3,"status":"ok","elapsed_ms":1,"out":{"out":"lines","n":1}}}
+{"type":"log","service":"deep","stream":"stdout","line":"[deep]            [echo] right","node":4}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [OK] run_cmd: echo right (exit 0, 1ms)"}
+{"type":"trace","service":"deep","event":{"op":"closed","id":4,"status":"ok","elapsed_ms":1,"out":{"out":"lines","n":1}}}
+{"type":"trace","service":"deep","event":{"op":"closed","id":2,"status":"ok","elapsed_ms":2}}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":5,"parent":1,"kind":"repeat","label":"times 2","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":51}}}
+{"type":"trace","service":"deep","event":{"op":"relabeled","id":5,"label":"times 1/2"}}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":6,"parent":5,"kind":"cmd","label":"echo pass","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":51}}}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [RUN] run_cmd: echo pass"}
+{"type":"log","service":"deep","stream":"stdout","line":"[deep]            [echo] pass","node":6}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [OK] run_cmd: echo pass (exit 0, 1ms)"}
+{"type":"trace","service":"deep","event":{"op":"closed","id":6,"status":"ok","elapsed_ms":1,"out":{"out":"lines","n":1}}}
+{"type":"trace","service":"deep","event":{"op":"relabeled","id":5,"label":"times 2/2"}}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":7,"parent":5,"kind":"cmd","label":"echo pass","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":53}}}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [RUN] run_cmd: echo pass"}
+{"type":"log","service":"deep","stream":"stdout","line":"[deep]            [echo] pass","node":7}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [OK] run_cmd: echo pass (exit 0, 1ms)"}
+{"type":"trace","service":"deep","event":{"op":"closed","id":7,"status":"ok","elapsed_ms":1,"out":{"out":"lines","n":1}}}
+{"type":"trace","service":"deep","event":{"op":"closed","id":5,"status":"ok","elapsed_ms":3}}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":8,"parent":1,"kind":"guard","label":"true","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":55}}}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [RUN] run_cmd: true"}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [OK] run_cmd: true (exit 0, 1ms)"}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [if] true -> true"}
+{"type":"trace","service":"deep","event":{"op":"opened","node":{"id":9,"parent":8,"kind":"cmd","label":"echo guarded","detail":""},"at":{"year":2026,"month":9,"day":18,"hour":21,"minute":8,"second":15,"millis":57}}}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [RUN] run_cmd: echo guarded"}
+{"type":"log","service":"deep","stream":"stdout","line":"[deep]            [echo] guarded","node":9}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [OK] run_cmd: echo guarded (exit 0, 1ms)"}
+{"type":"trace","service":"deep","event":{"op":"closed","id":9,"status":"ok","elapsed_ms":1,"out":{"out":"lines","n":1}}}
+{"type":"trace","service":"deep","event":{"op":"closed","id":8,"status":"ok","elapsed_ms":4}}
+{"type":"log","service":"deep","stream":"stderr","line":"[deep]            [wf] run_workflow deep_pass: finished (11ms)"}
+{"type":"trace","service":"deep","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":11}}
+{"type":"event","event":"fire_ok","service":"deep","elapsed_ms":13}
+{"type":"event","event":"service_next_fire","service":"deep","next_ms":3599999}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1551966208,"mem_total":32964694016,"rx_bps":3039,"tx_bps":2234}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"spare"}
+{"type":"event","event":"service_stopping","service":"flaky"}
+{"type":"event","event":"service_stopping","service":"deep"}
+{"type":"event","event":"service_stopping","service":"ops::sleeper"}
+{"type":"event","event":"service_stopping","service":"ops::db::vacuum"}
+{"type":"event","event":"service_stopping","service":"ops::nightly"}
+{"type":"event","event":"service_stopping","service":"janitor"}
+{"type":"event","event":"service_stopping","service":"archivist"}
+{"type":"event","event":"service_stopping","service":"noisy"}
+{"type":"event","event":"service_paused","service":"spare","paused":true}
+{"type":"event","event":"service_paused","service":"flaky","paused":true}
+{"type":"event","event":"service_paused","service":"deep","paused":true}
+{"type":"event","event":"service_paused","service":"ops::sleeper","paused":true}
+{"type":"event","event":"service_paused","service":"ops::db::vacuum","paused":true}
+{"type":"event","event":"service_paused","service":"ops::nightly","paused":true}
+{"type":"event","event":"service_paused","service":"janitor","paused":true}
+{"type":"event","event":"service_paused","service":"archivist","paused":true}
+{"type":"event","event":"service_paused","service":"noisy","paused":true}
