@@ -1,0 +1,80 @@
+# Cut the release `afkd install @afkd/web-top` fetches.
+#
+# afkd resolves a bare plugin name through https://afkd.sh/plugins.json, which lists
+# `@afkd/web-top` at this repository's `releases/download/web-top/afkd-web-top.tar.gz`.
+# afkd cannot install a subdirectory of a monorepo — its git leg requires the manifest at
+# the clone root, and its tarball leg steps through exactly one wrapper directory — so the
+# installable artifact is this per-plugin tarball, whose single top-level directory is the
+# plugin itself.
+#
+# The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
+# source URL it recorded at install time and never re-reads the index, so one unchanging
+# address is the only way an already-installed operator reaches the next version.
+name: Release @afkd/web-top
+
+on:
+  push:
+    branches: [main]
+    paths: ['@afkd/web-top/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-web-top
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # A red suite must not publish. Five of the plugin's six suites run here; the sixth,
+      # `keymap.test.mjs`, and two tests inside `layout.test.mjs` are drift gates that read
+      # afkd's Rust sources (`crates/config/src/keymap.rs`, `crates/tui/src/keys.rs`,
+      # `palette.rs`, `treeview.rs`) and hold the javascript to them row for row. Those
+      # sources are not in this repository, so — like the PTY gate the README names — they
+      # stay upstream, where the whole suite runs on every change.
+      - name: The plugin's own suites
+        working-directory: '@afkd/web-top'
+        run: |
+          node --test fold.test.mjs paint.test.mjs session.test.mjs input.test.mjs
+          node --test \
+            --test-skip-pattern='^(the stylesheet spends only the product.s palette|the rail glyphs measure as the tui measures them)$' \
+            layout.test.mjs
+
+      # `cp -a` then `tar`, so the mode bits ride: afkd places what the archive holds and
+      # there is no build step, so `web-top` has to arrive executable or the daemon cannot
+      # start it. One top-level directory and no more — that is what afkd steps through.
+      - name: Pack
+        run: |
+          cp -a '@afkd/web-top' afkd-web-top
+          tar czf afkd-web-top.tar.gz afkd-web-top
+          # Assert the shape rather than trust it: a second top-level entry would be placed
+          # verbatim instead of unwrapped, and a lost +x is a companion that never starts.
+          roots=$(tar tzf afkd-web-top.tar.gz | cut -d/ -f1 | sort -u)
+          test "$roots" = "afkd-web-top"
+          # Unpacked, not read off the listing: `test -x` after extraction is the same
+          # question afkd's own unpack answers, asked the same way.
+          mkdir -p shape && tar xzf afkd-web-top.tar.gz -C shape
+          test -x shape/afkd-web-top/web-top
+          test -f shape/afkd-web-top/afkd-plugin.toml
+          rm -rf shape
+
+      # Delete-then-create, because a tag is unique and the replacement cannot be made
+      # first. The brief 404 window on the download URL is a loud, retryable failure for an
+      # `afkd update` that races it.
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/web-top/afkd-plugin.toml')
+          test -n "$version"
+          printf '`afkd install @afkd/web-top`, or `afkd update @afkd/web-top` if you already have it.\n\nSynced from the afkd repository at %s.\n' "$GITHUB_SHA" > notes.md
+          gh release delete web-top --yes --cleanup-tag || true
+          gh release create web-top --target "$GITHUB_SHA" --title "@afkd/web-top $version" --notes-file notes.md afkd-web-top.tar.gz
