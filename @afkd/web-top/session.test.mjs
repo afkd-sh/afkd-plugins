@@ -17,7 +17,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { fold, seed } from "./fold.mjs";
-import { rowKey, scrollOffset, visibleRows } from "./layout.mjs";
+import { rowKey, runMetrics, scrollOffset, visibleRows } from "./layout.mjs";
 import {
   FLASH_TIMEOUT,
   flashOf,
@@ -58,7 +58,7 @@ function foldCapture(file, { until, lines } = {}) {
 }
 
 /// The capture's **live** board: every frame up to the `SIGINT` the recorder stayed attached
-/// through.
+/// through. Every capture ends with that drain.
 function liveBoard(file = "snapshot.jsonl") {
   return foldCapture(file, { until: (f) => f.type === "meta" && f.meta === "quitting" });
 }
@@ -774,10 +774,11 @@ test("a lane row's h narrows the lane rather than folding a group — and this p
 
 test("the actions this page has no surface for are inert and unprevented", () => {
   const { board, at } = liveBoard();
-  // Every action `keymap.mjs` notes as unreachable here, pressed at its own primary chord. `i`
-  // is **not** among them any more — it opens a service's info page — and its own partial
-  // boundary (a group header, a lane row) is asserted with the page's other keys below.
-  for (const chord of [key("o"), key("v"), key("b"), key("+"), key("-"), key("q"), ctrl("c")]) {
+  // Every action `keymap.mjs` notes as unreachable here, pressed at its own primary chord.
+  // Neither `i` nor `o` is among them any more — they open a service's info page and its run
+  // view — and each one's own partial boundary (a group header, a lane row) is asserted with the
+  // page's other keys below.
+  for (const chord of [key("v"), key("b"), key("+"), key("-"), key("q"), ctrl("c")]) {
     const out = press(newSession(), board, chord, { now: at, bodyHeight: 20 });
     assert.deepEqual(out.commands, [], `${chord.key} sends nothing`);
     assert.equal(out.handled, false, `${chord.key} is left to the browser`);
@@ -895,4 +896,290 @@ test("a quitting frame leaves the page open", () => {
   const drained = noteFrame({ ...open, help: true }, { type: "meta", meta: "quitting" }, at);
   assert.equal(drained.info, "janitor", "the page survives the drain frame");
   assert.equal(drained.help, false, "…the overlay over it does not");
+});
+
+// --- the run view -------------------------------------------------------------------------
+
+/// The viewport these presses clamp against. Deliberately **short**: at 12 rows the pane keeps
+/// seven, which `trace-burst`'s twenty log lines and ten tree rows both overflow — and a scroll
+/// assertion against a pane nothing overflows is an assertion about nothing.
+const RUN_ROWS = 12;
+const RUN_COLS = 100;
+
+/**
+ * Press a run of chords with the run view's metrics **re-measured before each one** — exactly
+ * what `top.mjs`'s `read()` does, and the reason a clamp here is against the arithmetic that
+ * paints rather than a number the test chose. Returns the last session and every command emitted.
+ */
+function runType(session, board, chords, at = BASE) {
+  let s = session;
+  let commands = [];
+  for (const chord of chords) {
+    const metrics = runMetrics(board, {
+      cols: RUN_COLS,
+      rows: RUN_ROWS,
+      now: at,
+      run: s.run,
+    });
+    const out = press(s, board, chord, { now: at, bodyHeight: 20, run: metrics });
+    s = out.session;
+    commands = commands.concat(out.commands);
+  }
+  return { session: s, commands };
+}
+
+/// One press, with the same re-measure — for the assertions that need `handled` too.
+function runPress(session, board, chord, at = BASE) {
+  const metrics = runMetrics(board, { cols: RUN_COLS, rows: RUN_ROWS, now: at, run: session.run });
+  return press(session, board, chord, { now: at, bodyHeight: 20, run: metrics });
+}
+
+/// The run view's metrics for a session, at the viewport these tests use.
+function metricsOf(session, board, at = BASE) {
+  return runMetrics(board, { cols: RUN_COLS, rows: RUN_ROWS, now: at, run: session.run });
+}
+
+test("o opens the selected service's run view, and o or Esc closes it where it was", () => {
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  // Land the cursor on the one service this capture really fired, so the opened view has a tree
+  // to show — and move there by pressing `j`, so "the cursor is where it was" is a claim about a
+  // cursor that really moved rather than about the default.
+  const rows = rowsOf(newSession(), board);
+  const want = rows.findIndex((r) => r.kind === "service" && r.svc.name === "deep");
+  assert.notEqual(want, -1, "the capture's fired service has a row");
+  const moved = type(newSession(), board, Array.from({ length: want }, () => key("j")), at).session;
+  const before = { cursor: moved.cursor, cursorRow: moved.cursorRow, offset: moved.offset };
+  const subject = cursorOn(moved, board);
+  assert.deepEqual(subject, { kind: "service", key: "deep" }, "the cursor sits on the fired service");
+  assert.ok(board.services.deep.tree.roots.length > 0, "…which really folded a run tree");
+
+  const opened = runPress(moved, board, key("o"), at);
+  assert.equal(opened.handled, true, "`o` is this page's key on a service row");
+  assert.deepEqual(opened.commands, [], "…and it posts nothing: a run view is a local surface");
+  assert.equal(opened.session.run.service, subject.key, "the view names the **service**, not a row index");
+  // ADR-0076: it opens on the **log** pane, the tree ready behind it — the full-screen log is
+  // what an operator watching a fire wants first. `model::enter_run_view` picks the same pane.
+  assert.equal(opened.session.run.focus, "log", "it opens on the log pane");
+  assert.equal(opened.session.run.tree, "follow", "the tree opens following its frontier");
+  assert.equal(opened.session.run.log, "follow", "and the log following its tail");
+  assert.equal(opened.session.run.scoped, false, "unscoped");
+  assert.equal(opened.session.run.cursor, board.services[subject.key].tree.roots[0], "on the first root");
+  assert.deepEqual([...opened.session.run.overrides], [], "with no folds carried in from another service");
+  assert.deepEqual([...opened.session.run.expanded], []);
+
+  // Both keys close it, and the list cursor is untouched either way — the run view never wrote
+  // to it, so there is nothing to restore.
+  for (const chord of [key("o"), key("esc")]) {
+    const closed = runPress(opened.session, board, chord, at);
+    assert.equal(closed.handled, true, `${chord.key} closes the view`);
+    assert.equal(closed.session.run, null);
+    assert.deepEqual(
+      { cursor: closed.session.cursor, cursorRow: closed.session.cursorRow, offset: closed.session.offset },
+      before,
+      `${chord.key} leaves the list cursor exactly where it was`,
+    );
+  }
+
+  // A service that has never fired opens a view with a **null** cursor rather than throwing: the
+  // tree is empty, so there is no first root to land on, and every nav key is inert until one
+  // arrives.
+  const idle = rows.findIndex((r) => r.kind === "service" && r.svc.name !== "deep");
+  const onIdle = { ...newSession(), cursor: rowKey(rows[idle]), cursorRow: idle };
+  const empty = runPress(onIdle, board, key("o"), at).session;
+  assert.deepEqual(board.services[rowKey(rows[idle]).key].tree.roots, [], "it really folded no tree");
+  assert.equal(empty.run.cursor, null, "…so the view opens with no cursor");
+  assert.equal(runPress(empty, board, key("tab"), at).session.run.focus, "tree", "and the frame still works");
+  assert.equal(runPress(empty, board, key("j"), at).session.run.cursor, null, "a nav key over an empty tree is inert");
+});
+
+test("o has no subject on a group header or a lane row", () => {
+  const { board, at } = liveBoard();
+  // The two rows `UiIntent::TreeOpen` has nothing to open on, each found on a real board rather
+  // than assumed to be at some index.
+  const rows = rowsOf(newSession(), board);
+  for (const kind of ["group", "queue"]) {
+    const at_ = rows.findIndex((r) => r.kind === kind);
+    assert.notEqual(at_, -1, `the capture has a ${kind} row`);
+    const session = { ...newSession(), cursor: rowKey(rows[at_]), cursorRow: at_ };
+    const out = runPress(session, board, key("o"), at);
+    assert.equal(out.handled, false, `\`o\` on a ${kind} row is left to the browser`);
+    assert.equal(out.session.run, null, "…and opens nothing");
+    assert.deepEqual(out.commands, []);
+  }
+});
+
+test("Tab swaps the pane and s scopes the log to the tree cursor", () => {
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const open = runPress({ ...newSession(), cursor: { kind: "service", key: "deep" }, cursorRow: 0 }, board, key("o"), at);
+  const onLog = open.session;
+  assert.equal(onLog.run.focus, "log");
+  const onTree = runPress(onLog, board, key("tab"), at).session;
+  assert.equal(onTree.run.focus, "tree", "`Tab` swaps which pane is shown");
+  assert.equal(runPress(onTree, board, key("tab"), at).session.run.focus, "log", "…and back");
+
+  // `s` from the **tree** *sets* the scope and swaps to the log: setting rather than toggling is
+  // what keeps a second `s` from the tree from landing you on an unscoped log.
+  const scoped = runPress(onTree, board, key("s"), at).session;
+  assert.equal(scoped.run.scoped, true, "`s` from the tree scopes the log");
+  assert.equal(scoped.run.focus, "log", "…and shows it, which is the destination its hint names");
+  assert.equal(scoped.run.log, "follow", "…re-following, so the new scope tails its own output");
+  // From the **log** it is an in-place toggle of the scope that pane's own title names.
+  const unscoped = runPress(scoped, board, key("s"), at).session;
+  assert.equal(unscoped.run.scoped, false, "`s` on the log toggles the scope");
+  assert.equal(unscoped.run.focus, "log", "…in place");
+  assert.equal(runPress(unscoped, board, key("s"), at).session.run.scoped, true, "…both ways");
+  // A second `s` from the tree still lands scoped, which is the whole reason the tree arm sets
+  // rather than toggles.
+  const twice = runType(onTree, board, [key("s"), key("tab"), key("s")], at).session;
+  assert.equal(twice.run.scoped, true, "a second `s` from the tree never un-scopes");
+});
+
+test("the tree cursor walks the node rows, and h/l fold or step", () => {
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const tree = board.services.deep.tree;
+  // On the tree pane, cursor on the root.
+  const start = runType({ ...newSession(), cursor: { kind: "service", key: "deep" }, cursorRow: 0 }, board, [key("o"), key("tab")], at).session;
+  assert.equal(start.run.cursor, 1, "the cursor opens on the first root");
+
+  // `j` walks the **visible node** rows in flatten order — never a body row, which is not
+  // selectable. Derived from the tree itself: the root's first child is the capture's node 2.
+  const down = runPress(start, board, key("j"), at).session;
+  assert.equal(down.run.cursor, tree.nodes[1].children[0], "`j` steps onto the first child");
+  assert.equal(runPress(down, board, key("k"), at).session.run.cursor, 1, "`k` steps back");
+  assert.equal(runPress(start, board, key("k"), at).session.run.cursor, 1, "`k` on the first row clamps rather than wrapping");
+  assert.equal(runType(start, board, [key("G"), key("g")], at).session.run.cursor, 1, "`g` returns to the top");
+
+  // `l` on a collapsed parent expands it; on an expanded one it steps onto its first child;
+  // `h` collapses an expanded parent and, on a leaf, steps onto its parent.
+  const collapsed = runPress(start, board, key("h"), at).session;
+  assert.equal(collapsed.run.overrides.get(1), true, "`h` collapses the expanded root");
+  const expanded = runPress(collapsed, board, key("l"), at).session;
+  assert.equal(expanded.run.overrides.get(1), false, "`l` expands it again");
+  const child = runPress(expanded, board, key("l"), at).session;
+  assert.equal(child.run.cursor, tree.nodes[1].children[0], "a second `l` steps onto the first child");
+  // `h` from a **leaf** walks back up: the deepest node in the capture, then its parent.
+  const leaf = tree.nodes[tree.nodes[1].children[0]].children[0];
+  const onLeaf = { ...child, run: { ...child.run, cursor: leaf } };
+  assert.equal(
+    runPress(onLeaf, board, key("h"), at).session.run.cursor,
+    tree.nodes[leaf].parent,
+    "`h` on a leaf steps onto its parent",
+  );
+
+  // `Enter` toggles the **effective** collapse, so it visually toggles whatever the row shows.
+  const toggled = runPress(start, board, key("enter"), at).session;
+  assert.equal(toggled.run.overrides.get(1), true, "`Enter` folds an expanded parent");
+  assert.equal(runPress(toggled, board, key("enter"), at).session.run.overrides.get(1), false, "…and unfolds it");
+  // On a childless `cmd` leaf it flips that leaf's own **body** instead.
+  const onCmd = { ...start, run: { ...start.run, cursor: leaf } };
+  const body = runPress(onCmd, board, key("enter"), at).session;
+  assert.deepEqual([...body.run.expanded], [leaf], "`Enter` on a leaf reveals its own output");
+  assert.deepEqual([...runPress(body, board, key("enter"), at).session.run.expanded], [], "…and hides it again");
+
+  // `H`/`L` write a **blanket** override onto every parent, which is what makes `L` override the
+  // per-kind agent default rather than merely clearing the map.
+  const parents = Object.values(tree.nodes).filter((n) => n.children.length > 0).map((n) => n.id).sort();
+  const all = runPress(start, board, key("H"), at).session;
+  assert.deepEqual([...all.run.overrides.keys()].sort(), parents, "`H` folds every parent");
+  assert.ok([...all.run.overrides.values()].every((v) => v === true));
+  const open = runPress(all, board, key("L"), at).session;
+  assert.deepEqual([...open.run.overrides.keys()].sort(), parents, "`L` opens every parent");
+  assert.ok([...open.run.overrides.values()].every((v) => v === false));
+
+  // A manual move freezes the tree's follow: a run read by hand must not yank itself away.
+  assert.equal(start.run.tree, "follow", "it opened following");
+  assert.equal(typeof runPress(start, board, key("j"), at).session.run.tree, "number", "a cursor move freezes it");
+  // `G` re-engages follow on the frontier, `f` toggles it.
+  const frontier = runPress(down, board, key("G"), at).session;
+  assert.equal(frontier.run.tree, "follow", "`G` follows the frontier");
+  assert.equal(frontier.run.cursor, tree.newest, "…and pins the cursor to it");
+  const frozen = runPress(frontier, board, key("f"), at).session;
+  assert.equal(typeof frozen.run.tree, "number", "`f` disengages follow");
+  assert.equal(runPress(frozen, board, key("f"), at).session.run.tree, "follow", "…and re-engages it");
+});
+
+test("scrolling up in the log pane drops follow, and f or G restores it", () => {
+  // A log longer than the pane, so the scroll has somewhere to go: `trace-burst`'s twenty log
+  // frames against a 30-row viewport whose pane keeps 25 of them.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const start = runPress({ ...newSession(), cursor: { kind: "service", key: "deep" }, cursorRow: 0 }, board, key("o"), at).session;
+  assert.equal(start.run.focus, "log", "the run view opens on the log");
+  assert.equal(start.run.log, "follow", "…following its tail");
+  const { viewport, logTotal } = metricsOf(start, board, at);
+  assert.ok(logTotal > viewport, `the log (${logTotal}) overflows the pane (${viewport}) — the scroll is not vacuous`);
+  const maxTop = logTotal - viewport;
+
+  // One `k` steps off the bottom rather than from row 0 — the resolve-then-freeze rule — and
+  // freezes strictly below `max_top`.
+  const up = runPress(start, board, key("k"), at).session;
+  assert.equal(up.run.log, maxTop - 1, "`k` steps one line off the bottom");
+  assert.ok(up.run.log < maxTop, "…and follow is gone");
+  // `f` restores it.
+  assert.equal(runPress(up, board, key("f"), at).session.run.log, "follow", "`f` restores follow");
+  // …and so does `G`, from a deeper scroll.
+  const deeper = runType(start, board, [key("k"), key("k"), key("k")], at).session;
+  assert.equal(deeper.run.log, maxTop - 3, "three `k`s step three lines");
+  assert.equal(runPress(deeper, board, key("G"), at).session.run.log, "follow", "`G` returns to the bottom, following");
+  // `g` goes to the top and freezes; `j` back to the bottom **re-engages** follow, which is the
+  // arm that makes `G` not a special case.
+  const top = runPress(start, board, key("g"), at).session;
+  assert.equal(top.run.log, 0, "`g` freezes at the first line");
+  const walked = runType(top, board, Array.from({ length: maxTop }, () => key("j")), at).session;
+  assert.equal(walked.run.log, "follow", "walking `j` to the bottom re-engages tailing");
+  // The paging keys step by the viewport and half of it, off the same resolved top.
+  assert.equal(runPress(start, board, ctrl("u"), at).session.run.log, maxTop - Math.floor(viewport / 2), "Ctrl+U is half a page");
+  assert.equal(runPress(start, board, key("pageup"), at).session.run.log, Math.max(0, maxTop - viewport), "PgUp is a whole one");
+  // …and both clamp rather than running off the top.
+  const floored = runType(start, board, [key("pageup"), key("pageup"), key("pageup"), key("pageup")], at).session;
+  assert.equal(floored.run.log, 0, "paging past the top clamps at the first line");
+});
+
+test("the open run view owns its key surface", () => {
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const start = runPress({ ...newSession(), cursor: { kind: "service", key: "deep" }, cursorRow: 0 }, board, key("o"), at).session;
+  // The two globals it forwards, exactly as the list and the info page do.
+  assert.equal(runPress(start, board, key("?"), at).session.help, true, "`?` still raises the overlay");
+  assert.deepEqual(runPress(start, board, ctrl("r"), at).commands, [{ command: "reload" }], "`Ctrl+R` still reloads");
+  // Everything else is inert **and reported handled**: a key struck in the run view must not
+  // fall through to the list underneath it and fire a service.
+  for (const chord of [key("t"), key("x"), key("r"), key("/"), key("i"), key("v"), key("b"), key("z")]) {
+    const out = runPress(start, board, chord, at);
+    assert.equal(out.handled, true, `${chord.key} is captured by the open view`);
+    assert.deepEqual(out.commands, [], `${chord.key} posts nothing`);
+    assert.equal(out.session.run.service, "deep", "…and the view is still open on its service");
+    assert.equal(out.session.filter.mode, "off", `${chord.key} did not reach the list's filter`);
+  }
+  // `s` is the one key in that family that **is** bound in the view (`output.scope`), so it is
+  // excluded from the sweep above deliberately: here it scopes the log rather than starting a
+  // service, which is exactly what "the view owns its key surface" has to mean for a key the
+  // list also binds.
+  const pressedS = runPress(start, board, key("s"), at);
+  assert.deepEqual(pressedS.commands, [], "`s` posts no start from inside the run view");
+  assert.equal(pressedS.session.run.scoped, true, "…it scopes the log pane instead");
+
+  // The drain refuses a reload from here through the same table the footer stops advertising it
+  // from, so the input side and the legend refuse exactly one set.
+  const drained = drainedBoard("trace-burst.jsonl");
+  const onDrained = { ...start, run: { ...start.run } };
+  const refusedOut = runPress(onDrained, drained.board, ctrl("r"), drained.at);
+  assert.deepEqual(refusedOut.commands, [], "a reload is refused while draining");
+  assert.equal(refusedOut.handled, true, "…and still captured, so Ctrl+R never reloads the tab");
+});
+
+test("a run view whose service vanished keeps its place, and its keys stay inert", () => {
+  // The `draw_split` fallback: the page falls back to the list while the session keeps the view
+  // open, so a service that comes back comes back to its run view. A key pressed meanwhile has
+  // no tree to walk and must not throw.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const start = runPress({ ...newSession(), cursor: { kind: "service", key: "deep" }, cursorRow: 0 }, board, key("o"), at).session;
+  const gone = { ...board, services: {}, order: [] };
+  for (const chord of [key("j"), key("l"), key("H"), key("G"), key("enter"), key("f")]) {
+    const out = runPress(start, gone, chord, at);
+    assert.equal(out.handled, true, `${chord.key} is captured`);
+    assert.equal(out.session.run.service, "deep", "…and the view is still open on the name it was opened on");
+  }
+  // The frame keys still work on a view with no subject — closing it is the one thing an
+  // operator definitely wants to be able to do.
+  assert.equal(runPress(start, gone, key("esc"), at).session.run, null, "`Esc` still closes it");
+  assert.equal(runPress(start, gone, key("tab"), at).session.run.focus, "tree", "`Tab` still swaps the pane");
 });

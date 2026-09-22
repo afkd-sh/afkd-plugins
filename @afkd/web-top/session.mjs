@@ -22,7 +22,7 @@
 //   for a fire, and what this page does for all six.
 
 import { HANDLED, REFUSED_WHILE_QUITTING, resolve } from "./keymap.mjs";
-import { rowKey, scrollOffset, visibleRows } from "./layout.mjs";
+import { rowKey, runTreeNav, scrollOffset, visibleRows } from "./layout.mjs";
 
 /// `model::FLASH_TIMEOUT` — how long a transient footer message stays up. Long enough to read
 /// a one-line reload summary, short enough that it gets out of the way.
@@ -44,6 +44,11 @@ export const FLASH_TIMEOUT = 4000;
  * deliberately **not** cleared when that service vanishes: `layout()` falls back to the list for
  * a page with no subject (`draw_info`'s own arm) while the key surface stays the info one, so a
  * service that comes back comes back to its page. `infoOffset` is that page's scroll top.
+ *
+ * `run` is the open **run view**, or `null` for the list — [`openRun`]'s record, on the same
+ * terms as `info` and for the same reason: it names its service rather than indexing a row, and
+ * it is not cleared when that service vanishes, so `layout()` falls back to the list
+ * (`draw_split`'s own arm) while the key surface stays the run one.
  */
 export function newSession() {
   return {
@@ -57,6 +62,7 @@ export function newSession() {
     flash: null,
     info: null,
     infoOffset: 0,
+    run: null,
   };
 }
 
@@ -327,6 +333,282 @@ function pressInfo(session, board, chord) {
   return { session, commands: [], handled: true };
 }
 
+// --- the run view ----------------------------------------------------------------------
+//
+// `model`'s `ViewMode::Run` plus `UiState`'s tree/log halves plus `shell::translate_split_key`
+// — ADR-0071 for the combined view, ADR-0076 for the one-pane frame, ADR-0068 for the tree and
+// ADR-0027 for the log's scroll.
+
+/// The metrics a press falls back on before the first paint has measured a pane: a one-row
+/// viewport and two empty panes, so every clamp floors rather than reaching into `undefined`.
+const NO_RUN_METRICS = { viewport: 0, treeTotal: 0, logTotal: 0 };
+
+/**
+ * `model::enter_run_view` — the run view opened on one service.
+ *
+ * It opens on the **log** pane with the tree ready behind it (ADR-0076: the full-screen log is
+ * what an operator watching a fire actually wants first), the collapse overrides and the
+ * body-expanded set cleared, the tree following its frontier, the log following its tail, the
+ * scope off and the tree cursor on the first root.
+ *
+ * The overrides are cleared on every (re)enter for two reasons: the tree then opens at its
+ * per-kind defaults (agents folded, the skeleton expanded), and node ids are **per service**, so
+ * one service's folds must never bleed onto another's tree.
+ */
+function openRun(session, svc) {
+  return {
+    ...session,
+    run: {
+      // The qualified name, the way `info` names its page's subject.
+      service: svc.name,
+      focus: "log",
+      cursor: svc.tree.roots[0] ?? null,
+      // `ui.tree_overrides` — the per-node collapse override, `id → collapsed?`.
+      overrides: new Map(),
+      // `ui.tree_body_expanded` — the leaf ids showing their own output beneath them.
+      expanded: new Set(),
+      // `TreeScroll` and `LogScroll`, each as a **sum**: `"follow"` or a frozen top row, never
+      // both. `model.rs` makes the point that a `{top, follow}` pair can encode "following with
+      // a stale top"; this cannot.
+      tree: "follow",
+      log: "follow",
+      // `ui.log_scoped` — whether the log pane is filtered to the tree cursor's own node. The
+      // node itself is resolved off the cursor at paint (`model::log_scope_node`), so a cursor
+      // move re-scopes with no second piece of state to keep in step.
+      scoped: false,
+    },
+  };
+}
+
+/// `model::half_page` — the `Ctrl+U`/`Ctrl+D` step for a `viewport` of rows: half the viewport,
+/// at least one line so a one-row pane still moves. [`fullPage`] is the whole viewport, same
+/// floor.
+function halfPage(viewport) {
+  return Math.max(1, Math.floor(viewport / 2));
+}
+function fullPage(viewport) {
+  return Math.max(1, viewport);
+}
+
+/// A `Map` with one entry rewritten — the collapse override map is per node id, so a bulk fold
+/// and a single toggle both go through this and neither mutates the map it was handed.
+function withEntry(map, key, value) {
+  const next = new Map(map);
+  next.set(key, value);
+  return next;
+}
+
+/// A `Set` with one member added or dropped — the body-expanded leaf ids.
+function withMember(set, key, member) {
+  const next = new Set(set);
+  if (member) next.add(key);
+  else next.delete(key);
+  return next;
+}
+
+/**
+ * `model::resettle_tree` — re-settle the run view's cursor and scroll after a fold mutation.
+ *
+ * An emptied tree drops the cursor and pins the top; a cursor now hidden under a
+ * newly-collapsed ancestor falls back to the first visible row. Then the scroll re-anchors:
+ * `reveal` (a mutation that **opened** rows) pulls the cursor toward the viewport top so its
+ * new subtree shows below it, while a collapse or a plain step keeps the cursor clamp — so a
+ * collapse never jumps and the cursor is never left dangling on a hidden node.
+ *
+ * Either way the result is **frozen**: a fold is the reader taking control of the viewport.
+ */
+function resettleRun(board, run, viewport, reveal) {
+  const nav = runTreeNav(board, run, viewport);
+  if (nav === null) return run;
+  if (nav.nodes.length === 0) return { ...run, cursor: null, tree: 0 };
+  const settled = nav.nodes.some((n) => n.id === run.cursor) ? run : { ...run, cursor: nav.nodes[0].id };
+  // Re-read against the settled cursor: the anchor is measured from where the cursor **is**,
+  // not from where it was before the fold moved it. A cursor the fold left alone needs no
+  // second walk.
+  const after = settled === run ? nav : runTreeNav(board, settled, viewport);
+  return { ...settled, tree: reveal ? after.reveal : after.clamp };
+}
+
+/**
+ * The run view's arm — `translate_split_key` plus the `Tree*`/`Log*` intents it emits.
+ *
+ * Scopes resolve **frame before pane** (`global`, then the `output` frame, then
+ * `output.tree`/`output.log` by which pane is *shown*), so a stray key can never cross panes —
+ * the pane guards in `apply_intent` make that structural there, and here it is the scope list.
+ * Like [`pressInfo`], a chord this view has no arm for is captured and reported **handled**: a
+ * key struck in the run view must not fall through to the list underneath it.
+ *
+ * `metrics` is [`runMetrics`]' `{viewport, treeTotal, logTotal}` — the arithmetic that *paints*,
+ * so every clamp here is against the rows the pane really drew rather than a second count.
+ */
+function pressRun(session, board, chord, metrics) {
+  const run = session.run;
+  const vp = Math.max(1, metrics.viewport);
+  const id = resolve(["global", "output", run.focus === "tree" ? "output.tree" : "output.log"], chord);
+  const captured = { session, commands: [], handled: true };
+  const next = (patch) => ({ session: { ...session, run: { ...run, ...patch } }, commands: [], handled: true });
+  /// A fold mutation, then `model::resettle_tree`'s re-anchor over the walk it produced.
+  const refold = (patch, reveal) => ({
+    session: { ...session, run: resettleRun(board, { ...run, ...patch }, vp, reveal) },
+    commands: [],
+    handled: true,
+  });
+
+  if (id === "output.back") {
+    // The list session's `cursor`/`cursorRow`/`offset` were never touched, so the cursor is
+    // already exactly where it was left.
+    return { session: { ...session, run: null }, commands: [], handled: true };
+  }
+  if (id === "global.help") return { session: { ...session, help: true }, commands: [], handled: true };
+  if (id === "global.reload" && !refused(board, id)) {
+    return { session, commands: [{ command: "reload" }], handled: true };
+  }
+  if (id === "output.focus_next") return next({ focus: run.focus === "tree" ? "log" : "tree" });
+  if (id === "output.scope") {
+    // `model::toggle_run_scope` — pane-dependent, because with one pane on screen the key means
+    // two different things. From the **tree** it *sets* the scope and swaps to the log: setting
+    // rather than toggling is what keeps a second `s` from the tree from landing you on an
+    // *un*scoped log, which is never what the key means there. From the **log** it is an
+    // in-place toggle of the scope that pane's own title names. Both arms re-follow, so the new
+    // scope tails its own latest output rather than a stale offset into a different
+    // physical-row space.
+    return run.focus === "tree"
+      ? next({ scoped: true, focus: "log", log: "follow" })
+      : next({ scoped: !run.scoped, log: "follow" });
+  }
+
+  const nav = runTreeNav(board, run, vp);
+  if (nav === null) return captured;
+  const cursor = nav.nodes.find((n) => n.id === run.cursor);
+  /// `model::move_tree_cursor` — `pick` chooses the destination row over the **node** rows (a
+  /// body row is never selectable), the cursor is stored as that row's node id so a later
+  /// insert-above keeps it, and the scroll re-clamps against the full walk so it stays on
+  /// screen. A manual move freezes follow: a run read by hand must not yank itself away.
+  const moveTo = (pick) => {
+    if (nav.nodes.length === 0) return captured;
+    const at = nav.nodes.findIndex((n) => n.id === run.cursor);
+    const to = Math.min(Math.max(0, pick(at === -1 ? 0 : at, nav.nodes.length)), nav.nodes.length - 1);
+    const moved = { ...run, cursor: nav.nodes[to].id };
+    return { session: { ...session, run: { ...moved, tree: runTreeNav(board, moved, vp).clamp } }, commands: [], handled: true };
+  };
+
+  switch (id) {
+    case "output.tree.up":
+      return moveTo((at) => at - 1);
+    case "output.tree.down":
+      return moveTo((at) => at + 1);
+    case "output.tree.first":
+      return moveTo(() => 0);
+    case "output.tree.follow_frontier":
+      // `model::tree_engage_follow` — pin the cursor to the frontier and follow, so the view
+      // jumps to and tracks the growing edge. On a completed run the frontier *is* the last
+      // node, so `G` still lands there (it subsumes a jump-to-last).
+      return next({ cursor: nav.frontier ?? run.cursor ?? null, tree: "follow" });
+    case "output.tree.follow":
+      // `model::tree_toggle_follow` — disengaging pins the cursor to the frontier and freezes
+      // **where we look** (the resolved anchor, so the view does not jump); re-engaging is `G`.
+      if (run.tree !== "follow") return next({ cursor: nav.frontier ?? run.cursor ?? null, tree: "follow" });
+      return nav.frontier === null ? next({ tree: 0 }) : next({ cursor: nav.frontier, tree: nav.top });
+    case "output.tree.toggle": {
+      // `model::tree_toggle_collapse` — a node with children flips its collapse; a childless
+      // `cmd`/`tool` leaf flips its own **body**, so `Enter` on a leaf reveals its output.
+      if (cursor === undefined) return captured;
+      if (cursor.hasChildren) {
+        return refold({ overrides: withEntry(run.overrides, cursor.id, !cursor.collapsed) }, cursor.collapsed);
+      }
+      if (!cursor.bodyCapable) return captured;
+      const shown = run.expanded.has(cursor.id);
+      return refold({ expanded: withMember(run.expanded, cursor.id, !shown) }, !shown);
+    }
+    case "output.tree.collapse": {
+      // `model::tree_collapse` — collapse an expanded parent, hide an expanded leaf body, else
+      // step the cursor onto its parent (selection-follows-collapse, the shape the list's group
+      // fold has). Nothing opens, so the anchor is the plain clamp.
+      if (cursor === undefined) return captured;
+      if (cursor.hasChildren && !cursor.collapsed) {
+        return refold({ overrides: withEntry(run.overrides, cursor.id, true) }, false);
+      }
+      if (cursor.bodyCapable && run.expanded.has(cursor.id)) {
+        return refold({ expanded: withMember(run.expanded, cursor.id, false) }, false);
+      }
+      return cursor.parent === null ? captured : refold({ cursor: cursor.parent }, false);
+    }
+    case "output.tree.expand": {
+      // `model::tree_expand` — the mirror: expand a collapsed parent, show a `cmd`/`tool`
+      // leaf's body, else step onto its first child. The two that *reveal* rows anchor toward
+      // the top; stepping onto an already-visible child is a plain clamp.
+      if (cursor === undefined) return captured;
+      if (cursor.collapsed) return refold({ overrides: withEntry(run.overrides, cursor.id, false) }, true);
+      if (cursor.firstChild !== null) return refold({ cursor: cursor.firstChild }, false);
+      if (!cursor.bodyCapable) return captured;
+      return refold({ expanded: withMember(run.expanded, cursor.id, true) }, true);
+    }
+    case "output.tree.collapse_all":
+    case "output.tree.expand_all": {
+      // `model::tree_collapse_all` / `tree_expand_all` — a **blanket override** on every parent,
+      // written explicitly rather than by clearing the map: `L` has to override the per-kind
+      // default too, and a clear would leave every agent at its collapsed one. The cost, which
+      // the terminal pays identically because its map is also per id: a node that opens *after*
+      // the bulk fold takes its own default rather than the bulk choice.
+      const collapse = id === "output.tree.collapse_all";
+      let overrides = run.overrides;
+      for (const parent of nav.parents) overrides = withEntry(overrides, parent, collapse);
+      return refold({ overrides }, false);
+    }
+    // --- the log pane ---------------------------------------------------------------
+    //
+    // `model::LogScroll`'s two methods, which is why "scrolling up drops follow; `f` and `G`
+    // restore it" needs no special case: **up** resolves the current effective top first (so a
+    // scroll-up from a followed view steps off the bottom rather than from row 0) and always
+    // freezes, and **down** re-engages follow the moment it reaches `max_top`.
+    case "output.log.up":
+      return next({ log: logUp(run.log, metrics.logTotal, vp, 1) });
+    case "output.log.down":
+      return next({ log: logDown(run.log, metrics.logTotal, vp, 1) });
+    case "output.log.half_up":
+      return next({ log: logUp(run.log, metrics.logTotal, vp, halfPage(vp)) });
+    case "output.log.half_down":
+      return next({ log: logDown(run.log, metrics.logTotal, vp, halfPage(vp)) });
+    case "output.log.page_up":
+      return next({ log: logUp(run.log, metrics.logTotal, vp, fullPage(vp)) });
+    case "output.log.page_down":
+      return next({ log: logDown(run.log, metrics.logTotal, vp, fullPage(vp)) });
+    case "output.log.top":
+      return next({ log: 0 });
+    case "output.log.bottom":
+      return next({ log: "follow" });
+    case "output.log.follow":
+      // `LogScroll::toggle_follow` — engaging snaps to the bottom on the next paint (the
+      // `"follow"` arm resolves there); disengaging freezes the current effective top, so the
+      // view does not jump.
+      return next({ log: run.log === "follow" ? logResolved(run.log, metrics.logTotal, vp) : "follow" });
+    default:
+      return captured;
+  }
+}
+
+/// `LogScroll::top_line` — the effective top a `"follow" | number` scroll resolves to. The twin
+/// of `layout.mjs`'s own `logTop`, restated here because the dispatch must resolve it *before*
+/// the paint does and the two read one rule.
+function logResolved(scroll, total, viewport) {
+  const max = Math.max(0, total - Math.max(1, viewport));
+  return scroll === "follow" ? max : Math.min(Math.max(0, scroll), max);
+}
+
+/// `LogScroll::scroll_up_by` — off the resolved top, clamped at 0, always **frozen**: the
+/// reader took manual control of the viewport.
+function logUp(scroll, total, viewport, n) {
+  return Math.max(0, logResolved(scroll, total, viewport) - n);
+}
+
+/// `LogScroll::scroll_down_by` — off the resolved top, clamped at `max_top`, and **re-engaging
+/// follow** once it gets there, so paging to the end resumes tailing.
+function logDown(scroll, total, viewport, n) {
+  const max = Math.max(0, total - Math.max(1, viewport));
+  const at = Math.min(logResolved(scroll, total, viewport) + n, max);
+  return at >= max ? "follow" : at;
+}
+
 /**
  * The info page scrolled by `lines` rows, clamped into `[0, max]` — the wheel's one effect.
  *
@@ -380,9 +662,13 @@ function pressTyping(session, chord) {
  * decides `preventDefault`, so an unbound key keeps whatever the browser does with it.
  *
  * Precedence is `translate_key`'s, as early returns: the confirm modal, then the help overlay
- * (both capturing), then the info page (capturing too), then filter typing, then the list.
- * Filter typing sits below the info page exactly as it does in the Rust — the filter is a
- * list-only affordance, so the two can never be open at once.
+ * (both capturing), then the info page, then the run view (capturing too), then filter typing,
+ * then the list. Filter typing sits below both pages exactly as it does in the Rust — the filter
+ * is a list-only affordance, so it can never be open at the same time as either.
+ *
+ * `options.run` is [`runMetrics`]' `{viewport, treeTotal, logTotal}` for the open run view, so a
+ * scroll is clamped against the arithmetic that paints. Absent, every clamp floors — which is
+ * the honest answer before the first paint has measured a viewport.
  */
 export function press(session, board, chord, options) {
   const now = options.now;
@@ -390,6 +676,7 @@ export function press(session, board, chord, options) {
   if (session.confirm !== null) return pressConfirm(session, chord, now);
   if (session.help) return pressHelp(session, chord);
   if (session.info !== null) return pressInfo(session, board, chord);
+  if (session.run !== null) return pressRun(session, board, chord, options.run ?? NO_RUN_METRICS);
   if (session.filter.mode === "typing") return pressTyping(session, chord);
 
   const rows = rowsOf(session, board);
@@ -515,6 +802,11 @@ export function press(session, board, chord, options) {
       const out = verbFor(session, board, wedged ? "force" : "stop", row, now);
       return { ...out, handled: true };
     }
+    case "overview.show_output":
+      // `UiIntent::TreeOpen` opens on `selected_card()`, so a group header and a lane row have
+      // no subject and the key is a no-op there — reported unhandled, exactly as `i` is.
+      if (row?.kind !== "service") return nothingToDo;
+      return { session: openRun(session, row.svc), commands: [], handled: true };
     case "overview.show_info":
       // `toggle_info_view` opens on `selected_card()`, so a group header and a lane row have no
       // subject and the key is a no-op there — reported unhandled, like every other row-shaped

@@ -1,0 +1,24 @@
+{"afkd":"welcome","proto":1,"daemon":"0.2.127","auth":"none"}
+{"type":"meta","meta":"snapshot","services":[{"name":"loud_fail","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3599949,"state_ms":50,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":51}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1534038016,"mem_total":32964694016,"rx_bps":4458,"tx_bps":2692}
+{"type":"event","event":"fire_started","service":"loud_fail"}
+{"type":"trace","service":"loud_fail","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"/tmp/afkd-fixture/bin/loud-fail.sh","detail":""},"at":{"year":2026,"month":9,"day":19,"hour":5,"minute":33,"second":57,"millis":784}}}
+{"type":"log","service":"loud_fail","stream":"stderr","line":"[loud_fail] [RUN] run_cmd: /tmp/afkd-fixture/bin/loud-fail.sh"}
+{"type":"log","service":"loud_fail","stream":"stdout","line":"[loud_fail] [/tmp/afkd-fixture/bin/loud-fail.sh] checking the tree for the thing that broke","node":1}
+{"type":"log","service":"loud_fail","stream":"stderr","line":"[loud_fail] [/tmp/afkd-fixture/bin/loud-fail.sh:err] step 7/7 FAILED: expected 0, got 3","node":1}
+{"type":"log","service":"loud_fail","stream":"stdout","line":"[loud_fail] [/tmp/afkd-fixture/bin/loud-fail.sh] step 1/7 ok","node":1}
+{"type":"log","service":"loud_fail","stream":"stdout","line":"[loud_fail] [/tmp/afkd-fixture/bin/loud-fail.sh] step 2/7 ok","node":1}
+{"type":"log","service":"loud_fail","stream":"stdout","line":"[loud_fail] [/tmp/afkd-fixture/bin/loud-fail.sh] step 3/7 ok","node":1}
+{"type":"log","service":"loud_fail","stream":"stdout","line":"[loud_fail] [/tmp/afkd-fixture/bin/loud-fail.sh] step 4/7 ok","node":1}
+{"type":"log","service":"loud_fail","stream":"stdout","line":"[loud_fail] [/tmp/afkd-fixture/bin/loud-fail.sh] step 5/7 ok: 監視サービス reported clean","node":1}
+{"type":"log","service":"loud_fail","stream":"stdout","line":"[loud_fail] [/tmp/afkd-fixture/bin/loud-fail.sh] step 6/7 ok","node":1}
+{"type":"log","service":"loud_fail","stream":"stderr","line":"[loud_fail] [ERR] run_cmd: /tmp/afkd-fixture/bin/loud-fail.sh (exit 3, 2ms)"}
+{"type":"trace","service":"loud_fail","event":{"op":"closed","id":1,"status":"failed","elapsed_ms":2,"out":{"out":"lines","n":8}}}
+{"type":"event","event":"fire_failed","service":"loud_fail","reason":"command failed: /tmp/afkd-fixture/bin/loud-fail.sh","elapsed_ms":2}
+{"type":"event","event":"service_next_fire","service":"loud_fail","next_ms":3599999}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1533968384,"mem_total":32964694016,"rx_bps":2919,"tx_bps":2373}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1533968384,"mem_total":32964694016,"rx_bps":3716,"tx_bps":909}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1533968384,"mem_total":32964694016,"rx_bps":3163,"tx_bps":2007}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"loud_fail"}
+{"type":"event","event":"service_paused","service":"loud_fail","paused":true}

@@ -265,11 +265,12 @@ test("preventDefault is called exactly when the press was handled", () => {
     ["j", {}, true],
     ["ArrowDown", {}, true],
     ["?", {}, true],
-    // `i` opens the selected service's info page, so it is this page's key now.
+    // `i` opens the selected service's info page and `o` its run view, so both are this page's
+    // keys now.
     ["i", {}, true],
+    ["o", {}, true],
     // A bound key that resolves to an action with **no surface here** — it must not prevent, or
     // the page would eat a chord it does nothing with.
-    ["o", {}, false],
     ["v", {}, false],
     ["b", {}, false],
     ["q", {}, false],

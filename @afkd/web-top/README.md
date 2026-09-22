@@ -55,7 +55,7 @@ fails `afkd validate` rather than being quietly ignored.
 | `port` | `8771` | the port to serve on. `0` binds an ephemeral one and prints the port it got |
 | `bind` | `127.0.0.1` | the IPv4 address to listen on. Read the section above before you change it |
 | `max_clients` | `8` | how many subscribers may be attached at once; the next one is a `503` |
-| `runs_dir` | `<state dir>/runs` | where the daemon keeps its run corpus. Read and range-checked here, unused until the cards that paint run trees |
+| `runs_dir` | `<state dir>/runs` | where the daemon keeps its run corpus. Read and range-checked here, unused until the card that serves a disk backfill — see *What this card deliberately does not do* |
 | `log_lines` | `2000` | how many log lines the page keeps per service. The terminal dashboard's own `LOG_RING_CAPACITY`, so a browser and a terminal watching one daemon scroll back the same distance. Carried to the page on its `stream` event — the ring it bounds lives in the browser, not here |
 
 Every value arrives as a string — afkd lowers a scalar to a JSON string and a bare key with
@@ -208,6 +208,7 @@ does. `input.mjs` is the browser half, and the only file here that touches an ev
 | `/`, `Esc` | type a needle (the rows narrow as you type), and clear it |
 | `s` `x` `t` `r` | start, stop, trigger and restart the selected service — or, on a group header, every eligible member behind a confirm |
 | `x` on a wedged service | the force-stop gate: `y` sends one `force`, `n` and `Esc` send nothing |
+| `o` | open the selected **service**'s run view — the tree and the log; `o` or `Esc` closes it |
 | `i` | open the selected **service**'s info page; `i` or `Esc` closes it |
 | the wheel, on an open info page | scroll it — see below |
 | `Ctrl+R` | reload the daemon's config. The page intercepts this chord — see below |
@@ -274,16 +275,85 @@ the info view's `Config` row, and the Rust carries only the orphan half; the sta
 written to the same `tag - actionable sentence` shape from the same vocabulary the 🕸️ legend
 note uses. Reconciling the terminal's own two surfaces is not this page's to do.
 
+## The run view
+
+`o` on a service opens its **run view** — the combined trace tree and log pane (ADR-0071,
+ADR-0076), the surface an operator actually watches a fire in. `o` or `Esc` returns to the list
+with the cursor exactly where it was. One pane is on screen at a time and `Tab` swaps which,
+which is `split_geometry`'s own frame: the shown pane takes the whole body and the hidden one a
+zero-*height* rect. Above it sits the run service's own list row — composed through the same
+cells the list composes it with, over the same shed column set, so it says what the list row
+says at every width; from the stretch floor (90 cells) up the two are byte-identical, and below
+it the header fits the `Service` column to its own name rather than to the widest on the board,
+because it is the only row on its screen — and below it the single focus-aware footer.
+
+| Keys | What they do |
+|---|---|
+| `Tab` | swap the pane on screen; the hint names its destination (`Tab log`, `Tab tree`) |
+| `s` | from the tree, scope the log to the cursor's node **and** show it; from the log, toggle that scope in place |
+| `o`/`Esc` | back to the list |
+| **tree** `j`/`k`, `g` | move the cursor over the node rows; a leaf's body row is never selectable |
+| **tree** `h`/`←`, `l`/`→` | collapse, or step to the parent; expand, step to the first child, or reveal a leaf's own output |
+| **tree** `Enter`/`Space` | toggle the row's collapse — or, on a `cmd`/`tool` leaf, its body |
+| **tree** `H` / `L` | fold every parent, or open them all, overriding the per-kind default |
+| **tree** `f`, `G` | toggle following the frontier; jump to it and follow |
+| **log** `j`/`k`, `Ctrl+D`/`Ctrl+U`, `PgDn`/`PgUp` | scroll a line, half a page, a page |
+| **log** `g`, `G`, `f` | top; bottom and follow; toggle follow |
+
+Scrolling up in the log drops follow and `f` or `G` restores it — which falls out of
+`LogScroll`'s two methods rather than being a special case: **up** resolves the current effective
+top first (so a scroll off a followed view steps off the bottom, not from row 0) and always
+freezes, and **down** re-engages follow the moment it reaches the last page.
+
+The tree pane is `treeview.rs` restated: one DFS pre-order walk, a collapsed node emitting its
+own row and skipping its subtree, the per-kind collapse default (an `agent` folds; the
+`sandbox ▸ workflow ▸ agent` skeleton does not) with the escape hatch that a **failing** agent
+auto-expands so a `✗` is never unreachable, the rollup that puts the worst hidden status on a
+collapsed parent, the `↻` a parent reads when its subtree failed but it came back green, and the
+right-flushed `OUT`/`TOOK`/`ST` rail that sheds `OUT` below 64 cells and `TOOK` below 44 and
+never sheds `ST`. Under a `failed`/`killed` leaf — or one opened with `Enter` — up to five of
+that leaf's own output lines show indented beneath it, then a `… N more`. The log pane is
+`logview.rs`: the ring wrapped by display width, never elided, with the scope and the
+`start–end/total` range in its own title.
+
+It diverges from the terminal on three points, each forced by the wire rather than by taste:
+
+- **No timestamp column and no day marker.** A `Frame::Log` carries `service`/`stream`/`line`/
+  `node` and **no stamp**, and the fold stamps each entry with the page's own monotonic clock.
+  Rendering `logview`'s civil `HH:MM:SS.mmm` would be the browser's clock wearing the daemon's —
+  the same refusal the info page makes for its elapsed-only phrases.
+- **The continuation hang is 2 cells, not 13.** `logview::CONT_INDENT` measured the stamp that is
+  now absent; 2 is the smallest indent that still reads as a continuation.
+- **A running node's ticking `TOOK` is monotonic.** `took_content` measures a running node
+  against a civil calendar this page has no clock for, so it reads `now - openedAt` — an instant
+  `fold.mjs` stamps beside the wire's civil `at`. A **closed** node still reads its authoritative
+  `elapsed_ms`, so only the live estimate rides the substituted clock.
+
+Nothing in the Rust can fail if those three drift back: the terminal has a stamp, so no test
+there is about their absence. They are pinned here instead — by this list, and by the committed
+goldens, which would move.
+
 ## What this card deliberately does not do
 
-- **No run view, so a quarter of the keymap is bound and inert.** The fold keeps the log rings
-  and the run trees; nothing paints them yet, so `o`, `v`, `b`, the two lane-width pairs and the
-  whole of the `output*` scopes resolve to an action this page has nowhere to send. They are
-  **listed** in the `?` overlay all the same, dim and with the reason beside them — a chord with
-  a binding is part of the keymap whether or not this surface can act on it — and they are
-  reported unhandled, so the browser keeps them. `q` is one of these: a page cannot close
-  itself, and `Ctrl+C` is the browser's copy. `i` on a group header or a lane row is the same
-  shape of refusal: `toggle_info_view` opens on the selected *card*, so there is no subject.
+- **No disk backfill, so a run view opened after the fire is empty.** The daemon serves its
+  run-tree and log-history burst **only** to a TCP client: a local-socket client is expected to
+  share the filesystem and read the run dirs itself, and a companion is handed the local socket.
+  So the run view fills from the live stream and from nothing else — attach after a run has
+  finished and both panes are empty until something fires. The `runs_dir` setting is read and
+  range-checked here against the card that spends it. Nothing is faked in the meantime: an empty
+  tree renders as an empty pane rather than as a guess.
+- **A few keys are bound and inert.** `v`, `b` and the two lane-width pairs resolve to an action
+  this page has nowhere to send. They are **listed** in the `?` overlay all the same, dim and
+  with the reason beside them — a chord with a binding is part of the keymap whether or not this
+  surface can act on it — and they are reported unhandled, so the browser keeps them. `q` is one
+  of these: a page cannot close itself, and `Ctrl+C` is the browser's copy. `o` and `i` on a
+  group header or a lane row are a different shape of refusal, and are listed as **partial**:
+  `TreeOpen` and `toggle_info_view` both open on the selected *card*, so there is no subject.
+- **`H`/`L` in the tree are a blanket override, not a mode.** Both write an explicit override
+  onto every parent the tree holds *now*, so a node that opens after the bulk fold takes its own
+  per-kind default rather than the bulk choice. The terminal behaves identically, for the same
+  reason — its override map is per node id too — and it is worth knowing before it looks like a
+  bug the first time an operator opens all and a new agent lands folded.
 - **The keymap is the stock one, and no `keys { … }` rebind is mirrored.** The keymap is not
   on the control wire, so `keymap.mjs` ships a transcription of afkd's `DEFAULT_KEYS` — all 51
   rows, all eight scopes, alternates included — pinned to `crates/config/src/keymap.rs` by

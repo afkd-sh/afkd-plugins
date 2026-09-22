@@ -73,6 +73,13 @@ const WIDE_RANGES = [
   [0xff00, 0xff60], // fullwidth forms
   [0xffe0, 0xffe6], // fullwidth signs
   [0x1f300, 0x1f64f], // misc symbols and pictographs, emoticons
+  // Transport and map symbols, the **contiguous** Wide run at the head of the block
+  // (🚀 `NodeKind::Workflow`, the root glyph of every run tree). Deliberately not the whole
+  // block: past `0x1f6c5` it is scattered singletons, and `🛠` (U+1F6E0) is *Neutral* — one
+  // cell in `unicode-width` 0.2, which is this table's default, and where such a symbol is
+  // meant to paint two it carries VS16, which `clusterWidth` resolves first. The gap at
+  // `0x1f650-0x1f67f` (Ornamental Dingbats, Neutral) is why the run above stops at `1f64f`.
+  [0x1f680, 0x1f6c5], // transport and map symbols, the Wide run
   [0x1f900, 0x1faff], // supplemental symbols and pictographs (🧵 🪦 …)
   [0x20000, 0x3fffd], // CJK unified ideographs, planes 2 and 3
 ];
@@ -1229,8 +1236,19 @@ const POISON_RECOVERY = "force-abandoned; its thread has not finished yet";
 function keysOf(quitting) {
   const chords = (action) => (quitting && REFUSED_WHILE_QUITTING.includes(action) ? [] : glyphs(action));
   const primary = (action) => chords(action)[0] ?? null;
+  /// `Keys::pair` — two actions' primary glyphs as `a/b`, with a shared `Ctrl+` elided on the
+  /// second. `null` when either is unbound: half a pair would advertise an unpressable key. A
+  /// closure rather than a method, so the raw accessor and `hintPair` below read one rule and
+  /// neither depends on how it was called.
+  const pair = (first, second) => {
+    const a = primary(first);
+    const b = primary(second);
+    if (a === null || b === null) return null;
+    return `${a}/${a.startsWith("Ctrl+") && b.startsWith("Ctrl+") ? b.slice(5) : b}`;
+  };
   return {
     primary,
+    pair,
     /// `Keys::hint` — an unbound action yields nothing, so the caller omits the cell.
     hint(action, label) {
       const key = primary(action);
@@ -1256,15 +1274,18 @@ function keysOf(quitting) {
       const bound = chords(action);
       return bound.length === 0 ? null : { kind: "key", keys: bound.join("/"), label, live: true };
     },
+    /// `Keys::alts` — the glyphs of `action`'s chords **after** the first, concatenated: the
+    /// alternative spellings the log scroll cell tacks on (`k/j or ↑↓`). Empty for an action
+    /// with one chord or none.
+    alts(action) {
+      return chords(action).slice(1).join("");
+    },
     /// `Keys::hint_pair` — two actions in one cell as `a/b`, with a shared `Ctrl+` elided on
     /// the second glyph. Nothing when **either** is unbound: half a pair would advertise an
     /// unpressable key.
     hintPair(first, second, label) {
-      const a = primary(first);
-      const b = primary(second);
-      if (a === null || b === null) return null;
-      const tail = a.startsWith("Ctrl+") && b.startsWith("Ctrl+") ? b.slice(5) : b;
-      return { kind: "key", keys: `${a}/${tail}`, label, live: true };
+      const keys = pair(first, second);
+      return keys === null ? null : { kind: "key", keys, label, live: true };
     },
   };
 }
@@ -2514,6 +2535,914 @@ function infoFrame(plan, options) {
   return screen.slice(0, rows);
 }
 
+// --- the run view ------------------------------------------------------------------
+//
+// `crates/tui/src/treeview.rs` (the tree pane), `crates/tui/src/logview.rs` (the log pane),
+// `crates/tui/src/scrollbar.rs` (the thumb both share) and `shell::split_geometry` /
+// `render_split` / `split_footer` (the frame around them) — ADR-0068 for the tree, ADR-0027
+// and ADR-0042 for the log, ADR-0071 and ADR-0076 for the combined view. Restated here arm
+// for arm like the list and the info page, each arm citing what it was read off.
+//
+// The frame is ADR-0076's: **one** pane on screen at a time. `split_geometry` gives the whole
+// body to `focus` and the hidden pane a zero-*height* rect, so `Tab` swaps which pane is
+// drawn rather than resizing two. The bands are the header (the run service's own list row),
+// the shown pane (its own title band + body + a one-column scrollbar gutter) and the single
+// focus-aware footer.
+//
+// **Three deliberate divergences from the terminal, and why.** Each is forced by the wire,
+// not by taste:
+//
+// - **No timestamp column and no day marker in the log pane.** A `Frame::Log` carries
+//   `service`/`stream`/`line`/`node` and **no stamp** (`proto.rs`, `Log`), and `foldLog`
+//   stamps each entry with this page's own monotonic `now`. Rendering `logview`'s civil
+//   `HH:MM:SS.mmm` would be the browser's clock wearing the daemon's — the refusal the info
+//   page already makes for its elapsed-only phrases. So `logview::render_line`'s
+//   `stamp + " " + text` is the text alone, `day_marker`/`civil_date` are not ported, and a
+//   line's physical span is its wrap span alone.
+// - **The continuation hang is 2 cells, not 13.** `logview::CONT_INDENT` measured the stamp
+//   that is now absent (it put a continuation under the first row's `[label]`); 2 is the
+//   smallest indent that still reads as a continuation.
+// - **A running node's ticking `TOOK` is monotonic.** `treeview::took_content` measures a
+//   `Running` node as `civil_delta_ms(now, at)` against a civil calendar this page has no
+//   clock for, so it reads `now - openedAt` — the monotonic instant `fold.mjs` stamps beside
+//   the wire's civil `at`. A **closed** node still reads its authoritative `elapsedMs`, so
+//   only the live estimate rides the substituted clock.
+
+/// `shell::TITLE_ROWS` — the header row plus its spacer, pinned above the pane.
+const RUN_TITLE_ROWS = 2;
+/// `shell::PANE_TITLE_ROWS` — the pane's own `Tree` / `Log · …` label plus its spacer. The
+/// same `title + spacer` band every pinned title in the app uses, so a pane's body sits at the
+/// same offset under the header as every other view's does.
+const PANE_TITLE_ROWS = 2;
+/// The one-column scrollbar gutter on the right of either pane
+/// (`shell::tree_content_width` / `log_content_width`), so the content width the row
+/// arithmetic budgets against is the width that paints.
+const SCROLLBAR_W = 1;
+/// `shell::render_scrollbar`'s two glyphs: the `░` track and the `█` thumb.
+const SCROLLBAR_TRACK = "░";
+const SCROLLBAR_THUMB = "█";
+
+/// `treeview`'s rail cell widths (ADR-0068): `{out:>7}  {took:>6}  {st:1}`, 18 rendered cells.
+const RAIL_OUT_W = 7;
+const RAIL_TOOK_W = 6;
+const RAIL_ST_W = 1;
+/// `treeview::RAIL_GAP` — the gap between adjacent rail cells, also reserved between a
+/// maximally elided label's `…` and the rail's leading cell so a shed label never butts it.
+const RAIL_GAP = 2;
+/// `treeview::TREE_RAIL_SHOW_OUT` / `_SHOW_TOOK` — the narrow-pane shed policy: `OUT` goes
+/// first, then `TOOK`; `ST` is never shed (status is the last thing given up).
+const TREE_RAIL_SHOW_OUT = 64;
+const TREE_RAIL_SHOW_TOOK = 44;
+/// `treeview::BODY_ELIDE` — how many of a leaf's own output lines show before the `… N more`
+/// tail. The full output is in the log pane, one `s` away.
+const BODY_ELIDE = 5;
+/// `layout::TREE_BODY_BAR` — the dim bar a leaf's body rows hang under.
+const TREE_BODY_BAR = "▏ ";
+/// `layout::TREE_GUIDE_W` — one guide column, a connector's width.
+const TREE_GUIDE_W = 3;
+/// `layout::TREE_GUIDE_BAR_GLYPH` — the `│` a guide column draws when that ancestor still has
+/// a sibling below it.
+const TREE_GUIDE_BAR_GLYPH = "│";
+
+/// The log pane's continuation hang, in cells — see the divergence note above.
+const LOG_CONT_INDENT = 2;
+const LOG_CONT_HANG = " ".repeat(LOG_CONT_INDENT);
+
+/// `treeview::kind_glyph` (ADR-0068) — the icon for a node's step kind, verbatim, VS15
+/// selectors included. Every glyph is *alignment-safe*: measured here it is exactly what
+/// `unicode-width` 0.2 gives it in the terminal, which is what lets the right-flushed rail
+/// land on one column at every depth. `the_rail_glyphs_measure_as_the_tui_measures_them` pins
+/// all seventeen, because `assertGrid` structurally cannot catch a mismeasured glyph: both
+/// sides of its width check go through the one measurement.
+const KIND_GLYPH = {
+  workflow: "🚀",
+  agent: "🤖",
+  cmd: "⚙︎",
+  tool: "🔧",
+  sandbox: "🔒",
+  worktree: "🌿",
+  guard: "⊘︎",
+  parallel: "∥︎",
+  repeat: "🌀",
+  sleep: "⏱︎",
+  fs: "✎︎",
+  lifecycle: "⚑︎",
+};
+/// The glyph for a kind the wire may grow past this table — the `cmd` gear rather than a `?`,
+/// since an unknown step is still a step and the rail must keep its column either way.
+const KIND_GLYPH_FALLBACK = KIND_GLYPH.cmd;
+
+/// `treeview::status_glyph` — the named set plus the derived recovered marker. A `killed`
+/// folds into the failure `✗` (a kill is a non-success) and `running`/`unknown` both read `⋯`
+/// (no known terminal outcome — never a false `✓`/`✗`). Each carries a trailing VS15: the
+/// glyph sits *in* the one-cell `ST` slot, and an emoji-presentation `✓` would over-fill the
+/// rail and shift it.
+const STATUS_GLYPH = {
+  ok: "✓︎",
+  failed: "✗︎",
+  killed: "✗︎",
+  skipped: "⊘︎",
+  running: "⋯︎",
+  unknown: "⋯︎",
+};
+const STATUS_RECOVERED_GLYPH = "↻︎";
+
+/// `shell::status_style` — the one coloured cell on a tree row, so the failing `✗` is the
+/// thing the eye lands on.
+const STATUS_ROLE = {
+  ok: "ok",
+  failed: "alarm",
+  killed: "alarm",
+  skipped: "muted",
+  running: "accent",
+  unknown: "caution",
+};
+
+/// `treeview::severity` — the rollup ladder `failed > killed > unknown > running > skipped >
+/// ok`, so a collapsed parent surfaces the loudest thing in its subtree.
+const STATUS_SEVERITY = { ok: 0, skipped: 1, running: 2, unknown: 3, killed: 4, failed: 5 };
+
+/// `treeview::worst` — the more severe of two statuses. An unrecognised status sorts *below*
+/// `ok` rather than above `failed`: a future wire word must not fake a failure.
+function worstStatus(a, b) {
+  return (STATUS_SEVERITY[a] ?? -1) >= (STATUS_SEVERITY[b] ?? -1) ? a : b;
+}
+
+/// `treeview::node_line` — the text after the kind glyph: the node's **live** headline (its
+/// `relabel` when a `times` loop carries one, `times 2/2`, else the label it opened with),
+/// then a space and its `detail` when it has one, then [`sanitizeLabel`]. The one seam the
+/// tree row and the log pane's scope title both read, so the two cannot spell one node two
+/// ways.
+function nodeLine(node) {
+  const label = node.relabel ?? node.label;
+  const composed = node.detail === "" ? label : `${label} ${node.detail}`;
+  return sanitizeLabel(composed);
+}
+
+/// `treeview::sanitize_label` — fold a composed label to one logical line: each
+/// whitespace-or-control character becomes a single space and a run of them collapses to one,
+/// so a multi-line `run_cmd`'s embedded newline can never break a row and a continuation's
+/// indentation leaves no long gap. Single spaces inside the command survive. Applied upstream
+/// of every width budget, so the elision lands on the final text.
+function sanitizeLabel(s) {
+  let out = "";
+  let prevSpace = false;
+  for (const ch of s) {
+    if (LABEL_FOLD.test(ch)) {
+      if (!prevSpace) {
+        out += " ";
+        prevSpace = true;
+      }
+      continue;
+    }
+    out += ch;
+    prevSpace = false;
+  }
+  return out.endsWith(" ") ? out.slice(0, -1) : out;
+}
+
+/// The characters [`sanitizeLabel`] folds to one space: `\p{Cc}` is the C0/C1 control set and
+/// `\s` the whitespace class including the Unicode separators, so the two together are the
+/// Rust's `is_whitespace() || is_control()`. Hoisted out of the loop, the way `ZERO_WIDTH` is.
+const LABEL_FOLD = /[\s\p{Cc}]/u;
+
+/// `treeview::collapse_default` — an `agent`'s tool-call subtree is deep detail you opt into,
+/// so an agent lands folded; the `sandbox ▸ workflow ▸ agent` skeleton lands expanded.
+function collapseDefault(kind) {
+  return kind === "agent";
+}
+
+/// `treeview::subtree_has_failure` — whether `node`'s subtree holds a failure, an iterative
+/// walk that early-returns on the first one. Cheaper than [`subtreeWorst`]; here only the
+/// *presence* of a failure matters, because it auto-expands a default-collapsed agent so a `✗`
+/// is never hidden.
+function subtreeHasFailure(tree, node) {
+  const stack = node.children.slice();
+  while (stack.length > 0) {
+    const child = tree.nodes[stack.pop()];
+    if (child === undefined) continue;
+    if (child.status === "failed" || child.status === "killed") return true;
+    stack.push(...child.children);
+  }
+  return false;
+}
+
+/// `treeview::is_row_collapsed` — precedence `override > failing-subtree > per-kind default`.
+/// A leaf (no children) never collapses. An explicit override wins in either direction;
+/// absent one a node reads its [`collapseDefault`], except a default-collapsed agent whose
+/// subtree failed auto-expands so the `✗` is reachable.
+function isRowCollapsed(tree, node, overrides) {
+  if (node.children.length === 0) return false;
+  const override = overrides.get(node.id);
+  if (override !== undefined) return override;
+  return collapseDefault(node.kind) && !subtreeHasFailure(tree, node);
+}
+
+/// `treeview::subtree_worst` — the worst descendant status under `node` plus whether any
+/// descendant failed, over the whole subtree regardless of inner collapse. Iterative, so a
+/// deep subtree never overflows. An empty subtree is `("ok", false)`.
+function subtreeWorst(tree, node) {
+  let worst = "ok";
+  let anyFailed = false;
+  const stack = node.children.slice();
+  while (stack.length > 0) {
+    const child = tree.nodes[stack.pop()];
+    if (child === undefined) continue;
+    worst = worstStatus(worst, child.status);
+    if (child.status === "failed" || child.status === "killed") anyFailed = true;
+    stack.push(...child.children);
+  }
+  return { worst, anyFailed };
+}
+
+/// `treeview::display_status` — a leaf or expanded node shows its own status (never
+/// recovered). A **collapsed** node rolls its whole hidden subtree up: a subtree that failed
+/// under a node that itself came back `ok` reads *recovered* (`↻`), and otherwise the row
+/// shows the worst of its own status and its subtree's, so a hidden `✗` surfaces on the
+/// collapsed parent rather than being buried by it.
+function displayStatus(tree, node, collapsed) {
+  if (!collapsed) return { status: node.status, recovered: false };
+  const { worst, anyFailed } = subtreeWorst(tree, node);
+  if (anyFailed && node.status === "ok") return { status: "ok", recovered: true };
+  return { status: worstStatus(node.status, worst), recovered: false };
+}
+
+/**
+ * `treeview::flatten` — the tree's renderable node-row sequence, honouring the per-kind
+ * collapse default plus the user `overrides` and marking the `cursor` row. **One** iterative
+ * DFS pre-order walk over the roots (children pushed reversed so they pop in open order); a
+ * collapsed node with children emits its own row and **skips its subtree**, so a folded
+ * subtree is exactly one row.
+ *
+ * Each row carries only **facts** — the ancestor guides, its own connector, the chevron, the
+ * kind, the composed headline, the rail's raw sources and the display status. The
+ * width-budgeted `OUT`/`TOOK` cells are filled per visible row by the pane, which is the only
+ * thing that knows `paneW`.
+ */
+function flattenTree(tree, overrides, cursor) {
+  const out = [];
+  const stack = tree.roots
+    .slice()
+    .reverse()
+    .map((id) => ({ id, connector: "none", guides: [] }));
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    const node = tree.nodes[frame.id];
+    if (node === undefined) continue;
+    const hasChildren = node.children.length > 0;
+    const collapsed = isRowCollapsed(tree, node, overrides);
+    const { status, recovered } = displayStatus(tree, node, collapsed);
+    out.push({
+      id: frame.id,
+      guides: frame.guides,
+      connector: frame.connector,
+      // `null` for a leaf (it draws no chevron); `true` collapsed, `false` expanded.
+      chevron: hasChildren ? collapsed : null,
+      kind: node.kind,
+      headline: nodeLine(node),
+      cost: node.cost,
+      out: node.out,
+      elapsedMs: node.elapsedMs,
+      openedAt: node.openedAt,
+      status,
+      recovered,
+      selected: cursor === frame.id,
+    });
+    if (collapsed) continue;
+    // A child's guides are this node's plus, for every non-root, a column for *this* node's
+    // level: a bar when this node has a sibling still below it, a blank when it was the last.
+    // A root contributes no column — the run view deliberately does not widen a column by the
+    // parent's icon, so a child's elbow descends from the parent's chevron.
+    const childGuides =
+      frame.connector === "none" ? frame.guides : frame.guides.concat([frame.connector === "mid"]);
+    const n = node.children.length;
+    for (let i = n - 1; i >= 0; i -= 1) {
+      stack.push({ id: node.children[i], connector: i + 1 === n ? "last" : "mid", guides: childGuides });
+    }
+  }
+  return out;
+}
+
+/// `treeview::body_guides` — a leaf's body rows hang at its *content* depth: its own guides
+/// plus, for a non-root, a bit for its level. The same rule [`flattenTree`] gives a child, so
+/// a body indents exactly where a child would and its `▏` bar sits one column past the leaf's
+/// own `│`.
+function bodyGuides(row) {
+  return row.connector === "none" ? row.guides : row.guides.concat([row.connector === "mid"]);
+}
+
+/// `treeview::push_guides` — the **one** place a guide bit becomes cells, shared by the body
+/// gutter and the row gutter so the body indent and the row indent cannot drift. Each column
+/// is its continuation glyph (or a space) padded out to [`TREE_GUIDE_W`].
+function guideCells(guides) {
+  return guides.map((bar) => (bar ? TREE_GUIDE_BAR_GLYPH : " ") + " ".repeat(TREE_GUIDE_W - 1)).join("");
+}
+
+/// `treeview::connector_prefix` — the guide columns then this node's own `├─ `/`└─ `
+/// connector (nothing for a root).
+function connectorPrefix(guides, connector) {
+  const elbow = connector === "mid" ? TREE_CONNECTOR_MID : connector === "last" ? TREE_CONNECTOR_LAST : "";
+  return guideCells(guides) + elbow;
+}
+
+/// `treeview::gutter` — the guides + connector + chevron + kind glyph + trailing space a row
+/// draws *before* its label. The label budget and the drawn row read this one string, so the
+/// two can never drift.
+function treeGutter(row) {
+  let s = connectorPrefix(row.guides, row.connector);
+  if (row.chevron !== null) s += `${row.chevron ? TREE_CHEVRON_COLLAPSED : TREE_CHEVRON_EXPANDED} `;
+  return `${s}${KIND_GLYPH[row.kind] ?? KIND_GLYPH_FALLBACK} `;
+}
+
+/// `treeview::body_gutter` — a body row's own gutter: the leaf's continuation guides then the
+/// `▏ ` bar.
+function bodyGutter(guides) {
+  return guideCells(guides) + TREE_BODY_BAR;
+}
+
+/// `logring::node_entries` — the ring entries one node emitted, the shared filter the scoped
+/// log pane and the tree's body rows both fold. An evicted node's lines are simply absent, so
+/// it shows nothing — never another node's lines.
+function nodeEntries(ring, node) {
+  return ring.filter((e) => e.node === node);
+}
+
+/**
+ * `treeview::with_bodies` — interleave each leaf's own output beneath its node row. A **leaf**
+ * (`cmd`/`tool`, no children) shows a body when it `failed`/`killed` (auto-expand, so a
+ * failure's output is never a keypress away) **or** its id is in `expanded`; the body is the
+ * first [`BODY_ELIDE`] lines the ring holds for that node, then a `… N more` row when more
+ * remain.
+ *
+ * This is the **one** walk both the scroll clamp and the paint read, so the row count the
+ * clamp counts is the row count the pane draws — the desync trap the Rust's own AC7 names.
+ */
+function withBodies(nodeRows, ring, expanded) {
+  const out = [];
+  for (const row of nodeRows) {
+    const isLeaf = row.chevron === null && (row.kind === "cmd" || row.kind === "tool");
+    const shown = isLeaf && (row.status === "failed" || row.status === "killed" || expanded.has(row.id));
+    const guides = bodyGuides(row);
+    out.push({ kind: "node", row });
+    if (!shown) continue;
+    const lines = nodeEntries(ring, row.id).map((e) => e.text);
+    for (const text of lines.slice(0, BODY_ELIDE)) {
+      out.push({ kind: "body", node: row.id, guides, text, more: 0 });
+    }
+    const rest = Math.max(0, lines.length - BODY_ELIDE);
+    if (rest > 0) out.push({ kind: "body", node: row.id, guides, text: null, more: rest });
+  }
+  return out;
+}
+
+/// `treeview::more_text` — the `… N more` elision row's text.
+function moreText(n) {
+  return `… ${n} more`;
+}
+
+/// `treeview::tree_columns` — which rail columns show at `paneW`. `OUT` is shed first, then
+/// `TOOK`; `ST` is never shed.
+function treeColumns(paneW) {
+  return { out: paneW >= TREE_RAIL_SHOW_OUT, took: paneW >= TREE_RAIL_SHOW_TOOK };
+}
+
+/// `treeview::rail_width` — the rendered width of the rail given its present cells, uniform
+/// across rows at a given `paneW`, which is what lands `ST` on one screen column.
+function railWidth(outCell, tookCell) {
+  const widths = [];
+  if (outCell !== "") widths.push(textWidth(outCell));
+  if (tookCell !== "") widths.push(textWidth(tookCell));
+  widths.push(RAIL_ST_W);
+  return widths.reduce((a, b) => a + b, 0) + RAIL_GAP * (widths.length - 1);
+}
+
+/// `treeview::out_content` — the `OUT` cell's content (unpadded). A cell is *ongoing* or a
+/// *real value*; there is no "not applicable → dash" third state. A running node has no known
+/// output yet and a skipped or unknown one never measured any, so both are blank. Otherwise
+/// the closed value by kind, and *"nothing happened" is a number*: a `workflow`/`agent` shows
+/// `$x.xx` (a real `0` is `$0.00`), a `cmd`/`tool` `N ln` / `N B` and `0 ln` when it ran
+/// silent, an `fs` edit its `+N −N` diff (a U+2212 minus). A kind with no OUT metric of its
+/// own is blank — never a misleading `0 ln`.
+function outContent(row) {
+  if (row.status === "running" || row.status === "skipped" || row.status === "unknown") return "";
+  if (row.kind === "workflow" || row.kind === "agent") {
+    return row.cost === null ? "" : `$${row.cost.toFixed(2)}`;
+  }
+  if (row.kind === "cmd" || row.kind === "tool") {
+    const out = row.out;
+    if (out !== null && out.out === "lines") return `${out.n} ln`;
+    if (out !== null && out.out === "bytes") return `${out.n} B`;
+    return "0 ln";
+  }
+  if (row.kind === "fs") {
+    const out = row.out;
+    return out !== null && out.out === "diff" ? `+${out.added} −${out.removed}` : "";
+  }
+  return "";
+}
+
+/// `treeview::took_content` — the `TOOK` cell's content (unpadded). A **running** node ticks,
+/// so a repaint advances it; a **skipped** or **unknown** node never ran and is blank (not a
+/// false `0.0s`). Every other closed node took real wall time — a `sleep` and an `fs` edit
+/// included — so it shows its engine-measured `elapsedMs`.
+///
+/// The running arm is the monotonic divergence named at the top of this section: `now -
+/// openedAt` rather than `civil_delta_ms(now, at)`.
+function tookContent(row, now) {
+  if (row.status === "running") return formatTook(Math.max(0, now - row.openedAt));
+  if (row.status === "skipped" || row.status === "unknown") return "";
+  return formatTook(row.elapsedMs);
+}
+
+/// `treeview::format_took` — the rail's own duration formatter. Its **sub-minute** band is
+/// deliberately its own (`{:.1}s` tool precision: `0.0s`, `47.2s`), distinct from
+/// [`formatElapsed`]'s integer seconds; its **composite** tiers share the one canonical
+/// `Xm Ys` shape through [`twoUnits`], so a `1m 1s` here is byte-identical to the
+/// `Last Activity` cell's.
+function formatTook(ms) {
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${(ms / 1000).toFixed(1)}s`;
+  if (secs < 3600) return twoUnits(Math.floor(secs / 60), "m", secs % 60, "s");
+  return twoUnits(Math.floor(secs / 3600), "h", Math.floor((secs % 3600) / 60), "m");
+}
+
+/// `treeview::window` — the cursor-anchored viewport top, so `cursorRow` sits inside
+/// `[top, top+viewport)`, clamped to `[0, total - viewport]`. Read **on every paint**, not
+/// only on a keypress, so a tree that grew below the cursor — or inserted rows above it —
+/// keeps it on screen with no key struck.
+function treeWindow(total, cursorRow, viewport, prevTop) {
+  const vp = Math.max(1, viewport);
+  let top = prevTop;
+  if (cursorRow < top) top = cursorRow;
+  else if (cursorRow >= top + vp) top = cursorRow + 1 - vp;
+  return Math.max(0, Math.min(top, total - vp));
+}
+
+/// `treeview::reveal` — the expand-reveal anchor: the top that pulls a just-expanded (or
+/// followed) row to the top of the viewport so what it revealed shows below it. Follow mode
+/// composes with the expand anchor by routing through this one helper, so the two never fight.
+function revealTop(total, nodeRow, viewport) {
+  const vp = Math.max(1, viewport);
+  return Math.max(0, Math.min(nodeRow, total - vp));
+}
+
+/**
+ * `model::tree_frontier` — the row of the **newest-opened** node, the growing edge follow mode
+ * tracks. Trace ids are monotonic in open order, so the newest-opened node is the greatest id,
+ * which the fold already carries as `tree.newest`. When that node is hidden under a collapsed
+ * ancestor it is not a visible row, so the walk climbs its `parent` chain to the nearest
+ * **visible** ancestor — never an unrelated sibling. `null` only for an empty tree.
+ */
+function frontierRow(tree, visible) {
+  if (tree.newest === null) return null;
+  const at = new Map();
+  visible.forEach((vrow, i) => {
+    if (vrow.kind === "node") at.set(vrow.row.id, i);
+  });
+  let id = tree.newest;
+  while (id !== null && id !== undefined) {
+    const row = at.get(id);
+    if (row !== undefined) return row;
+    id = tree.nodes[id]?.parent ?? null;
+  }
+  return null;
+}
+
+/// `scrollbar::scrollbar` — the `░` track / `█` thumb geometry for `total` rows in a
+/// `viewport` scrolled to `top`. `null` when everything fits, so no bar is painted. The thumb
+/// is proportional (at least one row) and never spans the whole track, so there is always a
+/// visible "there is more"; at the bottom it pins to the last valid row.
+function scrollbarOf(total, viewport, top) {
+  const vp = Math.max(1, viewport);
+  if (total <= vp) return null;
+  const trackLen = vp;
+  const thumbCap = Math.max(1, trackLen - 1);
+  const thumbLen = Math.min(thumbCap, Math.max(1, Math.floor((vp * trackLen) / total)));
+  const maxTop = total - vp;
+  const maxThumbStart = trackLen - thumbLen;
+  const thumbStart = maxTop === 0 ? 0 : Math.floor((top * maxThumbStart) / maxTop);
+  return { trackLen, thumbStart: Math.min(thumbStart, maxThumbStart), thumbLen };
+}
+
+/// One row of the scrollbar gutter at `row` of the track — the glyph the thumb or the track
+/// puts there, or a blank when the pane needs no bar.
+function scrollbarCell(bar, row) {
+  if (bar === null) return blank(SCROLLBAR_W);
+  const on = row >= bar.thumbStart && row < bar.thumbStart + bar.thumbLen;
+  return cell(on ? SCROLLBAR_THUMB : SCROLLBAR_TRACK, { fg: "recede", dim: true });
+}
+
+/// `logview::scoped_entries` — the ring entries the log pane renders, oldest → newest: the
+/// whole ring unscoped, or just the entries the tree cursor's node emitted when scoped. A
+/// scope with no output of its own yields an empty pane and an honest `0–0/0`.
+function scopedEntries(ring, scope) {
+  return scope === null ? ring : nodeEntries(ring, scope);
+}
+
+/**
+ * `logview::wrap` — one logical line's physical rows at `width` **display** cells: the first
+ * row budgets the whole width, each continuation hangs [`LOG_CONT_INDENT`] cells and budgets
+ * what is left. Both budgets floor at one column, so a degenerate width does a best-effort
+ * minimum-one-column hard split that never drops a glyph. Always at least one row.
+ *
+ * Wrapping is by **grapheme and display width** through the module's one measurement, so a
+ * wide glyph counts two cells and an emoji is never split down the middle.
+ */
+function wrapLogLine(text, width) {
+  const budgetFirst = Math.max(1, width);
+  const budgetCont = Math.max(1, width - LOG_CONT_INDENT);
+  const rows = [];
+  let row = "";
+  let used = 0;
+  let first = true;
+  const flush = () => {
+    rows.push(first ? row : LOG_CONT_HANG + row);
+    first = false;
+    row = "";
+    used = 0;
+  };
+  for (const { segment } of GRAPHEMES.segment(text)) {
+    const w = clusterWidth(segment);
+    const budget = first ? budgetFirst : budgetCont;
+    // Break before a cluster that would overflow — unless nothing is on the row yet, in which
+    // case take it anyway rather than drop it.
+    if (used + w > budget && used > 0) flush();
+    row += segment;
+    used += w;
+  }
+  flush();
+  return rows;
+}
+
+/// `logview::expand` minus its day markers — the ring's whole physical-row sequence at
+/// `width`, which is the space every scroll quantity (`top`, the range, the thumb) is counted
+/// over. Width-coupled by construction: a resize changes the total.
+function expandLog(entries, width) {
+  const rows = [];
+  for (const entry of entries) rows.push(...wrapLogLine(entry.text, width));
+  return rows;
+}
+
+/// `model::LogScroll::top_line` — the effective top to render at. While **following** this
+/// pins to the bottom so new lines stay in view; while frozen it is the stored top clamped
+/// into range (clamp-on-read, so a shrunk log never blanks the pane).
+function logTop(scroll, total, viewport) {
+  const max = Math.max(0, total - Math.max(1, viewport));
+  return scroll === "follow" ? max : Math.min(Math.max(0, scroll), max);
+}
+
+/// `logview::log_view`'s 1-based inclusive physical-row range, e.g. `128–139/139`. An empty
+/// (or empty-scoped) log reads `0–0/0`.
+function logRange(total, top, shown) {
+  if (total === 0) return "0–0/0";
+  return `${top + 1}–${Math.max(top + shown, top + 1)}/${total}`;
+}
+
+/// `treeview::tree_nav_hints` — the tree pane's own nav keys for the combined footer: cursor
+/// move, the collapse toggle, directional collapse/expand, top/frontier, and the
+/// `f follow ●/○` indicator (only `f` whitens; the live glyph stays in the label, free to
+/// change with the follow state). The shared `Tab`/back/help/quit tail is appended by
+/// [`planRunFooter`].
+function treeNavHints(keys, following) {
+  return [
+    keys.hintPair("output.tree.down", "output.tree.up", "move"),
+    keys.hint("output.tree.toggle", "toggle"),
+    keys.hintPair("output.tree.collapse", "output.tree.expand", "collapse/expand"),
+    keys.hintPair("output.tree.first", "output.tree.follow_frontier", "top/frontier"),
+    keys.hint("output.tree.follow", followLabel(following)),
+  ].filter((hint) => hint !== null);
+}
+
+/// `logview::log_nav_hints` — the log pane's own nav keys: line scroll, half-page/page paging,
+/// top/bottom and the same `f follow ●/○`. (`h`/`l` stay unbound: the log wraps and never
+/// elides, so it has no horizontal axis.)
+function logNavHints(keys, following) {
+  return [
+    logScrollHint(keys),
+    keys.hintPair("output.log.half_up", "output.log.half_down", "½page"),
+    keys.hintPair("output.log.page_up", "output.log.page_down", "page"),
+    keys.hintPair("output.log.top", "output.log.bottom", "top/bot"),
+    keys.hint("output.log.follow", followLabel(following)),
+  ].filter((hint) => hint !== null);
+}
+
+/// `logview::scroll_hint` — the line-scroll cell: the two primary keys paired (`k/j`), then —
+/// only when **both** carry an alternative spelling — an ` or ` tail naming those alternatives
+/// (`k/j or ↑↓`). The composition is presentation; every key character in it comes from the
+/// keymap, so a rebind that drops the arrow aliases drops the tail with them.
+function logScrollHint(keys) {
+  const paired = keys.pair("output.log.up", "output.log.down");
+  if (paired === null) return null;
+  const up = keys.alts("output.log.up");
+  const down = keys.alts("output.log.down");
+  return { kind: "key", keys: up === "" || down === "" ? paired : `${paired} or ${up}${down}`, label: "scroll", live: true };
+}
+
+/// The `f follow ●/○` label — the state rides the *label* so only the key whitens, the
+/// convention the list's `busy ○` cell already keeps.
+function followLabel(following) {
+  return following ? "follow ●" : "follow ○";
+}
+
+/**
+ * `treeview::split_footer` — the combined run view's single footer: the **shown** pane's nav
+ * keys, then the two frame keys, then the shared globals tail. One footer for the whole view;
+ * neither pane renders one of its own. `following` is the shown pane's own follow state.
+ *
+ * Both frame keys name their **destination**: `Tab log` while the tree is shown, `Tab tree`
+ * while the log is; `s node output` on the tree (the key goes somewhere), a plain `s scope` on
+ * the log (it toggles in place, and the live scope is in that pane's own title).
+ *
+ * Two `BREAK` seams cut it into the categories the grid lays out — the shown pane's nav keys ·
+ * the frame · the daemon. It composes no `bare` hint at all, so it contributes no grid header
+ * row.
+ */
+function planRunFooter(keys, focus, following) {
+  const hints = focus === "tree" ? treeNavHints(keys, following) : logNavHints(keys, following);
+  hints.push(BREAK);
+  const push = (hint) => {
+    if (hint !== null) hints.push(hint);
+  };
+  push(keys.hint("output.focus_next", focus === "tree" ? "log" : "tree"));
+  push(keys.hint("output.scope", focus === "tree" ? "node output" : "scope"));
+  hints.push(BREAK);
+  push(keys.hintAll("output.back", "back"));
+  push(keys.hint("global.help", HELP_LABEL));
+  push(keys.hint("global.quit", "quit"));
+  return hints;
+}
+
+/// One tree **node** row's cells at `paneW`: the dim gutter, the label at its own weight (bold
+/// under the cursor), a pad carrying that same weight so no dim gutter runs through the
+/// selection band, then the right-flushed rail cells joined by [`RAIL_GAP`] gaps. The label
+/// budget and the pad read the same [`railWidth`] the cells are built from, so `ST` lands on
+/// the fixed rightmost column and the label can never overwrite the rail.
+function treeRowCells(row, paneW, now) {
+  const shed = treeColumns(paneW);
+  const outCell = shed.out ? rightPad(outContent(row), RAIL_OUT_W) : "";
+  const tookCell = shed.took ? rightPad(tookContent(row, now), RAIL_TOOK_W) : "";
+  const railW = railWidth(outCell, tookCell);
+  const gutter = treeGutter(row);
+  const gutterW = textWidth(gutter);
+  // A `RAIL_GAP` is reserved so a maximally elided label's `…` keeps its gap before the rail.
+  const budget = Math.max(1, paneW - gutterW - railW - RAIL_GAP);
+  const label = truncateWidth(row.headline, budget);
+  const pad = Math.max(0, paneW - gutterW - textWidth(label) - railW);
+  const weight = row.selected ? { fg: "bright", bold: true } : { fg: "ink" };
+  const railStyle = row.selected ? { fg: "bright", bold: true } : { fg: "recede", dim: true };
+  const cells = [cell(gutter, { fg: "recede", dim: true }), cell(label, weight), blank(pad, weight)];
+  const rail = [];
+  if (outCell !== "") rail.push(cell(outCell, railStyle));
+  if (tookCell !== "") rail.push(cell(tookCell, railStyle));
+  rail.push(cell(statusGlyph(row.status, row.recovered), statusStyle(row.status, row.recovered, row.selected)));
+  rail.forEach((c, i) => {
+    if (i > 0) cells.push(blank(RAIL_GAP));
+    cells.push(c);
+  });
+  return cells;
+}
+
+/// `treeview::status_glyph` applied to a row's display status and its recovered bit.
+function statusGlyph(status, recovered) {
+  return recovered ? STATUS_RECOVERED_GLYPH : (STATUS_GLYPH[status] ?? STATUS_GLYPH.unknown);
+}
+
+/// `shell::status_style` — the `ST` cell's one hue. A **recovered** rollup reads `caution`: it
+/// succeeded, but something under it did not, and neither `ok` nor `alarm` says that. A
+/// selected row bolds it while keeping the hue, so the band moves as one.
+function statusStyle(status, recovered, selected) {
+  const fg = recovered ? "caution" : (STATUS_ROLE[status] ?? "caution");
+  return selected ? { fg, bold: true } : { fg };
+}
+
+/// One tree **body** row's cells: the dim continuation guides + `▏ ` bar, then the dim body
+/// text, elided to what the pane leaves. The whole row is dim — a body is subordinate detail —
+/// and it carries no rail.
+function treeBodyCells(body, paneW) {
+  const gutter = bodyGutter(body.guides);
+  const budget = Math.max(1, paneW - textWidth(gutter));
+  const text = body.text === null ? moreText(body.more) : truncateWidth(body.text, budget);
+  return [cell(gutter, { fg: "recede", dim: true }), cell(text, { fg: "recede", dim: true })];
+}
+
+/**
+ * The run view's parts at a viewport, or `null` when `options.run` names no service on this
+ * board — `draw_split`'s own fallback to the list, with the session left open so a service
+ * that comes back comes back to its view.
+ *
+ * The bands are `split_geometry`'s: the header ([`RUN_TITLE_ROWS`]), the body (the flex, all
+ * of it to the shown pane), and the footer the ladder settled on. The body less the pane's own
+ * title band is the pane's viewport; the content width is the pane less the scrollbar gutter.
+ *
+ * **Both** panes are folded every frame, exactly as `draw_split` builds both neutral views:
+ * only the viewport the window is sliced to belongs to the shown one, so `Tab` swaps what is
+ * drawn rather than rebuilding a pane from nothing.
+ */
+function runPlan(board, options) {
+  const run = options.run ?? null;
+  if (run === null) return null;
+  const svc = board.services[run.service];
+  if (svc === undefined) return null;
+  const cols = Math.max(1, Math.trunc(options.cols));
+  const rows = Math.max(1, Math.trunc(options.rows));
+  const focus = run.focus === "tree" ? "tree" : "log";
+  const following = (focus === "tree" ? run.tree : run.log) === "follow";
+  const keys = keysOf(board.quittingSince !== null);
+  const footer = footerRows(planRunFooter(keys, focus, following), cols, rows);
+  const viewport = Math.max(0, rows - RUN_TITLE_ROWS - PANE_TITLE_ROWS - footer.length);
+  const paneW = Math.max(0, cols - SCROLLBAR_W);
+
+  const tree = svc.tree;
+  const nodeRows = flattenTree(tree, run.overrides ?? new Map(), run.cursor ?? null);
+  const visible = withBodies(nodeRows, svc.log.lines, run.expanded ?? new Set());
+  const treeTotal = visible.length;
+  const cursorAt = visible.findIndex((v) => v.kind === "node" && v.row.selected);
+  const cursorRow = cursorAt === -1 ? 0 : cursorAt;
+  const treeTop =
+    run.tree === "follow"
+      ? revealTop(treeTotal, frontierRow(tree, visible) ?? 0, viewport)
+      : treeWindow(treeTotal, cursorRow, viewport, Math.max(0, Math.trunc(run.tree)));
+
+  // The scope is resolved off the cursor every frame — `model::log_scope_node`'s own rule — so
+  // moving the tree cursor re-scopes the log pane with no second piece of state to keep in step.
+  const scope = run.scoped === true ? (run.cursor ?? null) : null;
+  const scoped = scope === null || tree.nodes[scope] === undefined ? null : scope;
+  const logRows = expandLog(scopedEntries(svc.log.lines, scoped), paneW);
+  const logTotal = logRows.length;
+
+  return {
+    svc,
+    focus,
+    cols,
+    rows,
+    now: options.now,
+    paneW,
+    viewport,
+    footer,
+    tree: { rows: visible, total: treeTotal, top: treeTop, cursorRow },
+    log: {
+      rows: logRows,
+      total: logTotal,
+      top: logTop(run.log, logTotal, viewport),
+      scope: scoped === null ? null : nodeLine(tree.nodes[scoped]),
+    },
+  };
+}
+
+/// Every node id with children, walked from the roots — `model::tree_parent_ids`, the set
+/// `H`/`L` write a blanket override onto (a leaf has nothing to collapse).
+function treeParentIds(tree) {
+  const parents = [];
+  const stack = tree.roots.slice();
+  while (stack.length > 0) {
+    const node = tree.nodes[stack.pop()];
+    if (node === undefined || node.children.length === 0) continue;
+    parents.push(node.id);
+    stack.push(...node.children);
+  }
+  return parents;
+}
+
+/**
+ * The run tree's **navigation view** at a viewport — everything the dispatch needs to move a
+ * cursor, fold a node or re-anchor a scroll, read off the very walk that paints. Exported so
+ * `session.mjs` composes the same arithmetic rather than restating it: two copies of
+ * `model::resettle_tree`'s anchor rules would be two things to keep in step, which is the
+ * argument [`scrollOffset`] is already imported there for.
+ *
+ * `null` when the run view names no service on this board. An **empty** tree is not that case:
+ * it yields no `nodes`, which is the arm every nav key is inert on.
+ *
+ * - `nodes` — the visible **node** rows in order, each with the facts the fold keys read
+ *   (`model::tree_collapse`/`tree_expand` read exactly these five).
+ * - `parents` — every id with children, for the two bulk folds.
+ * - `total` — the full nodes-plus-bodies walk length, the space every scroll quantity counts
+ *   over (the AC7 clamp==render identity).
+ * - `cursorRow` — the cursor's row **in that walk**, so a leaf's expanded body is counted.
+ * - `frontier` / `frontierRow` — the growing edge follow mode tracks, id and row.
+ * - `top` — the top the pane renders at (`model::tree_scroll_top`: the frontier anchor while
+ *   following, the stored top clamped while frozen).
+ * - `clamp` — the top a **cursor move** settles on (`model::reclamp_tree_scroll`).
+ * - `reveal` — the top a mutation that **opened** rows settles on
+ *   (`model::reveal_tree_to_cursor`), pulling the cursor toward the viewport top so what it
+ *   revealed shows below it.
+ */
+export function runTreeNav(board, run, viewport) {
+  if (run === null || run === undefined) return null;
+  const svc = board.services[run.service];
+  if (svc === undefined) return null;
+  const tree = svc.tree;
+  const cursor = run.cursor ?? null;
+  const nodeRows = flattenTree(tree, run.overrides ?? new Map(), cursor);
+  const visible = withBodies(nodeRows, svc.log.lines, run.expanded ?? new Set());
+  const total = visible.length;
+  const at = visible.findIndex((v) => v.kind === "node" && v.row.selected);
+  const cursorRow = at === -1 ? 0 : at;
+  const frontier = frontierRow(tree, visible);
+  const vp = Math.max(1, Math.trunc(viewport));
+  const top =
+    run.tree === "follow"
+      ? revealTop(total, frontier ?? 0, vp)
+      : treeWindow(total, cursorRow, vp, Math.max(0, Math.trunc(run.tree)));
+  return {
+    nodes: nodeRows.map((row) => ({
+      id: row.id,
+      hasChildren: row.chevron !== null,
+      // The **effective** collapse — override, then failing-subtree, then per-kind default —
+      // which is what the fold keys flip so `Enter` always visually toggles.
+      collapsed: row.chevron === true,
+      // `model::body_capable` — the kinds whose own output a leaf can reveal beneath it.
+      bodyCapable: row.kind === "cmd" || row.kind === "tool",
+      parent: tree.nodes[row.id]?.parent ?? null,
+      firstChild: tree.nodes[row.id]?.children[0] ?? null,
+    })),
+    parents: treeParentIds(tree),
+    total,
+    cursorRow,
+    frontier: frontier === null ? null : visible[frontier].row.id,
+    frontierRow: frontier,
+    top,
+    clamp: treeWindow(total, cursorRow, vp, top),
+    reveal: revealTop(total, cursorRow, vp),
+  };
+}
+
+/**
+ * How far each pane can scroll at this viewport, and how tall the viewport is — the run view's
+ * twin of [`bodyHeight`] and [`infoScrollMax`], computed by the very walks that paint, so
+ * every scroll clamp is against the arithmetic that renders rather than a second count of the
+ * rows. Zeroes when there is no view to draw.
+ */
+export function runMetrics(board, options) {
+  const plan = runPlan(board, options);
+  if (plan === null) return { viewport: 0, treeTotal: 0, logTotal: 0 };
+  return { viewport: plan.viewport, treeTotal: plan.tree.total, logTotal: plan.log.total };
+}
+
+/// The header band's row: the run service's **own list row**, composed through the *same*
+/// [`bodyRowCells`] seam the list composes it with, over the same shed column set — so it says
+/// what the list row says and sheds exactly what the list sheds. The one thing it does not
+/// share is the `Service` column's *content fit*: the list measures the widest identity over
+/// every row, this row measures its own, because it is the only row on its screen and there is
+/// no column below it to line up with. At and above [`stretchFloor`] that difference is inert —
+/// `serviceColWidth` ignores the content there and both take the pure remainder — so the two
+/// rows are byte-identical, which `the_run_views_pinned_header_is_the_lists_own_row_for_that_
+/// service` sweeps. It keeps the **qualified** name: no group header sits above it and the pane
+/// title is a fixed label, so this row is the only thing naming the service.
+function runHeaderCells(plan) {
+  const row = { kind: "service", svc: plan.svc, depth: 0, prefix: "" };
+  const visible = visibleColumns(plan.cols);
+  const widths = {};
+  for (const column of visible) {
+    widths[column.key] = columnRenderWidth(column.key, textWidth(identityText(row)), plan.cols);
+  }
+  return bodyRowCells(row, visible, widths, queueCols(plan.cols, 0), {}, plan.now);
+}
+
+/// The shown pane's own title: a bold fixed `Tree`, or the scope-aware `Log · <node>` /
+/// `Log · all` with its `start–end/total` range. With one pane on screen the title is the only
+/// thing saying which pane you are in, so it is always bold — there is no second title left to
+/// contrast a dim one against. The range says where in the ring the pane is sitting and the
+/// scope what it is filtered to; `logview` composes both onto a title its own pane then
+/// dropped, and on this page there is nowhere else for them to go.
+function paneTitleCells(plan) {
+  if (plan.focus === "tree") return [cell("Tree", { fg: "bright", bold: true })];
+  const shown = Math.min(plan.viewport, Math.max(0, plan.log.total - plan.log.top));
+  return [
+    cell(`Log · ${plan.log.scope ?? "all"}`, { fg: "bright", bold: true }),
+    cell(` · ${logRange(plan.log.total, plan.log.top, shown)}`, { fg: "legend", dim: true }),
+  ];
+}
+
+/// The run view composed onto a `cols × rows` grid: the header band and the pane's title band
+/// pinned above, the shown pane's window sliced from its own clamped top with the scrollbar
+/// gutter down its right edge, the footer pinned below.
+function runFrame(plan) {
+  const { cols, paneW, viewport } = plan;
+  const screen = [fitRow(runHeaderCells(plan), cols), fitRow([], cols)];
+  screen.push(fitRow(paneTitleCells(plan), cols));
+  screen.push(fitRow([], cols));
+  const pane = plan.focus === "tree" ? plan.tree : plan.log;
+  const bar = scrollbarOf(pane.total, viewport, pane.top);
+  for (let i = 0; i < viewport; i += 1) {
+    const cells = [];
+    if (plan.focus === "tree") {
+      const vrow = plan.tree.rows[plan.tree.top + i];
+      if (vrow !== undefined) {
+        cells.push(...(vrow.kind === "node" ? treeRowCells(vrow.row, paneW, plan.now) : treeBodyCells(vrow, paneW)));
+      }
+    } else {
+      const line = plan.log.rows[plan.log.top + i];
+      if (line !== undefined) cells.push(cell(line));
+    }
+    // The content is fitted to the pane's **own** width first, so a row can never smear into
+    // the scrollbar gutter the thumb rides.
+    screen.push([...fitRow(cells, paneW), scrollbarCell(bar, i)]);
+  }
+  for (const row of plan.footer) screen.push(fitRow(hintRowCells(row), cols));
+  return screen.slice(0, plan.rows);
+}
+
 // --- the whole screen --------------------------------------------------------------
 
 /**
@@ -2537,6 +3466,9 @@ function infoFrame(plan, options) {
  * - `flash` — the transient one-line message, or `null`. Second in the footer's precedence.
  * - `confirm` — `{verb, targets, skipped}`, the pending confirm modal, or `null`.
  * - `help` — whether the `?` overlay is up.
+ * - `run` — the open run view's state (`{service, focus, cursor, overrides, expanded, tree,
+ *   log, scoped}` — `session.mjs`'s `run`), or absent for the list. It replaces the list the
+ *   way the info page does, and outranks neither overlay.
  * - `version` — the daemon's version for the title bar's identity prefix. The fold ignores
  *   the handshake frame (it is not a wire frame), so the shell reads it off the `welcome`
  *   event and hands it in here, exactly as it reads `log_lines` off `stream` and hands it to
@@ -2556,6 +3488,13 @@ export function layout(board, options) {
   // comes back comes back to its page.
   const info = infoPlan(board, options);
   if (info !== null) return withOverlays(infoFrame(info, options), board, options, cols, rows);
+  // The run view is the third base view, on the same terms and below the info page: a page
+  // cannot be both, and `translate_key`'s own precedence puts the run view after it. It falls
+  // back to the list the same way — a `run` naming a service that vanished under it returns
+  // `null` while the session keeps the view open, so a service that comes back comes back to
+  // its run view.
+  const run = runPlan(board, options);
+  if (run !== null) return withOverlays(runFrame(run), board, options, cols, rows);
   const now = options.now;
   const selected = options.selected ?? 0;
   const filter = options.filter ?? "";

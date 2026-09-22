@@ -524,7 +524,7 @@ function foldTrace(board, frame, now) {
   return folded(
     withService(board, toText(frame.service), (svc) => {
       const before = svc.tree;
-      if (op === "opened") svc.tree = openNode(before, event.node, event.at);
+      if (op === "opened") svc.tree = openNode(before, event.node, event.at, now);
       else if (op === "closed") svc.tree = closeNode(before, event);
       else svc.tree = relabelNode(before, event);
       // A trace event from a run is observable activity, on the same gate the ring uses.
@@ -549,8 +549,12 @@ function foldTrace(board, frame, now) {
  *    abandoned mid-flight and settles `unknown`;
  * 4. **rule 2** — a declared parent we never saw makes this an orphan, re-rooted rather
  *    than lost.
+ *
+ * `now` is the caller's own monotonic instant, stamped onto the node as
+ * [`openedAt`](#openedAt) beside the wire's civil `at` — the anchor the run view's ticking
+ * `TOOK` measures against. It is **not** part of the dedup (see the field's own note).
  */
-function openNode(tree, wire, at) {
+function openNode(tree, wire, at, now) {
   if (!isObject(wire)) return tree;
   const id = toNumber(wire.id, 0);
   const declaredParent = wire.parent === undefined || wire.parent === null ? null : toNumber(wire.parent, 0);
@@ -613,6 +617,14 @@ function openNode(tree, wire, at) {
     relabel: null,
     detail,
     at: stamp,
+    // The **monotonic** instant this frame folded, beside the wire's civil `at`. The run
+    // view's ticking `TOOK` is `now - openedAt`: `treeview::took_content` measures a running
+    // node as `civil_delta_ms(now, at)` against a civil clock the browser does not have, and
+    // the one it does have is this one. A closed node still reads its authoritative
+    // `elapsedMs`, so only the live estimate rides this field — and the dedup above
+    // deliberately does **not** compare it, since a replayed `opened` arrives at a different
+    // `now` and would otherwise reset the tree.
+    openedAt: now,
     children: [],
     status: "running",
     elapsedMs: 0,

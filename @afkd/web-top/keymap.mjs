@@ -292,6 +292,7 @@ export const HANDLED = new Set([
   "overview.service_fire",
   "overview.service_restart",
   "overview.service_peek",
+  "overview.show_output",
   "overview.show_info",
   "overview.group_collapse",
   "overview.group_expand",
@@ -303,6 +304,28 @@ export const HANDLED = new Set([
   "overview.last",
   "overview.filter",
   "overview.filter_clear",
+  "output.focus_next",
+  "output.scope",
+  "output.back",
+  "output.tree.up",
+  "output.tree.down",
+  "output.tree.toggle",
+  "output.tree.collapse",
+  "output.tree.expand",
+  "output.tree.first",
+  "output.tree.follow",
+  "output.tree.follow_frontier",
+  "output.tree.expand_all",
+  "output.tree.collapse_all",
+  "output.log.up",
+  "output.log.down",
+  "output.log.half_up",
+  "output.log.half_down",
+  "output.log.page_up",
+  "output.log.page_down",
+  "output.log.top",
+  "output.log.bottom",
+  "output.log.follow",
   "info.back",
   "confirm.accept",
   "confirm.cancel",
@@ -314,7 +337,7 @@ export const HANDLED = new Set([
 export const NOTES = {
   "global.quit": "The browser owns Ctrl+C",
   "overview.service_peek": "Groups only — no activity peek",
-  "overview.show_output": "No run view on this page",
+  "overview.show_output": "Services only — a group has no run",
   "overview.show_info": "Services only — a group has no info page",
   "overview.view": "No flat view on this page",
   "overview.filter_busy": "No busy lens on this page",
@@ -322,36 +345,15 @@ export const NOTES = {
   "overview.queue_narrow": "The relay has no lane verb",
   "queues.narrow": "The relay has no lane verb",
   "queues.widen": "The relay has no lane verb",
-  "output.focus_next": "No run view on this page",
-  "output.scope": "No run view on this page",
-  "output.back": "No run view on this page",
-  "output.tree.up": "No run view on this page",
-  "output.tree.down": "No run view on this page",
-  "output.tree.toggle": "No run view on this page",
-  "output.tree.collapse": "No run view on this page",
-  "output.tree.expand": "No run view on this page",
-  "output.tree.first": "No run view on this page",
-  "output.tree.follow": "No run view on this page",
-  "output.tree.follow_frontier": "No run view on this page",
-  "output.tree.expand_all": "No run view on this page",
-  "output.tree.collapse_all": "No run view on this page",
-  "output.log.up": "No run view on this page",
-  "output.log.down": "No run view on this page",
-  "output.log.half_up": "No run view on this page",
-  "output.log.half_down": "No run view on this page",
-  "output.log.page_up": "No run view on this page",
-  "output.log.page_down": "No run view on this page",
-  "output.log.top": "No run view on this page",
-  "output.log.bottom": "No run view on this page",
-  "output.log.follow": "No run view on this page",
 };
 
-/// The two actions that are in **both** sets, in table order. `Enter`/`Space` folds a group
-/// header here and, on a service row — where the terminal opens an activity peek — does
-/// nothing; `i` opens a **service**'s info page and, on a group header or a lane row, has no
-/// subject to open. Named rather than inferred, so the assert below can hold every other action
-/// to exactly one side.
-export const PARTIAL = ["overview.service_peek", "overview.show_info"];
+/// The three actions that are in **both** sets, in table order. `Enter`/`Space` folds a group
+/// header here and, on a service row — where the terminal opens an activity peek, which this
+/// page has no surface for — does nothing; `o` opens a **service**'s run view and `i` its info
+/// page, and on a group header or a lane row neither has a subject to open. Named rather than
+/// inferred, so the assert below can hold every other action to exactly one side, and in
+/// `ACTIONS` order because that is what the check compares against.
+export const PARTIAL = ["overview.service_peek", "overview.show_output", "overview.show_info"];
 
 // Every row is described, and is either handled or noted — so a row a future transcription
 // adds cannot land with no description, no dispatch and no explanation. The intersection is

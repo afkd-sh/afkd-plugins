@@ -257,7 +257,8 @@ class Relay:
 
     There is nothing else — no folded board, no cached frame. The **page** folds, in
     `fold.mjs`; this process forwards. `runs_dir` is read, range-checked and held here for
-    the cards that paint run trees; nothing opens anything under it yet, and `log_lines` is
+    the card that serves a **disk backfill** — the page paints run trees now, but only from
+    the live stream; nothing opens anything under it yet, and `log_lines` is
     likewise only carried — it is handed to the page on its `stream` event, because the ring
     it bounds lives in the browser.
     """

@@ -1,0 +1,61 @@
+{"type":"meta","meta":"snapshot","services":[{"name":"tree::retried","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"tree","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3598895,"state_ms":1104,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":1105}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1606975488,"mem_total":32964694016,"rx_bps":3184,"tx_bps":1975}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1602998272,"mem_total":32964694016,"rx_bps":7622,"tx_bps":41463}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1600315392,"mem_total":32964694016,"rx_bps":2702,"tx_bps":1979}
+{"type":"event","event":"fire_started","service":"tree::retried"}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":1,"kind":"workflow","label":"retried_pass","detail":""},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":455}}}
+{"type":"event","event":"step_entered","service":"tree::retried","breadcrumb":"run_workflow retried_pass"}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [wf] run_workflow retried_pass: start"}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":2,"parent":1,"kind":"agent","label":"scribe","detail":""},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":456}}}
+{"type":"event","event":"step_entered","service":"tree::retried","breadcrumb":"▶ scribe"}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [RUN] run_agent: scribe"}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":3,"parent":2,"kind":"tool","label":"Read","detail":"/tmp/notes.md"},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":467}}}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [scribe] tool: Read(/tmp/notes.md)"}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":3,"status":"ok","elapsed_ms":0,"out":{"out":"lines","n":2}}}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [scribe] tool result: one"}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [scribe] two"}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":4,"parent":2,"kind":"tool","label":"Bash","detail":"echo ok"},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":467}}}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [scribe] tool: Bash(echo ok)"}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":4,"status":"ok","elapsed_ms":0,"out":{"out":"lines","n":1}}}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [scribe] tool result: ok"}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [OK] run_agent: scribe (2 turns, 10ms, 920 tok, $0.02)"}
+{"type":"event","event":"agent_finished","service":"tree::retried","turns":2,"tokens":920,"cost":0.0231}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":2,"status":"ok","elapsed_ms":10,"cost":0.0231,"turns":2,"tokens":920}}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":5,"parent":1,"kind":"agent","label":"mender","detail":""},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":468}}}
+{"type":"event","event":"step_entered","service":"tree::retried","breadcrumb":"▶ mender"}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [RUN] run_agent: mender"}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":6,"parent":5,"kind":"tool","label":"Bash","detail":"cargo check --workspace --all-targets"},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":471}}}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [mender] tool: Bash(cargo check --workspace --all-targets)"}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":6,"status":"failed","elapsed_ms":0,"out":{"out":"lines","n":1}}}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [mender] tool result: error: could not compile"}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":7,"parent":5,"kind":"tool","label":"Edit","detail":"/tmp/notes.md"},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":471}}}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [mender] tool: Edit(/tmp/notes.md)"}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":7,"status":"ok","elapsed_ms":0,"out":{"out":"diff","added":0,"removed":0}}}
+{"type":"log","service":"tree::retried","stream":"stdout","line":"[tree::retried] [mender] tool result: applied"}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [OK] run_agent: mender (2 turns, 3ms, 920 tok, $0.02)"}
+{"type":"event","event":"agent_finished","service":"tree::retried","turns":2,"tokens":920,"cost":0.0231}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":5,"status":"ok","elapsed_ms":3,"cost":0.0231,"turns":2,"tokens":920}}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":8,"parent":1,"kind":"guard","label":"false","detail":""},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":472}}}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [RUN] run_cmd: false"}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [ERR] run_cmd: false (exit 1, 0ms)"}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [if] false -> false (else)"}
+{"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":9,"parent":8,"kind":"cmd","label":"exit 3","detail":""},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":472}}}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [RUN] run_cmd: exit 3"}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [ERR] run_cmd: exit 3 (exit 3, 0ms)"}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":9,"status":"failed","elapsed_ms":0,"out":{"out":"lines","n":0}}}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":8,"status":"skipped","elapsed_ms":1}}
+{"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [wf] run_workflow retried_pass: failed at if"}
+{"type":"trace","service":"tree::retried","event":{"op":"closed","id":1,"status":"failed","elapsed_ms":17,"cost":0.0462,"turns":4,"tokens":1840}}
+{"type":"event","event":"fire_failed","service":"tree::retried","reason":"command failed: exit 3","elapsed_ms":18}
+{"type":"event","event":"service_next_fire","service":"tree::retried","next_ms":3599999}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1596338176,"mem_total":32964694016,"rx_bps":2801,"tx_bps":2154}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1594134528,"mem_total":32964694016,"rx_bps":2154,"tx_bps":1964}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1590763520,"mem_total":32964694016,"rx_bps":2560,"tx_bps":1964}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1589616640,"mem_total":32964694016,"rx_bps":2153,"tx_bps":2161}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1588023296,"mem_total":32964694016,"rx_bps":15856,"tx_bps":144099}
+{"type":"meta","meta":"host_load","cpu_pct":7,"mem_used":1642868736,"mem_total":32964694016,"rx_bps":63630,"tx_bps":14955}
+{"type":"meta","meta":"host_load","cpu_pct":2,"mem_used":1630253056,"mem_total":32964694016,"rx_bps":11169,"tx_bps":5061}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1622253568,"mem_total":32964694016,"rx_bps":2586,"tx_bps":2043}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"tree::retried"}
+{"type":"event","event":"service_paused","service":"tree::retried","paused":true}

@@ -16,7 +16,8 @@ import test from "node:test";
 
 import { fold, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, SCOPES, all, idOf, primary } from "./keymap.mjs";
-import { ROLES, TREND_LADDER, bodyHeight, formatElapsed, infoScrollMax, infoView, layout, scrollOffset, textWidth, visibleRows } from "./layout.mjs";
+import { ROLES, TREND_LADDER, bodyHeight, formatElapsed, infoScrollMax, infoView, layout, runMetrics, scrollOffset, textWidth, visibleRows } from "./layout.mjs";
+import { newSession, press } from "./session.mjs";
 
 const HERE = import.meta.dirname;
 const REPO = join(HERE, "..", "..", "..");
@@ -50,7 +51,7 @@ function foldCapture(file, until) {
 }
 
 /// The capture's **live** board: every frame up to the `SIGINT` the recorder stayed attached
-/// through. Each of the five files ends with that drain, so a board folded whole is a board
+/// through. Every capture ends with that drain, so a board folded whole is a board
 /// of stopped services — true, and the subject of its own screen below, but not the board a
 /// dashboard spends its life showing.
 function liveBoard(file = "snapshot.jsonl") {
@@ -882,31 +883,34 @@ test("the overlay lists every bound action, grouped by scope", () => {
   };
   assert.equal(dimOf("Move selection up"), false, "a key this page takes is lit");
   assert.equal(dimOf("Info view"), false, "…including the one that opens the info page");
-  assert.equal(dimOf("Output"), true, "one it has no surface for is dim");
-  assert.equal(dimOf("Widen the service's lane"), true);
+  assert.equal(dimOf("Output"), false, "…and the one that opens the run view");
+  assert.equal(dimOf("Toggle collapse / output"), false, "…and a run-view pane key");
+  assert.equal(dimOf("Widen the service's lane"), true, "one it has no surface for is dim");
   // …and the reason is beside it, once per scope where a whole scope shares one.
-  assert.ok(text.includes("Output — No run view on this page"), "the per-row reason");
-  assert.ok(text.includes("output.tree — No run view on this page"), "the per-scope one, on the heading");
-  assert.equal(
-    text.split("No run view on this page").length - 1,
-    4,
-    "the three output scopes say it once each, plus the overview's own `o` — not twenty times",
-  );
+  assert.ok(text.includes("Widen the service's lane — The relay has no lane verb"), "the per-row reason");
+  assert.ok(text.includes("queues — The relay has no lane verb"), "the per-scope one, on the heading");
+  // The run view's own note is **gone**: the three `output` scopes are handled now, so a line
+  // saying this page has no run view would be an explanation of nothing.
+  assert.ok(!text.includes("No run view on this page"), "the output scopes' old note is gone");
+  for (const scope of ["output", "output.tree", "output.log"]) {
+    assert.ok(overlayReading(rows).includes(scope), `the ${scope} heading stands bare`);
+  }
   // The two page-level facts the card requires.
   assert.ok(text.includes("a rebound `keys { … }` block is not mirrored here"), "the rebind caveat");
   assert.ok(text.includes("Ctrl+R is afkd's reload"), "the interception, stated where the keys are");
   // The partial actions carry their boundary rather than reading as fully live.
   assert.ok(text.includes("Toggle group — Groups only — no activity peek"));
   assert.ok(text.includes("Info view — Services only — a group has no info page"));
+  assert.ok(text.includes("Output — Services only — a group has no run"));
   // The `info` scope is **handled** now, so neither its heading nor its row carries a reason —
   // the note that said this page had no info view would be an explanation of nothing.
   assert.ok(!text.includes("No info view on this page"), "the info scope's old note is gone");
   assert.match(overlayReading(rows).find((e) => e === "info") ?? "", /^info$/u, "its heading stands bare");
-  // Two rows spell `Back to list` — `output.back` and `info.back` — and they now differ in
-  // weight: the run view still has no surface here, the info page does. Counted rather than
-  // looked up by name, because `dimOf` finds whichever sits higher on the screen.
+  // Two rows spell `Back to list` — `output.back` and `info.back` — and both are lit now that
+  // both pages exist. Counted rather than looked up by name, because `dimOf` finds whichever
+  // sits higher on the screen.
   const backs = rows.flatMap((row) => row.filter((c) => c.fg === "legend" && c.text === "Back to list"));
-  assert.deepEqual(backs.map((c) => c.dim).sort(), [false, true], "one back is lit, the other still dim");
+  assert.deepEqual(backs.map((c) => c.dim), [false, false], "both backs are lit");
 });
 
 test("an overlay too big for the viewport sheds and says how much", () => {
@@ -1590,3 +1594,654 @@ test("a wide glyph on the info page costs the cells it costs", () => {
   assertGrid(rows, 100, 30);
   assert.ok(sameText(valueOf(rows, "Pick from"), "監視サービスの担当者を選ぶ列 Up for Grabs"), "the value reads whole");
 });
+
+// --- the run view -------------------------------------------------------------------
+
+/**
+ * One tab's open run view, the shape `session.mjs`'s `openRun` mints. Spelled here rather than
+ * driven through `press()` because these are *layout* tests and the state has to be dialled to
+ * a focus, a fold and a scroll a keypress sequence would take a dozen presses to reach — but the
+ * shape is anchored to the real one by `the_layout_reads_the_session_run_openRun_mints` below,
+ * so a field renamed in `session.mjs` reddens here rather than leaving these screens rendering a
+ * state no key can produce. That anchor compares field *names*, not values: the default `focus`
+ * here is deliberately `"tree"`, the pane `openRun` does **not** open on, so a tree screen reads
+ * as the plain case and a log screen has to ask for it by name.
+ */
+function runState(service, patch = {}) {
+  return {
+    service,
+    focus: "tree",
+    cursor: null,
+    overrides: new Map(),
+    expanded: new Set(),
+    tree: "follow",
+    log: "follow",
+    scoped: false,
+    ...patch,
+  };
+}
+
+/// The run view's body rows — the pane's window, between its title band and the footer. Read off
+/// the screen rather than off a plan, so an assertion sees what an operator sees.
+function paneBody(rows) {
+  const text = screenText(rows).split("\n");
+  const footerAt = text.findIndex((l, i) => i > 4 && /^[a-zA-Z?].* (quit|help)( |$)/.test(l));
+  return text.slice(4, footerAt === -1 ? text.length : footerAt).filter((l) => l.trim() !== "");
+}
+
+test("o opens the run tree over a real fire, with its depth, its siblings and its rail", () => {
+  // `trace-burst.jsonl` is the capture with **depth**: a `workflow` root over an `in_parallel`
+  // with two leaves, a `times` loop whose node the daemon relabelled twice, and a `guard` with
+  // its own leaf. Everything the tree pane composes — the guides, the connectors, the chevrons,
+  // the kind glyphs, the right-flushed OUT/TOOK/ST rail — is on one screen.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", run: runState("deep") });
+  assertGrid(rows, 100, 30);
+  assertGolden("run-tree-100x30.txt", rows);
+
+  const body = paneBody(rows);
+  const text = screenText(rows);
+  // Every node the capture's own `opened` frames declare, on exactly one row — derived from the
+  // frames rather than typed in, so a re-capture cannot make this vacuous. The `times` node is
+  // the exception and is asserted below: its row reads the **relabel**, not the as-opened label.
+  const tree = board.services.deep.tree;
+  const ids = Object.keys(tree.nodes).map(Number);
+  assert.equal(ids.length, 9, "the capture still folds its nine nodes");
+  for (const id of ids) {
+    const node = tree.nodes[id];
+    const headline = node.relabel ?? node.label;
+    assert.equal(
+      body.filter((l) => l.includes(` ${headline}`)).length >= 1,
+      true,
+      `node ${id} (${headline}) has a row`,
+    );
+  }
+  // The **relabel** is what shows: the node opened `times 2` and was relabelled twice, so a row
+  // reading the as-opened label would be a row a second behind the daemon.
+  assert.equal(tree.nodes[5].label, "times 2", "the capture's as-opened label");
+  assert.equal(tree.nodes[5].relabel, "times 2/2", "…and the live one the daemon relabelled to");
+  assert.ok(text.includes("🌀 times 2/2"), "the row reads the relabel");
+  assert.ok(!text.includes("🌀 times 2 "), "…and not the label it opened with");
+  // The nesting: a root draws no connector, a non-last sibling an elbow with a `│` under it, the
+  // last a `└─`, and a grandchild's own elbow hangs off its parent's guide column.
+  assert.match(body[0], /^⊟ 🚀 deep_pass/, "the root sits flush at column 0");
+  assert.match(body[1], /^├─ ⊟ ∥︎ in_parallel/, "a non-last child draws `├─`");
+  assert.match(body[2], /^│ {2}├─ ⚙︎ echo left/, "its first grandchild hangs off a `│` guide");
+  assert.match(body[3], /^│ {2}└─ ⚙︎ echo right/, "…and the last off the same guide with `└─`");
+  assert.match(body[body.length - 1], /^ {3}└─ ⚙︎ echo guarded/, "the last leaf's guide column is blank");
+  // The rail: `ST` lands on **one** column on every row regardless of depth, which is the
+  // alignment the VS15'd glyphs and the right flush exist for. Measured off the cells, because
+  // that is the only place a wide glyph's second column is visible.
+  const st = rows
+    .slice(4, 4 + body.length)
+    .map((row) => boundaries(row)[row.length - 2]);
+  assert.equal(new Set(st).size, 1, `ST is on one column at every depth, not ${[...new Set(st)].join("/")}`);
+  // …and the whole rail is there: a cmd leaf's `N ln`, a container's blank OUT, every node's
+  // `TOOK`, and the `✓` each of them closed with.
+  assert.ok(body[2].includes("1 ln"), "a cmd leaf sizes its output");
+  assert.ok(body.every((l) => l.trimEnd().endsWith("✓︎")), "every node in this capture closed ok");
+});
+
+test("a narrow run tree sheds OUT and keeps its status column", () => {
+  // The shed ladder, in a golden: at 60 cells the pane is under `TREE_RAIL_SHOW_OUT` (64) and
+  // over `TREE_RAIL_SHOW_TOOK` (44), so `OUT` is gone, `TOOK` is not, and `ST` never sheds. Same
+  // board as the wide screen, so the only difference is the width.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const options = { rows: 30, now: at + 1000, version: "0.2.123", run: runState("deep") };
+  const rows = layout(board, { ...options, cols: 60 });
+  assertGrid(rows, 60, 30);
+  assertGolden("run-tree-60x30.txt", rows);
+  const narrow = paneBody(rows);
+  assert.ok(narrow.every((l) => !l.includes("1 ln")), "OUT is shed at 60 cells");
+  assert.ok(narrow.some((l) => l.includes("0.0s")), "TOOK is not");
+  assert.ok(narrow.every((l) => l.trimEnd().endsWith("✓︎")), "and ST never is");
+  // Below `TREE_RAIL_SHOW_TOOK` only `ST` is left, and the label elides rather than the rail
+  // moving — the two rungs of the one ladder.
+  const tiny = paneBody(layout(board, { ...options, cols: 30 }));
+  assert.ok(tiny.every((l) => !l.includes("0.0s")), "TOOK sheds next");
+  assert.ok(tiny.every((l) => l.trimEnd().endsWith("✓︎")), "ST still does not");
+  // The elision needs a label long enough to overrun, which `trace-burst`'s `echo pass` is not:
+  // the deep capture's `Bash cargo check --workspace --all-targets` sits two levels down, so its
+  // gutter is widest and its budget smallest — the deepest rows elide first.
+  const deep = liveBoard("deep-fail.jsonl");
+  const elided = paneBody(
+    layout(deep.board, { ...options, cols: 40, now: deep.at + 1000, run: runState("tree::retried") }),
+  );
+  const cargo = elided.find((l) => l.includes("Bash cargo"));
+  assert.ok(cargo !== undefined, "the long tool call is on screen");
+  assert.ok(cargo.includes("…"), `the over-wide label elides: ${JSON.stringify(cargo)}`);
+  assert.ok(cargo.trimEnd().endsWith("✗︎"), "…and the rail keeps its column while it does");
+  // A `RAIL_GAP` is reserved so the `…` never butts the rail it was elided for.
+  assert.ok(/…\s{2,}/u.test(cargo), "the ellipsis keeps its gap before the rail");
+  // A degenerate width never throws and never loses the grid: the label budget floors at one.
+  for (const cols of [1, 2, 3, 8]) {
+    assertGrid(layout(board, { ...options, cols }), cols, 30);
+  }
+});
+
+test("the run log wraps the adversarial line set by display width", () => {
+  // `noise.jsonl`'s own fire prints the set that breaks a naive wrap: an SGR run, an OSC
+  // residue, an embedded `\r`, tabs, a `U+202E` bidi override, CJK, an emoji and a zero-width
+  // space. The fold sanitized them; the pane has to *measure* what is left.
+  const { board, at } = liveBoard("noise.jsonl");
+  const options = { rows: 30, now: at + 1000, version: "0.2.123", run: runState("noisy", { focus: "log" }) };
+  const wide = layout(board, { ...options, cols: 100 });
+  assertGrid(wide, 100, 30);
+  assertGolden("run-log-100x30.txt", wide);
+  // The pane title says what it is scoped to and where in the ring it is sitting.
+  assert.match(screenText(wide).split("\n")[2], /^Log · all · 1–10\/10/, "the scope and the range");
+
+  const narrow = layout(board, { ...options, cols: 40 });
+  assertGrid(narrow, 40, 30);
+  assertGolden("run-log-40x30.txt", narrow);
+  const body = paneBody(narrow);
+  // Every wrapped continuation hangs exactly two cells, and no first row does — the aligned
+  // hang is the only thing marking a continuation, so it has to be exact.
+  const hung = body.filter((l) => l.startsWith("  "));
+  assert.ok(hung.length > 0, "the narrow pane really wrapped");
+  assert.ok(hung.every((l) => !l.startsWith("   ")), "a continuation hangs two cells, not three");
+  // Exactly one un-hung row per ring entry: a continuation is marked by the hang and nothing
+  // else, so an entry that started a second un-hung row would read as two lines.
+  const ring = board.services.noisy.log.lines.map((e) => e.text);
+  assert.equal(body.length - hung.length, ring.length, "one first row per entry, and no more");
+  // Nothing is lost. Compared with **every space removed** from both sides, because the only
+  // thing the wrap inserts is spaces (the hang and the row's pad) — so a missing or duplicated
+  // non-space character is exactly what this catches, and a break that lands on a space is not
+  // a loss. The goldens pin the exact bytes; this pins the content across the wrap.
+  const squash = (line) => line.replace(/ /gu, "");
+  const painted = squash(body.join(""));
+  for (const line of ring) {
+    assert.ok(painted.includes(squash(line)), `the pane still holds ${JSON.stringify(line)}`);
+  }
+  // A wide glyph is never split down the middle: every wrapped line measures at most the pane's
+  // own width (the screen less the one-column scrollbar gutter), counted in **cells**, which a
+  // `slice` by UTF-16 unit would not hold. Read off the content cell rather than the rendered
+  // row, because the row also carries the pad and the gutter.
+  const content = narrow.slice(4, 4 + body.length).map((row) => row[0].text);
+  for (const line of content) {
+    assert.ok(textWidth(line) <= 39, `${JSON.stringify(line)} (${textWidth(line)} cells) fits the pane`);
+  }
+  // …and the straddle really bites somewhere: swept across widths, a row that ends **one cell
+  // short** with a wide grapheme on it is the signature of a two-cell cluster pushed whole to the
+  // next row rather than split down the middle. Swept rather than pinned at one width, because
+  // whether a given line's CJK lands on the edge is an accident of that width.
+  const straddles = [];
+  for (let cols = 20; cols <= 70; cols += 1) {
+    const at40 = layout(board, { ...options, cols });
+    assertGrid(at40, cols, 30);
+    for (const row of at40.slice(4)) {
+      const text = row[0].text;
+      if (text.trim() === "" || textWidth(text) !== cols - 2) continue;
+      const last = [...new Intl.Segmenter("en", { granularity: "grapheme" }).segment(text)].pop()?.segment ?? "";
+      if (textWidth(last) === 2) straddles.push([cols, text]);
+    }
+  }
+  assert.ok(straddles.length > 0, "a wide cluster is pushed whole at some width rather than halved");
+  // The degenerate floor: at a width narrower than the hang itself both budgets floor to one
+  // column, so the wrap is a minimum-one-cell hard split rather than an infinite loop.
+  for (const cols of [1, 2, 3]) {
+    assertGrid(layout(board, { ...options, cols }), cols, 30);
+  }
+});
+
+test("s scopes the log pane to one node's own lines, and says so in its title", () => {
+  // The filter has to *narrow*, which only a board whose ring mixes attributed and unattributed
+  // lines can show: `noise.jsonl`'s `noisy` ring is ten entries, eight of them tagged onto the
+  // one `cmd` node and two — the supervisor's own `[RUN]` and `[OK]` brackets — tagged onto no
+  // node at all. Counted off the ring rather than typed in, so a `nodeEntries` that returned
+  // everything and one that returned nothing are both a failure here.
+  const { board, at } = liveBoard("noise.jsonl");
+  const ring = board.services.noisy.log.lines;
+  const own = ring.filter((e) => e.node === 1);
+  const supervisor = ring.filter((e) => e.node === null);
+  assert.equal(ring.length, 10, "the capture's ring is still ten entries");
+  assert.equal(own.length, 8, "…eight of them the node's own");
+  assert.equal(supervisor.length, 2, "…and two the supervisor's, attributed to no node");
+
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" };
+  const at_ = (patch) => ({ ...options, run: runState("noisy", { focus: "log", ...patch }) });
+  const wide = layout(board, at_({}));
+  const scoped = layout(board, at_({ scoped: true, cursor: 1 }));
+  assertGrid(wide, 100, 30);
+  assertGrid(scoped, 100, 30);
+  const titleOf = (rows) => screenText(rows).split("\n")[2].trimEnd();
+  // The two counts, off one board: the range in the title and the total the scroll clamps
+  // against both move, and they move to the ring's own two numbers.
+  assert.equal(titleOf(wide), "Log · all · 1–10/10", "unscoped, the pane is the whole ring");
+  assert.equal(
+    titleOf(scoped),
+    "Log · /tmp/afkd-fixture/bin/noise.sh · 1–8/8",
+    "scoped, it names the node and holds only its lines",
+  );
+  assert.equal(runMetrics(board, at_({})).logTotal, ring.length, "the unscoped total is the ring");
+  assert.equal(runMetrics(board, at_({ scoped: true, cursor: 1 })).logTotal, own.length, "…the scoped one the node's");
+  // …and the lines it dropped are named, so a filter that narrowed by the wrong rule is caught
+  // as well as one that did not narrow at all.
+  const bodyOf = (rows) => paneBody(rows).map((l) => l.trimEnd());
+  assert.deepEqual(bodyOf(wide), ring.map((e) => e.text), "the unscoped pane is the ring, in order");
+  assert.deepEqual(bodyOf(scoped), own.map((e) => e.text), "…and the scoped one the node's eight");
+  for (const dropped of supervisor) {
+    assert.ok(bodyOf(wide).includes(dropped.text), `the unscoped pane holds ${JSON.stringify(dropped.text)}`);
+    assert.ok(!bodyOf(scoped).includes(dropped.text), "…and the scoped one does not");
+  }
+  // A node that emitted nothing scopes to an **empty** pane rather than falling back to the
+  // ring: `trace-burst`'s `times` node is a container and the capture tags no line onto it.
+  const burst = liveBoard("trace-burst.jsonl");
+  const empty = layout(burst.board, {
+    ...options,
+    now: burst.at + 1000,
+    run: runState("deep", { focus: "log", scoped: true, cursor: 5 }),
+  });
+  assertGrid(empty, 100, 30);
+  assert.ok(burst.board.services.deep.log.lines.length > 0, "the board's ring is not itself empty");
+  assert.equal(titleOf(empty), "Log · times 2/2 · 0–0/0", "a node with no output scopes to nothing");
+  assert.deepEqual(paneBody(empty), [], "…and the pane really is empty");
+});
+
+test("an expanded leaf hangs its own output under it, at its depth and elided past the fifth", () => {
+  // `noise.jsonl`'s `noisy` is the only committed capture whose ring is node-tagged **and**
+  // over `BODY_ELIDE`: eight lines on one `cmd` root, and the eight are the adversarial set —
+  // an SGR run, an OSC residue, an embedded `\r`, tabs, a bidi override, CJK, an emoji and a
+  // zero-width space — so the elision boundary and the body row's own measuring are one screen.
+  const { board, at } = liveBoard("noise.jsonl");
+  const leaf = board.services.noisy.tree.nodes[1];
+  const own = board.services.noisy.log.lines.filter((e) => e.node === 1);
+  assert.equal(leaf.kind, "cmd", "the capture still folds one `cmd` leaf");
+  assert.deepEqual(leaf.out, { n: own.length, out: "lines" }, "…whose OUT is the ring's own count for it");
+  assert.ok(own.length > 5, `the capture's ${own.length} lines still overrun BODY_ELIDE`);
+
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" };
+  const opened = { ...options, run: runState("noisy", { expanded: new Set([1]) }) };
+  const rows = layout(board, opened);
+  assertGrid(rows, 100, 30);
+  assertGolden("run-tree-body-100x30.txt", rows);
+
+  const body = paneBody(rows).map((l) => l.trimEnd());
+  assert.match(body[0], /^⚙︎ \/tmp\/afkd-fixture\/bin\/noise\.sh/, "the leaf's own row is still first");
+  // Five shown, three counted — the boundary, both sides of it, derived from the ring so a
+  // re-capture with a longer fire moves the count rather than making the assertion vacuous.
+  const shown = body.slice(1, -1);
+  assert.deepEqual(shown, own.slice(0, 5).map((e) => `▏ ${e.text}`), "the first five lines hang under it");
+  assert.equal(body.at(-1), `▏ … ${own.length - 5} more`, "…and the rest are counted, not drawn");
+  assert.ok(
+    own.slice(5).every((e) => !screenText(rows).includes(e.text)),
+    "the elided lines are really off the tree pane — they are one `s` away, in the log",
+  );
+  // The clamp==render identity, made **non-vacuous**: `withBodies` inserted six rows into the
+  // one walk the scroll clamps against, so a second count of the tree would be off by six.
+  const nodes = Object.keys(board.services.noisy.tree.nodes).length;
+  assert.equal(runMetrics(board, opened).treeTotal, body.length, "the tree's total is what it painted");
+  assert.equal(body.length, nodes + 6, "…and it is the node rows plus the body, not the node rows");
+  assert.equal(runMetrics(board, { ...options, run: runState("noisy") }).treeTotal, nodes, "collapsed, it is the nodes alone");
+
+  // The **depth**: a body hangs at its leaf's *content* indent — the leaf's own guides plus a
+  // column for its level — so the `▏` sits where a child's elbow would, not where the leaf's
+  // glyph does. `trace-burst` has the three shapes on one screen: a non-last child under a
+  // continuing guide, a last child under the same one, and a last child of a last child.
+  const burst = liveBoard("trace-burst.jsonl");
+  const deep = layout(burst.board, {
+    ...options,
+    now: burst.at + 1000,
+    run: runState("deep", { expanded: new Set([3, 4, 9]) }),
+  });
+  assertGrid(deep, 100, 30);
+  const bars = paneBody(deep).map((l) => l.trimEnd()).filter((l) => l.includes("▏"));
+  assert.deepEqual(
+    bars,
+    [
+      "│  │  ▏ [deep]            [echo] left",
+      "│     ▏ [deep]            [echo] right",
+      "      ▏ [deep]            [echo] guarded",
+    ],
+    "each body hangs at its own leaf's content depth, guides and all",
+  );
+  // One line each, so no `… N more` — and the identity holds at depth too.
+  assert.equal(
+    runMetrics(burst.board, { ...options, now: burst.at + 1000, run: runState("deep", { expanded: new Set([3, 4, 9]) }) }).treeTotal,
+    paneBody(deep).length,
+    "the tree's total is what it painted, with bodies interleaved at depth",
+  );
+});
+
+test("a failed leaf opens its own output without being asked", () => {
+  // The **auto-expand** arm of `withBodies`, which is a different disjunct from the `expanded`
+  // one above: a `cmd`/`tool` leaf that closed `failed`/`killed` shows its body with no override
+  // anywhere, so a failure's output is never a keypress away. `loud-fail.jsonl` is the capture
+  // recorded for it — the other six either close every leaf `ok` or attribute no ring line to
+  // the leaf that failed, which renders the arm true and invisible.
+  const { board, at } = liveBoard("loud-fail.jsonl");
+  const leaf = board.services.loud_fail.tree.nodes[1];
+  const own = board.services.loud_fail.log.lines.filter((e) => e.node === 1);
+  assert.equal(leaf.kind, "cmd", "the capture's one node is a `cmd`");
+  assert.deepEqual(leaf.children, [], "…a leaf");
+  assert.equal(leaf.status, "failed", "…that failed");
+  assert.ok(own.length > 5, `…with ${own.length} attributed lines, over BODY_ELIDE`);
+
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" };
+  const plain = { ...options, run: runState("loud_fail") };
+  assert.equal(plain.run.expanded.size, 0, "nothing is expanded by hand on this screen");
+  const rows = layout(board, plain);
+  assertGrid(rows, 100, 30);
+  assertGolden("run-tree-autoexpand-100x30.txt", rows);
+
+  const body = paneBody(rows).map((l) => l.trimEnd());
+  assert.match(body[0].trimEnd(), /✗︎$/, "the leaf's own row reads its failure");
+  assert.deepEqual(body.slice(1, -1), own.slice(0, 5).map((e) => `▏ ${e.text}`), "its first five lines hang under it");
+  assert.equal(body.at(-1), `▏ … ${own.length - 5} more`, "…and the rest are counted");
+  // The ring's order is the **wire's**, not the script's: the run's `stderr` line landed third
+  // even though the shell printed it last, so the body is what the daemon sent, in that order —
+  // which a body row-sorted by anything else would quietly change.
+  assert.ok(body[2].includes(":err] step 7/7 FAILED"), "the stderr line sits where the wire put it");
+  // And the arm really is the **status**, not a default that opens every leaf: `noise.jsonl`'s
+  // leaf is the same kind with the same node-tagged ring and closed `ok`, and it draws its row
+  // alone. Two real captures, so neither half can be satisfied by one wrong answer.
+  const ok = liveBoard("noise.jsonl");
+  const okLeaf = ok.board.services.noisy.tree.nodes[1];
+  assert.equal(okLeaf.kind, leaf.kind, "the control leaf is the same kind");
+  assert.equal(okLeaf.status, "ok", "…and closed ok");
+  assert.equal(
+    paneBody(layout(ok.board, { ...options, now: ok.at + 1000, run: runState("noisy") })).length,
+    1,
+    "an ok leaf keeps its output folded away",
+  );
+});
+
+test("a collapsed parent never buries a failure, and an agent folds unless it did", () => {
+  // `deep-fail.jsonl` is the sixth capture, recorded for exactly these three rules: a `guard`
+  // that closed `skipped` over a leaf that `failed`, an `agent` that closed `ok` over a tool
+  // that did not, and an `agent` whose tools all passed. No other capture holds a failure
+  // anywhere below a root, so without it all three ship unguarded.
+  const { board, at } = liveBoard("deep-fail.jsonl");
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" };
+  const svc = "tree::retried";
+  const tree = board.services[svc].tree;
+  // The capture's own shape, asserted off the fold before anything is rendered against it — a
+  // re-capture that lost one of the three would fail here rather than silently pass below.
+  assert.equal(tree.nodes[8].kind, "guard", "the guard node");
+  assert.equal(tree.nodes[8].status, "skipped", "…closed skipped, so it is not itself a failure");
+  assert.equal(tree.nodes[9].parent, 8, "…over a child");
+  assert.equal(tree.nodes[9].status, "failed", "…that failed");
+  assert.equal(tree.nodes[5].kind, "agent", "the `mender` agent");
+  assert.equal(tree.nodes[5].status, "ok", "…closed ok");
+  assert.ok(
+    tree.nodes[5].children.some((id) => tree.nodes[id].status === "failed"),
+    "…over a tool call that did not",
+  );
+  assert.equal(tree.nodes[2].kind, "agent", "the `scribe` agent");
+  assert.ok(tree.nodes[2].children.every((id) => tree.nodes[id].status === "ok"), "…whose tools all passed");
+
+  const rowFor = (rows, needle) => paneBody(rows).find((l) => l.includes(needle));
+  // The **per-kind default**, with no override anywhere: `scribe` folds (its subtree is deep
+  // detail you opt into) while `mender` is **expanded** — the auto-expand escape hatch, so a
+  // `✗` is never unreachable. Both read off one flatten of one tree, so the default and its
+  // exception cannot both be satisfied by a single wrong answer.
+  const plain = layout(board, { ...options, run: runState(svc) });
+  assertGrid(plain, 100, 30);
+  assertGolden("run-tree-fail-100x30.txt", plain);
+  assert.match(rowFor(plain, "scribe"), /⊞ 🤖 scribe/, "an agent whose tools passed lands folded");
+  assert.ok(!screenText(plain).includes("Read /tmp/notes.md"), "…and its tool calls are not on screen");
+  assert.match(rowFor(plain, "mender"), /⊟ 🤖 mender/, "an agent with a failed tool auto-expands");
+  assert.ok(screenText(plain).includes("🔧 Bash cargo check"), "…so the failing call is reachable");
+  // The **recovered** marker: fold `mender` by hand and its row reads `↻` — it came back ok, but
+  // something under it did not, and neither `✓` nor `✗` says that. Expanded, the same row reads
+  // its own `✓`. The `display_status` pair, both ways over one node.
+  const folded = layout(board, { ...options, run: runState(svc, { overrides: new Map([[5, true]]) }) });
+  assertGrid(folded, 100, 30);
+  assert.match(rowFor(folded, "mender").trimEnd(), /↻︎$/, "a collapsed ok-over-failed reads recovered");
+  assert.match(rowFor(plain, "mender").trimEnd(), /✓︎$/, "expanded, it reads its own status");
+  // The **rollup**: fold the `skipped` guard and its row reads `✗`, because `worst(skipped,
+  // failed)` is the failure it is hiding. Expanded it reads its own `⊘`. A non-failing parent,
+  // so neither half of the assertion is vacuous.
+  const guard = layout(board, { ...options, run: runState(svc, { overrides: new Map([[8, true]]) }) });
+  assertGrid(guard, 100, 30);
+  assert.match(rowFor(guard, "⊘︎ false").trimEnd(), /✗︎$/, "a collapsed parent surfaces the worst it hides");
+  assert.match(rowFor(plain, "⊘︎ false").trimEnd(), /⊘︎$/, "expanded, it reads its own skip");
+});
+
+test("a fire streams into both panes, and the panes' totals are the rows they draw", () => {
+  // The live half, folded **incrementally**: no daemon runs under `node --test`, so motion is
+  // driven by cutting the same capture at three points and asserting the panes grow with it —
+  // which is the evidence a live fire would produce.
+  const cuts = [3, 10, 20];
+  const seen = [];
+  for (const cut of cuts) {
+    let trace = 0;
+    const { board, at } = foldCapture("trace-burst.jsonl", (f) => f.type === "trace" && trace++ >= cut);
+    const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", run: runState("deep") };
+    const rows = layout(board, options);
+    assertGrid(rows, 100, 30);
+    const metrics = runMetrics(board, options);
+    // The clamp==render identity: the total the scroll clamps against is the row count the pane
+    // really drew. On this capture no leaf is expanded or failed, so `withBodies` interleaves
+    // nothing and this is the node walk alone — the *interleaved* case, where the desync it
+    // exists to close would actually bite, is asserted over the expanded and auto-expanded
+    // boards above.
+    const drawn = paneBody(rows).length;
+    assert.equal(metrics.treeTotal, drawn, `at cut ${cut} the tree's total is what it painted`);
+    seen.push(drawn);
+  }
+  assert.deepEqual(
+    seen,
+    [...seen].sort((a, b) => a - b),
+    `the tree grows as the capture is folded further: ${seen.join(" → ")}`,
+  );
+  assert.ok(seen[2] > seen[0], "…and it really grew, rather than staying one row");
+
+  // The log half, over the capture's own `log` frames: the pane holds every line the ring holds,
+  // in the ring's own order, at every cut.
+  let logs = 0;
+  const { board, at } = foldCapture("trace-burst.jsonl", (f) => f.type === "log" && logs++ >= 8);
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", run: runState("deep", { focus: "log" }) };
+  const body = paneBody(layout(board, options));
+  const ring = board.services.deep.log.lines.map((e) => e.text);
+  assert.ok(ring.length > 0, "the capture's log frames really folded");
+  assert.equal(runMetrics(board, options).logTotal, body.length, "the log's total is what it painted");
+  // Trimmed of the pad every row carries out to the pane's width, which is a cell fact rather
+  // than a content one.
+  assert.deepEqual(body.slice(0, ring.length).map((l) => l.trimEnd()), ring, "the pane is the ring, in order");
+});
+
+test("Tab swaps the pane, and the footer follows the one on screen", () => {
+  // **One** board, two screens, so the two cannot both be right by accident. The tree is
+  // following its frontier while the log is frozen, which is what makes the `f ●/○` indicator
+  // non-vacuous: the same board reads `●` on one screen and `○` on the other.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const state = runState("deep", { tree: "follow", log: 0 });
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" };
+  const onTree = layout(board, { ...options, run: { ...state, focus: "tree" } });
+  const onLog = layout(board, { ...options, run: { ...state, focus: "log" } });
+  assertGrid(onTree, 100, 30);
+  assertGrid(onLog, 100, 30);
+  const titleOf = (rows) => screenText(rows).split("\n")[2];
+  assert.equal(titleOf(onTree), `Tree${" ".repeat(96)}`, "the tree pane names itself");
+  assert.match(titleOf(onLog), /^Log · all · /, "…and so does the log");
+  assert.notDeepEqual(paneBody(onTree), paneBody(onLog), "the body is the shown pane's, not both");
+  const footerOf = (rows) => screenText(rows).split("\n").slice(-3).join("\n");
+  // The nav hints are the shown pane's: the tree teaches its cursor, the log its scroll.
+  assert.ok(footerOf(onTree).includes("j/k move"), "the tree footer teaches the cursor");
+  assert.ok(!footerOf(onTree).includes("scroll"), "…and not the log's scroll");
+  assert.ok(footerOf(onLog).includes("k/j or ↑↓ scroll"), "the log footer teaches the scroll, aliases and all");
+  assert.ok(!footerOf(onLog).includes("move"), "…and not the tree's cursor");
+  // `Tab` names its **destination**, and so does `s`.
+  assert.ok(footerOf(onTree).includes("Tab log"), "`Tab` names where it lands");
+  assert.ok(footerOf(onLog).includes("Tab tree"), "…from either side");
+  assert.ok(footerOf(onTree).includes("s node output"), "`s` goes somewhere from the tree");
+  assert.ok(footerOf(onLog).includes("s scope"), "…and toggles in place on the log");
+  // The follow indicator is the **focused** pane's own state.
+  assert.ok(footerOf(onTree).includes("f follow ●"), "the tree is following its frontier");
+  assert.ok(footerOf(onLog).includes("f follow ○"), "the log is frozen, on the same board");
+  // Scoped, the log pane's title says which node it is filtered to — through the same
+  // `node_line` the tree row's headline reads, so the two cannot spell one node two ways.
+  const scoped = layout(board, {
+    ...options,
+    run: { ...state, focus: "log", scoped: true, cursor: 5 },
+  });
+  assertGrid(scoped, 100, 30);
+  assert.match(titleOf(scoped), /^Log · times 2\/2 · /, "the scope names the cursor's node, relabel and all");
+});
+
+test("the run view's pinned header is the list's own row for that service", () => {
+  // The header band claims to be the run service's *list row*, composed through the one
+  // `bodyRowCells` seam — so it has to shed what the list sheds and say what the list says at
+  // every width, which is the JS twin of the Rust's
+  // `the_run_headers_columns_track_the_lists_at_every_ladder_step`. One board, one predicate,
+  // both surfaces, **swept** across the ladder rather than pinned at a rung a shed threshold
+  // could move out from under.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const rowText = (rows) => rows.map((row) => row.map((c) => c.text).join(""));
+  // The row is found by **index** rather than by a name needle: below ~31 cells the `Service`
+  // column clips `deep` to `dee`, and a needle that misses there would quietly stop asserting
+  // exactly where the ladder is most interesting. The list body opens one row under the column
+  // header, which is the only row that names the `Service` column.
+  const listRows = visibleRows(board, { filter: "", collapsed: new Set() });
+  const at_ = listRows.findIndex((row) => row.kind === "service" && row.svc.name === "deep");
+  assert.ok(at_ >= 0, "the capture's `deep` still has a list row");
+  // Compared with runs of blanks collapsed: the pad is the one thing the two legitimately
+  // spend differently below the stretch floor (see the byte-identity sweep below), so squashing
+  // it leaves exactly the columns, their order and their values — which must not differ at all.
+  const squash = (line) => line.trim().replace(/ {2,}/gu, " ");
+  let identical = null;
+  for (let cols = 20; cols <= 200; cols += 1) {
+    const options = { cols, rows: 40, now: at + 1000, version: "0.2.123" };
+    const header = rowText(layout(board, { ...options, run: runState("deep") }))[0];
+    const list = rowText(layout(board, { ...options, selected: 0 }));
+    const listed = list[list.findIndex((l) => l.startsWith("Service")) + 1 + at_];
+    assert.equal(squash(header), squash(listed), `the header and the row say the same at ${cols} cells`);
+    if (header !== listed) identical = null;
+    else if (identical === null) identical = cols;
+  }
+  // …and above the **stretch floor** they are byte-identical, because there `serviceColWidth`
+  // ignores the content fit entirely and both rows take the pure remainder. Below it the list
+  // fits its column to the widest identity over every row while the header — the only row on
+  // its screen — fits its own, which is the one deliberate difference and is why the sweep
+  // above squashes. Found rather than asserted at 90, so a moved floor reads as a moved number.
+  assert.equal(identical, 90, "the two rows agree byte for byte from the stretch floor up");
+});
+
+test("the layout reads the session run openRun mints", () => {
+  // The one coupling between the two suites: these screens are dialled by hand, so the shape
+  // they are dialled into has to be the shape a keypress really produces. Pressing `o` on a
+  // service row of a folded capture and rendering **that** session is what pins it.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const opened = press(newSession(), board, { ctrl: false, key: "o" }, { now: at, bodyHeight: 20 });
+  assert.notEqual(opened.session.run, null, "`o` opened a run view");
+  assert.deepEqual(
+    Object.keys(opened.session.run).sort(),
+    Object.keys(runState("deep")).sort(),
+    "the fields these screens dial are the fields the session holds",
+  );
+  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", run: opened.session.run });
+  assertGrid(rows, 100, 30);
+  // It really is the run view rather than the list falling through: the list's column header is
+  // gone and the pane's own title is there.
+  assert.ok(!screenText(rows).includes("Last Activity"), "the list's column header is not on screen");
+  assert.match(screenText(rows).split("\n")[2], /^Log · all · /, "the run view opens on the log pane");
+});
+
+test("both panes carry the scrollbar over their own total, viewport and top", () => {
+  // At a viewport nothing overflows there is no bar at all — a track drawn over a pane you can
+  // see the whole of is a lie about there being more.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const tall = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", run: runState("deep") };
+  const bar = (rows) => paneBody(rows).map((l) => l.slice(-1));
+  assert.ok(
+    runMetrics(board, tall).treeTotal <= runMetrics(board, tall).viewport,
+    "the tree fits this viewport",
+  );
+  assert.deepEqual([...new Set(bar(layout(board, tall)))], [" "], "a pane that fits draws no bar");
+
+  // Short enough that both panes overflow. The thumb is proportional, at least one row, never the
+  // whole track — so there is always a visible "there is more" — and it rides the pane's own
+  // `total`/`viewport`/`top` rather than a second count.
+  for (const [focus, scroll] of [["tree", {}], ["log", { focus: "log" }]]) {
+    const short = { cols: 100, rows: 12, now: at + 1000, version: "0.2.123", run: runState("deep", scroll) };
+    const { viewport, treeTotal, logTotal } = runMetrics(board, short);
+    const total = focus === "tree" ? treeTotal : logTotal;
+    assert.ok(total > viewport, `the ${focus} pane (${total}) overflows its viewport (${viewport})`);
+    const rows = layout(board, short);
+    assertGrid(rows, 100, 12);
+    const track = rows.slice(4, 4 + viewport).map((row) => row[row.length - 1].text);
+    assert.equal(track.length, viewport, `the ${focus} track is the viewport's own height`);
+    assert.deepEqual(
+      [...new Set(track)].sort(),
+      ["░", "█"].sort(),
+      `the ${focus} track is drawn in both glyphs`,
+    );
+    const thumb = track.filter((g) => g === "█").length;
+    assert.ok(thumb >= 1, "the thumb is at least a row");
+    assert.ok(thumb < viewport, "…and never the whole track");
+    // Following pins to the end, so the thumb sits at the bottom of its track.
+    assert.equal(track[track.length - 1], "█", `a following ${focus} pane rides the bottom`);
+    // …and a frozen top moves it: the same pane at row 0 puts the thumb at the top instead.
+    const frozen = layout(board, {
+      ...short,
+      run: runState("deep", { ...scroll, [focus]: 0, cursor: 1 }),
+    });
+    assert.equal(
+      frozen.slice(4)[0][frozen[4].length - 1].text,
+      "█",
+      `a ${focus} pane frozen at the top puts the thumb there`,
+    );
+  }
+});
+
+test("the rail glyphs measure as the tui measures them", () => {
+  // Every glyph `treeview::kind_glyph` and `status_glyph` put on a row, keyed by the Rust's own
+  // arm names and pinned to the width `unicode-width` 0.2 gives it in the terminal.
+  //
+  // This gate exists because `assertGrid` **structurally cannot** catch a mismeasured glyph:
+  // both sides of its `cell.width === textWidth(cell.text)` check go through the one
+  // measurement, and a golden's role/weight planes are `letter.repeat(c.width)`, so a glyph
+  // measured 1 and painted 2 passes every other assertion in this file while overrunning its
+  // `--cells × --cell-w` box in the browser. `🚀` did exactly that until this test was written.
+  const kind = {
+    Workflow: ["🚀", 2],
+    Agent: ["🤖", 2],
+    Cmd: ["⚙︎", 1],
+    Tool: ["🔧", 2],
+    Sandbox: ["🔒", 2],
+    Worktree: ["🌿", 2],
+    Guard: ["⊘︎", 1],
+    Parallel: ["∥︎", 1],
+    Repeat: ["🌀", 2],
+    Sleep: ["⏱︎", 1],
+    Fs: ["✎︎", 1],
+    Lifecycle: ["⚑︎", 1],
+  };
+  const status = { Ok: ["✓︎", 1], Failed: ["✗︎", 1], Skipped: ["⊘︎", 1], Running: ["⋯︎", 1], recovered: ["↻︎", 1] };
+  for (const [arm, [glyph, want]] of [...Object.entries(kind), ...Object.entries(status)]) {
+    assert.equal(textWidth(glyph), want, `${arm}'s ${glyph} is ${want} cell(s)`);
+  }
+  // Read the two tables **out of the Rust** and hold this one to them, so a glyph changed or
+  // added there reddens here rather than shipping a row that overruns behind a golden that pins
+  // the overrun as correct.
+  const rust = readFileSync(join(REPO, "crates", "tui", "src", "treeview.rs"), "utf8");
+  const armsOf = (from) => {
+    const body = rust.slice(rust.indexOf("{", from), rust.indexOf("\n}", from));
+    return [...body.matchAll(/NodeKind::(\w+) => "([^"]+)"/g)].map(([, arm, glyph]) => [arm, glyph]);
+  };
+  const kinds = armsOf(rust.indexOf("pub fn kind_glyph"));
+  assert.equal(kinds.length, Object.keys(kind).length, "treeview.rs still spells twelve kind glyphs");
+  for (const [arm, glyph] of kinds) {
+    assert.equal(unescapeRust(glyph), kind[arm]?.[0], `${arm}'s glyph is the Rust's`);
+  }
+  // The status arms pair several statuses onto one glyph (`Killed` folds into `✗`,
+  // `Running`/`Unknown` both read `⋯`), so they are matched as a **set** of glyph literals.
+  const from = rust.indexOf("pub(crate) fn status_glyph");
+  const statusBody = rust.slice(from, rust.indexOf("\n}", from));
+  const spelled = new Set(
+    [...statusBody.matchAll(/"((?:[^"\\]|\\u\{[0-9a-f]+\})+)"/g)].map(([, lit]) => unescapeRust(lit)),
+  );
+  assert.deepEqual(
+    [...spelled].sort(),
+    [...new Set(Object.values(status).map(([g]) => g))].sort(),
+    "the status glyphs are the Rust's, recovered marker included",
+  );
+});
+
+/// One Rust string literal's `\u{XXXX}` escapes resolved — the VS15 selector every width-1 rail
+/// glyph carries is spelled that way in `treeview.rs`, and it is the whole point of the
+/// comparison, so it cannot be dropped. `JSON.parse` rejects the brace form, hence this.
+function unescapeRust(literal) {
+  return literal.replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
+}

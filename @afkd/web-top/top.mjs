@@ -11,7 +11,7 @@
 
 import { fold, seed } from "./fold.mjs";
 import { installKeys } from "./input.mjs";
-import { bodyHeight, cell, infoScrollMax, layout, textWidth, truncateWidth } from "./layout.mjs";
+import { bodyHeight, cell, infoScrollMax, layout, runMetrics, textWidth, truncateWidth } from "./layout.mjs";
 import { paint } from "./paint.mjs";
 import { flashOf, needleOf, newSession, noteFrame, rowsOf, selectedIndex, typingOf } from "./session.mjs";
 
@@ -79,6 +79,7 @@ function view(cols, rows, now) {
     help: session.help,
     info: session.info,
     infoOffset: session.infoOffset,
+    run: session.run,
   };
 }
 
@@ -195,6 +196,9 @@ installKeys({
       // The info page's own ceiling, threaded exactly as the list's height is: the scroll is
       // clamped against the arithmetic that paints, not against a second count of the rows.
       infoMax: infoScrollMax(board, at),
+      // The run view's viewport and its two panes' row totals, on the same terms and for the
+      // same reason: every clamp a run-view key applies is against the walks that rendered.
+      run: runMetrics(board, at),
     };
   },
   write: (next) => {

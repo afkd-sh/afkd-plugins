@@ -366,6 +366,12 @@ test("an identical replayed root below the frontier is a no-op — the dedup run
 
   const after = fold(board, copy(root), end);
   assert.deepEqual(sansFrames(after), sansFrames(board), "no reset, no duplicate, children and closes intact");
+  // The replay lands at `end`, thousands of ticks after the root was first folded, so this also
+  // pins that the node's monotonic `openedAt` is **not** part of the dedup comparison: if it
+  // were, every replayed `opened` would reset the tree — and the run view's disk backfill, which
+  // replays a finished run's whole `trace.jsonl` over a live stream, depends on it not doing so.
+  const node = after.services[subject].tree.nodes[root.event.node.id];
+  assert.notEqual(end, node.openedAt, "the replay really arrived at a different instant");
 });
 
 test("a same-id open whose shape differs resets the tree to the incoming node", () => {
@@ -507,7 +513,7 @@ test("an invented type, an invented event tag and an extra field all fold to a n
 });
 
 test("every fixture replays end to end without throwing, ring bound included", () => {
-  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload"]) {
+  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail"]) {
     const frames = readFixture(name);
     assert.ok(frames.length > 0, `${name} is not empty`);
     assert.doesNotThrow(() => replay(frames), `${name} folds clean`);
@@ -1045,4 +1051,31 @@ test("the run tree evicts a whole completed root at a time, and never the live r
   const liveRoot = runs * perRun * 10 + 1;
   assert.ok(withLive.roots.includes(liveRoot), "the live run's root is retained");
   assert.equal(withLive.nodes[liveRoot].status, "running");
+});
+
+test("a node's openedAt is the instant its frame folded", () => {
+  // The monotonic anchor the run view's ticking `TOOK` is measured against. The wire carries a
+  // **civil** stamp (`at`) and no monotonic one, and the browser has no civil clock worth
+  // subtracting against, so the fold stamps its own `now` beside it — which only works if the
+  // instant it stamps really is the instant the frame arrived.
+  const frames = readFixture("trace-burst");
+  const subject = frames.find((f) => f.type === "trace").service;
+  const { boards, clock } = replay(frames);
+  const opens = frames
+    .map((frame, i) => ({ frame, i }))
+    .filter(({ frame }) => frame.type === "trace" && frame.service === subject && frame.event.op === "opened");
+  assert.ok(opens.length >= 5, "the capture opens several nodes at distinct instants");
+  for (const { frame, i } of opens) {
+    const node = boards[i].services[subject].tree.nodes[frame.event.node.id];
+    assert.equal(node.openedAt, clock[i], `node ${frame.event.node.id} is stamped where it landed`);
+    // …and the civil stamp is still carried verbatim beside it: the substitution is the run
+    // view's, not the fold's, so nothing downstream loses the daemon's own instant.
+    assert.deepEqual(node.at, frame.event.at, "the wire's civil stamp survives untouched");
+  }
+  // A `closed` does not re-stamp it: the anchor is the moment the node *opened*, and a close
+  // carries the authoritative `elapsed_ms` the rail reads instead.
+  const { board } = replay(frames);
+  const root = board.services[subject].tree.nodes[opens[0].frame.event.node.id];
+  assert.equal(root.openedAt, clock[opens[0].i], "a closed node still names when it opened");
+  assert.ok(root.elapsedMs > 0, "…and carries the engine's own span for the rail");
 });

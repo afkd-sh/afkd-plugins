@@ -184,14 +184,16 @@ test("every action is described, and either handled or noted", () => {
     assert.ok(ACTIONS.includes(id), `${id} is a row of the table`);
   }
   // The deliberately partial actions, named rather than inferred: `Enter`/`Space` folds a group
-  // header and does nothing on a service row, `i` opens a service's info page and does nothing
-  // on a group header or a lane row.
+  // header and does nothing on a service row, and `o`/`i` open a **service**'s run view and info
+  // page and have no subject on a group header or a lane row.
   assert.deepEqual(
     ACTIONS.filter((id) => HANDLED.has(id) && NOTES[id] !== undefined),
     PARTIAL,
     "only the declared PARTIAL actions are both handled and noted",
   );
-  assert.deepEqual(PARTIAL, ["overview.service_peek", "overview.show_info"]);
+  // Pinned in `ACTIONS` **table order**, which is what `keymap.mjs`'s own module-load check
+  // compares against: an appended entry throws on import.
+  assert.deepEqual(PARTIAL, ["overview.service_peek", "overview.show_output", "overview.show_info"]);
 });
 
 test("the drain refuses exactly the actions keys.rs refuses", () => {

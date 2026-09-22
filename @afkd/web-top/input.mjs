@@ -105,8 +105,8 @@ function bodyOf(streamId, command) {
  *
  * - `element` — the grid. It takes focus on load and on `pointerdown`, and the `keydown`
  *   listener sits on it, so nothing is captured while the operator is elsewhere.
- * - `read()` → `{session, board, streamId, bodyHeight, infoMax}`, the state a press is resolved
- *   against.
+ * - `read()` → `{session, board, streamId, bodyHeight, infoMax, run}`, the state a press is
+ *   resolved against.
  * - `write(session)` — store the next session.
  * - `post(body)` → `Promise<{ok, message}>`; the `POST /command` call.
  * - `now()` — the clock the flash is stamped against.
@@ -124,8 +124,8 @@ export function installKeys({ element, read, write, post, now, repaint }) {
       if (take) event.preventDefault();
       return;
     }
-    const { session, board, streamId, bodyHeight } = read();
-    const out = press(session, board, chord, { now: now(), bodyHeight });
+    const { session, board, streamId, bodyHeight, run } = read();
+    const out = press(session, board, chord, { now: now(), bodyHeight, run });
     write(out.session);
     if (out.handled || take) event.preventDefault();
     for (const command of out.commands) send(command, streamId, { read, write, post, now, repaint });
