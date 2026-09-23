@@ -1,5 +1,5 @@
 name = "@afkd/web-top"
-version = "0.1.0"
+version = "0.2.0"
 proto = 1
 shape = "companion"
 source = "https://github.com/afkd-sh/afkd-plugins"
