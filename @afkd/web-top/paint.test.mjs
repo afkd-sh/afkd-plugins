@@ -139,7 +139,7 @@ test("the painter styles from roles and sets no colour of its own", () => {
   const classes = new Set(root.children.flatMap((row) => row.children.map((s) => s.className)));
   for (const list of classes) {
     for (const name of list.split(" ")) {
-      assert.match(name, /^(fg-[a-z-]+|bg-[a-z-]+|dim|bold|italic)$/, `${name} is a role or a weight`);
+      assert.match(name, /^(fg-[a-z-]+|bg-[a-z-]+|dim|bold|italic|glyph)$/, `${name} is a role, a weight or the glyph box`);
     }
   }
   // Every look the layout puts on a cell reaches the DOM — not just the roles. A painter that
@@ -168,7 +168,7 @@ test("a cell's whole look reaches its span, and a run splits on any of it", () =
   const spans = root.children[0].children;
   assert.deepEqual(
     spans.map((s) => s.className),
-    ["fg-accent bold", "fg-accent", "fg-accent dim", "fg-accent", "fg-ok", "fg-ok bg-selection", "fg-ok bg-selection"],
+    ["fg-accent bold", "fg-accent", "fg-accent dim", "fg-accent", "fg-ok", "fg-ok glyph bg-selection", "fg-ok glyph bg-selection"],
     "each field of the look is on the span, and each one splits the run",
   );
   assert.deepEqual(spans.map((s) => s.textContent), ["Aa", "Bb", "Cc", "Dd", "Ee", "監", "視"]);
@@ -198,6 +198,15 @@ test("a glyph outside ASCII is boxed alone, so a wider face cannot clip the text
     [["▷", "1"], [" Queued 1h 18m", "14"], ["🔹", "2"], [" archivist", "10"], ["├", "1"], ["─", "1"], [" ", "1"]],
     "every non-ASCII cluster is a box of its own cells, and the ASCII between them one run",
   );
+  // …and each such box is marked, so the stylesheet can let its overhang paint over the next
+  // cell rather than clip it — while an ASCII run keeps the clip it has always had.
+  assert.deepEqual(
+    spans.map((s) => s.className.split(" ").includes("glyph")),
+    [true, false, true, false, true, true, false],
+    "the glyph boxes carry `glyph`, the ASCII runs do not",
+  );
+  const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
+  assert.match(css, /\.row > span\.glyph \{[^}]*overflow:\s*visible/, "a glyph box lets its overhang show");
 });
 
 test("the stylesheet spends what the painter publishes", () => {

@@ -137,6 +137,16 @@ body {
   vertical-align: top;
 }
 
+/* A glyph outside printable ASCII has a box of its own (`paint.mjs`), and a face that draws it
+   wider than its cells paints the overhang over the cell after it rather than losing it — a
+   terminal's own answer to a wide fallback. Its box keeps its width, so nothing moves; raised,
+   so the next run's band cannot paint over the overhang. */
+.row > span.glyph {
+  overflow: visible;
+  position: relative;
+  z-index: 1;
+}
+
 /* The probe: a hundred `0`s in the grid's own face, laid out but invisible, from which the
    page derives the cell advance and the line height. It must stay in flow — `display: none`
    would measure nothing — so it is pulled out of view rather than hidden. */

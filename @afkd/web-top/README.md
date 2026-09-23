@@ -28,7 +28,7 @@ Installing a companion does not start it; the config naming it does.
 
 ```console
 $ afkd install @afkd/web-top
-Installed @afkd/web-top 0.3.0 (companion)
+Installed @afkd/web-top 0.3.1 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 

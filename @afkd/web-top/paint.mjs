@@ -19,7 +19,8 @@
 // still pushes everything after it right, and the box then clips the run's last cell: a
 // `▷ Queued 1h 18m` whose `▷` came from a wider face read `▷ Queued 1h 18`. So only printable
 // ASCII, the one repertoire every monospace face draws at its own advance, coalesces into
-// runs; every other cluster gets a box of its own, the way a terminal gives each cell one.
+// runs; every other cluster gets a box of its own, the way a terminal gives each cell one, and
+// its `glyph` class lets the overhang paint over the cell after it instead of being clipped.
 //
 // Keeping the split strict is the rest of the point. It is what lets the whole dashboard be
 // rendered to text and diffed against committed golden screens under `node --test` with no
@@ -44,6 +45,7 @@ const PLAIN = /^[\x20-\x7e]+$/;
 /// colour.
 function classesOf(cell) {
   const classes = [`fg-${cell.fg}`];
+  if (cell.plain === false) classes.push("glyph");
   if (cell.bg !== null) classes.push(`bg-${cell.bg}`);
   if (cell.dim) classes.push("dim");
   if (cell.bold) classes.push("bold");
