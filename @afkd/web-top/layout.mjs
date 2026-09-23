@@ -184,6 +184,12 @@ export function textWidth(text) {
   return width;
 }
 
+/// `text` as its grapheme clusters, each with the cells it occupies — [`textWidth`] one
+/// cluster at a time, for the painter, which boxes a cluster by the count measured here.
+export function clusters(text) {
+  return [...GRAPHEMES.segment(text)].map(({ segment }) => ({ text: segment, width: clusterWidth(segment) }));
+}
+
 /**
  * `text` cut to `budget` cells with a trailing `…` when it overruns — the mirror of
  * `treeview::truncate_width`, ellipsis cell and `budget.max(1)` floor included. Used
@@ -239,8 +245,9 @@ function alignWidth(text, width, align) {
 
 /**
  * One cell run. `fg`/`bg` are palette **roles** — `dashboard.css` owns the hexes — `dim` and
- * `bold` are the terminal's two weight attributes, and `width` is the run's own measured
- * cell count, so a painter never measures anything.
+ * `bold` are the terminal's two weight attributes, `italic` the one slant the activity peek's
+ * `empty` placeholder wears, and `width` is the run's own measured cell count, so a painter
+ * never measures anything.
  */
 export function cell(text, options = {}) {
   return {
@@ -249,6 +256,7 @@ export function cell(text, options = {}) {
     bg: options.bg ?? null,
     dim: options.dim === true,
     bold: options.bold === true,
+    italic: options.italic === true,
     width: textWidth(text),
   };
 }
@@ -849,15 +857,123 @@ const STOPPED_ICON = "▪️";
 /// `layout::ORPHAN_MARKER` / `STALE_MARKER` — the tombstone and the cobweb (ADR-0028).
 const ORPHAN_MARKER = "🪦";
 const STALE_MARKER = "🕸️";
-/// The **confinement** marker: a service the daemon runs under an `in_sandbox`/`in_worktree`
-/// scope. This is the one row cell with no twin in `afkd top`, which spells confinement on
-/// its info view instead (`infoview::sandbox_label` — `Sandbox scoped` / `Sandbox host`) and
-/// reserves nothing for it on a list row. The card asks the page to carry it on the row, so
-/// it is drawn with the run tree's own confinement glyph (`treeview::kind_glyph`'s
-/// `NodeKind::Sandbox`) rather than a new one, in the reconcile markers' slot and on their
-/// terms: nothing is reserved for it on an unconfined row, so only a confined row pays its
-/// width. Recorded here rather than left to be discovered as drift.
-const CONFINED_MARKER = "🔒";
+// --- the activity peek -------------------------------------------------------------
+//
+// `model::push_peek_rows`, `treeview::active_branch_peek` and `layout.rs`'s `VisibleRow::Peek`
+// arm: `Enter` on a service row opens its run's **active branch** beneath it — the ancestor
+// path down to the innermost container, then that container's newest `PEEK_LINES` children —
+// as rows the cursor never lands on, each with the OUT/TOOK/ST rail right-flushed to the
+// list's own edge.
+
+/// `model::PEEK_LINES` — the rolling leaf level's cap.
+const PEEK_LINES = 5;
+/// `model::PEEK_EMPTY` — the placeholder an open peek with nothing to show reads, deliberately
+/// not `idle`, which would pass for the badge.
+const PEEK_EMPTY = "empty";
+/// `layout::PEEK_INDENT_W` — one nesting level of a peek line, in cells.
+const PEEK_INDENT_W = 2;
+
+/// `TraceTree::peek_container` — the newest root that has children, then the highest-id node
+/// with children at or after it. Ids rise in open order, so that is the innermost container
+/// the run is in.
+function peekContainer(tree) {
+  const root = [...tree.roots].reverse().find((id) => (tree.nodes[id]?.children.length ?? 0) > 0);
+  if (root === undefined) return null;
+  let best = null;
+  for (const key of Object.keys(tree.nodes)) {
+    const id = Number(key);
+    if (id >= root && tree.nodes[key].children.length > 0 && (best === null || id > best)) best = id;
+  }
+  return best;
+}
+
+/// `treeview::active_branch_peek` — the ancestor path, root first, each line one level deeper
+/// than the one above, then the container's newest `max` children one level past the path.
+/// With no container at all it degrades to the newest root alone, and an empty tree to none.
+function activeBranchPeek(tree, max) {
+  const container = peekContainer(tree);
+  const rolling = container !== null ? tree.nodes[container].children : tree.roots.slice(-1);
+  const path = [];
+  for (let id = container; id !== null && tree.nodes[id] !== undefined; id = tree.nodes[id].parent) {
+    path.push(id);
+  }
+  path.reverse();
+  const lines = path.map((id, depth) => ({ node: tree.nodes[id], depth }));
+  for (const id of rolling.slice(Math.max(0, rolling.length - max))) {
+    if (tree.nodes[id] !== undefined) lines.push({ node: tree.nodes[id], depth: path.length });
+  }
+  return lines;
+}
+
+/// `PeekLine`'s label — the node's kind glyph, then its [`nodeLine`].
+function peekLabel(node) {
+  return `${KIND_GLYPH[node.kind] ?? KIND_GLYPH_FALLBACK} ${nodeLine(node)}`;
+}
+
+/// The peek rows beneath `svc` — none unless it is peeked, the `empty` placeholder when its run
+/// has nothing to show, else one per active-branch line. `columns` are the tree guide columns
+/// the peek hangs under (its parent's own included) and `lead` the view's top-level lead-in,
+/// which only a guideless peek spends (`layout::top_level_lead`).
+function peekRows(svc, peeked, columns, lead) {
+  if (!peeked.has(svc.name)) return [];
+  const lines = activeBranchPeek(svc.tree, PEEK_LINES);
+  if (lines.length === 0) return [{ kind: "peek", svc, columns, lead, line: null }];
+  return lines.map((line) => ({ kind: "peek", svc, columns, lead, line }));
+}
+
+/// `layout::peek_gutter` up to its bar — the columns (or the lead) and the parent's icon width
+/// less one, so the `▏` that follows descends from under the icon's last cell and the content
+/// right of it lands under the name.
+function peekGuide(row) {
+  const reserve = " ".repeat(Math.max(0, textWidth(cardIcon(row.svc)) - 1));
+  return `${row.columns.length === 0 ? row.lead : row.columns.join("")}${reserve}`;
+}
+
+/// `treeview::peek_row_line` through `shell::peek_row_spans` — one real peek line across the
+/// whole list width: the guide at full weight, then everything from the `▏` bar through the
+/// label, its pad and the OUT/TOOK cells receded as one run, and the ST glyph in its own style
+/// on the fixed rightmost column.
+function peekLineCells(row, cols, now) {
+  const node = row.line.node;
+  const guide = peekGuide(row);
+  const bar = `${TREE_BODY_BAR}${" ".repeat(PEEK_INDENT_W * row.line.depth)}`;
+  const gutterW = textWidth(guide) + textWidth(bar);
+  const shed = treeColumns(cols);
+  const outCell = shed.out ? rightPad(outContent(node), RAIL_OUT_W) : "";
+  const tookCell = shed.took ? rightPad(tookContent(node, now), RAIL_TOOK_W) : "";
+  const railW = railWidth(outCell, tookCell);
+  // A `RAIL_GAP` is reserved so a maximally elided label's `…` keeps its gap before the rail.
+  const label = truncateWidth(peekLabel(node), Math.max(1, cols - gutterW - railW - RAIL_GAP));
+  const pad = Math.max(0, cols - gutterW - textWidth(label) - railW);
+  const rail = [outCell, tookCell].filter((c) => c !== "").map((c) => `${c}${" ".repeat(RAIL_GAP)}`);
+  const cells = [];
+  if (guide !== "") cells.push(cell(guide, { fg: "ink" }));
+  cells.push(cell(`${bar}${label}${" ".repeat(pad)}${rail.join("")}`, { fg: "muted", dim: true }));
+  cells.push(cell(statusGlyph(node.status, false), statusStyle(node.status, false, false)));
+  return cells;
+}
+
+/// The `empty` placeholder's cells, drawn inside the `Service` column (no rail): the guide at
+/// full weight, then the bar and the word receded and slanted.
+function peekEmptyCells(row, cols) {
+  const guide = peekGuide(row);
+  const avail = Math.max(0, cols - textWidth(guide) - textWidth(TREE_BODY_BAR));
+  const cells = [];
+  if (guide !== "") cells.push(cell(guide, { fg: "ink" }));
+  cells.push(cell(`${TREE_BODY_BAR}${truncateWidth(PEEK_EMPTY, avail)}`, { fg: "muted", dim: true, italic: true }));
+  return cells;
+}
+
+/// `shell::peek_floor_offset` — the downward scroll bias that keeps an open peek's tail on
+/// screen under its selected service, or `null` when the selection has no peek below it.
+export function peekFloorOffset(rows, selected, height) {
+  if (selected === null || selected < 0) return null;
+  let tail = selected;
+  while (tail + 1 < rows.length && rows[tail + 1].kind === "peek") tail += 1;
+  if (tail === selected) return null;
+  return Math.min(Math.max(0, tail + 1 - height), selected);
+}
+
 /// `layout::group_icon` — 📜 for a `.conf` group, 📦 for a namespace. Every production group
 /// name is a bare namespace since ADR-0072, so in practice every header renders 📦.
 const GROUP_CONF_ICON = "📜";
@@ -985,6 +1101,28 @@ function keptByFilter(name, filter) {
   return filter === "" || name.toLowerCase().includes(filter.toLowerCase());
 }
 
+/// `Badge::is_working` — a command of the service's own is in flight.
+function isWorking(badge) {
+  return badge === "Starting" || badge === "Busy" || badge === "Stopping";
+}
+
+/// `DashboardModel::visible_cards`' state axis — the busy lens (`b`): the cards running
+/// something of their own, plus the `Crashed` alarm, because a lens that can hide an alarm is
+/// a trap. It intersects the needle's name axis rather than replacing it.
+function keptByLens(svc, busyOnly) {
+  return !busyOnly || isWorking(svc.badge) || svc.badge === "Crashed";
+}
+
+/// `DashboardModel::visible_cards` — the cards that survive both axes, in config order: the one
+/// set the rows are built from, a header's rollup folds and the selection walk climbs.
+export function visibleCards(board, options = {}) {
+  const filter = options.filter ?? "";
+  const busyOnly = options.busyOnly === true;
+  return board.order
+    .map((name) => board.services[name])
+    .filter((svc) => svc !== undefined && keptByFilter(svc.name, filter) && keptByLens(svc, busyOnly));
+}
+
 /// `DashboardModel::group_rollup` — the **transitive** fold (ADR-0073): every service in the
 /// subtree counts, so a parent header reflects a crash three levels down. Two aggregates and
 /// no state ladder: ADR-0066 is explicit that a group row shows **no** state badge in the
@@ -1006,23 +1144,28 @@ function groupRollup(members, path) {
   return { anyCrashed, latestActivityAt };
 }
 
-/// The visible row sequence — `DashboardModel::build_rows`'s **grouped** arm (ADR-0073): one
-/// header per namespace *segment*, its children (sub-namespace headers and member services
-/// alike) beneath it in first-appearance config order, and a bare un-namespaced service as a
-/// root peer row taking its place in that same sequence. Every visible service appears
-/// exactly once, contiguous under its group's header.
+/// The visible row sequence — `DashboardModel::build_rows`. Unless `grouped` is set (`v`; the
+/// board boots **flat**, the ADR-0066 amendment) every surviving card is its own top-level
+/// row, flush to column 0 and spelling its whole qualified name, in config order. The
+/// **grouped** arm (ADR-0073) emits one header per namespace *segment*, its children
+/// (sub-namespace headers and member services alike) beneath it in first-appearance config
+/// order, and a bare un-namespaced service as a root peer row taking its place in that same
+/// sequence. Either way every visible service appears exactly once.
 ///
-/// The **flat** arm (`v`) is not modelled: this page paints the grouped board and `v` is
-/// listed-but-inert (`keymap.mjs`'s `NOTES`).
-///
-/// `collapsed` is the set of group paths whose descendants are folded away — the page's
-/// inversion of `DashboardModel`'s `expanded` set, and the reason is D3: the terminal boots
-/// flat, so its collapse default is never the first thing an operator sees, while this page
-/// has no flat arm and an expanded-set default would boot to nothing but headers. A non-empty
-/// `filter` force-expands the survivors for display without writing the set, which is
+/// `collapsed` is the set of group paths whose descendants are folded away. It is the inverse
+/// of `DashboardModel`'s `expanded` set, and it starts empty for the reason the terminal's
+/// starts full: `seed_expanded_groups` opens every group the board boots with, so the first
+/// `v` of a session lands on an expanded tree. A non-empty `filter` — or the busy lens —
+/// force-expands the survivors for display without writing the set, which is
 /// `visible_rows`'s own rule.
-function buildRows(board, filter, collapsed) {
-  const keep = (name) => keptByFilter(name, filter);
+function buildRows(board, filter, collapsed, grouped, busyOnly, peeked) {
+  const cards = visibleCards(board, { filter, busyOnly });
+  if (!grouped) {
+    // The flat arm: `depth: 0` and no connector, the spelling a bare root row already carries,
+    // which is why it renders the qualified name, each with its peek block beneath it. No
+    // header is emitted, so `collapsed` has nothing to act on here.
+    return cards.flatMap((svc) => [{ kind: "service", svc, depth: 0, prefix: "" }, ...peekRows(svc, peeked, [], "")]);
+  }
   // Insert: each card walks the `::` boundaries of its group, find-or-creating one node per
   // prefix path, and lands as a leaf in the deepest node. Find-or-create appends on first
   // sight, so children keep first-appearance order per level.
@@ -1042,16 +1185,12 @@ function buildRows(board, filter, collapsed) {
     }
     insert(node.children, group, end + 2, svc);
   };
-  for (const name of board.order) {
-    const svc = board.services[name];
-    if (svc === undefined || !keep(name)) continue;
-    insert(roots, svc.group, 0, svc);
-  }
+  for (const svc of cards) insert(roots, svc.group, 0, svc);
   // Flatten: a DFS pre-order walk stamping each row's depth, its tree prefix and, for a
   // header, the rollup its members fold to. A root row draws no connector, so its `last` is
   // moot — pinned true, the spelling a bare top-level row has always carried.
   const rows = [];
-  const folded = (path) => filter === "" && collapsed.has(path);
+  const folded = (path) => filter === "" && !busyOnly && collapsed.has(path);
   const walk = (level, depth, guides) => {
     level.forEach((entry, i) => {
       const last = depth === 0 || i + 1 === level.length;
@@ -1063,6 +1202,10 @@ function buildRows(board, filter, collapsed) {
         // view's pinned header composes its own row with `layout::service_row`'s empty
         // connector (`runHeaderCells`' `prefix: ""`) and that `""` has to reach the render.
         rows.push({ kind: "service", svc: entry.svc, depth, prefix: depth === 0 ? TREE_TOP_LEVEL_INDENT : prefix });
+        // A peek hangs under its service with the columns a child of it would carry: every
+        // ancestor's, then the service's own — a continuation bar while a sibling follows.
+        const columns = depth === 0 ? [] : guides.concat([last ? TREE_GUIDE_BLANK : TREE_GUIDE_BAR]);
+        rows.push(...peekRows(entry.svc, peeked, columns, TREE_TOP_LEVEL_INDENT));
       } else {
         rows.push({ kind: "group", path: entry.path, depth, prefix, collapsed: folded(entry.path) });
         if (folded(entry.path)) return;
@@ -1080,11 +1223,20 @@ function buildRows(board, filter, collapsed) {
  * exactly this, and the cursor indexes exactly this, so the row a key acts on is the row that
  * paints and there is no second sequence to drift.
  *
- * `options.filter` is the `/` needle (default none) and `options.collapsed` the folded group
- * paths (default none).
+ * `options.filter` is the `/` needle (default none), `options.collapsed` the folded group
+ * paths (default none), `options.grouped` the view flag (default flat, the boot view),
+ * `options.busyOnly` the busy lens (default off) and `options.peeked` the services whose
+ * activity peek is open (default none).
  */
 export function visibleRows(board, options = {}) {
-  const rows = buildRows(board, options.filter ?? "", options.collapsed ?? new Set());
+  const rows = buildRows(
+    board,
+    options.filter ?? "",
+    options.collapsed ?? new Set(),
+    options.grouped === true,
+    options.busyOnly === true,
+    options.peeked ?? new Set(),
+  );
   const lanes = queues(board);
   if (lanes.length > 0) {
     if (rows.length > 0) rows.push({ kind: "spacer" });
@@ -1131,7 +1283,7 @@ function identityOf(row) {
     // those two apart (`layout.rs`: "in the flat overview the list row for a top-level
     // service is *byte-identical* to the pinned header row").
     prefix: row.prefix,
-    body: `${cardIcon(svc)} ${reconcileMarker(svc)}${svc.confined ? CONFINED_MARKER : ""}`,
+    body: `${cardIcon(svc)} ${reconcileMarker(svc)}`,
     name: displayedName(svc, row.depth),
     // `shell::row_line_style`: a **stopped** row recedes whole-line so a shelf of switched-off
     // services sinks below the live ones; under the cursor it lifts back to full weight.
@@ -1144,6 +1296,9 @@ function identityOf(row) {
 /// table, laid from column 0, and a lane name has no business sizing the column every service
 /// row shares.
 function identityText(row) {
+  // `shell::service_cell_content_width`: an `empty` placeholder is drawn inside the column and
+  // counts its whole width; a real peek line overpaints the row and counts nothing.
+  if (row.kind === "peek") return row.line === null ? `${peekGuide(row)}${TREE_BODY_BAR}${PEEK_EMPTY}` : "";
   if (row.kind !== "service" && row.kind !== "group") return "";
   const { prefix, body, name } = identityOf(row);
   return `${prefix}${body}${name}`;
@@ -1372,6 +1527,14 @@ function keysOf(quitting) {
     hintPair(first, second, label) {
       const keys = pair(first, second);
       return keys === null ? null : { kind: "key", keys, label, live: true };
+    },
+    /// `Keys::hint_move` — an up/down pair in one cell, each with **all** its chords and two
+    /// spaces between them (`k/↑  j/↓`): the `?` overlay's movement rows.
+    hintMove(up, down, label) {
+      const a = chords(up);
+      const b = chords(down);
+      if (a.length === 0 || b.length === 0) return null;
+      return { kind: "key", keys: `${a.join("/")}  ${b.join("/")}`, label, live: true };
     },
   };
 }
@@ -1657,7 +1820,7 @@ function groupControlHints(keys, members) {
 ///
 /// The seams (`BREAK`) cut the same way the terminal cuts them — act on this · inspect it ·
 /// move around · the daemon — so the grid runs each category down its own column.
-function planFooter(board, rows, selected, filter, quitting, typing, flash, info) {
+function planFooter(board, rows, selected, filter, quitting, typing, flash, info, grouped, busyOnly) {
   const keys = keysOf(quitting);
   // Precedence 1 — while typing, the prompt owns the footer. Its leading glyph is the
   // `filter` key itself, so a prose-embedded key still tracks the table.
@@ -1691,8 +1854,10 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
     affordance = bare(` · ${slash}${filter}${clear === null ? "" : ` (${clear.toLowerCase()})`}`);
   }
   // The busy lens's state rides its own key cell — the `f follow ●/○` convention: the glyph
-  // sits in the *label* so only the key whitens. Nothing toggles it on this page yet.
-  const busy = keys.hint("overview.filter_busy", "busy ○");
+  // sits in the *label* so only the key whitens.
+  const busy = keys.hint("overview.filter_busy", busyOnly ? "busy ●" : "busy ○");
+  // The label names the view the key would switch *to*, so it reads as a destination.
+  const view = keys.hint("overview.view", grouped ? "flat" : "grouped");
   const globals = [];
   push(globals, keys.hint("global.reload", "reload"));
   push(globals, keys.hint("global.help", HELP_LABEL));
@@ -1722,8 +1887,7 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
     push(hints, keys.hint("overview.service_peek", "peek"));
     hints.push(BREAK);
     push(hints, keys.hintPair("overview.first", "overview.last", "first/last"));
-    // The label names the view the key would switch *to*, so it reads as a destination.
-    push(hints, keys.hint("overview.view", "flat"));
+    push(hints, view);
     push(hints, busy);
     push(hints, keys.hint("overview.filter", "find"));
   } else if (row !== undefined && row.kind === "group") {
@@ -1742,6 +1906,7 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
         : keys.hintPair("overview.service_peek", "overview.group_collapse", "collapse"),
     );
     push(hints, keys.hintPair("overview.group_collapse_all", "overview.group_expand_all", "fold all"));
+    // A header only exists in grouped view, so this arm's view hint always names `flat`.
     push(hints, keys.hint("overview.view", "flat"));
     push(hints, keys.hintPair("overview.first", "overview.last", "first/last"));
     push(hints, busy);
@@ -1751,7 +1916,8 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
     push(hints, keys.hint("queues.widen", "widen"));
     hints.push(BREAK);
     push(hints, keys.hintPair("overview.first", "overview.last", "first/last"));
-    push(hints, keys.hint("overview.view", "flat"));
+    // A lane row exists in both views, so the label is state-keyed like the service arm's.
+    push(hints, view);
     push(hints, busy);
     push(hints, keys.hint("overview.filter", "find"));
   } else {
@@ -1803,6 +1969,8 @@ export function bodyHeight(board, options) {
       options.typing ?? null,
       options.flash ?? null,
       (options.info ?? null) !== null,
+      options.grouped === true,
+      options.busyOnly === true,
     ),
     cols,
     rows,
@@ -1814,9 +1982,8 @@ export function bodyHeight(board, options) {
  * The body's scroll top after the cursor moved to `selected` — ratatui's **minimal** clamp,
  * which is what `TableState` gives the terminal through `get_row_bounds` (named at
  * `shell.rs:1418`): scroll only far enough to bring the selection back into view, then stay
- * put. Deliberately **not** `peek_floor_offset`, the downward bias that keeps a selected
- * service's expanded peek tail off the viewport floor — this page has no peek surface, so
- * transcribing that would scroll for a row that does not exist.
+ * put. The downward bias that keeps a selected service's open peek on screen is
+ * [`peekFloorOffset`], applied over this by its callers.
  *
  * Clamped into `0..=count-height` at the end, so a shrunk board or a grown viewport never
  * leaves blank rows above real ones.
@@ -1931,9 +2098,12 @@ function renderPopup(frame, popup, cols, rows) {
       cell(POPUP_BORDER.v, { fg: "recede" }),
     ];
   };
+  // A box the viewport clamps keeps both borders and its gutter rows and clips the body
+  // lines instead, the way a bordered ratatui `Block` clips the `Paragraph` inside it.
+  const shown = lines.slice(0, Math.max(0, height - 2 - 2 * POPUP_PAD_Y));
   const box = [titleRow];
   for (let i = 0; i < POPUP_PAD_Y; i += 1) box.push(bodyRow([]));
-  for (const line of lines) box.push(bodyRow(line));
+  for (const line of shown) box.push(bodyRow(line));
   for (let i = 0; i < POPUP_PAD_Y; i += 1) box.push(bodyRow([]));
   box.push(bottomRow);
 
@@ -2032,162 +2202,106 @@ function confirmModal(board, confirm, quitting) {
 }
 
 // --- the `?` overlay --------------------------------------------------------------------
+//
+// `help::help_lines` for the base view under it — the list (flat or grouped), the info page, or
+// the run view's shown pane — laid by `shell::help_overlay_lines` into one column of key cells
+// padded to the widest, and framed by the shared popup as `Help`.
 
-/// The two page-level facts the overlay states before it lists anything: that this is the
-/// stock keymap and a rebind is not mirrored, and that `Ctrl+R` is afkd's reload and is taken
-/// from the browser rather than left to it.
-const OVERLAY_PREAMBLE = [
-  "These are afkd's stock keys — a rebound `keys { … }` block is not mirrored here.",
-  "Ctrl+R is afkd's reload: the page takes it, so the browser does not reload the tab.",
+/// The list's four sigil rows: glyphs an operator sees on a row, not keys, so they sit in the
+/// key column unwhitened below a blank separator.
+const HELP_SIGILS = [
+  ["🪦", "Orphan (removed from config)"],
+  ["🕸️", "Stale (new config; restart to adopt)"],
+  ["🔷", "Executing now (init/run/cleanup)"],
+  ["🔸", "Failed fires or crashed (clears on restart)"],
 ];
 
-/// The gutter between two overlay columns — `legend::CATEGORY_GUTTER`, the same seam the
-/// footer's grid reads as a break without a rule or a label.
-const OVERLAY_GUTTER = CATEGORY_GUTTER;
-
-/// The overlay's entries in reading order: one heading per scope, then that scope's rows, an
-/// unhandled one carrying the note saying why this page does not take it (D2 — the rule is
-/// still "no binding ⇒ no row"; every one of these *has* a binding).
-///
-/// A scope whose rows share **one** reason carries it on the heading instead, once: the four
-/// output/info scopes are unreachable here wholesale, and twenty repetitions of one sentence
-/// would set the column's width for nothing.
-function overlayEntries() {
+/// `help::help_lines`. `base` is `"list"`, `"info"`, `"tree"` or `"log"`; `grouped` names the
+/// list's view, which drops the three group-fold rows while flat and renames the peek and view
+/// rows to what the keys do there. An unbound — or, while draining, refused — action drops its
+/// row.
+function helpLines(base, grouped, keys) {
   const out = [];
-  for (const scope of SCOPES) {
-    const rows = DEFAULT_KEYS.filter((row) => row.scope === scope);
-    if (rows.length === 0) continue;
-    const notes = new Set(rows.map((row) => NOTES[idOf(row)] ?? null));
-    const shared = notes.size === 1 && !notes.has(null) ? [...notes][0] : null;
-    if (out.length > 0) out.push({ kind: "blank" });
-    out.push({ kind: "heading", text: scope, note: shared });
-    for (const row of rows) {
-      const id = idOf(row);
-      out.push({
-        kind: "row",
-        keys: all(id) ?? "",
-        label: DESCRIPTIONS[id],
-        note: shared === null ? (NOTES[id] ?? null) : null,
-        live: HANDLED.has(id),
-      });
+  const push = (hint) => {
+    if (hint !== null) out.push(hint);
+  };
+  if (base === "list") {
+    push(keys.hintMove("overview.up", "overview.down", "Move selection"));
+    push(keys.hintPair("overview.first", "overview.last", "First / last"));
+    push(keys.hintAll("overview.service_peek", grouped ? "Toggle group / peek service activity" : "Peek service activity"));
+    if (grouped) {
+      push(keys.hintAll("overview.group_collapse", "Collapse group"));
+      push(keys.hintAll("overview.group_expand", "Expand group"));
+      push(keys.hintPair("overview.group_collapse_all", "overview.group_expand_all", "Expand all / collapse all groups"));
     }
-  }
-  return out;
-}
-
-/// One entry's cells at a column width — a heading bold with its shared note beside it, a live
-/// row's glyph bright and its label calm, an unhandled row's whole cell dim with its own note
-/// trailing at the same weight.
-function overlayCells(entry, keyWidth) {
-  if (entry.kind === "blank") return [];
-  if (entry.kind === "heading") {
-    const out = [cell(entry.text, { fg: "bright", bold: true })];
-    // The note is **not** bold: it explains the scope, it does not title it. Dim rather than
-    // plain, because everything it covers is dim.
-    if (entry.note !== null) out.push(cell(` — ${entry.note}`, { fg: "legend", dim: true }));
+    push(keys.hint("overview.view", grouped ? "Flat view (no group headers)" : "Grouped view"));
+    push(keys.hint("overview.service_start", "Start service"));
+    push(keys.hint("overview.service_stop", "Stop service"));
+    push(keys.hint("overview.service_fire", "Trigger an idle service"));
+    push(keys.hint("overview.service_restart", "Restart service"));
+    push(keys.hint("overview.queue_widen", "Widen the service's queue lane"));
+    push(keys.hint("overview.queue_narrow", "Narrow the service's queue lane"));
+    push(keys.hint("queues.narrow", "Narrow the queue lane at the cursor"));
+    push(keys.hint("queues.widen", "Widen the queue lane at the cursor"));
+    push(keys.hint("global.reload", "Reload config"));
+    push(keys.hint("overview.show_output", "Output"));
+    push(keys.hint("overview.show_info", "Info view"));
+    push(keys.hint("overview.filter", "Find (filter)"));
+    push(keys.hint("overview.filter_clear", "Clear filter"));
+    push(keys.hint("overview.filter_busy", "Show only busy or crashed services"));
+    push(keys.hint("global.quit", "Quit"));
+    push(keys.hint("global.help", "Close help"));
+    out.push(bare(""));
+    for (const [glyph, label] of HELP_SIGILS) out.push(note(glyph, label));
     return out;
   }
-  const out = [
-    cell(padWidth(entry.keys, keyWidth), { fg: "bright", dim: !entry.live }),
-    blank(1),
-    cell(entry.label, { fg: "legend", dim: !entry.live }),
-  ];
-  if (entry.note !== null) out.push(cell(` — ${entry.note}`, { fg: "legend", dim: true }));
+  if (base === "info") {
+    push(keys.hintAll("info.back", "Back to list"));
+    push(keys.hint("global.quit", "Quit"));
+    push(keys.hint("global.help", "Close help"));
+    return out;
+  }
+  if (base === "tree") {
+    push(keys.hintMove("output.tree.up", "output.tree.down", "Move cursor"));
+    push(keys.hintAll("output.tree.toggle", "Toggle collapse / leaf output"));
+    push(keys.hintAll("output.tree.collapse", "Collapse / to parent"));
+    push(keys.hintAll("output.tree.expand", "Expand / to child"));
+    push(keys.hintPair("output.tree.collapse_all", "output.tree.expand_all", "Expand all / collapse all"));
+    push(keys.hintPair("output.tree.first", "output.tree.follow_frontier", "Top / frontier"));
+    push(keys.hint("output.tree.follow", "Toggle follow"));
+  } else {
+    push(keys.hintMove("output.log.up", "output.log.down", "Scroll line"));
+    push(keys.hintPair("output.log.half_up", "output.log.half_down", "Half page up / down"));
+    push(keys.hintPair("output.log.page_up", "output.log.page_down", "Page up / down"));
+    push(keys.hintPair("output.log.top", "output.log.bottom", "Top / bottom"));
+    push(keys.hint("output.log.follow", "Toggle follow"));
+  }
+  // `run_shared_rows`: the frame's tail, its two rows naming their destination off the pane.
+  push(keys.hint("output.focus_next", base === "tree" ? "Show the log" : "Show the tree"));
+  push(keys.hint("output.scope", base === "tree" ? "Show this node's output" : "Scope log to node / all"));
+  push(keys.hintAll("output.back", "Back to list"));
+  push(keys.hint("global.quit", "Quit"));
+  push(keys.hint("global.help", "Close help"));
   return out;
 }
 
-/// The overlay's body laid into columns: the entries flow down a column and on into the next,
-/// never orphaning a scope heading at a column's foot. `height` rows a column, as many columns
-/// as the entries need; the caller picks the height that fits.
-function overlayColumns(entries, height) {
-  const columns = [];
-  let current = [];
-  for (let i = 0; i < entries.length; i += 1) {
-    const entry = entries[i];
-    // A heading with no room for at least one of its rows moves down with them.
-    const orphan = entry.kind === "heading" && current.length + 1 >= height;
-    if (current.length >= height || orphan) {
-      columns.push(current);
-      current = [];
-    }
-    // A column never opens on a blank: the seam between two scopes is the column edge itself.
-    if (entry.kind === "blank" && current.length === 0) continue;
-    current.push(entry);
-  }
-  if (current.length > 0) columns.push(current);
-  return columns;
+/// `shell::help_overlay_lines` — one line per hint: the key (or a note's glyph) padded to the
+/// widest of the column, two spaces, then its label. Keys whiten; glyphs and labels do not.
+function helpOverlayLines(hints) {
+  const fieldOf = (h) => (h.kind === "key" ? h.keys : h.kind === "note" ? h.glyph : h.kind === "bare" ? h.text : "");
+  const width = hints.reduce((w, h) => Math.max(w, textWidth(fieldOf(h))), 0);
+  return hints.map((h) => {
+    if (h.kind === "bare") return h.text === "" ? [] : [cell(h.text)];
+    const field = fieldOf(h);
+    const pad = " ".repeat(Math.max(0, width - textWidth(field)));
+    return [cell(field, h.kind === "key" ? { fg: "bright" } : {}), cell(`${pad}  ${h.label}`)];
+  });
 }
 
-/// The `?` overlay: every bound action in every scope, grouped by scope, in table order. It
-/// lists all 51 rows at any viewport that can hold them and, at one that cannot, says how many
-/// it could not show rather than clipping into silence.
-function helpOverlay(cols, rows) {
-  const entries = overlayEntries();
-  const keyWidth = entries.reduce((w, e) => (e.kind === "row" ? Math.max(w, textWidth(e.keys)) : w), 0);
-  const budgetW = Math.max(1, cols - 2 * POPUP_PAD_X - 2);
-  const budgetH = Math.max(1, rows - 2 * POPUP_PAD_Y - 2 - OVERLAY_PREAMBLE.length - 1);
-  /// One candidate shape at a column height: the painted rows, and how many **rows** of the
-  /// table had to be shed because their column did not fit `budget`.
-  const shapeAt = (height, budget) => {
-    const columns = overlayColumns(entries, height).map((column) => ({
-      entries: column,
-      cells: column.map((entry) => overlayCells(entry, keyWidth)),
-    }));
-    const widths = columns.map((c) => c.cells.reduce((w, line) => Math.max(w, rowWidth(line)), 0));
-    let kept = 0;
-    let spent = 0;
-    for (let i = 0; i < columns.length; i += 1) {
-      const next = spent + widths[i] + (i > 0 ? OVERLAY_GUTTER : 0);
-      // The first column always lands, even where it overruns: an overlay with nothing in it
-      // would be worse than one clipped at the edge.
-      if (next > budget && i > 0) break;
-      spent = next;
-      kept += 1;
-    }
-    const dropped = columns
-      .slice(kept)
-      .reduce((n, c) => n + c.entries.filter((e) => e.kind === "row").length, 0);
-    const shown = columns.slice(0, kept);
-    const out = [];
-    for (let r = 0; r < height; r += 1) {
-      const line = [];
-      shown.forEach((column, i) => {
-        if (i > 0) line.push(blank(OVERLAY_GUTTER));
-        const cells = column.cells[r] ?? [];
-        line.push(...cells, blank(widths[i] - rowWidth(cells)));
-      });
-      out.push(sliceCells(line, 0, budget));
-    }
-    // A shape whose tail columns are empty (the last rung often is) paints no blank rows.
-    while (out.length > 0 && rowWidth(out[out.length - 1]) === 0) out.pop();
-    return { rows: out, dropped };
-  };
-  // The fewest rows whose block fits the width — the footer grid's own ladder, walked over a
-  // taller range because eight scopes of prose never fit three rows.
-  let shape = null;
-  for (let height = 1; height <= budgetH; height += 1) {
-    const candidate = shapeAt(height, budgetW);
-    if (candidate.dropped === 0) {
-      shape = candidate;
-      break;
-    }
-  }
-  // Past the tallest rung the block still overruns the width: take the tallest shape and shed
-  // whole columns off the right, which loses the fewest entries and keeps the ones it shows
-  // readable.
-  if (shape === null) shape = shapeAt(budgetH, budgetW);
-  const lines = [
-    ...OVERLAY_PREAMBLE.map((text) => dialogLine(text)),
-    [],
-    ...shape.rows,
-  ];
-  // What a too-narrow viewport could not lay out, stated as **content**: the overlay must
-  // never quietly claim to be the whole keymap when a column of it is off the right edge.
-  if (shape.dropped > 0) {
-    lines.push([]);
-    lines.push(dialogLine(`… and ${shape.dropped} more keys — widen the viewport`));
-  }
-  return { title: "Help", lines };
+/// The `?` overlay over the base view `options` describe.
+function helpOverlay(options, quitting) {
+  const base = options.run != null ? options.run.focus : options.info != null ? "info" : "list";
+  return { title: "Help", lines: helpOverlayLines(helpLines(base, options.grouped === true, keysOf(quitting))) };
 }
 
 // --- the info surface --------------------------------------------------------------------
@@ -2733,15 +2847,16 @@ const STATUS_GLYPH = {
 };
 const STATUS_RECOVERED_GLYPH = "↻︎";
 
-/// `shell::status_style` — the one coloured cell on a tree row, so the failing `✗` is the
-/// thing the eye lands on.
+/// `shell::status_style`'s hue — the one coloured cell on a tree row, so the failing `✗` is
+/// the thing the eye lands on. A node with no known outcome yet reads as receded as a skipped
+/// one: neither is a result.
 const STATUS_ROLE = {
   ok: "ok",
   failed: "alarm",
   killed: "alarm",
   skipped: "muted",
-  running: "accent",
-  unknown: "caution",
+  running: "muted",
+  unknown: "muted",
 };
 
 /// `treeview::severity` — the rollup ladder `failed > killed > unknown > running > skipped >
@@ -3286,12 +3401,14 @@ function statusGlyph(status, recovered) {
   return recovered ? STATUS_RECOVERED_GLYPH : (STATUS_GLYPH[status] ?? STATUS_GLYPH.unknown);
 }
 
-/// `shell::status_style` — the `ST` cell's one hue. A **recovered** rollup reads `caution`: it
-/// succeeded, but something under it did not, and neither `ok` nor `alarm` says that. A
-/// selected row bolds it while keeping the hue, so the band moves as one.
+/// `shell::status_style` — the `ST` cell's hue and weight. A **recovered** rollup reads
+/// `caution`: it succeeded, but something under it did not, and neither `ok` nor `alarm` says
+/// that. It and a failure are loud (bold); everything else sits dim, until the cursor bolds
+/// it with the rest of its band.
 function statusStyle(status, recovered, selected) {
-  const fg = recovered ? "caution" : (STATUS_ROLE[status] ?? "caution");
-  return selected ? { fg, bold: true } : { fg };
+  const fg = recovered ? "caution" : (STATUS_ROLE[status] ?? "muted");
+  const loud = recovered || status === "failed" || status === "killed";
+  return loud || selected ? { fg, bold: true } : { fg, dim: true };
 }
 
 /// One tree **body** row's cells: the dim continuation guides + `▏ ` bar, then the dim body
@@ -3578,17 +3695,23 @@ export function layout(board, options) {
   const selected = options.selected ?? 0;
   const filter = options.filter ?? "";
   const collapsed = options.collapsed ?? new Set();
+  const grouped = options.grouped === true;
+  const busyOnly = options.busyOnly === true;
+  const peeked = options.peeked ?? new Set();
   const typing = options.typing ?? null;
   const flash = options.flash ?? null;
   const version = options.version ?? "";
   const quitting = board.quittingSince !== null;
 
-  const listRows = visibleRows(board, { filter, collapsed });
+  const listRows = visibleRows(board, { filter, collapsed, grouped, busyOnly, peeked });
   const lanes = queues(board);
 
-  // The `Service` column's content fit, folded over the **same** rows that render and
-  // through the same composition, so the measured content is exactly what is drawn.
-  const content = listRows.reduce((w, row) => Math.max(w, textWidth(identityText(row))), 0);
+  // The `Service` column's content fit — `DashboardModel::expanded_rows`: the rows as if every
+  // group were open, over the needle's survivors alone, in the view that renders. Neither a
+  // fold nor the busy lens may reflow the column under an operator who never touched a key;
+  // the view flag does, because flat names are wider than the grouped tree's leaves.
+  const measured = visibleRows(board, { filter, grouped, peeked });
+  const content = measured.reduce((w, row) => Math.max(w, textWidth(identityText(row))), 0);
   const visible = visibleColumns(cols);
   const widths = {};
   for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols);
@@ -3598,16 +3721,14 @@ export function layout(board, options) {
   // with the paint". This is the paint, so the transitive fold (ADR-0073 — a crash three
   // levels down still surfaces on the root header that hides it) happens here, over the
   // filtered card set the rows were built from, mirroring `DashboardModel::group_rollup`.
-  const members = board.order
-    .map((name) => board.services[name])
-    .filter((svc) => svc !== undefined && keptByFilter(svc.name, filter));
+  const members = visibleCards(board, { filter, busyOnly });
   const rollups = {};
   for (const row of listRows) {
     if (row.kind === "group") rollups[row.path] = groupRollup(members, row.path);
   }
 
   const footer = footerRows(
-    planFooter(board, listRows, selected, filter, quitting, typing, flash, false),
+    planFooter(board, listRows, selected, filter, quitting, typing, flash, false, grouped, busyOnly),
     cols,
     rows,
   );
@@ -3616,7 +3737,11 @@ export function layout(board, options) {
   const height = Math.max(0, rows - LIST_CHROME_ROWS - footer.length);
   // Clamped here as well as in `scrollOffset`, because a caller that never scrolled still
   // hands in the `0` default and a stale offset from a taller viewport must not blank the body.
-  const offset = Math.min(Math.max(0, Math.trunc(options.offset ?? 0)), Math.max(0, listRows.length - height));
+  const clamped = Math.min(Math.max(0, Math.trunc(options.offset ?? 0)), Math.max(0, listRows.length - height));
+  // The peek floor rides over the minimal clamp only when it would scroll further down, the
+  // way the terminal applies it (`want > table_state.offset()`).
+  const floor = peekFloorOffset(listRows, selected, height);
+  const offset = floor !== null && floor > clamped ? floor : clamped;
 
   const screen = [];
   screen.push(fitRow(planHeader(headerView(board, now, version), cols), cols));
@@ -3631,7 +3756,7 @@ export function layout(board, options) {
       screen.push(fitRow([], cols));
       continue;
     }
-    const cells = fitRow(bodyRowCells(row, visible, widths, laneCols, rollups, now), cols);
+    const cells = fitRow(bodyRowCells(row, visible, widths, laneCols, rollups, now, cols), cols);
     screen.push(at === selected ? selectRow(cells) : cells);
   }
   for (const row of footer) screen.push(fitRow(hintRowCells(row), cols));
@@ -3653,7 +3778,7 @@ function withOverlays(frame, board, options, cols, rows) {
   if (options.confirm != null) {
     return renderPopup(frame, confirmModal(board, options.confirm, board.quittingSince !== null), cols, rows);
   }
-  if (options.help === true) return renderPopup(frame, helpOverlay(cols, rows), cols, rows);
+  if (options.help === true) return renderPopup(frame, helpOverlay(options, board.quittingSince !== null), cols, rows);
   return frame;
 }
 
@@ -3674,8 +3799,11 @@ function columnHeaderCells(visible, widths) {
 
 /// One body row's cells. A service or group row is laid over the list's visible columns; the
 /// `Queues` section's three kinds are laid over the section's **own** five, from column 0.
-function bodyRowCells(row, visible, widths, laneCols, rollups, now) {
+function bodyRowCells(row, visible, widths, laneCols, rollups, now, cols) {
   if (row.kind === "spacer") return [];
+  // A real peek line is laid across the whole list width, over every column
+  // (`render_peek_rails`); the placeholder stays inside the `Service` column below.
+  if (row.kind === "peek" && row.line !== null) return peekLineCells(row, cols, now);
   if (row.kind === "queuesHeader") {
     return queueCompose(
       laneCols,
@@ -3684,15 +3812,17 @@ function bodyRowCells(row, visible, widths, laneCols, rollups, now) {
   }
   if (row.kind === "queue") return queueCompose(laneCols, queueLaneCells(laneCols, row.lane));
 
-  const identity = identityOf(row);
+  const identity = row.kind === "peek" ? null : identityOf(row);
   const parts = {
-    service: identityCells(identity.prefix, identity.body, identity.name, identity.tint),
+    service: identity === null ? peekEmptyCells(row, cols) : identityCells(identity.prefix, identity.body, identity.name, identity.tint),
     state: [],
     trigger: [],
     liveness: [],
     next: [],
   };
-  if (row.kind === "service") {
+  if (row.kind === "peek") {
+    // Every other cell of the placeholder row is empty: a peek carries no state or timing.
+  } else if (row.kind === "service") {
     const svc = row.svc;
     const style = BADGE_STYLE[svc.badge] ?? BADGE_STYLE.Idle;
     parts.state = [cell(stateText(svc, now), style)];

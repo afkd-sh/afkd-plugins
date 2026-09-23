@@ -164,6 +164,7 @@ body {
 .bg-selection { background: var(--term-selection); }
 
 .bold { font-weight: 700; }
+.italic { font-style: italic; }
 
 /* A terminal's `DIM` is an SGR attribute laid *over* a colour, which a browser has no
    equivalent for: `opacity` would blend a tone the palette does not contain, and that is

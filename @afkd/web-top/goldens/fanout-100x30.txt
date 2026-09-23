@@ -9,7 +9,7 @@ Service                          State                 Trigger              Last
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
 └─ ⊟ 📦 db                           ┌ Stop 3 services? ──────┐                        5s           
    └─ 🔷 vacuum                  ▶ Bu│                        │                        5s           
-  🔹 🔒archivist                 ● Id│    🔹 ops::nightly     │                              59m 47s
+  🔹 archivist                   ● Id│    🔹 ops::nightly     │                              59m 47s
   🔹 noisy                       ● Id│    🔷 ops::sleeper     │                              59m 47s
   🔹 flaky                       ● Id│    🔷 ops::db::vacuum  │                              59m 47s
   🔹 deep                        ● Id│                        │                        7s    59m 52s
@@ -61,7 +61,7 @@ bnlllllllllbnlllllllllllbnllllllllllllbbbnllllllllllllbnllllllllbbbbbbnllllllnnn
 bnlllllllllbnlllllllllllbnllllllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnlllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

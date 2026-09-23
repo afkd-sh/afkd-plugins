@@ -15,17 +15,28 @@
 // to do. Driving the real page is what turned that from a design note into a bug: at 1200×700
 // the `State` column landed on eight different pixel columns, one per row.
 //
+// A run's box only holds its *edges*, though. Inside one, a glyph drawn wider than its cells
+// still pushes everything after it right, and the box then clips the run's last cell: a
+// `▷ Queued 1h 18m` whose `▷` came from a wider face read `▷ Queued 1h 18`. So only printable
+// ASCII, the one repertoire every monospace face draws at its own advance, coalesces into
+// runs; every other cluster gets a box of its own, the way a terminal gives each cell one.
+//
 // Keeping the split strict is the rest of the point. It is what lets the whole dashboard be
 // rendered to text and diffed against committed golden screens under `node --test` with no
 // browser in sight — and what will let a later card put a key on it without a layout decision
 // hiding in the DOM.
 
+import { clusters } from "./layout.mjs";
+
 /// Whether two cells paint identically, and so may be coalesced into one `<span>`. Adjacent
 /// runs of one look are the common case (a row of blanks, a name, a pad), so this keeps a
 /// hundred-cell row at a handful of nodes rather than one per run.
 function alike(a, b) {
-  return a.fg === b.fg && a.bg === b.bg && a.dim === b.dim && a.bold === b.bold;
+  return a.fg === b.fg && a.bg === b.bg && a.dim === b.dim && a.bold === b.bold && a.italic === b.italic;
 }
+
+/// Whether a cluster is printable ASCII, and so safe to share a box with its neighbours.
+const PLAIN = /^[\x20-\x7e]+$/;
 
 /// The class list one cell's look resolves to — `fg-<role>` always, `bg-<role>` when the cell
 /// carries a band, and the two weight attributes. The role names come straight off the cell,
@@ -36,6 +47,7 @@ function classesOf(cell) {
   if (cell.bg !== null) classes.push(`bg-${cell.bg}`);
   if (cell.dim) classes.push("dim");
   if (cell.bold) classes.push("bold");
+  if (cell.italic) classes.push("italic");
   return classes.join(" ");
 }
 
@@ -61,19 +73,15 @@ export function paint(root, rows) {
     // else.
     const runs = [];
     for (const cell of cells) {
-      const last = runs[runs.length - 1];
-      if (last !== undefined && alike(last, cell)) {
-        last.text += cell.text;
-        last.width += cell.width;
-      } else {
-        runs.push({
-          text: cell.text,
-          width: cell.width,
-          fg: cell.fg,
-          bg: cell.bg,
-          dim: cell.dim,
-          bold: cell.bold,
-        });
+      for (const { text, width } of clusters(cell.text)) {
+        const plain = PLAIN.test(text);
+        const last = runs[runs.length - 1];
+        if (plain && last !== undefined && last.plain && alike(last, cell)) {
+          last.text += text;
+          last.width += width;
+        } else {
+          runs.push({ text, width, plain, fg: cell.fg, bg: cell.bg, dim: cell.dim, bold: cell.bold, italic: cell.italic });
+        }
       }
     }
     while (row.childElementCount > runs.length) row.lastElementChild.remove();

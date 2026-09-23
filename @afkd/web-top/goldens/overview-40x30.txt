@@ -1,19 +1,19 @@
 afkd 0.2.123 · ● Running 12s · 8/10 up  
 CPU   1% · Mem 1.5G/31G                 
                                         
-Service            State                
-  🧹 janitor       □ Stopped            
-⊟ 📦 ops           ✕ Crashed            
-├─ 🔹 nightly      ▷ Queued 2s          
-├─ 🔷 sleeper      ▶ Busy 4s            
-├─ 🔸 broken       ✕ Crashed            
+Service           State                 
+  🧹 janitor      □ Stopped             
+⊟ 📦 ops          ✕ Crashed             
+├─ 🔹 nightly     ▷ Queued 2s           
+├─ 🔷 sleeper     ▶ Busy 4s             
+├─ 🔸 broken      ✕ Crashed             
 └─ ⊟ 📦 db                              
-   └─ 🔷 vacuum    ▶ Busy 5s            
-  🔹 🔒archivist   ● Idle               
-  🔹 noisy         ● Idle               
-  🔹 flaky         ● Idle               
-  🔹 deep          ● Idle               
-  🔹 spare         ● Idle               
+   └─ 🔷 vacuum   ▶ Busy 5s             
+  🔹 archivist    ● Idle                
+  🔹 noisy        ● Idle                
+  🔹 flaky        ● Idle                
+  🔹 deep         ● Idle                
+  🔹 spare        ● Idle                
                                         
 Queue    Slots              Parallelism 
 🧵 he…   ▮▮ ╎ ∙             2           
@@ -33,19 +33,19 @@ Queue    Slots              Parallelism
 nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnn
-rrmmmmmmmmmmnnnnnnnmmmmmmmmmnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnn
-rrrnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnn
+bbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnn
+rrmmmmmmmmmmnnnnnnmmmmmmmmmnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnn
+rrrnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnn
+rrrrrrnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbnnnnbbbbbnnnnnnnnnnnnnnbbbbbbbbbbbn
 nnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnn
@@ -61,18 +61,18 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 ........................................
 dddd....ddddddd.........................
 ........................................
-bbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb..
-sssssssssssssssssssDDDDDDDDDssssssssssss
-...................bbbbbbbbb............
-...................ddddddddddd..........
-...................bbbbbbbbb............
-...................bbbbbbbbb............
+bbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...
+ssssssssssssssssssDDDDDDDDDsssssssssssss
+..................bbbbbbbbb.............
+..................ddddddddddd...........
+..................bbbbbbbbb.............
+..................bbbbbbbbb.............
 ........................................
-...................bbbbbbbbb............
+..................bbbbbbbbb.............
 ........................................
 ........................................
 ........................................

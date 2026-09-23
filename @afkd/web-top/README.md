@@ -16,9 +16,9 @@ The relay puts an **unauthenticated** control channel on a TCP port: anyone who 
 that port can start, stop, restart and fire every service the daemon runs, with the
 daemon's own privileges. There is no password, no token and no session.
 
-That is why `bind` defaults to `127.0.0.1`, where the trust boundary is the machine. The
+That is why `listen` defaults to `127.0.0.1`, where the trust boundary is the machine. The
 setting exists because an operator with a private network and a reason may widen it, and a
-`bind` that refused anything but loopback would be a setting that lies — but widening it is
+`listen` that refused anything but loopback would be a setting that lies — but widening it is
 a decision, not a default. Put a reverse proxy that authenticates in front of it, or leave
 it on loopback and reach it through an SSH tunnel.
 
@@ -34,7 +34,7 @@ Installed @afkd/web-top 0.2.0 (companion)
 
 ```conf
 plugin @afkd/web-top {
-  port 8771
+  listen "127.0.0.1:8771"
 }
 ```
 
@@ -53,8 +53,7 @@ fails `afkd validate` rather than being quietly ignored.
 
 | Key | Default | What it does |
 |---|---|---|
-| `port` | `8771` | the port to serve on. `0` binds an ephemeral one and prints the port it got |
-| `bind` | `127.0.0.1` | the IPv4 address to listen on. Read the section above before you change it |
+| `listen` | `"127.0.0.1:8771"` | the IPv4 address to serve on, as `"host[:port]"` — the shape afkd's own `bind { listen … }` takes. A bare host keeps port `8771`, and `:0` binds an ephemeral port and prints the one it got. Read the section above before you widen the host |
 | `max_clients` | `8` | how many subscribers may be attached at once; the next one is a `503` |
 | `runs_dir` | `<state dir>/runs` | where the daemon keeps its run corpus. Read off disk on every subscriber's attach and served ahead of that subscriber's live frames, so a run view opened after a fire is not empty — see *The disk backfill*. Set it when afkd's own top-level `runs_dir` moves the corpus off the default |
 | `log_lines` | `2000` | how many log lines the page keeps per service. The terminal dashboard's own `LOG_RING_CAPACITY`, so a browser and a terminal watching one daemon scroll back the same distance. Carried to the page on its `stream` event — the ring it bounds lives in the browser, not here |
@@ -215,9 +214,11 @@ does. `input.mjs` is the browser half, and the only file here that touches an ev
 | Keys | What they do |
 |---|---|
 | `j`/`k`, `↓`/`↑`, `g`, `G` | move the cursor; the body scrolls to keep it on screen |
-| `h`/`←`, `l`/`→` | fold and unfold a group — from a member too, which moves the cursor onto its header |
-| `Enter`/`Space` | toggle the group header under the cursor |
-| `H` / `L` | fold every group, or open them all |
+| `v` | flip the list between the flat boot view — every service its own row, named in full — and the grouped tree; the cursor rides its row across |
+| `b` | the busy lens: only the services running something of their own (`Starting`, `Busy`, `Stopping`) and any `Crashed` one; `b busy ●` says it is on |
+| `Enter`/`Space` | open or close the selected service's **activity peek** — its run's active branch under its row — or fold the group header under the cursor |
+| `h`/`←`, `l`/`→` | fold and unfold a group — from a member too, which moves the cursor onto its header; grouped view only |
+| `H` / `L` | fold every group, or open them all; grouped view only |
 | `/`, `Esc` | type a needle (the rows narrow as you type), and clear it |
 | `s` `x` `t` `r` | start, stop, trigger and restart the selected service — or, on a group header, every eligible member behind a confirm |
 | `x` on a wedged service | the force-stop gate: `y` sends one `force`, `n` and `Esc` send nothing |
@@ -225,7 +226,7 @@ does. `input.mjs` is the browser half, and the only file here that touches an ev
 | `i` | open the selected **service**'s info page; `i` or `Esc` closes it |
 | the wheel, on an open info page | scroll it — see below |
 | `Ctrl+R` | reload the daemon's config. The page intercepts this chord — see below |
-| `?` | the overlay: every bound action in all eight scopes, grouped by scope |
+| `?` | the overlay: the terminal's own legend for the view underneath — the list's keys and its four sigils, the info page's, or the shown run pane's |
 
 These are afkd's own chords, not a second set invented for a browser — `t` triggers and `f`
 does not, because that is what `DEFAULT_KEYS` binds.
@@ -406,13 +407,12 @@ the release workflow runs this directory's suites.
 
 ## What this card deliberately does not do
 
-- **A few keys are bound and inert.** `v`, `b` and the two lane-width pairs resolve to an action
-  this page has nowhere to send. They are **listed** in the `?` overlay all the same, dim and
-  with the reason beside them — a chord with a binding is part of the keymap whether or not this
-  surface can act on it — and they are reported unhandled, so the browser keeps them. `q` is one
-  of these: a page cannot close itself, and `Ctrl+C` is the browser's copy. `o` and `i` on a
-  group header or a lane row are a different shape of refusal, and are listed as **partial**:
-  `TreeOpen` and `toggle_info_view` both open on the selected *card*, so there is no subject.
+- **A few keys are bound and inert.** The two lane-width pairs resolve to an action this page
+  has nowhere to send, and `q` is another: a page cannot close itself, and `Ctrl+C` is the
+  browser's copy. They are listed in the `?` overlay and the footer exactly as the terminal lists
+  them, and reported unhandled, so the browser keeps them. `o` and `i` on a group header or a
+  lane row are a different shape of refusal, and are **partial**: `TreeOpen` and
+  `toggle_info_view` both open on the selected *card*, so there is no subject.
 - **`H`/`L` in the tree are a blanket override, not a mode.** Both write an explicit override
   onto every parent the tree holds *now*, so a node that opens after the bulk fold takes its own
   per-kind default rather than the bulk choice. The terminal behaves identically, for the same
@@ -428,17 +428,13 @@ the release workflow runs this directory's suites.
   costs is that an operator who rebinds `x` sees `x` here and a different key in their
   terminal. A layout whose keyboard cannot reach `/` or `?` loses those actions, exactly as it
   would in a terminal.
-- **Groups boot expanded, where the terminal boots flat.** `afkd top` tracks the groups an
-  operator has *opened*; this page tracks the ones they have *closed*. The terminal's default
-  is never the first thing an operator sees there (it boots the flat list), and this page has
-  no flat arm — an opened-set default would show nothing but headers.
+- **A group a reload adds opens expanded.** `afkd top` tracks the groups an operator has
+  *opened*, seeded with every group the board boots with; this page tracks the ones they have
+  *closed*. The two agree on every group the board booted with, which is all of them until a
+  reload adds a new one: the terminal shows that one folded, and this page open.
 - **A popup dims the backdrop and nothing more.** ratatui unions `DIM` into a cell's modifier,
   which over the bold column header would leave it bold *and* dim; a cell here carries one
   weight, so a receded cell takes `dim` alone.
-- **One row cell has no twin in `afkd top`.** The confinement marker: the terminal spells
-  confinement on its info view (`Sandbox scoped`) and reserves nothing for it on a list row,
-  where this page draws the run tree's own 🔒 hard against the name, on the reconcile markers'
-  terms — nothing reserved unless the row has one.
 - **No TCP, no password, on the daemon side.** It attaches to the local unix socket, where
   `auth` is `none`. The `challenge`/password leg of the handshake is not implemented.
 - **No reconnect.** A stream that ends is ended. The page says which way it went and waits

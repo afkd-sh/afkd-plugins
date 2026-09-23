@@ -9,7 +9,7 @@ Service                          State                 Trigger              Last
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
 └─ ⊟ 📦 db                                                                             1s           
    └─ ▪️ vacuum                  □ Stopped             Every 1h                        1s           
-  ▪️ 🔒archivist                 □ Stopped             Every 1h                                     
+  ▪️ archivist                   □ Stopped             Every 1h                                     
   ▪️ noisy                       □ Stopped             Every 1h                                     
   ▪️ flaky                       □ Stopped             Every 1h                                     
   ▪️ deep                        □ Stopped             Every 1h                        7s           
@@ -41,7 +41,7 @@ rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnncccccccccccccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrrrrmmmmmmmmmnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
-rrmmmmmmmmmmmmmmnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrmmmmmmmmmmmmnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
@@ -61,7 +61,7 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnllllllllbnllllllbbbbbnllllllllbbbnllllllllllllbnllllllbnllllllllbnllllllllbnllllllbnllllnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 ....................................................................................................
 dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
 ....................................................................................................

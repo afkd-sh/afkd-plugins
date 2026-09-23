@@ -235,7 +235,7 @@ export const DESCRIPTIONS = {
   "overview.service_stop": "Stop service",
   "overview.service_fire": "Trigger an idle service",
   "overview.service_restart": "Restart service",
-  "overview.service_peek": "Toggle group",
+  "overview.service_peek": "Toggle group / peek service activity",
   "overview.show_output": "Output",
   "overview.show_info": "Info view",
   "overview.group_collapse": "Collapse group",
@@ -294,6 +294,8 @@ export const HANDLED = new Set([
   "overview.service_peek",
   "overview.show_output",
   "overview.show_info",
+  "overview.view",
+  "overview.filter_busy",
   "overview.group_collapse",
   "overview.group_expand",
   "overview.group_collapse_all",
@@ -336,24 +338,19 @@ export const HANDLED = new Set([
 /// sentence wide enough to explain itself twice would set the overlay's column width.
 export const NOTES = {
   "global.quit": "The browser owns Ctrl+C",
-  "overview.service_peek": "Groups only — no activity peek",
   "overview.show_output": "Services only — a group has no run",
   "overview.show_info": "Services only — a group has no info page",
-  "overview.view": "No flat view on this page",
-  "overview.filter_busy": "No busy lens on this page",
   "overview.queue_widen": "The relay has no lane verb",
   "overview.queue_narrow": "The relay has no lane verb",
   "queues.narrow": "The relay has no lane verb",
   "queues.widen": "The relay has no lane verb",
 };
 
-/// The three actions that are in **both** sets, in table order. `Enter`/`Space` folds a group
-/// header here and, on a service row — where the terminal opens an activity peek, which this
-/// page has no surface for — does nothing; `o` opens a **service**'s run view and `i` its info
-/// page, and on a group header or a lane row neither has a subject to open. Named rather than
-/// inferred, so the assert below can hold every other action to exactly one side, and in
-/// `ACTIONS` order because that is what the check compares against.
-export const PARTIAL = ["overview.service_peek", "overview.show_output", "overview.show_info"];
+/// The two actions that are in **both** sets, in table order: `o` opens a **service**'s run
+/// view and `i` its info page, and on a group header or a lane row neither has a subject to
+/// open. Named rather than inferred, so the assert below can hold every other action to exactly
+/// one side, and in `ACTIONS` order because that is what the check compares against.
+export const PARTIAL = ["overview.show_output", "overview.show_info"];
 
 // Every row is described, and is either handled or noted — so a row a future transcription
 // adds cannot land with no description, no dispatch and no explanation. The intersection is

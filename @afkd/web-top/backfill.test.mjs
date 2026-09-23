@@ -275,7 +275,7 @@ function openedRun(board, now, chords) {
     rows: 30,
     now,
     version: "0.2.130",
-    selected: selectedIndex(session, rowsOf(session, board)) ?? -1,
+    selected: selectedIndex(session, rowsOf(session, board), board) ?? -1,
     offset: session.offset,
     filter: needleOf(session),
     collapsed: session.collapsed,

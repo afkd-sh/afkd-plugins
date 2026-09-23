@@ -20,11 +20,117 @@ import test from "node:test";
 
 import { fold, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, SCOPES, all, idOf, primary } from "./keymap.mjs";
-import { TREND_LADDER, bodyHeight, formatElapsed, infoScrollMax, infoView, layout, runMetrics, scrollOffset, textWidth, visibleRows } from "./layout.mjs";
-import { newSession, press } from "./session.mjs";
+import { TREND_LADDER, bodyHeight as bodyHeightOf, formatElapsed, infoScrollMax, infoView, layout as layoutOf, peekFloorOffset, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { newSession as bootSession, press } from "./session.mjs";
 import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, screenText } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
+
+// Most of these suites were written against the grouped tree, the one view the page used to
+// paint, so they lay the board out grouped unless they say otherwise; the flat boot view, the
+// busy lens and the activity peek have their own section, which passes `grouped: false`.
+const layout = (board, options) => layoutOf(board, { grouped: true, ...options });
+const bodyHeight = (board, options) => bodyHeightOf(board, { grouped: true, ...options });
+const visibleRows = (board, options = {}) => visibleRowsOf(board, { grouped: true, ...options });
+const newSession = () => ({ ...bootSession(), grouped: true });
+
+// --- the flat boot view, the busy lens and the activity peek ------------------------------
+
+test("the board boots flat: every service its own row, named in full, from column 0", () => {
+  // `build_rows`' flat arm, the ADR-0066 amendment's boot view: no header, no connector, no
+  // lead-in — each card spells its qualified name, in config order, and the footer's view key
+  // names where it would go.
+  const { board, at } = liveBoard();
+  const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
+  assertGrid(rows, 100, 30);
+  assertGolden("overview-flat-100x30.txt", rows);
+  const lines = screenText(rows).split("\n");
+  assert.ok(!lines.some((l) => l.includes("📦")), "no group header is emitted");
+  const body = lines.slice(4, 4 + board.order.length);
+  assert.deepEqual(
+    body.map((l) => l.slice(l.indexOf(" ") + 1, l.indexOf("  "))),
+    board.order,
+    "one row per service, each its whole name, in config order",
+  );
+  for (const line of body) assert.notEqual(line[0], " ", `${line.trim()} starts at column 0`);
+  const footer = lines.slice(-3).join("\n");
+  assert.ok(footer.includes("v grouped") && !footer.includes("v flat"), "the view key names the grouped tree");
+  assert.ok(footer.includes("Enter peek"), "…and Enter the peek it opens");
+});
+
+test("the busy lens keeps the working and the crashed, and measures nothing new", () => {
+  // `visible_cards`' state axis: `Starting`/`Busy`/`Stopping` plus the `Crashed` alarm. The
+  // `Service` column is measured over the needle's survivors alone, so lensing the board moves
+  // no column, and the key's own label carries the lens's state.
+  const { board, at } = liveBoard();
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", grouped: false };
+  const open = screenText(layoutOf(board, options)).split("\n");
+  const rows = layoutOf(board, { ...options, busyOnly: true });
+  assertGrid(rows, 100, 30);
+  const lines = screenText(rows).split("\n");
+  const kept = Object.values(board.services).filter((svc) => ["Starting", "Busy", "Stopping", "Crashed"].includes(svc.badge));
+  assert.ok(kept.length > 0 && kept.length < board.order.length, "the capture has both kinds");
+  for (const svc of Object.values(board.services)) {
+    const listed = lines.some((l) => l.includes(` ${svc.name} `));
+    assert.equal(listed, kept.includes(svc), `${svc.name} (${svc.badge}) is ${kept.includes(svc) ? "kept" : "lensed away"}`);
+  }
+  assert.equal(lines[3], open[3], "the column header did not move");
+  assert.ok(lines.slice(-3).join("\n").includes("b busy ●"), "the key says the lens is on");
+  assert.ok(open.slice(-3).join("\n").includes("b busy ○"), "…and off, unlensed");
+  // Grouped, the lens force-expands every survivor's header for display.
+  const grouped = screenText(layoutOf(board, { ...options, grouped: true, busyOnly: true, collapsed: new Set(["ops"]) }));
+  assert.ok(grouped.includes("vacuum") && grouped.includes("broken"), "a folded header does not hide a busy member");
+});
+
+test("a peek opens the run's active branch beneath its service, the rail on the list's edge", () => {
+  // `active_branch_peek` over a real fire: the ancestor path root first, each line a level
+  // deeper, then the container's newest children; the ST glyph on the rightmost column and the
+  // cursor never on a peek line.
+  const { board, at } = liveBoard("trace-burst.jsonl");
+  const selected = board.order.indexOf("deep");
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", grouped: false, peeked: new Set(["deep"]), selected };
+  const rows = layoutOf(board, options);
+  assertGrid(rows, 100, 30);
+  assertGolden("peek-100x30.txt", rows);
+  const lines = screenText(rows).split("\n");
+  const at_ = lines.findIndex((l) => l.startsWith("🔹 deep "));
+  const peek = [];
+  for (let i = at_ + 1; lines[i].startsWith(" ▏ "); i += 1) peek.push(lines[i]);
+  assert.ok(peek.length > 0 && peek.length <= 5 + 3, "the branch is its path plus at most five leaves");
+  assert.match(peek[0], /^ ▏ 🚀 /u, "the path opens on the workflow root, under the name");
+  peek.forEach((line, i) => {
+    if (i > 0) assert.ok(line.indexOf("︎") > 0, "every line after the root is nested");
+    assert.match(line, /[✓✗⋯⊘↻]︎$/u, "the ST glyph ends the line, on the list's own right edge");
+  });
+  // The rows the cursor walks skip the peek block.
+  const visible = visibleRowsOf(board, { grouped: false, peeked: new Set(["deep"]) });
+  assert.ok(visible.filter((r) => r.kind === "peek").length === peek.length, "one row per peek line");
+  // Grouped, the same block hangs under the service's icon at the guide columns a child would.
+  const grouped = screenText(layoutOf(board, { ...options, grouped: true, selected: 0 })).split("\n");
+  assert.ok(grouped.some((l) => l.startsWith("   ▏ 🚀 ")), "a root row's peek descends from under its icon");
+});
+
+test("an open peek with nothing to show reads empty, receded and slanted", () => {
+  // `PEEK_EMPTY`, deliberately not `idle`: a service with no run tree still answers the key.
+  const { board, at } = liveBoard();
+  const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", grouped: false, peeked: new Set(["spare"]) });
+  assertGrid(rows, 100, 30);
+  const at_ = screenText(rows).split("\n").findIndex((l) => l.startsWith("🔹 spare "));
+  const row = rows[at_ + 1];
+  assert.equal(screenText([row]).trimEnd(), " ▏ empty", "the placeholder sits under the name");
+  const word = row.find((c) => c.text.includes("empty"));
+  assert.deepEqual([word.fg, word.dim, word.italic], ["muted", true, true], "receded, dim and italic");
+});
+
+test("the peek floor keeps an open peek on screen under its service", () => {
+  // `shell::peek_floor_offset`: nothing without a peek below the cursor, else the offset that
+  // lands the block's last line on the viewport floor — never past the service itself.
+  const rows = [{ kind: "service" }, { kind: "service" }, { kind: "peek" }, { kind: "peek" }, { kind: "service" }];
+  assert.equal(peekFloorOffset(rows, 0, 3), null, "no peek under the cursor, no bias");
+  assert.equal(peekFloorOffset(rows, 1, 3), 1, "the block's tail on the floor");
+  assert.equal(peekFloorOffset(rows, 1, 2), 1, "…but never scrolled past the service");
+  assert.equal(peekFloorOffset(rows, 1, 10), 0, "a tall viewport needs no scroll");
+});
 
 // --- AC1: the whole overview -------------------------------------------------------
 
@@ -50,10 +156,10 @@ test("renders the whole overview at 100x30", () => {
     const leaf = name.includes("::") ? name.slice(name.lastIndexOf("::") + 2) : name;
     assert.equal(lines.filter((l) => l.includes(leaf)).length, 1, `${name} has exactly one row`);
   }
-  // The confined one wears its marker, hard against its name like a reconcile marker, and
-  // nothing else does.
-  assert.equal(lines.filter((l) => l.includes("🔒")).length, 1, "one confined service, one marker");
-  assert.ok(lines.some((l) => l.includes("🔒archivist")), "…on the service whose snapshot entry is confined");
+  // The confined one wears nothing on its row, as `afkd top`'s list row does not: the info
+  // view's `Sandbox` field is where confinement is spelled.
+  assert.ok(Object.values(board.services).some((svc) => svc.confined), "the capture still holds a confined service");
+  assert.equal(lines.filter((l) => l.includes("🔒")).length, 0, "no list row carries a confinement marker");
   // Both group headers, including the nested one — the two-level `ops::db` is what makes the
   // transitive rollup non-vacuous.
   assert.ok(lines.some((l) => l.includes("⊟ 📦 ops")), "the `ops` header");
@@ -809,86 +915,153 @@ test("the fan-out modal names its verb, its count and what it skipped", () => {
 
 // --- the `?` overlay -------------------------------------------------------------------------
 
-test("the overlay lists every bound action, grouped by scope", () => {
-  // At a viewport that can hold the whole table. 51 rows of prose across eight scopes needs
-  // room; the next test is what happens when there is none.
+/// The `?` popup's body, one string per line, read off the cells between its two side borders
+/// with the frame's own gutter trimmed — what `help_overlay_lines` composed, and nothing of the
+/// receded board around it.
+function popupLines(rows) {
+  const top = screenText(rows).split("\n").findIndex((line) => line.includes("┌ Help "));
+  assert.notEqual(top, -1, "the overlay's frame is up");
+  const left = columnOf(rows[top], "┌");
+  const right = columnOf(rows[top], "┐");
+  // The frame's own bottom corner, under its top one — the board behind has `└` connectors too.
+  const bottom = rows.findIndex((row, i) => i > top && textAcross(row, left, left + 1) === "└");
+  assert.notEqual(bottom, -1, "…and closed");
+  return rows.slice(top + 1, bottom).map((row) => textAcross(row, left + 1, right).trim());
+}
+
+/// The screen column `glyph` first paints at on `row`.
+function columnOf(row, glyph) {
+  let col = 0;
+  for (const c of row) {
+    const at = c.text.indexOf(glyph);
+    if (at !== -1) return col + textWidth(c.text.slice(0, at));
+    col += c.width;
+  }
+  return -1;
+}
+
+/// The text of `row`'s cells from screen column `start` up to `end`, whole graphemes only.
+function textAcross(row, start, end) {
+  const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
+  let col = 0;
+  let out = "";
+  for (const c of row) {
+    for (const { segment } of segmenter.segment(c.text)) {
+      const w = textWidth(segment);
+      if (col >= start && col + w <= end) out += segment;
+      col += w;
+    }
+  }
+  return out;
+}
+
+/// `help::help_lines` for the list, as the stock keymap spells it — the grouped legend, and the
+/// flat one it sheds its three fold rows from and renames two rows of.
+const LIST_HELP_GROUPED = [
+  "k/↑  j/↓     Move selection",
+  "g/G          First / last",
+  "Enter/Space  Toggle group / peek service activity",
+  "h/←          Collapse group",
+  "l/→          Expand group",
+  "H/L          Expand all / collapse all groups",
+  "v            Flat view (no group headers)",
+  "s            Start service",
+  "x            Stop service",
+  "t            Trigger an idle service",
+  "r            Restart service",
+  "+            Widen the service's queue lane",
+  "-            Narrow the service's queue lane",
+  "h            Narrow the queue lane at the cursor",
+  "l            Widen the queue lane at the cursor",
+  "Ctrl+R       Reload config",
+  "o            Output",
+  "i            Info view",
+  "/            Find (filter)",
+  "Esc          Clear filter",
+  "b            Show only busy or crashed services",
+  "q            Quit",
+  "?            Close help",
+  "",
+  "🪦           Orphan (removed from config)",
+  "🕸️           Stale (new config; restart to adopt)",
+  "🔷           Executing now (init/run/cleanup)",
+  "🔸           Failed fires or crashed (clears on restart)",
+];
+const LIST_HELP_FLAT = LIST_HELP_GROUPED.filter((line) => !/Collapse group|Expand group|collapse all groups/u.test(line)).map(
+  (line) =>
+    line
+      .replace("Toggle group / peek service activity", "Peek service activity")
+      .replace("Flat view (no group headers)", "Grouped view"),
+);
+
+test("the overlay is the terminal's own legend for the view underneath", () => {
+  // `help::help_lines`, row for row: the list's keys then its four sigils, the fold rows only
+  // while grouped, and the peek and view rows named for what the key does in the view on
+  // screen. A gutter row above and below the body is the frame's, so the popup reads it too.
   const { board, at } = liveBoard();
-  const rows = layout(board, { cols: 160, rows: 44, now: at + 1000, version: "0.2.123", help: true });
-  assertGrid(rows, 160, 44);
-  assertGolden("help-160x44.txt", rows);
-  const text = screenText(rows);
-  // Every scope heading and every one of the 51 rows, once, in **reading order** — each
-  // category runs down its own column and the columns sit side by side, so the sequence is
-  // read column by column rather than line by line. Read off the *cells*, because two scopes
-  // may legitimately spell one row the same way (`g Top` is both `output.tree.first` and
-  // `output.log.top`) and a substring scan would count one twice and the other never.
-  const expected = [];
-  for (const scope of SCOPES) {
-    expected.push(scope);
-    for (const row of DEFAULT_KEYS.filter((r) => r.scope === scope)) {
-      expected.push(`${all(idOf(row))} ${DESCRIPTIONS[idOf(row)]}`);
-    }
-  }
-  assert.deepEqual(overlayReading(rows), expected, "every scope and every row, once, in table order");
-  assert.equal(overlayRows(rows).length, DEFAULT_KEYS.length, "all 51 rows are laid out");
-  assert.ok(!text.includes("more keys"), "nothing was shed at this size");
-  // The unhandled rows are dim and carry their reason; the handled ones are not dim.
-  const dimOf = (label) => {
-    for (const row of rows) {
-      const at_ = row.findIndex((c) => c.fg === "legend" && c.text === label);
-      if (at_ !== -1) return row[at_].dim;
-    }
-    return null;
+  const options = { cols: 160, rows: 44, now: at + 1000, version: "0.2.123", help: true };
+  const grouped = layout(board, options);
+  assertGrid(grouped, 160, 44);
+  assertGolden("help-160x44.txt", grouped);
+  assert.deepEqual(popupLines(grouped), ["", ...LIST_HELP_GROUPED, ""], "the grouped list's legend");
+  const flat = layoutOf(board, { ...options, grouped: false });
+  assertGrid(flat, 160, 44);
+  assert.deepEqual(popupLines(flat), ["", ...LIST_HELP_FLAT, ""], "the flat list's legend");
+  // Only keys whiten: a sigil's glyph and every label paint at the body's own ink.
+  const keyCells = grouped.flat().filter((c) => c.fg === "bright" && c.text.trim() !== "").map((c) => c.text.trim());
+  for (const key of ["k/↑  j/↓", "Enter/Space", "Ctrl+R", "?"]) assert.ok(keyCells.includes(key), `${key} is a whitened key`);
+  assert.ok(!keyCells.includes("🪦"), "a sigil is not a key");
+  // The info page's own three rows, and each run-view pane's.
+  const info = layout(board, infoAt("ops::nightly", 160, 44, at, { help: true }));
+  assert.deepEqual(popupLines(info), ["", "i/Esc  Back to list", "q      Quit", "?      Close help", ""]);
+  const run = liveBoard("trace-burst.jsonl");
+  const state = runState("deep");
+  const runOptions = { cols: 160, rows: 44, now: run.at + 1000, version: "0.2.123", help: true };
+  // `help_overlay_lines` pads every key to the widest one of the legend, then two spaces.
+  const legend = (pairs) => {
+    const width = Math.max(...pairs.map(([key]) => textWidth(key)));
+    return pairs.map(([key, label]) => `${key}${" ".repeat(width - textWidth(key))}  ${label}`);
   };
-  assert.equal(dimOf("Move selection up"), false, "a key this page takes is lit");
-  assert.equal(dimOf("Info view"), false, "…including the one that opens the info page");
-  assert.equal(dimOf("Output"), false, "…and the one that opens the run view");
-  assert.equal(dimOf("Toggle collapse / output"), false, "…and a run-view pane key");
-  assert.equal(dimOf("Widen the service's lane"), true, "one it has no surface for is dim");
-  // …and the reason is beside it, once per scope where a whole scope shares one.
-  assert.ok(text.includes("Widen the service's lane — The relay has no lane verb"), "the per-row reason");
-  assert.ok(text.includes("queues — The relay has no lane verb"), "the per-scope one, on the heading");
-  // The run view's own note is **gone**: the three `output` scopes are handled now, so a line
-  // saying this page has no run view would be an explanation of nothing.
-  assert.ok(!text.includes("No run view on this page"), "the output scopes' old note is gone");
-  for (const scope of ["output", "output.tree", "output.log"]) {
-    assert.ok(overlayReading(rows).includes(scope), `the ${scope} heading stands bare`);
-  }
-  // The two page-level facts the card requires.
-  assert.ok(text.includes("a rebound `keys { … }` block is not mirrored here"), "the rebind caveat");
-  assert.ok(text.includes("Ctrl+R is afkd's reload"), "the interception, stated where the keys are");
-  // The partial actions carry their boundary rather than reading as fully live.
-  assert.ok(text.includes("Toggle group — Groups only — no activity peek"));
-  assert.ok(text.includes("Info view — Services only — a group has no info page"));
-  assert.ok(text.includes("Output — Services only — a group has no run"));
-  // The `info` scope is **handled** now, so neither its heading nor its row carries a reason —
-  // the note that said this page had no info view would be an explanation of nothing.
-  assert.ok(!text.includes("No info view on this page"), "the info scope's old note is gone");
-  assert.match(overlayReading(rows).find((e) => e === "info") ?? "", /^info$/u, "its heading stands bare");
-  // Two rows spell `Back to list` — `output.back` and `info.back` — and both are lit now that
-  // both pages exist. Counted rather than looked up by name, because `dimOf` finds whichever
-  // sits higher on the screen.
-  const backs = rows.flatMap((row) => row.filter((c) => c.fg === "legend" && c.text === "Back to list"));
-  assert.deepEqual(backs.map((c) => c.dim), [false, false], "both backs are lit");
+  const onTree = layout(run.board, { ...runOptions, run: { ...state, focus: "tree" } });
+  assert.deepEqual(popupLines(onTree), ["", ...legend([
+    ["k/↑  j/↓", "Move cursor"],
+    ["Enter/Space", "Toggle collapse / leaf output"],
+    ["h/←", "Collapse / to parent"],
+    ["l/→", "Expand / to child"],
+    ["H/L", "Expand all / collapse all"],
+    ["g/G", "Top / frontier"],
+    ["f", "Toggle follow"],
+    ["Tab", "Show the log"],
+    ["s", "Show this node's output"],
+    ["o/Esc", "Back to list"],
+    ["q", "Quit"],
+    ["?", "Close help"],
+  ]), ""], "the tree pane's legend");
+  const onLog = layout(run.board, { ...runOptions, run: { ...state, focus: "log" } });
+  assert.deepEqual(popupLines(onLog), ["", ...legend([
+    ["k/↑  j/↓", "Scroll line"],
+    ["Ctrl+U/D", "Half page up / down"],
+    ["PgUp/PgDn", "Page up / down"],
+    ["g/G", "Top / bottom"],
+    ["f", "Toggle follow"],
+    ["Tab", "Show the tree"],
+    ["s", "Scope log to node / all"],
+    ["o/Esc", "Back to list"],
+    ["q", "Quit"],
+    ["?", "Close help"],
+  ]), ""], "the log pane's legend");
 });
 
-test("an overlay too big for the viewport sheds and says how much", () => {
-  // The honest failure. 51 rows of prose do not fit 100×30 at any rung, so the overlay shows
-  // the columns that fit and states the count it could not — never quietly claiming to be the
-  // whole keymap when a column of it is off the edge.
+test("an overlay taller than the viewport keeps its frame and clips the rest", () => {
+  // A bordered block's own answer: the box is clamped to the frame, both borders and the
+  // gutter rows stay, and the body shows the lines that fit, first first.
   const { board, at } = liveBoard();
-  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", help: true });
-  assertGrid(rows, 100, 30);
-  const text = screenText(rows);
-  const shed = text.match(/… and (\d+) more keys — widen the viewport/);
-  assert.notEqual(shed, null, "it says how many it could not lay out");
-  assert.equal(overlayRows(rows).length + Number(shed[1]), DEFAULT_KEYS.length, "shown + shed is the whole table");
-  // The preamble survives the shed: the two facts are page-level and are not one of the rows.
-  assert.ok(text.includes("Ctrl+R is afkd's reload"));
-  // A wider viewport sheds strictly less — the ladder goes one way.
-  const wider = screenText(layout(board, { cols: 130, rows: 34, now: at + 1000, version: "0.2.123", help: true }));
-  const widerShed = wider.match(/… and (\d+) more keys/);
-  assert.ok(widerShed === null || Number(widerShed[1]) < Number(shed[1]), "a bigger viewport sheds less");
+  const rows = layout(board, { cols: 100, rows: 20, now: at + 1000, version: "0.2.123", help: true });
+  assertGrid(rows, 100, 20);
+  const lines = screenText(rows).split("\n");
+  assert.ok(lines[0].includes("┌ Help "), "the title border is the top row");
+  assert.ok(lines[19].includes("└"), "…and the bottom border the last, not lost off the edge");
+  assert.deepEqual(popupLines(rows), ["", ...LIST_HELP_GROUPED.slice(0, 20 - 4), ""], "the body is its first lines");
 });
 
 // --- §8: what a popup owes the screen behind it ------------------------------------------------
@@ -1054,11 +1227,17 @@ test("the key glyphs are canonical on every surface, not only the footer", () =>
       }
     }
   }
-  // …and the overlay really does carry the Title-case ones, so the scan above is not vacuous.
+  // …and the overlays really do carry the Title-case ones, so the scan above is not vacuous: the
+  // list's legend its own, and the run log pane's the paging keys and the pane switch.
   const overlay = screenText(screens[1]);
-  for (const glyph of ["Enter/Space", "Ctrl+R", "PgUp", "PgDn", "Esc", "Tab", "↑", "↓", "←", "→"]) {
+  for (const glyph of ["Enter/Space", "Ctrl+R", "Esc", "↑", "↓", "←", "→"]) {
     assert.ok(overlay.includes(glyph), `the overlay spells ${glyph}`);
   }
+  const run = liveBoard("trace-burst.jsonl");
+  const logOverlay = screenText(
+    layout(run.board, { cols: 160, rows: 44, now: run.at + 1000, version: "0.2.123", help: true, run: { ...runState("deep"), focus: "log" } }),
+  );
+  for (const glyph of ["PgUp", "PgDn", "Tab"]) assert.ok(logOverlay.includes(glyph), `the log pane's overlay spells ${glyph}`);
   // A dialog's title is Sentence case: a leading capital and no Title Case run.
   const titles = screenText(screens[0]).split("\n").concat(overlay.split("\n"))
     .map((l) => l.match(/┌ (.+?) ─/))
@@ -1509,7 +1688,7 @@ test("the overlays still outrank the info page", () => {
   const { board, at } = liveBoard();
   const help = layout(board, infoAt("ops::nightly", 160, 44, at, { help: true }));
   assertGrid(help, 160, 44);
-  assert.ok(screenText(help).includes("Ctrl+R is afkd's reload"), "the `?` overlay is up over the page");
+  assert.ok(popupLines(help).includes("i/Esc  Back to list"), "the `?` overlay is up over the page, with the page's own keys");
   const confirm = layout(board, infoAt("ops::nightly", 100, 30, at, {
     confirm: { verb: "force", targets: ["ops::sleeper"], skipped: 0 },
   }));

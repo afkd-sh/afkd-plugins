@@ -57,9 +57,10 @@ const { flashOf, needleOf, newSession, noteFrame, press, rowsOf, selectedIndex, 
 const cols = Number(need("cols"));
 const rows = Number(need("rows"));
 const version = args.get("version") ?? "";
-/// One press per character. `tab` is spelled `\t`, so the run view's pane swap is reachable
-/// without a second flag — the only named key any leg needs.
-const keys = [...(args.get("keys") ?? "")].map((c) => (c === "\t" ? "tab" : c));
+/// One press per character. `tab` is spelled `\t` and `enter` a newline, so the run view's
+/// pane swap and the activity peek are reachable without a second flag — the only named keys
+/// any leg needs.
+const keys = [...(args.get("keys") ?? "")].map((c) => (c === "\t" ? "tab" : c === "\n" ? "enter" : c));
 
 // The fold is clock-driven — every badge elapsed, activity age and countdown is measured
 // against the `now` it is handed — so the capture is replayed on a synthetic clock that only
@@ -90,10 +91,13 @@ const view = () => ({
   rows,
   now,
   version,
-  selected: selectedIndex(session, rowsOf(session, board)) ?? -1,
+  selected: selectedIndex(session, rowsOf(session, board), board) ?? -1,
   offset: session.offset,
   filter: needleOf(session),
   collapsed: session.collapsed,
+  grouped: session.grouped,
+  busyOnly: session.busyOnly,
+  peeked: session.peeked,
   typing: typingOf(session),
   flash: flashOf(session, now),
   confirm: session.confirm,

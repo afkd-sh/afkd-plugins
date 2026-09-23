@@ -1,19 +1,17 @@
-afkd 0.2.123 · ● Running 20m 11s · 8 up · 2 down                                    1.6k tok · $0.04
-                                                                                                    
+afkd 0.2.123 · ● Running 12s · 8 up · 2 down                                        1.6k tok · $0.04
+CPU           ▁▁▁   1% · Mem           ▁▁▁ 1.5G/31G · Net ↓         ▆▁▁  717/s ↑         ▂▁▁  959/s 
                                                                                                     
 Service                          State                 Trigger              Last Activity   Next Run
-  🧹 janitor                     □ Stopped             Every 1h                                     
-⊟ 📦 ops                         ✕ Crashed                                         20m 3s           
-├─ 🔹 nightly                    ▷ Queued 20m 1s       Every 1h                    20m 8s           
-├─ 🔷 sleeper                    ▶ Busy 20m 3s         Every 1h                    20m 3s           
-├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
-└─ ⊟ 📦 db                                                                         20m 4s           
-   └─ 🔷 vacuum                  ▶ Busy 20m 4s         Every 1h                    20m 4s           
-  🔹 archivist                   ● Idle                Every 1h                              39m 48s
-  🔹 noisy                       ● Idle                Every 1h                              39m 48s
-  🔹 flaky                       ● Idle                Every 1h                              39m 48s
-  🔹 deep                        ● Idle                Every 1h                    20m 6s    39m 53s
-  🔹 spare                       ● Idle                Every 1h                              39m 48s
+🧹 janitor                       □ Stopped             Every 1h                                     
+🔹 ops::nightly                  ▷ Queued 2s           Every 1h                        9s           
+🔷 ops::sleeper                  ▶ Busy 4s             Every 1h                        4s           
+🔸 ops::broken                   ✕ Crashed             Every 1h                                     
+🔷 ops::db::vacuum               ▶ Busy 5s             Every 1h                        5s           
+🔹 archivist                     ● Idle                Every 1h                              59m 47s
+🔹 noisy                         ● Idle                Every 1h                              59m 47s
+🔹 flaky                         ● Idle                Every 1h                              59m 47s
+🔹 deep                          ● Idle                Every 1h                        7s    59m 52s
+🔹 spare                         ● Idle                Every 1h                              59m 47s
                                                                                                     
 Queue             Slots                                                 Parallelism   Held   Waiting
 🧵 heavy (high)   ▮▮ ╎ ∙                                                2             2      1      
@@ -25,8 +23,10 @@ Queue             Slots                                                 Parallel
                                                                                                     
                                                                                                     
                                                                                                     
+                                                                                                    
+                                                                                                    
 s start    r restart    o output      g/G first/last  / find    Ctrl+R reload                       
-x stop     + widen      i info        v flat                    ? help                              
+x stop     + widen      i info        v grouped                 ? help                              
 t trigger  - narrow     Enter peek    b busy ○                  q quit                              
 
 ── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
@@ -34,21 +34,21 @@ nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
-rrmmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnneeeeeeeeeeeeeeennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+mmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnrrnnnnnnnnnnnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnrrnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnrrnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnrrnnrrnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbnnnnnnnnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -63,16 +63,14 @@ bnlllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnn
 
 ── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 ....................................................................................................
-....................................................................................................
+dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
 ....................................................................................................
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb
 sssssssssssssssssssssssssssssssssDDDDDDDDDssssssssssssssssssssssssssssssssssssssssssssssssssssssssss
+.................................ddddddddddd........................................................
 .................................bbbbbbbbb..........................................................
-.................................ddddddddddddddd....................................................
-.................................bbbbbbbbbbbbb......................................................
 .................................bbbbbbbbb..........................................................
-....................................................................................................
-.................................bbbbbbbbbbbbb......................................................
+.................................bbbbbbbbb..........................................................
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................
@@ -81,6 +79,8 @@ sssssssssssssssssssssssssssssssssDDDDDDDDDssssssssssssssssssssssssssssssssssssss
 ....................................................................................................
 bbbbb.............bbbbb.................................................bbbbbbbbbbb...bbbb...bbbbbbb
 ..................bb...d............................................................................
+....................................................................................................
+....................................................................................................
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................

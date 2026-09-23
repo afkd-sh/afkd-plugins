@@ -265,14 +265,16 @@ test("preventDefault is called exactly when the press was handled", () => {
     ["j", {}, true],
     ["ArrowDown", {}, true],
     ["?", {}, true],
-    // `i` opens the selected service's info page and `o` its run view, so both are this page's
-    // keys now.
+    // `i` opens the selected service's info page and `o` its run view, and `v`, `b` and `Enter`
+    // flip the view, the busy lens and the selected service's peek, so all five are this page's.
     ["i", {}, true],
     ["o", {}, true],
+    ["v", {}, true],
+    ["b", {}, true],
+    ["Enter", {}, true],
     // A bound key that resolves to an action with **no surface here** — it must not prevent, or
     // the page would eat a chord it does nothing with.
-    ["v", {}, false],
-    ["b", {}, false],
+    ["+", {}, false],
     ["q", {}, false],
     // An unbound key.
     ["z", {}, false],
@@ -342,7 +344,8 @@ test("a confirmed fan-out posts one body per target, and exactly one", () => {
   const { board } = liveBoard();
   const grid = wire({
     board,
-    session: { ...newSession(), cursor: { kind: "group", key: "ops" }, cursorRow: 1 },
+    // A group header exists only in the grouped tree.
+    session: { ...newSession(), grouped: true, cursor: { kind: "group", key: "ops" }, cursorRow: 1 },
   });
   grid.element.focus();
   grid.element.dispatch("keydown", keydown("r"));

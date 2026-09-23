@@ -9,7 +9,7 @@ Service                          State                 Trigger              Last
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
 └─ ⊟ 📦 db                                                                             5s           
    └─ 🔷 vacuum                  ▶ Busy 5s             Every 1h                        5s           
-  🔹 🔒archivist                 ● Idle                Every 1h                              59m 47s
+  🔹 archivist                   ● Idle                Every 1h                              59m 47s
   🔹 noisy                       ● Idle                Every 1h                              59m 47s
   🔹 flaky                       ● Idle                Every 1h                              59m 47s
   🔹 deep                        ● Idle                Every 1h                        7s    59m 52s
@@ -61,7 +61,7 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnllllllllbnlllllllllbbbnllllllllllllbnllllllbnllllllllbnllllllllbbbbbbnllllllllbnllllllbnllllnnnnnn
 
-── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 ....................................................................................................
 dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
 ....................................................................................................

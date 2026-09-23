@@ -3,40 +3,40 @@ CPU                          ▁▁▁   1% · Mem                          ▁�
                                                                                                                                                                 
 Service                                                                        State                 Trigger                            Last Activity   Next Run
   🧹 janitor                                                                   □ Stopped             Every 1h                                                   
-⊟ 📦 op┌ Help ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐       
-├─ 🔹 n│                                                                                                                                                │       
-├─ 🔷 s│  These are afkd's stock keys — a rebound `keys { … }` block is not mirrored here.                                                              │       
-├─ 🔸 b│  Ctrl+R is afkd's reload: the page takes it, so the browser does not reload the tab.                                                           │       
-└─ ⊟ 📦│                                                                                                                                                │       
-   └─  │  global                                                                queues — The relay has no lane verb          PgDn        Page down      │       
-  🔹 🔒│  q/Ctrl+C    Quit — The browser owns Ctrl+C                            h/←         Narrow the lane at the cursor    g           Top            │59m 47s
-  🔹 no│  Ctrl+R      Reload config                                             l/→         Widen the lane at the cursor     G           Bottom         │59m 47s
-  🔹 fl│  ?           Close help                                                                                             f           Toggle follow  │59m 47s
-  🔹 de│                                                                        output                                                                  │59m 52s
-  🔹 sp│  overview                                                              Tab         Show the other pane              info                       │59m 47s
-       │  s           Start service                                             s           Scope log to node / all          i/Esc       Back to list   │       
-Queue  │  x           Stop service                                              o/Esc       Back to list                                                │Waiting
-🧵 heav│  t           Trigger an idle service                                                                                confirm                    │1      
-       │  r           Restart service                                           output.tree                                  y           Confirm        │       
-       │  Enter/Space Toggle group — Groups only — no activity peek             k/↑         Move cursor up                   n/Esc       Cancel         │       
-       │  o           Output — Services only — a group has no run               j/↓         Move cursor down                                            │       
-       │  i           Info view — Services only — a group has no info page      Enter/Space Toggle collapse / output                                    │       
-       │  h/←         Collapse group                                            h/←         Collapse / to parent                                        │       
-       │  l/→         Expand group                                              l/→         Expand / to child                                           │       
-       │  H           Collapse all groups                                       g           Top                                                         │       
-       │  L           Expand all groups                                         f           Toggle follow                                               │       
-       │  v           Flat view — No flat view on this page                     G           Follow the frontier                                         │       
-       │  k/↑         Move selection up                                         L           Expand all                                                  │       
-       │  j/↓         Move selection down                                       H           Collapse all                                                │       
-       │  g           First row                                                                                                                         │       
-       │  G           Last row                                                  output.log                                                              │       
-       │  /           Find (filter)                                             k/↑         Scroll up a line                                            │       
-       │  Esc         Clear filter                                              j/↓         Scroll down a line                                          │       
-       │  b           Show only busy services — No busy lens on this page       Ctrl+U      Half page up                                                │       
-       │  +           Widen the service's lane — The relay has no lane verb     Ctrl+D      Half page down                                              │       
-       │  -           Narrow the service's lane — The relay has no lane verb    PgUp        Page up                                                     │       
-       │                                                                                                                                                │       
-       └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘       
+⊟ 📦 ops                                                                       ✕ Crashed                                                           4s           
+├─ 🔹 nightly                                    ┌ Help ──────────────────────────────────────────────────────┐                                    9s           
+├─ 🔷 sleeper                                    │                                                            │                                    4s           
+├─ 🔸 broken                                     │  k/↑  j/↓     Move selection                               │                                                 
+└─ ⊟ 📦 db                                       │  g/G          First / last                                 │                                    5s           
+   └─ 🔷 vacuum                                  │  Enter/Space  Toggle group / peek service activity         │                                    5s           
+  🔹 archivist                                   │  h/←          Collapse group                               │                                          59m 47s
+  🔹 noisy                                       │  l/→          Expand group                                 │                                          59m 47s
+  🔹 flaky                                       │  H/L          Expand all / collapse all groups             │                                          59m 47s
+  🔹 deep                                        │  v            Flat view (no group headers)                 │                                    7s    59m 52s
+  🔹 spare                                       │  s            Start service                                │                                          59m 47s
+                                                 │  x            Stop service                                 │                                                 
+Queue             Slots                          │  t            Trigger an idle service                      │                     Parallelism   Held   Waiting
+🧵 heavy (high)   ▮▮ ╎ ∙                         │  r            Restart service                              │                     2             2      1      
+                                                 │  +            Widen the service's queue lane               │                                                 
+                                                 │  -            Narrow the service's queue lane              │                                                 
+                                                 │  h            Narrow the queue lane at the cursor          │                                                 
+                                                 │  l            Widen the queue lane at the cursor           │                                                 
+                                                 │  Ctrl+R       Reload config                                │                                                 
+                                                 │  o            Output                                       │                                                 
+                                                 │  i            Info view                                    │                                                 
+                                                 │  /            Find (filter)                                │                                                 
+                                                 │  Esc          Clear filter                                 │                                                 
+                                                 │  b            Show only busy or crashed services           │                                                 
+                                                 │  q            Quit                                         │                                                 
+                                                 │  ?            Close help                                   │                                                 
+                                                 │                                                            │                                                 
+                                                 │  🪦           Orphan (removed from config)                 │                                                 
+                                                 │  🕸️           Stale (new config; restart to adopt)         │                                                 
+                                                 │  🔷           Executing now (init/run/cleanup)             │                                                 
+                                                 │  🔸           Failed fires or crashed (clears on restart)  │                                                 
+                                                 │                                                            │                                                 
+                                                 └────────────────────────────────────────────────────────────┘                                                 
+                                                                                                                                                                
                                                                                                                                                                 
                                                                                                                                                                 
                                                                                                                                                                 
@@ -49,86 +49,86 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
 rrmmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnrbbbbbbrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnn
-rrrnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-rrrnnnnrnnllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-rrrnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-rrrnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-rrrrrrnrnnbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbblllllllllllllllllllllllllllllnnnnnnnnnnbbbbbbbbbbbnlllllllllnnnnnnrnnnnnnn
-rrnnnnnrnnbbbbbbbbbbbnllllllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllllllllllllnnnnbbbbbbbbbbbnlllnnnnnnnnnnnnrrrrrrrr
-rrnnnnnrnnbbbbbbbbbbbnlllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllllllllllllllllllnnnnnbbbbbbbbbbbnllllllnnnnnnnnnrrrrrrrr
-rrnnnnnrnnbbbbbbbbbbbnllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllnnrrrrrrrr
-rrnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrr
-rrnnnnnrnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllnnnnnnnnnnnnnnbbbbnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrr
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllllllnnnnnnnnnnbbbbbbbbbbbnllllllllllllnnnrnnnnnnn
-bbbbbnnrnnbbbbbbbbbbbnllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbbbbbb
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllllllllllllllllllllllllllllnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllllnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllllllllllllllllllllllllllnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnnnbbbbbbbbbbbnllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllllllllllllllllllllllllllllllllllnnnnnnnbbbbbbbbbbbnllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnnbbbbbbbbbbbnllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnbbbbbbbbbbbnllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnbbbbbbbbbbbnlllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
-nnnnnnnrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbbbbbrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnnnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnlllllllbnlllllllllbnllllllllllbnllllllllbbbbbnllllllllbbbnllllllllllllbnllllllllllbbbbbbnllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnlllllllbnlllllllllbnllllllllllbnllllllllllllllllllllllbnllllllllllllllbnllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd...bbbbbb................................................................bbbbbbddddddddddddddddddddddddddddd......................................ddddddd
-ddddddd...ddddddddddd.dddddddddddddddddddddddddddddd............................ddddddddddd.ddddddddddddddddddddddddddddd................................ddddddd
-ddddddd.........................................................................ddddddddddd.dddddddddddddddddddddddddddd.................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd.........................................................................bbbbbb...................................................................ddddddd
-ddddddd...bbbbbbbb...........................................................................................................bbbb........................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd......................................................................................................................bbbbbbb.....................ddddddd
-ddddddd.........................................................................bbbbbbbbbbb..............................................................ddddddd
-ddddddd...........................ddddddddddddddddddddddddddddddddd......................................................................................ddddddd
-ddddddd.....................ddddddddddddddddddddddddddddddddddddd........................................................................................ddddddd
-ddddddd........................ddddddddddddddddddddddddddddddddddddddddddd...............................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd...ddddddddddd.ddddddddddddddddddddddddddddddddddddd..............................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd.........................................................................bbbbbbbbbb...............................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd...ddddddddddd.ddddddddddddddddddddddddddddddddddddddddddddddddddd................................................................................ddddddd
-ddddddd...ddddddddddd.ddddddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................................ddddddd
-ddddddd...ddddddddddd.dddddddddddddddddddddddddddddddddddddddddddddddddddddd.............................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
-ddddddd..................................................................................................................................................ddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddddddddddddd..............................................................ddddddddddddddddddddddddddddddddddddddddddddddddd
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

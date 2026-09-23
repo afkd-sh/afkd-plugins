@@ -1,19 +1,19 @@
 afkd 0.2.123 · ● Running 12s · 8 up · 2 down           $0.04
 CPU   1% · Mem 1.5G/31G · Net ↓717/s ↑959/s                 
                                                             
-Service            State                 Last Activity      
-  🧹 janitor       □ Stopped                                
-⊟ 📦 ops           ✕ Crashed                        4s      
-├─ 🔹 nightly      ▷ Queued 2s                      9s      
-├─ 🔷 sleeper      ▶ Busy 4s                        4s      
-├─ 🔸 broken       ✕ Crashed                                
-└─ ⊟ 📦 db                                          5s      
-   └─ 🔷 vacuum    ▶ Busy 5s                        5s      
-  🔹 🔒archivist   ● Idle                                   
-  🔹 noisy         ● Idle                                   
-  🔹 flaky         ● Idle                                   
-  🔹 deep          ● Idle                           7s      
-  🔹 spare         ● Idle                                   
+Service           State                 Last Activity       
+  🧹 janitor      □ Stopped                                 
+⊟ 📦 ops          ✕ Crashed                        4s       
+├─ 🔹 nightly     ▷ Queued 2s                      9s       
+├─ 🔷 sleeper     ▶ Busy 4s                        4s       
+├─ 🔸 broken      ✕ Crashed                                 
+└─ ⊟ 📦 db                                         5s       
+   └─ 🔷 vacuum   ▶ Busy 5s                        5s       
+  🔹 archivist    ● Idle                                    
+  🔹 noisy        ● Idle                                    
+  🔹 flaky        ● Idle                                    
+  🔹 deep         ● Idle                           7s       
+  🔹 spare        ● Idle                                    
                                                             
 Queue        Slots              Parallelism   Held   Waiting
 🧵 heavy …   ▮▮ ╎ ∙             2             2      1      
@@ -33,19 +33,19 @@ Queue        Slots              Parallelism   Held   Waiting
 nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnnnn
-rrmmmmmmmmmmnnnnnnnmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnnnnn
+rrmmmmmmmmmmnnnnnnmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrrrrnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbnnnnnnnnbbbbbnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -61,18 +61,18 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 ............................................................
 dddd....ddddddd........dddddddd.....dd......................
 ............................................................
-bbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb......
-sssssssssssssssssssDDDDDDDDDssssssssssssssssssssssssssssssss
-...................bbbbbbbbb................................
-...................ddddddddddd..............................
-...................bbbbbbbbb................................
-...................bbbbbbbbb................................
+bbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb.......
+ssssssssssssssssssDDDDDDDDDsssssssssssssssssssssssssssssssss
+..................bbbbbbbbb.................................
+..................ddddddddddd...............................
+..................bbbbbbbbb.................................
+..................bbbbbbbbb.................................
 ............................................................
-...................bbbbbbbbb................................
+..................bbbbbbbbb.................................
 ............................................................
 ............................................................
 ............................................................

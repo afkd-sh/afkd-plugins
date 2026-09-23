@@ -6,4 +6,4 @@ source = "https://github.com/afkd-sh/afkd-plugins"
 exec = "web-top"
 
 [config]
-settings = ["port", "bind", "runs_dir", "max_clients", "log_lines"]
+settings = ["listen", "runs_dir", "max_clients", "log_lines"]

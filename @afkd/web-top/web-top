@@ -46,9 +46,10 @@ MAX_LINE = 64 * 1024
 
 # What an unwritten setting means. A block naming this companion with nothing in it must
 # still come up, which is the first thing anybody tries. 8770 is the example companion's,
-# so the two can be run side by side.
+# so the two can be run side by side, and a `listen` that names a host alone keeps the
+# port.
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8771
-DEFAULT_BIND = "127.0.0.1"
 DEFAULT_MAX_CLIENTS = 8
 # How many log lines the page's fold keeps per service. `LOG_RING_CAPACITY` in
 # `crates/tui/src/logring.rs` — the terminal dashboard's own bound, so a browser and a
@@ -102,8 +103,8 @@ def setting_int(settings, key, default, low, high):
 
     Every value arrives as a **string**: afkd lowers a scalar to a JSON string and a bare
     key with no value to `true`, and omits an unwritten key entirely. So the coercion and
-    the default live in one place, and `port` written as a word is a sentence rather than
-    a traceback four frames later.
+    the default live in one place, and `max_clients` written as a word is a sentence
+    rather than a traceback four frames later.
     """
     raw = settings.get(key, default)
     if isinstance(raw, bool) or not isinstance(raw, (str, int)):
@@ -124,6 +125,31 @@ def setting_str(settings, key, default):
     if isinstance(raw, bool) or not isinstance(raw, str) or not raw.strip():
         die("%s: setting `%s` must be a non-empty string, not %r" % (NAME, key, raw))
     return raw.strip()
+
+
+def setting_listen(settings, key, default_host, default_port):
+    """`listen "host[:port]"` as an IPv4 host and a port, or a named fault.
+
+    afkd's own spelling for an address to bind: its `bind` block and the webhook trigger
+    take the same shape, so an operator writes one word for one thing. A bare host keeps
+    `default_port`, and a port of `0` binds an ephemeral one.
+    """
+    if key not in settings:
+        return default_host, default_port
+    text = setting_str(settings, key, "")
+    host, sep, port = text.rpartition(":")
+    if not sep:
+        return text, default_port
+    if not host:
+        die("%s: setting `%s` must be \"host[:port]\", not %r" % (NAME, key, text))
+    try:
+        number = int(port)
+    except ValueError:
+        die("%s: setting `%s` must end in a port number, not %r" % (NAME, key, text))
+    if not 0 <= number <= 65535:
+        die("%s: setting `%s` must name a port between 0 and 65535, not %d"
+            % (NAME, key, number))
+    return host, number
 
 
 def setting_dir(settings, key, default):
@@ -1216,7 +1242,7 @@ def check_socket(path):
 
     Checked rather than dialled: a probe connection would show up in the daemon's own
     client log every time this companion starts. Deliberately **after** the settings, so a
-    misspelled `port` is named as the misspelled `port` rather than masked by whatever the
+    malformed `listen` is named as the malformed `listen` rather than masked by whatever the
     home looks like.
     """
     try:
@@ -1262,8 +1288,7 @@ def main():
     settings = call.get("settings")
     if not isinstance(settings, dict):
         settings = {}
-    port = setting_int(settings, "port", DEFAULT_PORT, 0, 65535)
-    bind = setting_str(settings, "bind", DEFAULT_BIND)
+    bind, port = setting_listen(settings, "listen", DEFAULT_HOST, DEFAULT_PORT)
     max_clients = setting_int(settings, "max_clients", DEFAULT_MAX_CLIENTS, 1, 64)
     runs_dir = setting_dir(
         settings, "runs_dir", os.path.join(os.path.dirname(socket_path), "runs")
@@ -1292,7 +1317,7 @@ def main():
     threading.Thread(target=watch_stdin, args=(httpd, relay, ready), daemon=True).start()
 
     # The line an operator reads out of the daemon log, and the only place an ephemeral
-    # `port 0` announces what it got.
+    # `:0` announces what it got.
     print("serving http://%s:%d" % (bind, httpd.server_address[1]), flush=True)
     ready.set()
     httpd.serve_forever(poll_interval=0.1)

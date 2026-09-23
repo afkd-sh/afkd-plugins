@@ -139,7 +139,7 @@ test("the painter styles from roles and sets no colour of its own", () => {
   const classes = new Set(root.children.flatMap((row) => row.children.map((s) => s.className)));
   for (const list of classes) {
     for (const name of list.split(" ")) {
-      assert.match(name, /^(fg-[a-z-]+|bg-[a-z-]+|dim|bold)$/, `${name} is a role or a weight`);
+      assert.match(name, /^(fg-[a-z-]+|bg-[a-z-]+|dim|bold|italic)$/, `${name} is a role or a weight`);
     }
   }
   // Every look the layout puts on a cell reaches the DOM — not just the roles. A painter that
@@ -152,9 +152,9 @@ test("the painter styles from roles and sets no colour of its own", () => {
 
 test("a cell's whole look reaches its span, and a run splits on any of it", () => {
   // The coalescer's contract, over a row built to break it: six cells whose looks differ one
-  // field at a time — weight, then weight again, then role, then band — and a two-cell
-  // grapheme in the last of them. Adjacent cells merge only when **all four** fields agree,
-  // so this row must paint as six spans and not five.
+  // field at a time — weight, then weight again, then role, then band — and two two-cell
+  // graphemes in the last of them. Adjacent cells merge only when **all four** fields agree,
+  // and a grapheme outside ASCII never merges at all, so this row paints as seven spans.
   const root = element("div");
   const row = [
     cell("Aa", { fg: "accent", bold: true }),
@@ -168,20 +168,36 @@ test("a cell's whole look reaches its span, and a run splits on any of it", () =
   const spans = root.children[0].children;
   assert.deepEqual(
     spans.map((s) => s.className),
-    ["fg-accent bold", "fg-accent", "fg-accent dim", "fg-accent", "fg-ok", "fg-ok bg-selection"],
+    ["fg-accent bold", "fg-accent", "fg-accent dim", "fg-accent", "fg-ok", "fg-ok bg-selection", "fg-ok bg-selection"],
     "each field of the look is on the span, and each one splits the run",
   );
-  assert.deepEqual(spans.map((s) => s.textContent), ["Aa", "Bb", "Cc", "Dd", "Ee", "監視"]);
+  assert.deepEqual(spans.map((s) => s.textContent), ["Aa", "Bb", "Cc", "Dd", "Ee", "監", "視"]);
   assert.deepEqual(
     spans.map((s) => s.style.props["--cells"]),
-    ["2", "2", "2", "2", "2", "4"],
-    "…and the wide pair is boxed at the four cells it costs, not the two it counts",
+    ["2", "2", "2", "2", "2", "2", "2"],
+    "…and each wide grapheme is boxed at the two cells it costs, not the one it counts",
   );
   // The other direction: one look across two cells really is one span, which is what keeps a
   // hundred-cell row at a handful of nodes.
   paint(root, [[cell("ab", { fg: "ink" }), cell("cd", { fg: "ink" })]]);
   assert.equal(root.children[0].children.length, 1, "two cells of one look coalesce");
   assert.equal(root.children[0].children[0].textContent, "abcd");
+});
+
+test("a glyph outside ASCII is boxed alone, so a wider face cannot clip the text after it", () => {
+  // The bug a real browser showed: the `State` cell's `▷` came from a fallback face drawn
+  // wider than its one cell, and inside one shared box it pushed ` Queued 1h 18m` right until
+  // the box clipped its last cell and the page read `▷ Queued 1h 18`. Each such glyph now
+  // owns a box of its measured width, so its overhang is the only thing that can clip, and
+  // the ASCII after it still coalesces into one run starting on its own column.
+  const root = element("div");
+  paint(root, [[cell("▷ Queued 1h 18m", { fg: "info" }), cell("🔹 archivist", { fg: "ink" }), cell("├─ ", { fg: "recede" })]]);
+  const spans = root.children[0].children;
+  assert.deepEqual(
+    spans.map((s) => [s.textContent, s.style.props["--cells"]]),
+    [["▷", "1"], [" Queued 1h 18m", "14"], ["🔹", "2"], [" archivist", "10"], ["├", "1"], ["─", "1"], [" ", "1"]],
+    "every non-ASCII cluster is a box of its own cells, and the ASCII between them one run",
+  );
 });
 
 test("the stylesheet spends what the painter publishes", () => {

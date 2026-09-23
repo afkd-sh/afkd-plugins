@@ -4,7 +4,7 @@ CPU           ▁▁▁   1% · Mem           ▁▁▁ 1.5G/31G · Net ↓     
 Service                          State                 Trigger              Last Activity   Next Run
   🧹 janitor                     □ Stopped             Every 1h                                     
 ⊞ 📦 ops                         ✕ Crashed                                             4s           
-  🔹 🔒archivist                 ● Idle                Every 1h                              59m 47s
+  🔹 archivist                   ● Idle                Every 1h                              59m 47s
   🔹 noisy                       ● Idle                Every 1h                              59m 47s
   🔹 flaky                       ● Idle                Every 1h                              59m 47s
   🔹 deep                        ● Idle                Every 1h                        7s    59m 52s
@@ -61,7 +61,7 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnlllllllbnlllllllllbnllllllllllbbbbbbbnllllllllbnllllllllllllllbnllllllllllbbbbbbnllllllllbnllllnnn
 bnlllllllbnlllllllllbnllllllllllbbbnllllllllllllbbbnllllllllllllbnllllllllllbnllllnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 ....................................................................................................
 dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
 ....................................................................................................

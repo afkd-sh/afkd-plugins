@@ -9,7 +9,7 @@ Service                          State                 Trigger              Last
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
 └─ ⊟ 📦 db        ┌ Force-stop ─────────────────────────────────────────────────┐                   
    └─ 🔹 vacuum   │                                                             │            59m 54s
-  🔹 🔒archivist  │  Force-stop 1 stuck service?                                │            59m 54s
+  🔹 archivist    │  Force-stop 1 stuck service?                                │            59m 54s
   🔹 noisy        │                                                             │      1s    59m 58s
   🔸 flaky        │    🧹 janitor                                               │      1s    59m 58s
   🔹 deep         │                                                             │            59m 54s
@@ -61,7 +61,7 @@ bnllllllllllllbnlllllllllllbnllllllllllllbbbnllllllllllllbnllllllllbbbbbbnllllll
 bnllllllllllllbnlllllllllllbnllllllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bnllllllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

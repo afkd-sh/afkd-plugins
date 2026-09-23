@@ -124,7 +124,7 @@ assert.deepEqual(Object.keys(ROLE_LETTER).sort(), [...FG_ROLES].sort(), "every f
 assert.equal(new Set(Object.values(ROLE_LETTER)).size, FG_ROLES.length, "…and no two roles share one");
 
 const ROLE_RULE = "── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted";
-const WEIGHT_RULE = "── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold";
+const WEIGHT_RULE = "── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold";
 
 /// The weight-and-band letter for one cell. `dim` and `bold` are the terminal's two weight
 /// attributes and never co-occur here (`assertGrid` holds them to that), and the selection
@@ -132,6 +132,8 @@ const WEIGHT_RULE = "── weight · . plain · d dim · b bold · s selection 
 /// in lower case off the band, in upper case on it.
 function weightLetter(c) {
   const band = c.bg === "selection";
+  // Italic only ever rides dim — the activity peek's `empty` placeholder — and never a band.
+  if (c.italic) return "i";
   if (c.dim) return band ? "D" : "d";
   if (c.bold) return band ? "B" : "b";
   return band ? "s" : ".";

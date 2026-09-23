@@ -17,12 +17,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { fold, seed } from "./fold.mjs";
-import { rowKey, runMetrics, scrollOffset, visibleRows } from "./layout.mjs";
+import { rowKey, runMetrics, scrollOffset, visibleRows as visibleRowsOf } from "./layout.mjs";
 import {
   FLASH_TIMEOUT,
   flashOf,
   needleOf,
-  newSession,
+  newSession as bootSession,
   noteFrame,
   press,
   rowsOf,
@@ -32,6 +32,11 @@ import {
 } from "./session.mjs";
 
 const HERE = import.meta.dirname;
+
+// Most of these suites drive the grouped tree, the one view the page used to have, so their
+// sessions start grouped; the flat boot view's own tests start from `bootSession()`.
+const newSession = () => ({ ...bootSession(), grouped: true });
+const visibleRows = (board, options = {}) => visibleRowsOf(board, { grouped: true, ...options });
 
 /// A synthetic clock, as `layout.test.mjs` keeps one: every anchor the fold computes is pure
 /// arithmetic and identical across runs.
@@ -225,7 +230,7 @@ test("h folds a member's parent and moves the cursor onto it; l unfolds", () => 
   );
 });
 
-test("Enter toggles a group header and does nothing on a service row", () => {
+test("Enter folds a group header and opens a service row's peek", () => {
   const { board } = liveBoard();
   const onOps = { ...newSession(), cursor: { kind: "group", key: "ops" }, cursorRow: 1 };
   const shut = press(onOps, board, key("enter"), { now: BASE, bodyHeight: 20 });
@@ -238,13 +243,55 @@ test("Enter toggles a group header and does nothing on a service row", () => {
   // `Space` is the alternate, and toggles back.
   const open = press(shut.session, board, key("space"), { now: BASE, bodyHeight: 20 });
   assert.deepEqual([...open.session.collapsed], []);
-  // On a service row the terminal opens an activity peek; this page has none, so the key does
-  // nothing **and reports itself unhandled**, which is what keeps the browser's own meaning.
+  // On a service row it opens that service's activity peek, and a second press closes it —
+  // `toggle_selected_collapse`'s other arm — with the fold set and the cursor untouched.
   const onJanitor = newSession();
   const peek = press(onJanitor, board, key("enter"), { now: BASE, bodyHeight: 20 });
-  assert.equal(peek.handled, false, "Enter on a service row is not this page's key");
-  assert.deepEqual(peek.session, onJanitor);
-  assert.deepEqual(peek.commands, []);
+  assert.equal(peek.handled, true, "Enter on a service row is this page's key");
+  assert.deepEqual([...peek.session.peeked], ["janitor"], "…and it opens that service's peek");
+  assert.deepEqual(peek.session.collapsed, onJanitor.collapsed, "the fold set is not what moved");
+  assert.deepEqual(peek.commands, [], "a peek is a local view and posts nothing");
+  const closed = press(peek.session, board, key("space"), { now: BASE, bodyHeight: 20 });
+  assert.deepEqual([...closed.session.peeked], [], "the alternate closes it again");
+});
+
+test("the board boots flat, and v flips it without losing the cursor", () => {
+  // `toggle_view`: the flag and nothing else. A selected service keeps the selection in both
+  // views, and a selected header lands on its first member flat and finds itself again grouped.
+  const { board } = liveBoard();
+  const boot = bootSession();
+  assert.equal(boot.grouped, false, "the boot view is flat");
+  assert.ok(rowsOf(boot, board).every((r) => r.kind !== "group"), "…with no header in it");
+  const onOps = { ...boot, grouped: true, cursor: { kind: "group", key: "ops" }, cursorRow: 1 };
+  const flat = press(onOps, board, key("v"), { now: BASE, bodyHeight: 20 });
+  assert.equal(flat.handled, true);
+  assert.equal(flat.session.grouped, false);
+  assert.deepEqual(cursorOn(flat.session, board), { kind: "service", key: "ops::nightly" }, "the header's first member");
+  const back = press(flat.session, board, key("v"), { now: BASE, bodyHeight: 20 });
+  assert.deepEqual(cursorOn(back.session, board), { kind: "group", key: "ops" }, "…and the header again");
+  assert.deepEqual(back.session.collapsed, onOps.collapsed, "the fold set rode the round trip untouched");
+  // Flat view has no headers, so the four fold keys are inert there rather than rewriting a set
+  // nothing on screen reflects.
+  for (const chord of [key("h"), key("l"), key("H"), key("L")]) {
+    const out = press(flat.session, board, chord, { now: BASE, bodyHeight: 20 });
+    assert.equal(out.handled, false, `${chord.key} is inert in flat view`);
+    assert.deepEqual(out.session.collapsed, flat.session.collapsed);
+  }
+});
+
+test("b lenses the board, and the cursor finds its row again when it lifts", () => {
+  // `FilterBusyToggle`: state-only, touching neither the needle nor the fold set. A cursor the
+  // lens hides falls back by position and keeps its key, so clearing the lens puts it back.
+  const { board } = liveBoard();
+  const onIdle = { ...bootSession(), cursor: { kind: "service", key: "archivist" }, cursorRow: 5 };
+  const lensed = press(onIdle, board, key("b"), { now: BASE, bodyHeight: 20 });
+  assert.equal(lensed.handled, true);
+  assert.equal(lensed.session.busyOnly, true);
+  assert.ok(rowsOf(lensed.session, board).filter((r) => r.kind === "service").every((r) => ["Starting", "Busy", "Stopping", "Crashed"].includes(r.svc.badge)));
+  assert.deepEqual(lensed.session.filter, onIdle.filter, "the needle is its own axis");
+  const lifted = press(lensed.session, board, key("b"), { now: BASE, bodyHeight: 20 });
+  assert.equal(lifted.session.busyOnly, false);
+  assert.deepEqual(cursorOn(lifted.session, board), { kind: "service", key: "archivist" }, "the cursor is back on its row");
 });
 
 test("H folds every group and L opens them all", () => {
@@ -339,7 +386,7 @@ test("the footer's gated hints track the selected row's own badge", () => {
 /// rendered screen's own cells, so the gate observed is the gate painted.
 function footerTextAt(board, at, selected) {
   const { layout } = layoutModule;
-  const rows = layout(board, { cols: 140, rows: 30, now: at + 1000, version: "0.2.123", selected });
+  const rows = layout(board, { cols: 140, rows: 30, now: at + 1000, version: "0.2.123", selected, grouped: true });
   const out = [];
   for (const row of rows.slice(-4)) {
     // A hint is a bright key cell, a space, then a legend label cell — the two `hintRowCells`
@@ -782,9 +829,9 @@ test("the actions this page has no surface for are inert and unprevented", () =>
   const { board, at } = liveBoard();
   // Every action `keymap.mjs` notes as unreachable here, pressed at its own primary chord.
   // Neither `i` nor `o` is among them any more — they open a service's info page and its run
-  // view — and each one's own partial boundary (a group header, a lane row) is asserted with the
-  // page's other keys below.
-  for (const chord of [key("v"), key("b"), key("+"), key("-"), key("q"), ctrl("c")]) {
+  // view — nor `v` and `b`, which flip the view and the busy lens; each partial boundary (a
+  // group header, a lane row) is asserted with the page's other keys below.
+  for (const chord of [key("+"), key("-"), key("q"), ctrl("c")]) {
     const out = press(newSession(), board, chord, { now: at, bodyHeight: 20 });
     assert.deepEqual(out.commands, [], `${chord.key} sends nothing`);
     assert.equal(out.handled, false, `${chord.key} is left to the browser`);

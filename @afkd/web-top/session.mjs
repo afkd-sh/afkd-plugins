@@ -22,7 +22,7 @@
 //   for a fire, and what this page does for all six.
 
 import { HANDLED, REFUSED_WHILE_QUITTING, resolve } from "./keymap.mjs";
-import { rowKey, runTreeNav, scrollOffset, visibleRows } from "./layout.mjs";
+import { peekFloorOffset, rowKey, runTreeNav, scrollOffset, visibleCards, visibleRows } from "./layout.mjs";
 
 /// `model::FLASH_TIMEOUT` — how long a transient footer message stays up. Long enough to read
 /// a one-line reload summary, short enough that it gets out of the way.
@@ -36,7 +36,10 @@ export const FLASH_TIMEOUT = 4000;
  * key last resolved, the index-domain last resort `resolve_selection` falls back to when the
  * keyed row has vanished entirely. `collapsed` holds the **folded** group paths — absent means
  * expanded, the inversion of the terminal's `expanded` set and the reason is in `layout.mjs`'s
- * `buildRows`.
+ * `buildRows`. `grouped` is the view flag (`v`), `false` at boot because the terminal boots
+ * flat, and `busyOnly` the busy lens (`b`); neither touches the other or the fold set.
+ * `peeked` holds the services whose activity peek is open (`model::UiState::peeked`), which
+ * neither the view flag, the needle nor the lens touches either.
  *
  * `info` is the **name** of the service whose info page is open, or `null` for the list —
  * `model::info_service`, a name rather than a row index for the same reason the cursor is a key:
@@ -56,6 +59,9 @@ export function newSession() {
     cursorRow: 0,
     offset: 0,
     collapsed: new Set(),
+    grouped: false,
+    busyOnly: false,
+    peeked: new Set(),
     filter: { mode: "off", needle: "" },
     confirm: null,
     help: false,
@@ -89,7 +95,13 @@ export function flashOf(session, now) {
 
 /// This session's rows of `board` — the one sequence the cursor indexes and the paint draws.
 export function rowsOf(session, board) {
-  return visibleRows(board, { filter: needleOf(session), collapsed: session.collapsed });
+  return visibleRows(board, {
+    filter: needleOf(session),
+    collapsed: session.collapsed,
+    grouped: session.grouped,
+    busyOnly: session.busyOnly,
+    peeked: session.peeked,
+  });
 }
 
 /// Whether a row may carry the cursor — `model::is_selectable`. The section's spacer and its
@@ -131,16 +143,40 @@ function nearestSelectable(rows, from, preferDown) {
  * last seen at. `null` for an empty row set, which is a real arm (`layout::footer`'s no-selection
  * case), not a fault.
  */
-export function selectedIndex(session, rows) {
+export function selectedIndex(session, rows, board) {
   if (rows.length === 0) return null;
-  if (session.cursor !== null) {
-    const at = rows.findIndex((row) => {
-      const key = rowKey(row);
-      return key !== null && key.kind === session.cursor.kind && key.key === session.cursor.key;
-    });
-    if (at !== -1) return at;
+  const positional = () => nearestSelectable(rows, session.cursorRow, true);
+  const key = session.cursor;
+  if (key === null) return positional();
+  // 1. The row itself — a service or a lane by its identity.
+  const at = rows.findIndex((row) => {
+    const own = rowKey(row);
+    return own !== null && own.kind === key.kind && own.key === key.key;
+  });
+  if (at !== -1) return at;
+  // The path to climb, gated on the key's referent still being visible at all: a service by
+  // its group, a header by its own path. A bare service, a lane and anything gone have no
+  // ancestry to climb, and fall through to the positional resort.
+  let path = null;
+  if (board !== undefined) {
+    const cards = visibleCards(board, { filter: needleOf(session), busyOnly: session.busyOnly });
+    if (key.kind === "service") {
+      const card = cards.find((svc) => svc.name === key.key);
+      path = card !== undefined && card.group !== "" ? card.group : null;
+    } else if (key.kind === "group" && cards.some((svc) => inSubtree(svc.group, key.key))) {
+      path = key.key;
+    }
   }
-  return nearestSelectable(rows, session.cursorRow, true);
+  if (path === null) return positional();
+  // 2. The nearest visible ancestor header — the path itself first, then each parent — and
+  // 3. the subtree's first member: which is how a header selected in the grouped tree lands
+  // on its first member when `v` goes flat, and finds its own row again on the way back.
+  for (let p = path; p !== ""; p = p.includes("::") ? p.slice(0, p.lastIndexOf("::")) : "") {
+    const header = rows.findIndex((row) => row.kind === "group" && row.path === p);
+    if (header !== -1) return header;
+  }
+  const member = rows.findIndex((row) => row.kind === "service" && inSubtree(row.svc.group, path));
+  return member !== -1 ? member : positional();
 }
 
 /// The session with its cursor moved onto `rows[at]` — both halves of `Selection`, so the
@@ -680,7 +716,7 @@ export function press(session, board, chord, options) {
   if (session.filter.mode === "typing") return pressTyping(session, chord);
 
   const rows = rowsOf(session, board);
-  const at = selectedIndex(session, rows);
+  const at = selectedIndex(session, rows, board);
   const row = at === null ? undefined : rows[at];
   const id = resolve(scopesAt(row), chord);
   if (id === null || !HANDLED.has(id) || refused(board, id)) {
@@ -693,12 +729,14 @@ export function press(session, board, chord, options) {
   /// A cursor move, then the minimal scroll that brings it back into view.
   const moveTo = (next) => {
     const moved = pointAt(session, rows, next);
-    return { session: scrolled(moved, rows, height), commands: [], handled: true };
+    return { session: scrolled(moved, rows, height, board), commands: [], handled: true };
   };
   /// The group path a fold key acts on: a header acts on itself, a member on its **parent** —
-  /// `UiIntent::GroupCollapse`'s stated behaviour in both directions.
+  /// `UiIntent::GroupCollapse`'s stated behaviour in both directions. Flat view has no
+  /// headers, so there the fold keys are inert rather than rewriting a set nothing on screen
+  /// reflects.
   const foldPath = () => {
-    if (row === undefined) return null;
+    if (row === undefined || !session.grouped) return null;
     if (row.kind === "group") return row.path;
     if (row.kind === "service" && row.svc.group !== "") return row.svc.group;
     return null;
@@ -713,13 +751,13 @@ export function press(session, board, chord, options) {
   const refold = (collapsed, onto) => {
     const next = { ...session, collapsed };
     const rebuilt = rowsOf(next, board);
-    if (onto === null) return { session: scrolled(next, rebuilt, height), commands: [], handled: true };
+    if (onto === null) return { session: scrolled(next, rebuilt, height, board), commands: [], handled: true };
     const to = rebuilt.findIndex((r) => {
       const key = rowKey(r);
       return key !== null && key.kind === "group" && key.key === onto;
     });
     const settled = pointAt(next, rebuilt, to === -1 ? next.cursorRow : to);
-    return { session: scrolled(settled, rebuilt, height), commands: [], handled: true };
+    return { session: scrolled(settled, rebuilt, height, board), commands: [], handled: true };
   };
 
   switch (id) {
@@ -733,9 +771,15 @@ export function press(session, board, chord, options) {
       return moveTo(nearestSelectable(rows, rows.length - 1, false));
     case "overview.group_collapse":
     case "overview.service_peek": {
-      // `Enter`/`Space` folds a **group** header; on a service row the terminal opens an
-      // activity peek, which this page has no surface for, so it is inert there. `h`/`←` folds
-      // the parent from a member too, which is the half that makes a deep tree navigable.
+      // `toggle_selected_collapse`: `Enter`/`Space` opens or closes a **service**'s activity
+      // peek and folds a **group** header, and a lane row takes neither. `h`/`←` folds the
+      // parent from a member too, which is the half that makes a deep tree navigable.
+      if (id === "overview.service_peek" && row?.kind === "service") {
+        const peeked = new Set(session.peeked);
+        if (!peeked.delete(row.svc.name)) peeked.add(row.svc.name);
+        const next = { ...session, peeked };
+        return { session: scrolled(next, rowsOf(next, board), height, board), commands: [], handled: true };
+      }
       if (id === "overview.service_peek" && row?.kind !== "group") return nothingToDo;
       if (id === "overview.service_peek" && row.collapsed) {
         const collapsed = new Set(session.collapsed);
@@ -759,6 +803,7 @@ export function press(session, board, chord, options) {
       return refold(collapsed, path);
     }
     case "overview.group_collapse_all": {
+      if (!session.grouped) return nothingToDo;
       const collapsed = new Set(
         rowsOf({ ...session, collapsed: new Set() }, board)
           .filter((r) => r.kind === "group")
@@ -767,7 +812,20 @@ export function press(session, board, chord, options) {
       return refold(collapsed, null);
     }
     case "overview.group_expand_all":
+      if (!session.grouped) return nothingToDo;
       return refold(new Set(), null);
+    case "overview.view": {
+      // `toggle_view` — the flag and nothing else: the fold set is kept for the way back, and
+      // the cursor rides its row identity across the flip (see `selectedIndex`).
+      const next = { ...session, grouped: !session.grouped };
+      return { session: scrolled(next, rowsOf(next, board), height, board), commands: [], handled: true };
+    }
+    case "overview.filter_busy": {
+      // `UiIntent::FilterBusyToggle` — state-only, so it touches neither the needle nor the
+      // fold set; the two axes stay independent.
+      const next = { ...session, busyOnly: !session.busyOnly };
+      return { session: scrolled(next, rowsOf(next, board), height, board), commands: [], handled: true };
+    }
     case "overview.filter":
       // `Filter::begin` — `/` starts an **empty** needle, so a second `/` over a confirmed one
       // is a fresh search rather than an edit of the last.
@@ -846,10 +904,12 @@ function previousSelectable(rows, at) {
 /// clamp, imported rather than restated: the shell clamps through the same function when the
 /// viewport resizes under a still cursor, and two copies of ratatui's three lines would be two
 /// things to keep in step.
-function scrolled(session, rows, height) {
-  const at = selectedIndex(session, rows);
+function scrolled(session, rows, height, board) {
+  const at = selectedIndex(session, rows, board);
   if (at === null) return { ...session, offset: 0 };
-  return { ...session, offset: scrollOffset(session.offset, at, rows.length, height) };
+  const offset = scrollOffset(session.offset, at, rows.length, height);
+  const floor = peekFloorOffset(rows, at, height);
+  return { ...session, offset: floor !== null && floor > offset ? floor : offset };
 }
 
 // --- the frames that are not board state ---------------------------------------------------

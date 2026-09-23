@@ -107,6 +107,10 @@ service never {
 }
 "#;
 
+/// `layout::WARN_ICON` — the icon a service wears once a fire of its since the last arm has
+/// failed, which is how a leg waits for a surface to have folded that failure.
+const WARN_ICON: &str = "🔸";
+
 /// The fired service's fully-qualified name, as the wire carries it.
 const BUSY: &str = "ops::監視";
 
@@ -776,7 +780,7 @@ fn the_verbs_accept_the_shipped_manifest() {
 
     // Every declared setting validates, and a key the manifest does not declare does not.
     let full = config_with_block(
-        "  port 8771\n  bind \"127.0.0.1\"\n  max_clients 4\n  runs_dir \"/tmp/afkd-runs\"\n  log_lines 500\n",
+        "  listen \"127.0.0.1:8771\"\n  max_clients 4\n  runs_dir \"/tmp/afkd-runs\"\n  log_lines 500\n",
     );
     std::fs::write(main_conf(dir.path()), &full).expect("write the config");
     let ok = run_subcommand_args(dir.path(), &["validate"]);
@@ -793,14 +797,17 @@ fn the_verbs_accept_the_shipped_manifest() {
         "a sound manifest leaves `doctor` green"
     );
 
-    std::fs::write(main_conf(dir.path()), config_with_block("  prot 8771\n"))
-        .expect("write the config");
+    std::fs::write(
+        main_conf(dir.path()),
+        config_with_block("  lisen \"127.0.0.1:8771\"\n"),
+    )
+    .expect("write the config");
     let typo = run_subcommand_args(dir.path(), &["validate"]);
     let report =
         String::from_utf8_lossy(&typo.stdout).into_owned() + &String::from_utf8_lossy(&typo.stderr);
     assert_eq!(typo.status.code(), Some(1), "a typo'd key is a refusal");
     assert!(
-        report.contains("`prot`") && report.contains("`port`"),
+        report.contains("`lisen`") && report.contains("`listen`"),
         "…naming the key it did not know and the one it meant: {report}"
     );
 
@@ -1172,7 +1179,7 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
 
 #[test]
 fn the_daemon_runs_the_relay_and_the_stream_climbs() {
-    // AC2. The block says `port 0`, so the port the relay answers on is one it could only
+    // AC2. The block says `listen "127.0.0.1:0"`, so the port the relay answers on is one it could only
     // have got by reading its own settings. The page comes up, the stream opens with this
     // subscriber's own id and the daemon's welcome, the first forwarded frame is the
     // snapshot — and the count **rises** with nothing fired, because the daemon's
@@ -1183,7 +1190,7 @@ fn the_daemon_runs_the_relay_and_the_stream_climbs() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let (daemon, dir, port) = daemon_serving(&config_with_block("  port 0\n"));
+    let (daemon, dir, port) = daemon_serving(&config_with_block("  listen \"127.0.0.1:0\"\n"));
 
     let (status, head, page) = get(port, "/");
     assert_eq!(status, 200, "GET /: {page}");
@@ -1274,7 +1281,9 @@ fn two_subscribers_each_get_their_own_snapshot_and_the_third_is_refused() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let (_daemon, _dir, port) = daemon_serving(&config_with_block("  port 0\n  max_clients 2\n"));
+    let (_daemon, _dir, port) = daemon_serving(&config_with_block(
+        "  listen \"127.0.0.1:0\"\n  max_clients 2\n",
+    ));
 
     let mut first = Sse::admitted(port);
     let id_first = first.handshake();
@@ -1340,7 +1349,7 @@ fn a_fire_from_one_tab_arrives_on_every_stream() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let (_daemon, dir, port) = daemon_serving(&config_with_block("  port 0\n"));
+    let (_daemon, dir, port) = daemon_serving(&config_with_block("  listen \"127.0.0.1:0\"\n"));
 
     let mut one = Sse::admitted(port);
     let id_one = one.handshake();
@@ -1413,7 +1422,7 @@ fn killing_the_daemon_ends_every_stream_and_a_restart_reconnects() {
         return;
     }
     let port = free_loopback_port();
-    let config = config_with_block(&format!("  port {port}\n"));
+    let config = config_with_block(&format!("  listen \"127.0.0.1:{port}\"\n"));
     let dir = dir_with_config(&config);
     let (out, err, code) = install_relay(dir.path());
     assert_eq!(code, Some(0), "installing the shipped relay: {out}{err}");
@@ -1475,7 +1484,7 @@ fn the_static_allowlist_serves_three_extensions_and_nothing_else() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let (_daemon, dir, port) = daemon_serving(&config_with_block("  port 0\n"));
+    let (_daemon, dir, port) = daemon_serving(&config_with_block("  listen \"127.0.0.1:0\"\n"));
 
     // A file with an **allowlisted extension** outside the plugin directory, placed where
     // a traversal would really reach it: the tree is installed at
@@ -1570,7 +1579,7 @@ fn the_static_allowlist_serves_three_extensions_and_nothing_else() {
 
 #[test]
 fn a_bad_setting_is_one_sentence_and_exit_one() {
-    // AC5, widened past `port` because the card asks for every setting to be range-checked.
+    // AC5, widened past `listen` because the card asks for every setting to be range-checked.
     // A start failure has to be a **sentence and an exit**, never a traceback and never a
     // companion that came up wrong: the daemon's ladder parks a plugin that keeps failing,
     // and the operator's only view of why is the line this writes. The stub is the oracle
@@ -1580,12 +1589,13 @@ fn a_bad_setting_is_one_sentence_and_exit_one() {
         return;
     }
     for (settings, key) in [
-        (serde_json::json!({"port": "eight"}), "port"),
-        (serde_json::json!({"port": "70000"}), "port"),
-        (serde_json::json!({"port": true}), "port"),
+        (serde_json::json!({"listen": "127.0.0.1:eight"}), "listen"),
+        (serde_json::json!({"listen": "127.0.0.1:70000"}), "listen"),
+        (serde_json::json!({"listen": ":8771"}), "listen"),
+        (serde_json::json!({"listen": true}), "listen"),
         (serde_json::json!({"max_clients": "0"}), "max_clients"),
         (serde_json::json!({"max_clients": "65"}), "max_clients"),
-        (serde_json::json!({"bind": ""}), "bind"),
+        (serde_json::json!({"listen": ""}), "listen"),
         (serde_json::json!({"runs_dir": "runs"}), "runs_dir"),
         (serde_json::json!({"log_lines": "0"}), "log_lines"),
         (serde_json::json!({"log_lines": "100001"}), "log_lines"),
@@ -1647,7 +1657,7 @@ fn a_rejected_handshake_and_an_over_cap_line_each_end_one_stream() {
 
     // (a) A refusal crosses verbatim and closes the stream.
     let refusal = "this endpoint is password-gated and your hello carried none";
-    let stub = Stub::spawn_with(serde_json::json!({"port": "0"}));
+    let stub = Stub::spawn_with(serde_json::json!({"listen": "127.0.0.1:0"}));
     stub.expect_hello_reply();
     let port = stub.serving_port();
     let mut sse = Sse::admitted(port);
@@ -1674,7 +1684,7 @@ fn a_rejected_handshake_and_an_over_cap_line_each_end_one_stream() {
     //     matter how the bytes were chunked on the way in. The terminator arrives in the
     //     same write as the body here on purpose: a cap judged per `recv` rather than per
     //     line lets exactly this through.
-    let stub = Stub::spawn_with(serde_json::json!({"port": "0"}));
+    let stub = Stub::spawn_with(serde_json::json!({"listen": "127.0.0.1:0"}));
     stub.expect_hello_reply();
     let port = stub.serving_port();
     let mut sse = Sse::admitted(port);
@@ -1735,7 +1745,7 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
         eprintln!("skipping: node is not on PATH, and the render half needs it");
         return;
     }
-    let (_daemon, dir, port) = daemon_serving(&config_with_block("  port 0\n"));
+    let (_daemon, dir, port) = daemon_serving(&config_with_block("  listen \"127.0.0.1:0\"\n"));
 
     // One fire, run to completion, on a subscriber this leg then leaves open as the sender.
     let mut driver = Sse::admitted(port);
@@ -1845,11 +1855,11 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
     );
 
     // …and the page really draws it. The collected JSONL is exactly what a browser's fold
-    // would have seen, rendered through the plugin's own modules with `j` onto the service
-    // row and `o` into its run view, then `Tab` onto the tree pane.
+    // would have seen, rendered through the plugin's own modules with `o` into the run view of
+    // the flat board's first row — the service — then `Tab` onto the tree pane.
     let jsonl = dir.path().join("late-attach.jsonl");
     std::fs::write(&jsonl, format!("{}\n", raw.join("\n"))).expect("write the collected frames");
-    let log_pane = render_through_plugin(&plugin_root(), &jsonl, "0.0.0", "jo");
+    let log_pane = render_through_plugin(&plugin_root(), &jsonl, "0.0.0", "o");
     let log_text = (0..usize::from(DRIFT_ROWS))
         .map(|at| log_pane.row_text(at))
         .collect::<Vec<_>>()
@@ -1859,7 +1869,7 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
         "the run view's log pane is not empty:\n{}",
         log_pane.render()
     );
-    let tree_pane = render_through_plugin(&plugin_root(), &jsonl, "0.0.0", "jo\t");
+    let tree_pane = render_through_plugin(&plugin_root(), &jsonl, "0.0.0", "o\t");
     let tree_text = (0..usize::from(DRIFT_ROWS))
         .map(|at| tree_pane.row_text(at))
         .collect::<Vec<_>>()
@@ -1888,7 +1898,7 @@ fn an_unreadable_runs_dir_starts_anyway_says_so_once_and_flashes_every_tab() {
     }
     let missing = "/nonexistent/afkd-web-top/does-not-exist";
     let (daemon, dir, port) = daemon_serving(&config_with_block(&format!(
-        "  port 0\n  runs_dir \"{missing}\"\n"
+        "  listen \"127.0.0.1:0\"\n  runs_dir \"{missing}\"\n"
     )));
 
     // It came up, and it serves.
@@ -1980,7 +1990,9 @@ fn a_runs_dir_that_appears_after_the_daemon_started_is_served() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let dir = dir_with_config(config_with_block("  port 0\n  runs_dir \"RUNS\"\n").as_str());
+    let dir = dir_with_config(
+        config_with_block("  listen \"127.0.0.1:0\"\n  runs_dir \"RUNS\"\n").as_str(),
+    );
     let late = dir.path().join("late-runs");
     let config = std::fs::read_to_string(main_conf(dir.path())).expect("read the config");
     std::fs::write(
@@ -2586,7 +2598,16 @@ fn span_of(spans: &[(String, (usize, usize))], label: &str) -> (usize, usize) {
 /// The order is the order a reader wants it in — the header, the load strip's identity, the
 /// column header, every service row, the footer's hints — and the non-vacuity floors come
 /// last, so an honest disagreement is always reported before "there was nothing on screen".
-fn drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
+/// Which overview arm a [`drift`] comparison covers, and so which floor proves it covered it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Arm {
+    /// The boot view: every service its own row, no header, no connector.
+    Flat,
+    /// The `v` tree: headers over members, drawn with connectors.
+    Grouped,
+}
+
+fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
     let both = format!(
         "\n\n--- afkd top, {DRIFT_COLS}x{DRIFT_ROWS} ---\n{}\n\n--- {NAME}, {DRIFT_COLS}x{DRIFT_ROWS} ---\n{}",
         top.render(),
@@ -2656,10 +2677,11 @@ fn drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
 
     // …and the floors, so a leg that captured an empty board cannot agree with an empty
     // renderer and call it parity.
-    if top_rows.len() < SERVICE_ROW_FLOOR {
+    if top_rows.len() < row_floor(arm) {
         return Err(format!(
-            "only {} service rows were on screen; the fixture ships {SERVICE_ROW_FLOOR}{both}",
-            top_rows.len()
+            "only {} service rows were on screen; the fixture ships {}{both}",
+            top_rows.len(),
+            row_floor(arm)
         ));
     }
     if badges(&top_rows, &spans).len() < BADGE_FLOOR {
@@ -2667,12 +2689,17 @@ fn drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
             "the board carried one badge; the fixture stops a service so it carries two{both}"
         ));
     }
-    if !top_rows
+    let connector = top_rows
         .iter()
-        .any(|row| cell_text(row, span_of(&spans, "Service")).contains('├'))
-    {
+        .any(|row| cell_text(row, span_of(&spans, "Service")).contains('├'));
+    if arm == Arm::Grouped && !connector {
         return Err(format!(
             "no group connector was on screen, so the grouped tree was never compared{both}"
+        ));
+    }
+    if arm == Arm::Flat && connector {
+        return Err(format!(
+            "a group connector was on screen, so the flat arm was never compared{both}"
         ));
     }
     if !top_rows
@@ -2705,6 +2732,61 @@ fn drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
     Ok(())
 }
 
+/// The overview with an activity peek open, compared cell for cell: the column header, then
+/// every list row — the peek's own lines among them, whole, since a peek line is laid across
+/// every column — and the footer's hint set. Floored on a real peek line being on screen, so
+/// a peek that never opened cannot agree with one that never rendered.
+fn peek_drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
+    let both = format!(
+        "\n\n--- afkd top, {DRIFT_COLS}x{DRIFT_ROWS} ---\n{}\n\n--- {NAME}, {DRIFT_COLS}x{DRIFT_ROWS} ---\n{}",
+        top.render(),
+        plugin.render()
+    );
+    let (Some(top_header), Some(plugin_header)) = (top.column_header(), plugin.column_header())
+    else {
+        return Err(format!(
+            "one of the two screens has no column header on it{both}"
+        ));
+    };
+    if top_header != plugin_header {
+        return Err(format!(
+            "the column header differs:\n  afkd top: {top_header:?}\n  web-top:  {plugin_header:?}{both}"
+        ));
+    }
+    let (top_rows, plugin_rows) = (top.service_rows(), plugin.service_rows());
+    if top_rows.len() != plugin_rows.len() {
+        return Err(format!(
+            "afkd top lists {} rows under its header, web-top {}{both}",
+            top_rows.len(),
+            plugin_rows.len()
+        ));
+    }
+    let whole = (0, usize::from(DRIFT_COLS));
+    for (at, (mine, theirs)) in top_rows.iter().zip(&plugin_rows).enumerate() {
+        let (mine, theirs) = (cell_text(mine, whole), cell_text(theirs, whole));
+        if mine != theirs {
+            return Err(format!(
+                "row {at} under the header differs:\n  afkd top: {mine:?}\n  web-top:  {theirs:?}{both}"
+            ));
+        }
+    }
+    if !top_rows
+        .iter()
+        .any(|row| cell_text(row, whole).contains('▏'))
+    {
+        return Err(format!(
+            "no peek line was on screen, so the peek was never compared{both}"
+        ));
+    }
+    let (top_hints, plugin_hints) = (top.footer_hints(), plugin.footer_hints());
+    if top_hints != plugin_hints {
+        return Err(format!(
+            "the footer's hint set differs:\n  afkd top: {top_hints:?}\n  web-top:  {plugin_hints:?}{both}"
+        ));
+    }
+    Ok(())
+}
+
 /// Poll the terminal until its screen holds everything the comparison needs to mean
 /// something — the fixture's rows, both badges, the whole hint legend — and hand that screen
 /// back. Gives up at [`BUDGET`] with the screen printed.
@@ -2713,17 +2795,28 @@ fn drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
 /// closes on, so this waits for the *thing being asserted* rather than for a string. A
 /// half-painted frame, or a flash sitting over a hint row, fails **here** with the terminal's
 /// own screen to look at; nothing about the terminal's wording is pinned on the way.
-fn settled_terminal(tui: &CapturedTui) -> Screen {
-    settled(tui, "a board worth comparing", board_settled)
+fn settled_terminal(tui: &CapturedTui, arm: Arm) -> Screen {
+    settled(tui, "a board worth comparing", |screen| {
+        board_settled(screen, arm)
+    })
+}
+
+/// The row floor of `arm`: the grouped tree lists the fixture's services and the `ops` header
+/// over two of them, the flat arm the services alone.
+fn row_floor(arm: Arm) -> usize {
+    match arm {
+        Arm::Grouped => SERVICE_ROW_FLOOR,
+        Arm::Flat => FLAT_ROW_FLOOR,
+    }
 }
 
 /// [`settled_terminal`]'s condition on its own, so a leg that waits on the board **and**
 /// something more can wait on the conjunction rather than on two screens in turn.
-fn board_settled(screen: &Screen) -> bool {
+fn board_settled(screen: &Screen, arm: Arm) -> bool {
     let rows = screen.service_rows();
     screen.column_header().is_some_and(|header| {
         let spans = column_spans(&header, usize::from(DRIFT_COLS));
-        rows.len() >= SERVICE_ROW_FLOOR
+        rows.len() >= row_floor(arm)
             && badges(&rows, &spans).len() >= BADGE_FLOOR
             && has_countdown(&rows, &spans)
     }) && screen.footer_hints().len() >= FOOTER_HINT_FLOOR
@@ -3203,14 +3296,13 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     // `crates/tui/` the plugin would go on painting yesterday's dashboard in silence. The
     // plugin's own `node --test` goldens only prove it agrees with itself.
     //
-    // The scope is the **overview**, deliberately. The `Queues` section, the info page and
-    // the run view each diverge from the terminal on purpose and say so in the plugin's own
-    // source (`layout.mjs`'s lane priority, its two-column info grid), and the flat arm is
-    // not modelled there at all — which is why the terminal is brought onto the grouped arm
-    // below rather than the plugin onto the flat one. The run view has its own drift leg
-    // (`the_plugins_run_view_matches_afkd_tops_own_screen`), and the other three are held to
-    // [`LEDGER`] by `web_tops_divergences_from_afkd_top_are_exactly_the_ledgers`, which keeps
-    // them from growing a fourth.
+    // The scope is the **overview**, in both of its arms: the flat boot view both surfaces
+    // open on, then the grouped tree `v` brings both onto. The `Queues` section and the info
+    // page diverge from the terminal on purpose and say so in the plugin's own source
+    // (`layout.mjs`'s lane priority, its two-column info grid); the run view has its own
+    // drift leg (`the_plugins_run_view_matches_afkd_tops_own_screen`), and the other two are
+    // held to [`LEDGER`] by `web_tops_divergences_from_afkd_top_are_exactly_the_ledgers`,
+    // which keeps them from growing a third.
     if !python3_available() {
         eprintln!("skipping the drift leg: python3 is not on PATH, and the relay that carries the frames is python");
         return;
@@ -3221,7 +3313,7 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         );
         return;
     }
-    let config = format!("{DRIFT_SERVICES}\nplugin {NAME} {{\n  port 0\n}}\n");
+    let config = format!("{DRIFT_SERVICES}\nplugin {NAME} {{\n  listen \"127.0.0.1:0\"\n}}\n");
     let (_daemon, dir, port) = daemon_serving(&config);
     let scratch = TempDir::new().expect("a tempdir for the capture");
 
@@ -3255,10 +3347,14 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     );
 
     let tui = spawn_captured_sized(dir.path(), &["top"], &[], DRIFT_COLS, DRIFT_ROWS);
-    // `afkd top` boots **flat** and the plugin models only the grouped tree, so the two are
-    // brought onto the same arm before anything is compared — verified rather than assumed,
+    // `afkd top` boots **flat**, and so does the plugin: that arm is caught first, verified
+    // rather than assumed, then `v` brings the terminal onto the grouped tree — verified too,
     // because the daemon holds the view state across attaches and a blind press would be a
     // coin flip against a home that had been driven before.
+    tui.send(b"g");
+    let flat = settled(&tui, "the flat arm", |screen| {
+        board_settled(screen, Arm::Flat) && !screen.render().contains('├')
+    });
     tui.send(b"v");
     if !tui.wait_until(Duration::from_secs(5), |s| s.contains('├')) {
         tui.send(b"v");
@@ -3269,7 +3365,7 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         );
     }
     tui.send(b"g");
-    let terminal = settled_terminal(&tui);
+    let terminal = settled_terminal(&tui, Arm::Grouped);
     // …and the daemon's once-a-second host reading, so the renderer draws a load strip too:
     // the terminal's own ring is seeded from the same broadcast, and a capture that ended
     // before one arrived would leave the two screens disagreeing about a row neither is at
@@ -3284,8 +3380,13 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     std::fs::write(&capture, frames.join("\n") + "\n").expect("write the captured frames");
     // `g` on the plugin too: the cursor is style-only on both surfaces, but entering from
     // the same row is what keeps it that way if either ever grows a marker.
-    let page = render_through_plugin(&plugin_root(), &capture, &version, "g");
-    if let Err(fault) = drift(&terminal, &page) {
+    let page_flat = render_through_plugin(&plugin_root(), &capture, &version, "g");
+    if let Err(fault) = drift(&flat, &page_flat, Arm::Flat) {
+        panic!("{fault}");
+    }
+    // The same keys the terminal took: `g`, `v`, then `g` onto the tree's first row.
+    let page = render_through_plugin(&plugin_root(), &capture, &version, "gvg");
+    if let Err(fault) = drift(&terminal, &page, Arm::Grouped) {
         panic!("{fault}");
     }
 
@@ -3313,8 +3414,8 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         r#"{ key: "trigger", label: "Cadence", align: "left" }"#,
     );
     std::fs::write(&layout, &renamed).expect("write the mutated layout module");
-    let drifted = render_through_plugin(&copy, &capture, &version, "g");
-    let fault = drift(&terminal, &drifted)
+    let drifted = render_through_plugin(&copy, &capture, &version, "gvg");
+    let fault = drift(&terminal, &drifted, Arm::Grouped)
         .expect_err("a renamed column header is drift, and this leg has to say so");
     assert!(
         fault.contains("Trigger") && fault.contains("Cadence"),
@@ -3338,8 +3439,8 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     );
     let flipped = before.replace(NEXT, r#"{ key: "next", label: "Next Run", align: "left" }"#);
     std::fs::write(&layout, &flipped).expect("write the mutated layout module");
-    let misaligned = render_through_plugin(&copy, &capture, &version, "g");
-    let fault = drift(&terminal, &misaligned).expect_err(
+    let misaligned = render_through_plugin(&copy, &capture, &version, "gvg");
+    let fault = drift(&terminal, &misaligned, Arm::Grouped).expect_err(
         "a countdown one cell short of its header's edge is drift, and this leg has to say so",
     );
     assert!(
@@ -3362,8 +3463,8 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         "if (startsEmojiPresentation(cluster, base)) return 1;",
     );
     std::fs::write(&layout, &narrowed).expect("write the mutated layout module");
-    let shifted = render_through_plugin(&copy, &capture, &version, "g");
-    let fault = drift(&terminal, &shifted).expect_err(
+    let shifted = render_through_plugin(&copy, &capture, &version, "gvg");
+    let fault = drift(&terminal, &shifted, Arm::Grouped).expect_err(
         "a VS16 icon one cell narrower than afkd top's is drift, and this leg has to say so",
     );
     assert!(
@@ -3376,8 +3477,8 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     // with no emoji presentation sequence, so the widened icon pushes that row's name out.
     let widened = before.replace(VS16_RULE, r#"if (cluster.includes("\u{FE0F}")) return 2;"#);
     std::fs::write(&layout, &widened).expect("write the mutated layout module");
-    let pushed = render_through_plugin(&copy, &capture, &version, "g");
-    let fault = drift(&terminal, &pushed)
+    let pushed = render_through_plugin(&copy, &capture, &version, "gvg");
+    let fault = drift(&terminal, &pushed, Arm::Grouped)
         .expect_err("a VS16 widening a non-emoji base is drift, and this leg has to say so");
     assert!(
         fault.contains("`Service` cell differs"),
@@ -3768,7 +3869,7 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
         eprintln!("skipping the run-view drift leg: node is not on PATH, and the plugin's renderer is javascript");
         return;
     }
-    let config = format!("{DRIFT_SERVICES}\nplugin {NAME} {{\n  port 0\n}}\n");
+    let config = format!("{DRIFT_SERVICES}\nplugin {NAME} {{\n  listen \"127.0.0.1:0\"\n}}\n");
     let (_daemon, dir, port) = daemon_serving(&config);
     let scratch = TempDir::new().expect("a tempdir for the capture");
 
@@ -3800,18 +3901,14 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     // The terminal attaches **before** the fire, deliberately: the control socket serves no
     // run history (the plugin's own backfill read, `a72fbdc7`, exists because of that), so a
     // run the terminal did not watch happen is a run it cannot open. Both surfaces therefore
-    // read the same live frames.
+    // read the same live frames, on the flat board both boot on — and the attach is waited
+    // for as a painted board, because a fire posted before the terminal attached would reach
+    // it only as a snapshot, with no failure in it.
     let tui = spawn_captured_sized(dir.path(), &["top"], &[], DRIFT_COLS, DRIFT_ROWS);
-    tui.send(b"v");
-    if !tui.wait_until(Duration::from_secs(5), |s| s.contains('├')) {
-        tui.send(b"v");
-        assert!(
-            tui.wait_until(BUDGET, |s| s.contains('├')),
-            "two `v` presses and the terminal is still not on the grouped tree:\n{}",
-            tui.screen()
-        );
-    }
     tui.send(b"g");
+    settled(&tui, "the attached board", |screen| {
+        board_settled(screen, Arm::Flat)
+    });
 
     let (status, body) = post_command(
         port,
@@ -3823,7 +3920,21 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
             && f["service"] == BUSY),
         "the fire never failed on the stream; it carried {frames:?}"
     );
-    let terminal = settled_terminal(&tui);
+    // The terminal is its own client, so its board folds the failure on its own clock: waited
+    // for as the fired row's warning icon, or the capture below could beat it and compare a
+    // board that has not failed yet against the plugin's that has.
+    //
+    // …and past the fired row's first countdown second: a capture in the very second the fire
+    // ended reads a whole `1h` on one clock and `59m 59s` on the other, two shapes of one
+    // instant that no normalisation can call the same.
+    let terminal = settled(&tui, "the failed fire on the board", |screen| {
+        board_settled(screen, Arm::Flat)
+            && screen.render().contains(WARN_ICON)
+            && (0..usize::from(DRIFT_ROWS)).any(|at| {
+                let row = screen.row_text(at);
+                row.contains(BUSY) && row.contains("59m")
+            })
+    });
     // The fire's own trailing frames, plus the daemon's once-a-second host reading: the
     // reporter emits `fire_failed` before the root node's closing `trace` necessarily lands,
     // and a capture cut at the failure would leave the plugin's tree showing a running root
@@ -3867,6 +3978,24 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     let tree_keys = format!("{keys}\t");
     let plugin_tree = render_through_plugin(&plugin_root(), &capture, &version, &tree_keys);
     if let Err(fault) = run_drift(&top_tree, &plugin_tree, &spans, RunPane::Tree) {
+        panic!("{fault}");
+    }
+
+    // `o` backs out to the list and `Enter` opens the fired service's activity peek on both:
+    // the run's active branch under its row, each line's rail on the list's right edge. The
+    // driver spells `Enter` as a newline, and the terminal reads a carriage return as one.
+    tui.send(b"o");
+    tui.send(b"\r");
+    let top_peek = settled(&tui, "the fired service's open peek", |screen| {
+        board_settled(screen, Arm::Flat) && screen.render().contains('▏')
+    });
+    let plugin_peek = render_through_plugin(
+        &plugin_root(),
+        &capture,
+        &version,
+        &format!("{tree_keys}o\n"),
+    );
+    if let Err(fault) = peek_drift(&top_peek, &plugin_peek) {
         panic!("{fault}");
     }
 
@@ -3990,18 +4119,6 @@ const LEDGER: &[Divergence] = &[
               stacked boxes — and it goes two-up on `cols` where the terminal measures its \
               inset body, so at exactly 100 columns the two disagree on the column count too",
     },
-    Divergence {
-        surface: "Flat",
-        field: "rows",
-        intent: "The **flat** arm (`v`) is not modelled",
-        why: "the page paints only the grouped tree, so `v` leaves the group header on screen",
-    },
-    Divergence {
-        surface: "Flat",
-        field: "footer",
-        intent: "listed-but-inert (`keymap.mjs`'s `NOTES`)",
-        why: "`v` is listed but inert, so the page's legend still offers `v flat`",
-    },
 ];
 
 /// The 1-based line of `intent`'s one occurrence in `source`, or why there is no such line —
@@ -4063,7 +4180,7 @@ fn ledger_config() -> String {
         "`DRIFT_SERVICES` opens `ops::backup` once; the ledger's lane is no longer aimed at it"
     );
     let services = DRIFT_SERVICES.replace(OPENER, &format!("{OPENER}  queue {LANE}\n"));
-    format!("queue {LANE} {{\n  parallelism 2\n}}\n\n{services}\nplugin {NAME} {{\n  port 0\n}}\n")
+    format!("queue {LANE} {{\n  parallelism 2\n}}\n\n{services}\nplugin {NAME} {{\n  listen \"127.0.0.1:0\"\n}}\n")
 }
 
 impl Screen {
@@ -4442,9 +4559,9 @@ fn observe(top: &Captured, plugin: &Captured) -> Observed {
 /// compares, each through the keys that reach it.
 fn capture_plugin(plugin: &Path, frames: &Path, version: &str) -> Captured {
     Captured {
-        overview: render_through_plugin(plugin, frames, version, "g"),
-        flat: render_through_plugin(plugin, frames, version, "v"),
-        info: render_through_plugin(plugin, frames, version, INFO_KEYS),
+        overview: render_through_plugin(plugin, frames, version, "vg"),
+        flat: render_through_plugin(plugin, frames, version, ""),
+        info: render_through_plugin(plugin, frames, version, &format!("v{INFO_KEYS}")),
     }
 }
 
@@ -4617,7 +4734,7 @@ fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
     }
     tui.send(b"g");
     let overview = settled(&tui, "a board with a `Queues` section", |screen| {
-        board_settled(screen) && !screen.queue_rows().is_empty()
+        board_settled(screen, Arm::Grouped) && !screen.queue_rows().is_empty()
     });
     for key in INFO_KEYS.trim_start_matches('g').bytes() {
         tui.send(&[key]);
@@ -4745,9 +4862,10 @@ fn every_ledger_entry_names_a_line_that_intends_it() {
             entry.key()
         );
     }
-    // The card's three: the `Queues` section, the info view and the flat arm each have an
-    // entry, so a ledger trimmed to agree with a broken reader cannot drop a whole surface.
-    for surface in ["Queues", "Info", "Flat"] {
+    // The `Queues` section and the info view each have an entry, so a ledger trimmed to agree
+    // with a broken reader cannot drop a whole surface. The flat arm has none: it is compared
+    // as strictly as the grouped tree, and any divergence there is unlisted.
+    for surface in ["Queues", "Info"] {
         assert!(
             LEDGER.iter().any(|entry| entry.surface == surface),
             "the ledger covers the `{surface}` surface"
