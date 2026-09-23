@@ -8,162 +8,24 @@
 // one: a mismatch fails with the whole screen in the message, and regenerating is a
 // deliberate act (`node layout.test.mjs --write-goldens`), so a drift has to be looked at
 // before it is accepted.
+//
+// The capture fold, the three golden planes and the grid invariants live in `testkit.mjs`,
+// because `backfill.test.mjs` renders the same panes off a disk replay and diffs them
+// against goldens of the same shape.
 
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
 import { fold, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, SCOPES, all, idOf, primary } from "./keymap.mjs";
-import { ROLES, TREND_LADDER, bodyHeight, formatElapsed, infoScrollMax, infoView, layout, runMetrics, scrollOffset, textWidth, visibleRows } from "./layout.mjs";
+import { TREND_LADDER, bodyHeight, formatElapsed, infoScrollMax, infoView, layout, runMetrics, scrollOffset, textWidth, visibleRows } from "./layout.mjs";
 import { newSession, press } from "./session.mjs";
+import { BASE, STEP, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, screenText } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
 const REPO = join(HERE, "..", "..", "..");
-/// `node layout.test.mjs --write-goldens` rewrites them; `node --test` never does.
-const WRITING = process.argv.includes("--write-goldens");
-
-// --- the fixtures ------------------------------------------------------------------
-
-/// A synthetic clock, so every anchor the fold computes and every age the layout renders is
-/// pure arithmetic and identical across runs. The base is far from zero so a `now` before the
-/// first frame is still a positive instant.
-const BASE = 1_000_000;
-/// The step between two frames of a capture, in milliseconds.
-const STEP = 10;
-
-/**
- * Fold `file`'s frames into a board, stopping at `until` (a predicate on the frame) when one
- * is given. Returns the board and the instant the last folded frame landed at, so a test
- * renders against a clock that really is "just after the capture".
- */
-function foldCapture(file, until) {
-  let board = seed({ logLines: 2000 });
-  let at = BASE;
-  for (const line of readFileSync(join(HERE, "fixtures", file), "utf8").split("\n")) {
-    if (line === "") continue;
-    const frame = JSON.parse(line);
-    if (until !== undefined && until(frame)) break;
-    board = fold(board, frame, (at += STEP));
-  }
-  return { board, at };
-}
-
-/// The capture's **live** board: every frame up to the `SIGINT` the recorder stayed attached
-/// through. Every capture ends with that drain, so a board folded whole is a board
-/// of stopped services — true, and the subject of its own screen below, but not the board a
-/// dashboard spends its life showing.
-function liveBoard(file = "snapshot.jsonl") {
-  return foldCapture(file, (f) => f.type === "meta" && f.meta === "quitting");
-}
-
-/// The same capture folded **whole**, drain included: the `Quitting` header, the suppressed
-/// reconcile markers and the shelf of `Stopped` rows.
-function drainedBoard(file = "snapshot.jsonl") {
-  return foldCapture(file);
-}
-
-/// One screen rendered to text, one row per line — the first of a golden's three planes.
-function screenText(rows) {
-  return rows.map((row) => row.map((c) => c.text).join("")).join("\n");
-}
-
-/// The palette role each cell wears, one letter per **cell** — so the plane a golden holds
-/// lines up under the text plane in any terminal, a wide glyph's two columns over its two
-/// letters.
-const ROLE_LETTER = {
-  ink: "n",
-  bright: "b",
-  legend: "l",
-  recede: "r",
-  accent: "a",
-  "accent-dim": "e",
-  caution: "c",
-  alarm: "x",
-  ok: "k",
-  idle: "i",
-  muted: "m",
-};
-/// Every foreground role the layout can emit has a letter, so a new tone cannot slip into a
-/// golden as a `?` nobody reads — the same equality the stylesheet's scan holds, one file
-/// over. `selection` is the one background role and is spelled by the weight plane instead.
-/// It is checked here rather than inside a test because `--write-goldens` writes before any
-/// test the runner would have ordered after it, and a `?` must never reach a golden.
-const FG_ROLES = ROLES.filter((r) => r !== "selection");
-assert.deepEqual(Object.keys(ROLE_LETTER).sort(), [...FG_ROLES].sort(), "every foreground role has a plane letter");
-assert.equal(new Set(Object.values(ROLE_LETTER)).size, FG_ROLES.length, "…and no two roles share one");
-
-const ROLE_RULE = "── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted";
-const WEIGHT_RULE = "── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold";
-
-/// The weight-and-band letter for one cell. `dim` and `bold` are the terminal's two weight
-/// attributes and never co-occur here (`assertGrid` holds them to that), and the selection
-/// bar is the only background the page paints — so one letter spells all three: the weight
-/// in lower case off the band, in upper case on it.
-function weightLetter(c) {
-  const band = c.bg === "selection";
-  if (c.dim) return band ? "D" : "d";
-  if (c.bold) return band ? "B" : "b";
-  return band ? "s" : ".";
-}
-
-/// One plane: `letter(cell)` repeated across each cell's own width, one line per row.
-function plane(rows, letter) {
-  return rows.map((row) => row.map((c) => letter(c).repeat(c.width)).join("")).join("\n");
-}
-
-/**
- * The three planes a golden holds — what the screen **says**, what colour it says it in, and
- * what weight. The text plane alone would leave four of a cell's six fields unasserted: the
- * footer's gated hints, the trend lanes' recession, the column header's weight and the
- * selection bar's position are all look and no text, and a golden blind to them is a golden
- * that passes over a page painted flat.
- */
-function goldenOf(rows) {
-  return `${screenText(rows)}\n\n${ROLE_RULE}\n${plane(rows, (c) => ROLE_LETTER[c.fg] ?? "?")}\n\n${WEIGHT_RULE}\n${plane(rows, weightLetter)}\n`;
-}
-
-/// Diff a rendered screen against its committed golden, failing with the whole screen rather
-/// than a character offset — a grid is only readable whole.
-function assertGolden(name, rows) {
-  const path = join(HERE, "goldens", name);
-  const got = goldenOf(rows);
-  if (WRITING) {
-    writeFileSync(path, got);
-    return;
-  }
-  let want;
-  try {
-    want = readFileSync(path, "utf8");
-  } catch {
-    assert.fail(`no golden ${name}; the screen it would hold is:\n${got}`);
-  }
-  assert.equal(got, want, `${name} drifted. The screen now reads:\n${got}\nthe golden holds:\n${want}`);
-}
-
-/// The two structural invariants every screen holds by construction, asserted on every screen
-/// this suite renders: each row sums to exactly `cols` (so nothing wraps into a broken row and
-/// nothing overruns), and each cell reports the width its own text measures (so a painter that
-/// trusts `width` paints what the layout planned).
-function assertGrid(rows, cols, height) {
-  assert.equal(rows.length, height, "the screen is exactly as tall as the viewport");
-  rows.forEach((row, i) => {
-    let width = 0;
-    for (const cell of row) {
-      assert.equal(cell.width, textWidth(cell.text), `row ${i}: cell ${JSON.stringify(cell.text)} misreports its width`);
-      assert.ok(!cell.text.includes("\n"), `row ${i} carries a newline`);
-      // …and that the look is one the planes above can spell: an unknown role or a second
-      // background would go into a golden as a `?`, and a cell both dim and bold would lose
-      // its weight silently.
-      assert.ok(ROLE_LETTER[cell.fg] !== undefined, `row ${i}: ${JSON.stringify(cell.text)} wears the unknown role ${cell.fg}`);
-      assert.ok(cell.bg === null || cell.bg === "selection", `row ${i}: the only band is the selection bar, not ${cell.bg}`);
-      assert.ok(!(cell.dim && cell.bold), `row ${i}: ${JSON.stringify(cell.text)} is both dim and bold`);
-      width += cell.width;
-    }
-    assert.equal(width, cols, `row ${i} is ${width} cells, not ${cols}: ${JSON.stringify(row.map((c) => c.text).join(""))}`);
-  });
-}
 
 // --- AC1: the whole overview -------------------------------------------------------
 
@@ -431,6 +293,104 @@ test("the glyph vocabulary measures as the tui measures it", () => {
   assert.equal(textWidth("é"), 1, "a combining mark rides its base");
   assert.equal(textWidth("a​b"), 2, "a zero-width space takes no cell");
   assert.equal(textWidth(""), 0);
+});
+
+test("VS16 widens only a base that starts an emoji presentation sequence", () => {
+  // `unicode-width` gives a VS16 cluster two cells only when its base is listed in
+  // `emoji-variation-sequences.txt`; on any other base the selector is ignored (FdK5ONtJ).
+  assert.equal(textWidth("★️"), 1, "U+2605 is not listed, so its Neutral one cell stands");
+  assert.equal(textWidth("▪️"), 2, "U+25AA is listed, so the selector widens it");
+});
+
+// --- right-flushed runs end where their headers end ---------------------------------
+
+/// The screen columns in `[from, to)` a non-blank grapheme of `row` covers, in order — read
+/// off the grid's own cells and their measured widths, never off a joined string.
+function inkColumns(row, from, to) {
+  const out = [];
+  const starts = boundaries(row);
+  row.forEach((cell, i) => {
+    let at = starts[i];
+    for (const { segment } of new Intl.Segmenter().segment(cell.text)) {
+      const width = textWidth(segment);
+      if (segment.trim() !== "") {
+        for (let col = at; col < at + width; col++) if (col >= from && col < to) out.push(col);
+      }
+      at += width;
+    }
+  });
+  return out;
+}
+const firstInk = (row, from, to) => inkColumns(row, from, to)[0] ?? null;
+const lastInk = (row, from, to) => inkColumns(row, from, to).at(-1) ?? null;
+
+/// The `[from, to)` span of the header cell whose trimmed text is `label`, or `null` when the
+/// column is shed.
+function headerSpan(row, label) {
+  const i = row.findIndex((c) => c.text.trim() === label);
+  if (i < 0) return null;
+  const from = boundaries(row)[i];
+  return [from, from + row[i].width];
+}
+
+test("every right-flushed run ends where its header ends", () => {
+  // The runs this checks, and why each is where it is:
+  // - `Last Activity` and `Next Run` — `Column::align`'s two duration columns, flushed right
+  //   in afkd top so their magnitudes stack. Every list row's value ends on its header's last
+  //   column; at 100 that is the pane's last column, the card's literal claim.
+  // - The header's token/cost cluster — `planHeader` measures its pad, so it ends on the
+  //   pane's last column whenever it is shown at all.
+  // - The `Queues` section's `Parallelism`/`Held`/`Waiting` — **not** right-flushed:
+  //   `queue_compose` pushes a cell and then its pad, so each value starts on its label's first
+  //   column and the blanks after `Waiting` are correct. Asserted so, so a "fix" that flushed
+  //   them right would redden here.
+  // Not checked: the load strip's trailing blank, which is `trend_row` leaving an odd last
+  // cell undrawn — a mirrored rule, not an alignment.
+  const { board, at } = liveBoard();
+  for (const cols of [100, 90, 80]) {
+    const rows = layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123" });
+    assertGrid(rows, cols, 30);
+    const headerAt = rows.findIndex((row) => headerSpan(row, "Service") !== null);
+    const header = rows[headerAt];
+    // The list body runs from under the header to the blank row that opens `Queues`.
+    const body = [];
+    for (let r = headerAt + 1; rows[r].map((c) => c.text).join("").trim() !== ""; r++) body.push(rows[r]);
+
+    const checked = {};
+    for (const label of ["Last Activity", "Next Run"]) {
+      const span = headerSpan(header, label);
+      assert.ok(span !== null, `${label} is on screen at ${cols}`);
+      const edge = lastInk(header, ...span);
+      assert.equal(edge, span[1] - 1, `the ${label} label saturates its own column at ${cols}`);
+      checked[label] = 0;
+      for (const row of body) {
+        const end = lastInk(row, ...span);
+        if (end === null) continue;
+        assert.equal(end, edge, `a ${label} value ends where its header ends at ${cols}`);
+        checked[label] += 1;
+      }
+    }
+    if (cols === 100) {
+      assert.equal(lastInk(header, ...headerSpan(header, "Next Run")), cols - 1, "`Next Run` ends on the pane's last column");
+      // Non-vacuity: five countdowns and six ages (two on group headers), every one narrower
+      // than its column, so a left-flushed cell misses its header's edge on each.
+      assert.equal(checked["Next Run"], 5, "every countdown was checked");
+      assert.equal(checked["Last Activity"], 6, "every age was checked");
+    }
+
+    const top = rows[0];
+    if (top.at(-1).text.trim() !== "") {
+      assert.equal(lastInk(top, 0, cols), cols - 1, `the token/cost cluster ends on the last column at ${cols}`);
+    }
+
+    const queueHeader = rows.findIndex((row) => headerSpan(row, "Waiting") !== null);
+    const lane = rows[queueHeader + 1];
+    assert.ok(lane.map((c) => c.text).join("").startsWith("🧵 heavy"), "the `heavy` lane sits under its header");
+    for (const label of ["Parallelism", "Held", "Waiting"]) {
+      const span = headerSpan(rows[queueHeader], label);
+      assert.equal(firstInk(lane, ...span), span[0], `the lane's ${label} starts on its label at ${cols}`);
+    }
+  }
 });
 
 // --- AC4: the palette ---------------------------------------------------------------
@@ -1621,14 +1581,6 @@ function runState(service, patch = {}) {
   };
 }
 
-/// The run view's body rows — the pane's window, between its title band and the footer. Read off
-/// the screen rather than off a plan, so an assertion sees what an operator sees.
-function paneBody(rows) {
-  const text = screenText(rows).split("\n");
-  const footerAt = text.findIndex((l, i) => i > 4 && /^[a-zA-Z?].* (quit|help)( |$)/.test(l));
-  return text.slice(4, footerAt === -1 ? text.length : footerAt).filter((l) => l.trim() !== "");
-}
-
 test("o opens the run tree over a real fire, with its depth, its siblings and its rail", () => {
   // `trace-burst.jsonl` is the capture with **depth**: a `workflow` root over an `in_parallel`
   // with two leaves, a `times` loop whose node the daemon relabelled twice, and a `guard` with
@@ -1728,8 +1680,13 @@ test("the run log wraps the adversarial line set by display width", () => {
   const wide = layout(board, { ...options, cols: 100 });
   assertGrid(wide, 100, 30);
   assertGolden("run-log-100x30.txt", wide);
-  // The pane title says what it is scoped to and where in the ring it is sitting.
-  assert.match(screenText(wide).split("\n")[2], /^Log · all · 1–10\/10/, "the scope and the range");
+  // The pane title says what it is scoped to, and nothing else: the `start–end/total` range
+  // `logview` composes is deliberately not painted, because the terminal's split pane does not
+  // paint it either ("the split pane renders a fixed `Log` label"). The scrollbar down the
+  // right edge is what says where in the ring the pane is sitting, and the ring's own size is
+  // asserted against the pane below rather than read off a title.
+  assert.equal(screenText(wide).split("\n")[2].trimEnd(), "Log · all", "the scope, and no range");
+  assert.equal(paneBody(wide).length, board.services.noisy.log.lines.length, "…over the whole ring");
 
   const narrow = layout(board, { ...options, cols: 40 });
   assertGrid(narrow, 40, 30);
@@ -1805,12 +1762,13 @@ test("s scopes the log pane to one node's own lines, and says so in its title", 
   assertGrid(wide, 100, 30);
   assertGrid(scoped, 100, 30);
   const titleOf = (rows) => screenText(rows).split("\n")[2].trimEnd();
-  // The two counts, off one board: the range in the title and the total the scroll clamps
-  // against both move, and they move to the ring's own two numbers.
-  assert.equal(titleOf(wide), "Log · all · 1–10/10", "unscoped, the pane is the whole ring");
+  // The title carries the scope alone — the `start–end/total` range is deliberately unpainted
+  // — so the count the filter moves is asserted where it lives: on the metrics the scroll
+  // clamps against, and on the pane's own rows.
+  assert.equal(titleOf(wide), "Log · all", "unscoped, the pane is the whole ring");
   assert.equal(
     titleOf(scoped),
-    "Log · /tmp/afkd-fixture/bin/noise.sh · 1–8/8",
+    "Log · /tmp/afkd-fixture/bin/noise.sh",
     "scoped, it names the node and holds only its lines",
   );
   assert.equal(runMetrics(board, at_({})).logTotal, ring.length, "the unscoped total is the ring");
@@ -1834,8 +1792,8 @@ test("s scopes the log pane to one node's own lines, and says so in its title", 
   });
   assertGrid(empty, 100, 30);
   assert.ok(burst.board.services.deep.log.lines.length > 0, "the board's ring is not itself empty");
-  assert.equal(titleOf(empty), "Log · times 2/2 · 0–0/0", "a node with no output scopes to nothing");
-  assert.deepEqual(paneBody(empty), [], "…and the pane really is empty");
+  assert.equal(titleOf(empty), "Log · times 2/2", "the title still names the scope it narrowed to");
+  assert.deepEqual(paneBody(empty), [], "…and the pane it scoped to is empty, rather than the ring");
 });
 
 test("an expanded leaf hangs its own output under it, at its depth and elided past the fifth", () => {
@@ -2054,7 +2012,7 @@ test("Tab swaps the pane, and the footer follows the one on screen", () => {
   assertGrid(onLog, 100, 30);
   const titleOf = (rows) => screenText(rows).split("\n")[2];
   assert.equal(titleOf(onTree), `Tree${" ".repeat(96)}`, "the tree pane names itself");
-  assert.match(titleOf(onLog), /^Log · all · /, "…and so does the log");
+  assert.equal(titleOf(onLog), `Log · all${" ".repeat(91)}`, "…and so does the log, scope and all");
   assert.notDeepEqual(paneBody(onTree), paneBody(onLog), "the body is the shown pane's, not both");
   const footerOf = (rows) => screenText(rows).split("\n").slice(-3).join("\n");
   // The nav hints are the shown pane's: the tree teaches its cursor, the log its scroll.
@@ -2077,7 +2035,7 @@ test("Tab swaps the pane, and the footer follows the one on screen", () => {
     run: { ...state, focus: "log", scoped: true, cursor: 5 },
   });
   assertGrid(scoped, 100, 30);
-  assert.match(titleOf(scoped), /^Log · times 2\/2 · /, "the scope names the cursor's node, relabel and all");
+  assert.equal(titleOf(scoped), `Log · times 2/2${" ".repeat(85)}`, "the scope names the cursor's node, relabel and all");
 });
 
 test("the run view's pinned header is the list's own row for that service", () => {
@@ -2096,26 +2054,52 @@ test("the run view's pinned header is the list's own row for that service", () =
   const listRows = visibleRows(board, { filter: "", collapsed: new Set() });
   const at_ = listRows.findIndex((row) => row.kind === "service" && row.svc.name === "deep");
   assert.ok(at_ >= 0, "the capture's `deep` still has a list row");
+  // `deep` is **bare and top-level**, which is the shape the lead-in is about: in the grouped
+  // tree its list row spends `TREE_TOP_LEVEL_INDENT` before its icon so that icon lands in the
+  // group-icon column, while the pinned header — with no group header above it — spends none
+  // (`layout.rs`: "`connector` is … `""` for the pinned header. Only the **grouped** tree
+  // supplies a non-empty one for a top-level row"). So the `Service` cell is compared apart
+  // from the rest of the row, which is also the one column the two fit differently: the list
+  // measures the widest identity over every row, the header measures its own.
+  const LEAD = "  ";
+  const BADGE = "● Idle";
+  const identity = (line) => line.slice(0, line.indexOf(BADGE)).trimEnd();
+  const rest = (line) => line.slice(line.indexOf(BADGE));
   // Compared with runs of blanks collapsed: the pad is the one thing the two legitimately
-  // spend differently below the stretch floor (see the byte-identity sweep below), so squashing
-  // it leaves exactly the columns, their order and their values — which must not differ at all.
+  // spend differently below the stretch floor, so squashing leaves exactly the columns, their
+  // order and their values — which must not differ at all.
   const squash = (line) => line.trim().replace(/ {2,}/gu, " ");
-  let identical = null;
+  let confined = null;
   for (let cols = 20; cols <= 200; cols += 1) {
     const options = { cols, rows: 40, now: at + 1000, version: "0.2.123" };
     const header = rowText(layout(board, { ...options, run: runState("deep") }))[0];
     const list = rowText(layout(board, { ...options, selected: 0 }));
     const listed = list[list.findIndex((l) => l.startsWith("Service")) + 1 + at_];
-    assert.equal(squash(header), squash(listed), `the header and the row say the same at ${cols} cells`);
-    if (header !== listed) identical = null;
-    else if (identical === null) identical = cols;
+    assert.ok(header.includes(BADGE) && listed.includes(BADGE), `both rows are on screen at ${cols} cells`);
+    assert.equal(squash(rest(header)), squash(rest(listed)), `the header sheds what the row sheds at ${cols} cells`);
+    // The lead-in, at every rung: the list row spends it and the pinned header never does.
+    assert.ok(listed.startsWith(LEAD), `the grouped list row spends the lead-in at ${cols} cells`);
+    assert.ok(!header.startsWith(" "), `…and the pinned header flushes to column 0 at ${cols} cells`);
+    // One identity, the list row's carrying the lead-in — up to the clip each row's own column
+    // width imposes, which below 31 cells is over-constrained enough that the list's two extra
+    // cells cost it two of the name's.
+    const [mine, theirs] = [identity(header), identity(listed).slice(LEAD.length)];
+    assert.ok(
+      mine.startsWith(theirs) || theirs.startsWith(mine),
+      `the two rows spell one identity at ${cols} cells: ${JSON.stringify(mine)} / ${JSON.stringify(theirs)}`,
+    );
+    const same = squash(header) === squash(listed) && header.indexOf(BADGE) === listed.indexOf(BADGE);
+    if (!same) confined = null;
+    else if (confined === null) confined = cols;
   }
-  // …and above the **stretch floor** they are byte-identical, because there `serviceColWidth`
-  // ignores the content fit entirely and both rows take the pure remainder. Below it the list
-  // fits its column to the widest identity over every row while the header — the only row on
-  // its screen — fits its own, which is the one deliberate difference and is why the sweep
-  // above squashes. Found rather than asserted at 90, so a moved floor reads as a moved number.
-  assert.equal(identical, 90, "the two rows agree byte for byte from the stretch floor up");
+  // …and above the **stretch floor** the difference is confined to the `Service` cell: there
+  // `serviceColWidth` ignores the content fit entirely and both rows take the pure remainder,
+  // so every column after `Service` lands on the same screen column and nothing is clipped —
+  // the only thing that moved is where the identity starts. Below it the list fits its column
+  // to the widest identity over every row, lead-in included, while the header fits its own, so
+  // the later columns slide too. Found rather than asserted at 90, so a moved floor reads as a
+  // moved number.
+  assert.equal(confined, 90, "from the stretch floor up the two differ only inside the `Service` cell");
 });
 
 test("the layout reads the session run openRun mints", () => {
@@ -2135,7 +2119,7 @@ test("the layout reads the session run openRun mints", () => {
   // It really is the run view rather than the list falling through: the list's column header is
   // gone and the pane's own title is there.
   assert.ok(!screenText(rows).includes("Last Activity"), "the list's column header is not on screen");
-  assert.match(screenText(rows).split("\n")[2], /^Log · all · /, "the run view opens on the log pane");
+  assert.equal(screenText(rows).split("\n")[2].trimEnd(), "Log · all", "the run view opens on the log pane");
 });
 
 test("both panes carry the scrollbar over their own total, viewport and top", () => {

@@ -1,0 +1,14 @@
+{"ev":"opened","id":1,"parent":null,"kind":"workflow","label":"record_pass","detail":"","at":"260923 00:33:09.024"}
+{"ev":"opened","id":2,"parent":1,"kind":"parallel","label":"in_parallel","detail":"","at":"260923 00:33:09.025"}
+{"ev":"opened","id":3,"parent":2,"kind":"cmd","label":"sh loud.sh 1","detail":"","at":"260923 00:33:09.025"}
+{"ev":"opened","id":4,"parent":2,"kind":"cmd","label":"sh quiet.sh","detail":"","at":"260923 00:33:09.025"}
+{"ev":"closed","id":4,"status":"ok","elapsed_ms":2,"out":{"lines":1},"cost":null,"turns":null,"tokens":null}
+{"ev":"closed","id":3,"status":"ok","elapsed_ms":1804,"out":{"lines":8},"cost":null,"turns":null,"tokens":null}
+{"ev":"closed","id":2,"status":"ok","elapsed_ms":1804,"out":null,"cost":null,"turns":null,"tokens":null}
+{"ev":"opened","id":5,"parent":1,"kind":"guard","label":"true","detail":"","at":"260923 00:33:10.830"}
+{"ev":"opened","id":6,"parent":5,"kind":"cmd","label":"sh tail.sh","detail":"","at":"260923 00:33:10.833"}
+{"ev":"closed","id":6,"status":"ok","elapsed_ms":1022,"out":{"lines":3},"cost":null,"turns":null,"tokens":null}
+{"ev":"closed","id":5,"status":"ok","elapsed_ms":1026,"out":null,"cost":null,"turns":null,"tokens":null}
+{"ev":"opened","id":7,"parent":1,"kind":"cmd","label":"sh coda.sh","detail":"","at":"260923 00:33:11.856"}
+{"ev":"closed","id":7,"status":"ok","elapsed_ms":1022,"out":{"lines":3},"cost":null,"turns":null,"tokens":null}
+{"ev":"closed","id":1,"status":"ok","elapsed_ms":3854,"out":null,"cost":null,"turns":null,"tokens":null}

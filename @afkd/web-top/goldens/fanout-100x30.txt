@@ -3,17 +3,17 @@ CPU           ▁▁▁   1% · Mem           ▁▁▁ 1.5G/31G · Net ↓     
                                                                                                     
 Service                          State                 Trigger              Last Activity   Next Run
   🧹 janitor                     □ Stopped             Every 1h                                     
-⊟ 📦 ops                         ✕ Crashed                                  4s                      
-├─ 🔹 nightly                    ▷ Queued 2s           Every 1h             9s                      
-├─ 🔷 sleeper                    ▶ Busy 4s             Every 1h             4s                      
+⊟ 📦 ops                         ✕ Crashed                                             4s           
+├─ 🔹 nightly                    ▷ Queued 2s           Every 1h                        9s           
+├─ 🔷 sleeper                    ▶ Busy 4s             Every 1h                        4s           
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
-└─ ⊟ 📦 db                           ┌ Stop 3 services? ──────┐             5s                      
-   └─ 🔷 vacuum                  ▶ Bu│                        │             5s                      
-  🔹 🔒archivist                 ● Id│    🔹 ops::nightly     │                             59m 47s 
-  🔹 noisy                       ● Id│    🔷 ops::sleeper     │                             59m 47s 
-  🔹 flaky                       ● Id│    🔷 ops::db::vacuum  │                             59m 47s 
-  🔹 deep                        ● Id│                        │             7s              59m 52s 
-  🔹 spare                       ● Id│  1 skipped             │                             59m 47s 
+└─ ⊟ 📦 db                           ┌ Stop 3 services? ──────┐                        5s           
+   └─ 🔷 vacuum                  ▶ Bu│                        │                        5s           
+  🔹 🔒archivist                 ● Id│    🔹 ops::nightly     │                              59m 47s
+  🔹 noisy                       ● Id│    🔷 ops::sleeper     │                              59m 47s
+  🔹 flaky                       ● Id│    🔷 ops::db::vacuum  │                              59m 47s
+  🔹 deep                        ● Id│                        │                        7s    59m 52s
+  🔹 spare                       ● Id│  1 skipped             │                              59m 47s
                                      │                        │                                     
 Queue             Slots              │  y stop  n cancel      │         Parallelism   Held   Waiting
 🧵 heavy (high)   ▮▮ ╎ ∙             │                        │         2             2      1      
@@ -41,11 +41,11 @@ rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbbbbbbbbbbbbbbbbbrrrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaarnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnlllllllllnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnlllllllllnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbnnnnnnnnnnnnnbbbbbnnnnnnnnnnnnnnrnnbnllllnnbnllllllnnnnnnrnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnnnnnnnnaarrrennnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn

@@ -2,19 +2,19 @@ afkd 0.2.123 · ● Running 4s · 9 up · 2 down                                
 CPU          ▁▁▁▁   1% · Mem          ▁▁▁▁ 1.5G/31G · Net ↓        ▂▂▂▂ 1.9k/s ↑        ▁▂▂▁  842/s 
                                                                                                     
 Service                          State                 Trigger              Last Activity   Next Run
-  🧹 janitor                     ● Idle                Every 1h                             59m 55s 
+  🧹 janitor                     ● Idle                Every 1h                              59m 55s
 ⊟ 📦 ops                         ✕ Crashed                                                          
-├─ 🔹 nightly                    ● Idle                Every 1h                             59m 55s 
-├─ 🔹 sleeper                    ● Idle                Every 1h                             59m 55s 
+├─ 🔹 nightly                    ● Idle                Every 1h                              59m 55s
+├─ 🔹 sleeper                    ● Idle                Every 1h                              59m 55s
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
 └─ ⊟ 📦 db                                                                                          
-   └─ 🔹 vacuum                  ● Idle                Every 1h                             59m 55s 
-  🔹 🔒archivist                 ● Idle                Every 1h                             59m 55s 
-  🔹 🕸️noisy                     ● Idle                Every 1h                             59m 55s 
-  🔹 flaky                       ● Idle                Every 1h                             59m 55s 
-  🔹 deep                        ● Idle                Every 1h                             59m 55s 
+   └─ 🔹 vacuum                  ● Idle                Every 1h                              59m 55s
+  🔹 🔒archivist                 ● Idle                Every 1h                              59m 55s
+  🔹 🕸️noisy                     ● Idle                Every 1h                              59m 55s
+  🔹 flaky                       ● Idle                Every 1h                              59m 55s
+  🔹 deep                        ● Idle                Every 1h                              59m 55s
   📈 reports                     □ Stopped             Every 2h                                     
-  🔹 🪦spare                     ● Idle                Every 1h                             59m 55s 
+  🔹 🪦spare                     ● Idle                Every 1h                              59m 55s
                                                                                                     
 Queue             Slots                                                 Parallelism   Held   Waiting
 🧵 heavy (high)   ▯▯                                                    2             0      0      
@@ -34,19 +34,19 @@ nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+rrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 rrmmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbnnnnnnnnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnnnnnnnnrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn

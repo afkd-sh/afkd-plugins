@@ -1,6 +1,6 @@
-  🔹 noisy   ● Idle                     
+🔹 noisy   ● Idle                       
                                         
-Log · all · 1–22/22                     
+Log · all                               
                                         
 [noisy]           [RUN] run_cmd: /tmp/a 
   fkd-fixture/bin/noise.sh              
@@ -30,9 +30,9 @@ Log · all · 1–22/22
 ? help                                  
 
 ── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
-rrnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbllllllllllnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -64,7 +64,7 @@ bnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 ── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
 ........................................
 ........................................
-bbbbbbbbbdddddddddd.....................
+bbbbbbbbb...............................
 ........................................
 ........................................
 ........................................

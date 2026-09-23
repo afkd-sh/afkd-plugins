@@ -4,7 +4,8 @@ A **companion** plugin: a program the daemon runs alongside itself for as long a
 This one is a **relay** — `afkd top`'s wire, put in front of a browser. Every subscriber
 gets its own attach to the control socket, every frame that attach reads is forwarded
 verbatim as one server-sent event, and the operator's intents come back the other way as
-`command` frames on that same attach.
+`command` frames on that same attach. The one thing it does on its own account is the
+[disk backfill](#the-disk-backfill): the run history the local socket never serves.
 
 It is python3, standard library only, one file, no build step and no toolchain on the host.
 See [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks.
@@ -55,7 +56,7 @@ fails `afkd validate` rather than being quietly ignored.
 | `port` | `8771` | the port to serve on. `0` binds an ephemeral one and prints the port it got |
 | `bind` | `127.0.0.1` | the IPv4 address to listen on. Read the section above before you change it |
 | `max_clients` | `8` | how many subscribers may be attached at once; the next one is a `503` |
-| `runs_dir` | `<state dir>/runs` | where the daemon keeps its run corpus. Read and range-checked here, unused until the card that serves a disk backfill — see *What this card deliberately does not do* |
+| `runs_dir` | `<state dir>/runs` | where the daemon keeps its run corpus. Read off disk on every subscriber's attach and served ahead of that subscriber's live frames, so a run view opened after a fire is not empty — see *The disk backfill*. Set it when afkd's own top-level `runs_dir` moves the corpus off the default |
 | `log_lines` | `2000` | how many log lines the page keeps per service. The terminal dashboard's own `LOG_RING_CAPACITY`, so a browser and a terminal watching one daemon scroll back the same distance. Carried to the page on its `stream` event — the ring it bounds lives in the browser, not here |
 
 Every value arrives as a string — afkd lowers a scalar to a JSON string and a bare key with
@@ -77,6 +78,16 @@ sentence when it fails.
 | `GET /dashboard.css` | the palette and the grid's type |
 | `GET /stream` | this subscriber's own attach, as an event stream |
 | `POST /command` | `{"stream":"<id>","command":"fire","service":"nightly"}` → one `command` frame |
+
+The program takes one argument form of its own, for asking what a tab opening *now* would be
+served out of the run corpus:
+
+```console
+$ web-top --backfill <runs_dir> <service> busy|idle
+```
+
+It prints the burst as JSONL — one `backfill` / `backfill_log` frame per line — through the
+same producer the stream seam calls, reads no stdin and binds no port.
 
 Static files are served from this directory by an **allowlist of extensions** — `.html`,
 `.mjs`, `.css` — as a single path segment. A nested path, a `..`, this README, the manifest
@@ -107,7 +118,8 @@ smuggle a field onto the wire. A verb outside the control wire's vocabulary is a
   second reader of one mid-stream. The relay holds no replay ring: a subscriber the daemon
   pruned gets `closed` and reopens, which is the honest answer rather than a buffer that
   pretends it never missed anything. The **page** keeps the model — `fold.mjs` folds each
-  frame into per-service state, log rings and run trees — and this process forwards.
+  frame into per-service state, log rings and run trees — and this process forwards. It
+  composes frames of its own in exactly one place, the disk backfill below.
 - **It is told where the socket is and never resolves one itself.** A companion under a
   relocated afkd home has to reach the daemon that started it.
 - **Every duration on the wire is relative and daemon-measured.** The relay forwards them
@@ -313,8 +325,11 @@ collapsed parent, the `↻` a parent reads when its subtree failed but it came b
 right-flushed `OUT`/`TOOK`/`ST` rail that sheds `OUT` below 64 cells and `TOOK` below 44 and
 never sheds `ST`. Under a `failed`/`killed` leaf — or one opened with `Enter` — up to five of
 that leaf's own output lines show indented beneath it, then a `… N more`. The log pane is
-`logview.rs`: the ring wrapped by display width, never elided, with the scope and the
-`start–end/total` range in its own title.
+`logview.rs`: the ring wrapped by display width, never elided, with the scope — and only the
+scope — in its own title. The `start–end/total` range `logview` composes is deliberately not
+painted, because the terminal's split pane does not paint it either ("retained on the neutral
+view … but the split pane renders a fixed `Log` label"); the scrollbar down the pane's right
+edge is what says where in the ring it is sitting.
 
 It diverges from the terminal on three points, each forced by the wire rather than by taste:
 
@@ -333,15 +348,45 @@ Nothing in the Rust can fail if those three drift back: the terminal has a stamp
 there is about their absence. They are pinned here instead — by this list, and by the committed
 goldens, which would move.
 
+## The disk backfill
+
+A run view opened **after** a fire finished is not empty: on each subscriber's attach the relay
+reads the daemon's own run corpus off disk and serves it as `backfill` / `backfill_log` frames —
+the two wire variants afkd already carries for exactly this — before that subscriber's first live
+frame.
+
+It exists because the daemon will not serve the burst here. `host.rs` sends it only to a **TCP**
+client, on the reasoning that a local-socket client shares the filesystem and can read the run
+dirs itself; a companion is handed the local socket, so the page is the local client and this is
+the read it would otherwise never get. The relay's own section mirrors `crates/app/src/backfill.rs`
+and `host::served_backfill_lines` function for function, each one naming the Rust it was read off:
+
+- the **tree** is that service's run-dir window — newest generation, bounded by the run tree's own
+  `TRACE_TREE_CAPACITY` nodes, a fire-less lifecycle dir skipped, replayed oldest → newest;
+- the **log** is the `run.log` tail of that window's newest dir, sanitized on this side because
+  `BackfillLog` carries the already-clean ring text.
+
+Duplicates between the disk read and the live stream are expected and harmless: an identical
+same-id `opened` is a no-op in `fold.mjs`, and the ring's content-keyed seam drops a **busy**
+service's re-streamed tail once and then disarms.
+
+**When the runs base cannot be read** the relay serves no backfill. It never fails to start over
+it, and it never guesses a second path; the verdict is resolved **per attach**, not latched, so a
+base that appears later is served without a restart.
+
+Whether it *says* so depends on which kind of "cannot be read" it is:
+
+- the block **named** a `runs_dir` that is not there, or the base is there and this process may
+  not read it — a mistake either way. The relay writes one sentence to stderr at start (which
+  reaches the daemon log under `companion @afkd/web-top: err`) and sends each subscriber a
+  `meta.error` naming the path it tried, which the page flashes;
+- nobody named it and the default `<state dir>/runs` is simply **not there yet** — the state of
+  every install before its first fire. Silent, on both channels. `afkd top` reads the same disk
+  and says nothing about it either, and a page that flashed at every tab until the first fire
+  would be louder than the terminal over the same state.
+
 ## What this card deliberately does not do
 
-- **No disk backfill, so a run view opened after the fire is empty.** The daemon serves its
-  run-tree and log-history burst **only** to a TCP client: a local-socket client is expected to
-  share the filesystem and read the run dirs itself, and a companion is handed the local socket.
-  So the run view fills from the live stream and from nothing else — attach after a run has
-  finished and both panes are empty until something fires. The `runs_dir` setting is read and
-  range-checked here against the card that spends it. Nothing is faked in the meantime: an empty
-  tree renders as an empty pane rather than as a guess.
 - **A few keys are bound and inert.** `v`, `b` and the two lane-width pairs resolve to an action
   this page has nowhere to send. They are **listed** in the `?` overlay all the same, dim and
   with the reason beside them — a chord with a binding is part of the keymap whether or not this

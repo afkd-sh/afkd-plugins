@@ -3,14 +3,22 @@
 
 The daemon starts this program, hands it the control socket it already bound and the
 settings its `plugin @afkd/web-top { … }` block carried, and from there this is a **relay**
-and nothing else: every subscriber gets its **own** attach to the daemon, every frame that
-attach reads is forwarded verbatim as one SSE `data:` line, and the operator's intents come
-back the other way as `command` frames on that same attach.
+and very nearly nothing else: every subscriber gets its **own** attach to the daemon, every
+frame that attach reads is forwarded verbatim as one SSE `data:` line, and the operator's
+intents come back the other way as `command` frames on that same attach.
 
-It folds nothing, keeps no model and holds no replay ring. That is the whole design: the
-daemon serves each connection its own `meta.snapshot`, so a second browser is a second
-attach rather than a second reader of one mid-stream. The dashboard is painted in the
-browser, by later cards — this card ships the process side and a placeholder page.
+It folds nothing and keeps no model. That is the whole design: the daemon serves each
+connection its own `meta.snapshot`, so a second browser is a second attach rather than a
+second reader of one mid-stream. The dashboard is painted in the browser, by `fold.mjs` and
+the modules beside it.
+
+The **one** thing it does on its own account is the run **backfill**. The daemon serves its
+history burst only to a TCP client — a local-socket client is expected to share the
+filesystem and read the run dirs itself — and a companion is handed the local socket, so
+without this the page's run view would be empty until something fired. So on each
+subscriber's `meta.snapshot` this program reads the daemon's own run corpus off disk and
+serves it as the very `backfill` / `backfill_log` frames the wire already carries for it,
+ahead of that subscriber's first live frame (see *the run corpus* below).
 
 Standard library only, so it installs on a host with no toolchain.
 """
@@ -22,6 +30,7 @@ import socket
 import stat
 import sys
 import threading
+import unicodedata
 import urllib.parse
 
 # This plugin's own name, as the manifest spells it and every sentence it writes names it.
@@ -128,6 +137,537 @@ def setting_dir(settings, key, default):
     if not os.path.isabs(value):
         die("%s: setting `%s` must be an absolute path, not %r" % (NAME, key, value))
     return value
+
+
+# --- the run corpus ------------------------------------------------------------------
+#
+# The daemon serves its on-attach backfill burst only to a **TCP** client: a local-socket
+# client is expected to share the filesystem and read the run dirs itself
+# (`crates/app/src/host.rs`, the `if remote` around `served_backfill_lines`). A companion is
+# handed the local socket, so nobody would read this corpus for the page — and a run view
+# opened after a fire would be empty. This section is that read, performed here and served
+# per subscriber as the very frames the daemon would have sent.
+#
+# It is a **mirror** of `crates/app/src/backfill.rs` plus `host::served_backfill_lines`,
+# function for function, and each function names the Rust it was read off — the citation
+# discipline `fold.mjs` already holds for `model.rs`, because the two can drift and the
+# citation is the only thing that makes the drift findable.
+#
+# All I/O here is best-effort, the Rust's own posture: a missing service dir yields nothing,
+# and a half-written or garbage trace records no fire and contributes nothing.
+
+# The two per-run files, as `afkd_system::service` reserves their names.
+TRACE_FILE = "trace.jsonl"
+RUN_LOG_FILE = "run.log"
+
+# The trailing bytes of a `run.log` the tail read spans, so a multi-MB transcript is never
+# read whole. `TAIL_CAP_BYTES` (`crates/app/src/logfile.rs`).
+TAIL_CAP_BYTES = 1 << 20
+
+# How many trace nodes the window walk keeps before it stops. `TRACE_TREE_CAPACITY`
+# (`crates/tui/src/tracetree.rs`) — the tree's **own** bound, not a second constant, so a
+# backfilled client folds the runs a client that stayed connected still retains.
+TRACE_TREE_CAPACITY = 2000
+
+# The kinds that are a lifecycle **scope wrapper** rather than work. `is_fire_node`
+# (`crates/app/src/backfill.rs`): a dir holding only these recorded no fire.
+WRAPPER_KINDS = ("sandbox", "worktree")
+
+# The node kinds and terminal statuses the wire spells, and what an unrecognised one
+# degrades to — `tracefile::kind_from_str` / `status_from_str`, whose degradations exist
+# because the engine's enums have no unknown variant. Mirrored rather than passed through so
+# a browser and a terminal reading the same corpus render the same node.
+NODE_KINDS = ("workflow", "agent", "cmd", "tool", "sandbox", "worktree", "guard",
+              "parallel", "repeat", "sleep", "fs", "lifecycle")
+NODE_STATUSES = ("ok", "failed", "skipped", "killed", "running")
+UNKNOWN_KIND = "cmd"
+UNKNOWN_STATUS = "failed"
+
+# A zeroed civil stamp — the degradation for an `at` that does not parse, so the node still
+# renders. `tracefile::ZERO_STAMP`.
+ZERO_STAMP = {"year": 0, "month": 0, "day": 0, "hour": 0, "minute": 0, "second": 0,
+              "millis": 0}
+
+
+def name_segment(name):
+    """A service name as its run-dir segment — `afkd_config::name_segment`.
+
+    The wire name stays qualified (`ns::name`); only the lookup path is encoded, so this
+    lands on the exact dir the daemon's `scratch_root` wrote.
+
+    One known, accepted divergence from the Rust, which folds through `str::to_lowercase`:
+    that mapping has a context-sensitive rule for a **final** Greek capital sigma (`ΟΔΟΣ` →
+    `οδος`, with a final `ς`), and python's `str.lower()` has none (`οδοσ`). A service whose
+    name ends in a capital sigma would therefore resolve to a different directory here. It
+    is a comment rather than code: no config in this repo or its fixtures can produce one,
+    and hand-rolling the rule would be a second spelling of a fold afkd itself does not
+    special-case anywhere else.
+    """
+    return name.lower().replace("::", "__")
+
+
+def runs_readable(base):
+    """Whether `base` is a directory this process may list and read.
+
+    Resolved **per burst**, never remembered: `<state dir>/runs` does not exist until a
+    service first fires (the daemon makes it on the fire path), so a verdict latched at
+    start would mean no backfill *ever* on a fresh install, even after the corpus appeared.
+    The inverse — a runs dir removed after a good start — would otherwise report nothing
+    while silently serving no history.
+    """
+    return os.path.isdir(base) and os.access(base, os.R_OK | os.X_OK)
+
+
+def runs_fault(base, named):
+    """The sentence `base` deserves, or `None` when its state is not a fault at all.
+
+    Three cases, and the middle one is why this is a function rather than
+    `not runs_readable(...)`:
+
+    - **readable** -> `None`. There is nothing to say.
+    - **missing, and nobody named it** -> `None` as well. The default base is
+      `<state dir>/runs`, which the daemon makes the first time a service fires, so on a
+      fresh install it is simply not there yet and will appear on its own. `afkd top` reads
+      the same disk and says nothing at all about that state, and a page that flashed a
+      refusal at every tab on every install until the first fire would be **louder than the
+      terminal over the same disk** — which is the one thing this page is not allowed to be.
+    - **missing while the block named a `runs_dir`, or there but unreadable** -> a sentence
+      naming the path. Both are somebody's mistake rather than a state that fixes itself: a
+      path written down that is not there, or one this process may not read.
+
+    The one predicate both reports run through — the sentence written to stderr once at
+    start, and the `meta.error` a subscriber's burst is replaced by — so the two can never
+    disagree about what counts as a fault.
+    """
+    if runs_readable(base):
+        return None
+    if not named and not os.path.exists(base):
+        return None
+    return ("%s: no run corpus to read at %s, so a run view opens with no history"
+            % (NAME, base))
+
+
+def is_real_run_dir(path):
+    """Whether `path` is a **real** run dir: a directory holding a `trace.jsonl`.
+
+    `backfill.rs`'s `is_real_run_dir`. An abandoned force-fire dir (minted, `run.log` only,
+    never a trace) is not, which is what keeps it from taking a slot in the window — and,
+    because the log tail anchors on the newest of *that same* list, what keeps the log from
+    anchoring an empty dir the tree skipped.
+    """
+    return os.path.isdir(path) and os.path.isfile(os.path.join(path, TRACE_FILE))
+
+
+def recent_run_dirs(service_runs):
+    """A service's real run sub-directories, oldest -> newest — `backfill.rs`'s.
+
+    Keyed on mtime, tie-broken by name, and **not** on the run-name string: the run
+    grammar's optional `-<ms>` conflict segment sits before the kind suffix, so within one
+    second a conflict name sorts before the earlier natural one and lexical order is not
+    chronological there. Best-effort: an unreadable dir or entry yields fewer dirs.
+    """
+    try:
+        names = os.listdir(service_runs)
+    except (OSError, ValueError):
+        # `ValueError` is the embedded-NUL case, the same one the static route checks for by
+        # hand: it is not an `OSError`, so without it a path carrying one would leave here as
+        # a traceback on the daemon's log instead of as an empty window.
+        return []
+    dirs = []
+    for name in names:
+        path = os.path.join(service_runs, name)
+        if not is_real_run_dir(path):
+            continue
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            mtime = 0
+        dirs.append((mtime, name, path))
+    dirs.sort()
+    return [path for _, _, path in dirs]
+
+
+def read_fire_run(path):
+    """One run dir's trace read **once**, or `None` when it recorded no real fire.
+
+    `backfill.rs`'s `read_fire_run`, returning the events already mapped to their wire
+    shape: the window's bookkeeping then reads the very events it will emit, so the ids it
+    stops on and the nodes it counts cannot be a second opinion about the same file.
+
+    A fire is an `opened` whose kind is neither wrapper kind (`is_fire_node`): an empty
+    `init`/`cleanup` under `in_sandbox` persists a run dir whose trace is a lone
+    `sandbox` open/close, and that is not a fire.
+    """
+    if not is_real_run_dir(path):
+        return None
+    try:
+        with open(os.path.join(path, TRACE_FILE), "r", encoding="utf-8",
+                  errors="replace") as handle:
+            body = handle.read()
+    except (OSError, ValueError):
+        return None
+    events = []
+    min_id = None
+    max_id = 0
+    nodes = 0
+    fire = False
+    for line in body.split("\n"):
+        event = trace_line_to_wire(line)
+        if event is None:
+            continue
+        events.append(event)
+        if event["op"] != "opened":
+            continue
+        node = event["node"]
+        min_id = node["id"] if min_id is None else min(min_id, node["id"])
+        max_id = max(max_id, node["id"])
+        nodes += 1
+        fire = fire or node["kind"] not in WRAPPER_KINDS
+    if not fire:
+        return None
+    return {"events": events, "min_id": min_id, "max_id": max_id, "nodes": nodes}
+
+
+def tree_backfill_window(service_runs):
+    """A service's run-tree window as `(dirs, events)` — `backfill.rs`'s
+    `tree_backfill_window`, whose three walk rules this mirrors whole.
+
+    Walking the trace-bearing dirs newest -> oldest:
+
+    - a **fire-less** lifecycle dir takes no slot, does not end the walk and does not vote
+      on the generation boundary, so right after a reload the window is still the previous
+      generation's fires rather than blank;
+    - the walk **stops before** a dir whose highest `opened` id is at or above the lowest of
+      the oldest dir kept so far. Within one generation ids strictly increase in open order,
+      so that regression can only be a re-minted allocator — an older daemon generation,
+      whose nodes a connected client does not hold either;
+    - the walk **stops after** the dir that brings the kept nodes to `TRACE_TREE_CAPACITY`.
+      Crossing the bound on that last dir rather than stopping short is deliberate: folding
+      a superset is harmless (the fold's own eviction drops whole oldest roots and lands on
+      exactly the set a connected client retains), while stopping short would show *fewer*
+      runs than one.
+
+    The kept dirs are returned oldest -> newest, the order the fold rebuilds the live union
+    in: the init lifecycle and each fire live in separate run dirs, and chronological
+    folding lets a newer generation's first root clear the prior one through the fold's own
+    generation guard — no disk-side generation bookkeeping.
+    """
+    kept = []
+    oldest_min = None
+    nodes = 0
+    for path in reversed(recent_run_dirs(service_runs)):
+        run = read_fire_run(path)
+        if run is None:
+            continue
+        if oldest_min is not None and run["max_id"] >= oldest_min:
+            break
+        nodes += run["nodes"]
+        # `min_id <= max_id < oldest_min`, so the floor only ever descends.
+        oldest_min = run["min_id"]
+        kept.append((path, run["events"]))
+        if nodes >= TRACE_TREE_CAPACITY:
+            break
+    kept.reverse()
+    dirs = [path for path, _ in kept]
+    events = [event for _, run_events in kept for event in run_events]
+    return dirs, events
+
+
+def trace_line_to_wire(line):
+    """One `trace.jsonl` line as the wire's `TraceEvent`, or `None` when it is malformed.
+
+    The one place the two schemas meet, and the one piece here with no single Rust twin: the
+    Rust goes disk -> engine -> wire across two files (`tracefile::trace_line_to_engine` and
+    `host::trace_event_to_wire`), and they are genuinely different shapes — `ev` against
+    `op`, a flat `id`/`parent`/`kind`/`label`/`detail` against a nested `node`, and an
+    externally-tagged `out` object against an internally-tagged one.
+
+    A `null` optional is **omitted** rather than crossed, which is what the daemon's own
+    encoder does (`skip_serializing_if = "Option::is_none"`), so these frames are
+    byte-comparable with the ones a TCP client is served.
+    """
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    kind = event.get("ev")
+    if kind == "opened":
+        node_id = wire_u64(event.get("id"))
+        if node_id is None:
+            return None
+        node = {
+            "id": node_id,
+            "kind": one_of(event.get("kind"), NODE_KINDS, UNKNOWN_KIND),
+            "label": wire_text(event.get("label")),
+            "detail": wire_text(event.get("detail")),
+        }
+        parent = wire_u64(event.get("parent"))
+        if parent is not None:
+            node["parent"] = parent
+        return {"op": "opened", "node": node, "at": parse_at(event.get("at"))}
+    if kind == "closed":
+        node_id = wire_u64(event.get("id"))
+        if node_id is None:
+            return None
+        closed = {
+            "op": "closed",
+            "id": node_id,
+            "status": one_of(event.get("status"), NODE_STATUSES, UNKNOWN_STATUS),
+            "elapsed_ms": wire_u64(event.get("elapsed_ms")) or 0,
+        }
+        out = out_to_wire(event.get("out"))
+        if out is not None:
+            closed["out"] = out
+        cost = event.get("cost")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            closed["cost"] = cost
+        for key in ("turns", "tokens"):
+            value = wire_u64(event.get(key))
+            if value is not None:
+                closed[key] = value
+        return closed
+    if kind == "relabeled":
+        node_id = wire_u64(event.get("id"))
+        if node_id is None:
+            return None
+        return {"op": "relabeled", "id": node_id, "label": wire_text(event.get("label"))}
+    # An unrecognised `ev` — a newer writer's event — is dropped, not faulted, which is the
+    # Rust reader's own rule.
+    return None
+
+
+def out_to_wire(out):
+    """A `closed` line's externally-tagged `out` as the wire's internally-tagged one.
+
+    `{"lines":N}` -> `{"out":"lines","n":N}`, `{"bytes":N}` likewise, and
+    `{"diff":{"added":N,"removed":N}}` -> `{"out":"diff","added":N,"removed":N}`. A `null`
+    (the common case: most nodes measure no output) or anything unrecognised yields `None`,
+    which the caller omits from the frame.
+    """
+    if not isinstance(out, dict) or len(out) != 1:
+        return None
+    for key in ("lines", "bytes"):
+        n = wire_u64(out.get(key))
+        if n is not None:
+            return {"out": key, "n": n}
+    diff = out.get("diff")
+    if isinstance(diff, dict):
+        added = wire_u64(diff.get("added"))
+        removed = wire_u64(diff.get("removed"))
+        if added is not None and removed is not None:
+            return {"out": "diff", "added": added, "removed": removed}
+    return None
+
+
+def wire_u64(value):
+    """`value` as a non-negative integer, or `None` — JSON's `true` is not a 1 here."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def wire_text(value):
+    """`value` as a string, or the empty string — the wire's `#[serde(default)]`."""
+    return value if isinstance(value, str) else ""
+
+
+def one_of(value, vocabulary, fallback):
+    """`value` if the wire spells it, else `fallback` — the two skew degradations."""
+    return value if value in vocabulary else fallback
+
+
+def parse_at(text):
+    """The 19-byte `yymmdd hh:mm:ss.sss` civil stamp as the wire's `TraceStamp` object.
+
+    `tracefile::parse_at`: the fields are sliced by their fixed offsets — the exact layout
+    `StampTime::format` writes — and any fault at all degrades to `ZERO_STAMP` rather than
+    dropping the node. The digit check is explicit because the Rust parses into integers
+    that reject a sign, a space and a non-ASCII digit, and python's `int()` accepts all
+    three.
+    """
+    if not isinstance(text, str) or len(text) != 19:
+        return dict(ZERO_STAMP)
+    fields = (("year", 0, 2), ("month", 2, 4), ("day", 4, 6), ("hour", 7, 9),
+              ("minute", 10, 12), ("second", 13, 15), ("millis", 16, 19))
+    stamp = {}
+    for key, start, end in fields:
+        part = text[start:end]
+        if not (part.isascii() and part.isdigit()):
+            return dict(ZERO_STAMP)
+        stamp[key] = int(part)
+    stamp["year"] += 2000
+    return stamp
+
+
+def tail_run_log(path, max_lines):
+    """The last `max_lines` physical lines of a `run.log`, each as `(stamp, text)`.
+
+    `logfile::tail_run_log`. The read is byte-bounded to `TAIL_CAP_BYTES`: when the window
+    does not reach the file start its first (likely half-cut) line is dropped, so no partial
+    line is ever emitted; a killed run's final unterminated line is kept. A missing / empty
+    / unreadable file yields nothing.
+
+    The split mirrors Rust's `str::lines` exactly — on `\\n`, dropping the trailing empty
+    after a terminating newline and stripping one `\\r` before it — rather than
+    `str.splitlines()`, which would also break on the vertical tab, the form feed and
+    `U+2028` and so cut a line the daemon wrote whole.
+    """
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            length = handle.tell()
+            if length == 0:
+                return []
+            start = max(0, length - TAIL_CAP_BYTES)
+            handle.seek(start)
+            blob = handle.read()
+    except (OSError, ValueError):
+        return []
+    lines = blob.decode("utf-8", "replace").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    lines = [line[:-1] if line.endswith("\r") else line for line in lines]
+    if start > 0 and lines:
+        lines.pop(0)
+    return [split_stamp(line) for line in lines[max(0, len(lines) - max_lines):]]
+
+
+def split_stamp(line):
+    """One `run.log` line split into its `(stamp, text)` — `logfile::split_stamp`.
+
+    The stamp is the fixed 19-character prefix `StampingSink::stamp_one` writes, followed by
+    one space. A prefix that does not parse to a real stamp — a pre-stamp line, or a corrupt
+    head — degrades to `ZERO_STAMP` and keeps the **whole** line as its text.
+    """
+    if len(line) > 19 and line[19] == " ":
+        stamp = parse_at(line[:19])
+        if stamp != ZERO_STAMP:
+            return stamp, line[20:]
+    return dict(ZERO_STAMP), line
+
+
+def sanitize_log_line(text):
+    """One logical log line as printable, single-line text — `sanitize_log_line`
+    (`crates/engine/src/logtext.rs`), and `fold.mjs`'s `sanitize()` byte for byte.
+
+    A log line is a child's own output, so its bytes must never be a write primitive on the
+    reader's screen: an `ESC [` opens a CSI and is dropped through its final byte in
+    `@`..=`~` (an unterminated one to end of line); any other `ESC` drops just the escape,
+    leaving its payload as inert printable residue; a tab becomes one space; every other C0
+    control and DEL is dropped, which is where an embedded `\\r` is neutralised in place;
+    and the Unicode format characters (`General_Category=Cf` — the bidi overrides, the
+    zero-width set, the BOM) go, since a line carrying them can display as text that reads
+    differently from what it is.
+
+    This runs on **this** side of the wire, as the daemon's own served tail does, because
+    `Frame::BackfillLog` carries the already-sanitized ring text. The page's ring is keyed on
+    that text at the backfill/live seam, so the two spellings have to be one — which
+    `backfill.test.mjs` asserts over the recorded adversarial line set rather than trusting
+    this paragraph.
+    """
+    chars = list(text)
+    out = []
+    i = 0
+    while i < len(chars):
+        char = chars[i]
+        i += 1
+        if char == "\x1b":
+            if i < len(chars) and chars[i] == "[":
+                i += 1
+                while i < len(chars):
+                    code = ord(chars[i])
+                    i += 1
+                    if 0x40 <= code <= 0x7e:
+                        break
+            continue
+        if char == "\t":
+            out.append(" ")
+            continue
+        code = ord(char)
+        if code < 0x20 or code == 0x7f or unicodedata.category(char) == "Cf":
+            continue
+        out.append(char)
+    return "".join(out)
+
+
+def backfill_frames(base, targets, log_lines):
+    """The whole burst one subscriber is served, in order — the wire twin of
+    `host::served_backfill_lines`.
+
+    Per service, its run-tree window replayed as `backfill` frames, then the `run.log` tail
+    of that window's **newest** dir as `backfill_log` frames. The log anchors on
+    `dirs[-1]` — the exact dir the tree burst ended on, not a second picker — which is what
+    makes the two structurally unable to disagree about which dir is real.
+
+    The tail is bounded by `log_lines`, the ring bound this subscriber was told on its
+    `stream` event: serving more would be serving lines the page drops on arrival.
+
+    The single producer both callers use — the stream seam and `--backfill` — so the
+    inspection mode cannot drift from what a subscriber is actually served.
+    """
+    frames = []
+    for name, busy in targets:
+        dirs, events = tree_backfill_window(os.path.join(base, name_segment(name)))
+        for event in events:
+            frames.append({"type": "backfill", "service": name, "event": event})
+        if not dirs:
+            continue
+        tail = tail_run_log(os.path.join(dirs[-1], RUN_LOG_FILE), log_lines)
+        for i, (stamp, text) in enumerate(tail):
+            frames.append({
+                "type": "backfill_log",
+                "service": name,
+                "stamp": stamp,
+                # Sanitized here, as the daemon sanitizes its own served tail: the wire's
+                # `BackfillLog.line` is the already-clean ring text, unlike live `Log`.
+                "line": sanitize_log_line(text),
+                "busy": busy,
+                "last": i == len(tail) - 1,
+            })
+    return frames
+
+
+def snapshot_targets(snapshot):
+    """The `(service, busy)` pairs a burst reads run dirs for, off the attach snapshot.
+
+    The very list the snapshot seeded, which is where the daemon takes its own targets from
+    (`host.rs`, `backfill_targets`) — so the burst can never name a service the board has
+    not seen, and a frame naming one would be dropped by the page's fold anyway.
+    """
+    services = snapshot.get("services")
+    if not isinstance(services, list):
+        return []
+    targets = []
+    for entry in services:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        busy_ms = entry.get("busy_ms")
+        busy = not isinstance(busy_ms, bool) and isinstance(busy_ms, int) and busy_ms != 0
+        targets.append((name, busy))
+    return targets
+
+
+def as_snapshot(line):
+    """The attach snapshot `line` carries, or `None` — the one frame this relay parses.
+
+    Best-effort by design: a line that is not JSON, or not an object, or not this frame, is
+    simply not the snapshot. It has already been forwarded verbatim by the time this is
+    asked, so nothing here can cost a subscriber a frame.
+    """
+    try:
+        frame = json.loads(line.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(frame, dict):
+        return None
+    if frame.get("type") != "meta" or frame.get("meta") != "snapshot":
+        return None
+    return frame
 
 
 # --- the attaches ------------------------------------------------------------------
@@ -256,16 +796,21 @@ class Relay:
     """What the handler threads share: where the daemon is, who is attached, and the latch.
 
     There is nothing else — no folded board, no cached frame. The **page** folds, in
-    `fold.mjs`; this process forwards. `runs_dir` is read, range-checked and held here for
-    the card that serves a **disk backfill** — the page paints run trees now, but only from
-    the live stream; nothing opens anything under it yet, and `log_lines` is
-    likewise only carried — it is handed to the page on its `stream` event, because the ring
-    it bounds lives in the browser.
+    `fold.mjs`; this process forwards.
+
+    `runs_dir` is the daemon's run corpus, read fresh on every subscriber's snapshot (the
+    burst in [`Handler.backfill`]) and cached in neither this object nor any other: a base
+    that appears after the daemon's first fire is served, and one that vanishes is reported.
+    `log_lines` is only carried — it is handed to the page on its `stream` event, because
+    the ring it bounds lives in the browser, and it is the bound the served tail is cut to.
     """
 
-    def __init__(self, socket_path, runs_dir, max_clients, log_lines):
+    def __init__(self, socket_path, runs_dir, runs_named, max_clients, log_lines):
         self.socket_path = socket_path
         self.runs_dir = runs_dir
+        # Whether the block **named** `runs_dir` rather than taking the default — which is
+        # what [`runs_fault`] reads to tell a configuration mistake from a fresh install.
+        self.runs_named = runs_named
         self.log_lines = log_lines
         self.attaches = Attaches(max_clients)
         self.stopping = threading.Event()
@@ -440,12 +985,62 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return False
 
     def forward(self, attach):
-        """Every frame the daemon writes, verbatim, one `data:` line each."""
+        """Every frame the daemon writes, verbatim, one `data:` line each — plus this
+        subscriber's own backfill burst, injected once on the attach snapshot.
+
+        The burst goes **after** the snapshot and before anything the daemon says next,
+        which is both the daemon's own order for its TCP burst and the only order the page's
+        fold accepts: a frame naming a service the board has not seen is dropped, so nothing
+        may precede the snapshot that seeds it.
+
+        Until the snapshot has been seen each forwarded line is also parsed, best-effort;
+        after it the loop is byte-verbatim forever. The read is synchronous on this
+        subscriber's own thread, which is the point: frames the daemon writes meanwhile
+        queue in its send buffer and are forwarded *after* the burst, reproducing the
+        `[attach, read]` overlap window the daemon's own path has — and whose duplicates the
+        fold is built to absorb, by `openNode`'s identical-replay dedup and by the ring's
+        content-keyed seam.
+        """
+        seeded = False
         while True:
             line = self.read(attach)
             if line is None:
                 return
             self.write(b"data: " + line + b"\n\n")
+            if not seeded:
+                snapshot = as_snapshot(line)
+                if snapshot is not None:
+                    seeded = True
+                    self.backfill(snapshot)
+
+    def backfill(self, snapshot):
+        """This subscriber's run history, off disk, as `backfill` / `backfill_log` frames.
+
+        The runs base is stat'd **now** rather than at start (see [`runs_readable`]), and a
+        base that is missing or unreadable serves no backfill at all: one composed
+        `meta.error` goes out instead, which the page flashes exactly as it flashes the
+        daemon's own (`session.mjs`'s `noteFrame`). The sentence opens with this plugin's
+        name, since to the page it is indistinguishable from a refusal the daemon sent.
+
+        It never fails the stream over it, and it never guesses a second path.
+        """
+        relay = self.server.relay
+        if not runs_readable(relay.runs_dir):
+            fault = runs_fault(relay.runs_dir, relay.runs_named)
+            if fault is not None:
+                self.wire({"type": "meta", "meta": "error", "message": fault})
+            return
+        for frame in backfill_frames(relay.runs_dir, snapshot_targets(snapshot),
+                                     relay.log_lines):
+            self.wire(frame)
+
+    def wire(self, frame):
+        """One frame this relay **composed**, written as a subscriber-facing `data:` line.
+
+        The same shape [`forward`] writes for a frame the daemon sent, because to the page
+        there is no difference: a `data:` line is a wire frame, whichever side read it.
+        """
+        self.write(b"data: " + json.dumps(frame).encode("utf-8") + b"\n\n")
 
     def read(self, attach):
         """The next wire line, or `None` once this stream is over.
@@ -631,7 +1226,37 @@ def check_socket(path):
         die("%s: cannot reach the control socket afkd named: %s" % (NAME, err))
 
 
+def inspect(runs_dir, service, liveness):
+    """`--backfill <runs_dir> <service> busy|idle`: the burst that service would be served.
+
+    One JSON frame per line, on stdout — the operator-facing answer to "what history does a
+    tab opening now actually get?". It runs `backfill_frames` itself, the same producer the
+    stream seam calls, so the dump cannot drift from what a subscriber is served; and it is
+    what `backfill.test.mjs` replays, so the read is tested exactly as it ships rather than
+    re-stated in javascript.
+
+    Reads no stdin and binds no port. The ring bound is the default: this mode has no
+    subscriber to have been told another.
+    """
+    if liveness not in ("busy", "idle"):
+        die("%s: --backfill takes `busy` or `idle`, not %r" % (NAME, liveness))
+    if not runs_readable(runs_dir):
+        die("%s: no run corpus to read at %s" % (NAME, runs_dir))
+    for frame in backfill_frames(runs_dir, [(service, liveness == "busy")],
+                                 DEFAULT_LOG_LINES):
+        sys.stdout.write(json.dumps(frame) + "\n")
+    sys.stdout.flush()
+    return 0
+
+
 def main():
+    # The one argument form this program takes. Guarded to exactly the three-argument shape,
+    # so the daemon's own invocation — no arguments at all, a `hello` on stdin — cannot fall
+    # into it.
+    if sys.argv[1:2] == ["--backfill"]:
+        if len(sys.argv) != 5:
+            die("%s: usage: web-top --backfill <runs_dir> <service> busy|idle" % NAME)
+        return inspect(sys.argv[2], sys.argv[3], sys.argv[4])
     call = hello()
     socket_path = named_socket(call)
     settings = call.get("settings")
@@ -645,11 +1270,18 @@ def main():
     )
     log_lines = setting_int(settings, "log_lines", DEFAULT_LOG_LINES, 1, 100000)
     check_socket(socket_path)
+    # One sentence, once, naming a runs base that is a genuine fault — the daemon log carries
+    # it under `companion @afkd/web-top: err`. A **report**, not a latch: it decides nothing
+    # about what any later burst does, and never a `die()`, because the relay comes up either
+    # way and every subscriber is told on its own stream besides.
+    fault = runs_fault(runs_dir, "runs_dir" in settings)
+    if fault is not None:
+        print(fault, file=sys.stderr, flush=True)
 
     sys.stdout.write(json.dumps({"ok": True, "proto": PLUGIN_PROTO}) + "\n")
     sys.stdout.flush()
 
-    relay = Relay(socket_path, runs_dir, max_clients, log_lines)
+    relay = Relay(socket_path, runs_dir, "runs_dir" in settings, max_clients, log_lines)
     try:
         httpd = Server((bind, port), Handler)
     except OSError as err:

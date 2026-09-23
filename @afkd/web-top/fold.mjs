@@ -37,6 +37,12 @@ export const LOG_LINES_DEFAULT = 2000;
 /// **completed** root. Mirrors `TRACE_TREE_CAPACITY` (`crates/tui/src/tracetree.rs`).
 export const TRACE_NODES_CAPACITY = 2000;
 
+/// How many of a served backfill tail's trailing lines a service's log seam remembers.
+/// Mirrors `SEAM_GUARD_LINES` (`crates/tui/src/logring.rs`): the true overlap is only the
+/// lines written in the `[attach, disk-read]` window, so this is orders of magnitude of
+/// headroom while still bounding the worst-case over-drop a content key admits.
+export const SEAM_GUARD_LINES = 256;
+
 /// How many `meta.host_load` samples the load strip keeps. The daemon samples once a
 /// second (ADR-0080), so this is a couple of minutes of trend — enough for the lanes a
 /// later card draws, bounded so a tab left open overnight is not a memory leak.
@@ -99,13 +105,20 @@ export function fold(board, frame, now) {
     case "log":
       return foldLog(counted, frame, now);
     case "trace":
-      return foldTrace(counted, frame, now);
+      return foldTrace(counted, frame, now, true);
+    case "backfill":
+      // A **replayed** tree event — the same payload `trace` carries, folded the same way
+      // but **without** the last-activity stamp (`proto.rs`, `Frame::Backfill`: a replay is
+      // history, not output, so the snapshot's `last_activity_ms` stays authoritative).
+      // `model.rs::apply_replayed_trace` is the same one-flag split.
+      return foldTrace(counted, frame, now, false);
+    case "backfill_log":
+      return foldBackfillLog(counted, frame, now);
     case "meta":
       return foldMeta(counted, frame, now);
     default:
-      // `command`/`view` (inbound, never sent to a subscriber), `backfill`/`backfill_log`
-      // (a TCP attach's history burst, which a unix-socket attach never serves) and
-      // whatever a newer daemon adds.
+      // `command`/`view` (inbound, never sent to a subscriber) and whatever a newer daemon
+      // adds.
       return ignore(counted);
   }
 }
@@ -200,6 +213,13 @@ function seedService(entry, now) {
     cost: toNumber(entry.cost, 0),
     turns: toNumber(entry.turns, 0),
     log: { lines: [], dropped: 0 },
+    // The ring's idempotent key (`LogSeam`, `crates/tui/src/logring.rs`): `null` is
+    // `Disarmed`, an array is `Armed { expect }`. Armed only by a **busy** service's served
+    // backfill, whose in-progress run re-streams its trailing lines live.
+    logSeam: null,
+    // The served tail accumulating for that arm (`CardModel::served_log_backfill`), drained
+    // on the burst's `last` line — push-then-arm, so the burst never filters itself.
+    servedLog: [],
     tree: emptyTree(),
   };
 }
@@ -426,27 +446,114 @@ function foldEvent(board, frame, now) {
 function foldLog(board, frame, now) {
   return folded(
     withService(board, toText(frame.service), (svc) => {
-      const lines = svc.log.lines.slice();
-      let dropped = svc.log.dropped;
-      lines.push({
-        // An unrecognised future stream value is kept verbatim rather than dropped.
-        stream: toText(frame.stream),
-        text: sanitize(toText(frame.line)),
-        node: frame.node === undefined || frame.node === null ? null : toNumber(frame.node, 0),
-        at: now,
-      });
-      while (lines.length > board.logLines) {
-        lines.shift();
-        dropped += 1;
-      }
-      svc.log = { lines, dropped };
-      // A log line emitted **from a run** is observable activity. Output with no fire in
-      // flight (the boot lifecycle's narration, `init`/`cleanup`) is not a run, so it does
-      // not move the column — the `apply_log` gate.
-      if (svc.inFlightSince !== null) svc.lastActivityAt = now;
+      applyLog(
+        svc,
+        {
+          // An unrecognised future stream value is kept verbatim rather than dropped.
+          stream: toText(frame.stream),
+          text: sanitize(toText(frame.line)),
+          node: frame.node === undefined || frame.node === null ? null : toNumber(frame.node, 0),
+        },
+        board.logLines,
+        now,
+      );
       return svc;
     }),
   );
+}
+
+/**
+ * `DashboardModel::apply_log`'s body, written through `svc` (the shallow copy `withService`
+ * handed its caller): the seam gate, the bounded push, and the activity stamp.
+ *
+ * The **one** push both log arms run, which is `apply_served_log`'s own reuse of `apply_log`
+ * — a served tail line and a live one land in the same ring, under the same bound and the
+ * same gate, so the two can never drift on how a line is stored. `entry` carries the ring's
+ * three fields; the fourth, `at`, is this page's own monotonic instant, stamped here.
+ */
+function applyLog(svc, entry, capacity, now) {
+  const { seam, admitted } = admit(svc.logSeam, entry.text);
+  svc.logSeam = seam;
+  // The early return at `model.rs`'s seam check: a line the backfill already pushed is this
+  // line's live replay across the seam, dropped whole — the activity stamp included.
+  if (!admitted) return;
+  const lines = svc.log.lines.slice();
+  let dropped = svc.log.dropped;
+  lines.push({ ...entry, at: now });
+  while (lines.length > capacity) {
+    lines.shift();
+    dropped += 1;
+  }
+  svc.log = { lines, dropped };
+  // A log line emitted **from a run** is observable activity. Output with no fire in
+  // flight (the boot lifecycle's narration, `init`/`cleanup`) is not a run, so it does
+  // not move the column — the `apply_log` gate.
+  if (svc.inFlightSince !== null) svc.lastActivityAt = now;
+}
+
+/**
+ * One **served** `run.log` tail line into the same ring the live `log` frames feed — the
+ * mirror of `DashboardModel::apply_served_log` (`crates/tui/src/model.rs`).
+ *
+ * Three things it does that the live arm does not, each of them the Rust's:
+ *
+ * - the text is pushed **verbatim**. `Frame::BackfillLog`'s `line` is already the sanitized
+ *   ring text (the producer ran the same transform this module's [`sanitize`] is), unlike
+ *   live `Log`, whose line is raw and stripped on fold. Sanitizing twice would be a second
+ *   pass over text that is already clean — and the seam keys on content, so the two spellings
+ *   have to be one;
+ * - `stream`/`node` are fixed to `stdout`/`null`, because a `run.log` is a flat transcript
+ *   that records neither;
+ * - the frame's civil `stamp` is **dropped on the floor, deliberately**. The log pane renders
+ *   no timestamp column and no day marker at all (`layout.mjs`'s log pane, because a live
+ *   `Frame::Log` carries no stamp and the entry is stamped with this page's own monotonic
+ *   clock), so a civil stamp has nowhere to go here and a ring holding one entry stamped
+ *   differently from every other would be the drift, not the fix.
+ *
+ * A **busy** service's served texts accumulate, and the `last` line drains them and arms the
+ * seam — push-then-arm, so the burst never filters itself. A not-busy service's `run.log` is
+ * final and can never re-stream, so it arms nothing.
+ */
+function foldBackfillLog(board, frame, now) {
+  const busy = frame.busy === true;
+  return folded(
+    withService(board, toText(frame.service), (svc) => {
+      const text = toText(frame.line);
+      applyLog(svc, { stream: "stdout", text, node: null }, board.logLines, now);
+      if (busy) svc.servedLog = svc.servedLog.concat([text]);
+      if (frame.last === true) {
+        const texts = svc.servedLog;
+        svc.servedLog = [];
+        if (busy) svc.logSeam = armSeam(texts);
+      }
+      return svc;
+    }),
+  );
+}
+
+/// Arm a seam with `texts`, the tail a backfill just pushed oldest → newest — `LogSeam::arm`.
+/// Only the newest [`SEAM_GUARD_LINES`] are remembered, and an empty tail leaves the seam
+/// disarmed: nothing was backfilled, so nothing can be a duplicate.
+function armSeam(texts) {
+  const expect = texts.slice(Math.max(0, texts.length - SEAM_GUARD_LINES));
+  return expect.length === 0 ? null : expect;
+}
+
+/**
+ * Whether `text` should be folded into the ring, and the seam that remains — `LogSeam::admit`
+ * (`crates/tui/src/logring.rs`), pure like everything else here, so the caller writes the new
+ * seam back onto its own service copy.
+ *
+ * A hit drops the line **and every remembered line before it**: the overlap is contiguous, so
+ * anything earlier can no longer arrive. A miss is the first genuinely new line, which disarms
+ * the guard for good — at most the overlap window is ever filtered.
+ */
+function admit(seam, text) {
+  if (seam === null) return { seam, admitted: true };
+  const at = seam.indexOf(text);
+  if (at === -1) return { seam: null, admitted: true };
+  const rest = seam.slice(at + 1);
+  return { seam: rest.length === 0 ? null : rest, admitted: false };
 }
 
 /**
@@ -515,8 +622,13 @@ function emptyTree() {
  * One `trace` frame into its service's run tree — `crates/tui/src/tracetree.rs`, whose four
  * loss-reconciliation rules this mirrors whole. Trace frames take the **lossy** prune class
  * (ADR-0068), so the fold must tolerate every gap and none of them may fault.
+ *
+ * `stamp` is `model.rs::fold_trace`'s own flag, and the only difference between a live
+ * `trace` and a replayed `backfill`: the tree fold is identical, but a replay of minutes-old
+ * history is not output *now*, so it must not move the list's last-activity anchor off the
+ * authoritative value the snapshot seeded.
  */
-function foldTrace(board, frame, now) {
+function foldTrace(board, frame, now, stamp) {
   const event = frame.event;
   if (!isObject(event)) return ignore(board);
   const op = event.op;
@@ -528,7 +640,7 @@ function foldTrace(board, frame, now) {
       else if (op === "closed") svc.tree = closeNode(before, event);
       else svc.tree = relabelNode(before, event);
       // A trace event from a run is observable activity, on the same gate the ring uses.
-      if (svc.tree !== before && svc.inFlightSince !== null) svc.lastActivityAt = now;
+      if (stamp && svc.tree !== before && svc.inFlightSince !== null) svc.lastActivityAt = now;
       return svc;
     }),
   );

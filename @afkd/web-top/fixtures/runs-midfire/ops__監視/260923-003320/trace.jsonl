@@ -1,0 +1,9 @@
+{"ev":"opened","id":15,"parent":null,"kind":"workflow","label":"record_pass","detail":"","at":"260923 00:33:20.973"}
+{"ev":"opened","id":16,"parent":15,"kind":"parallel","label":"in_parallel","detail":"","at":"260923 00:33:20.973"}
+{"ev":"opened","id":17,"parent":16,"kind":"cmd","label":"sh quiet.sh","detail":"","at":"260923 00:33:20.973"}
+{"ev":"opened","id":18,"parent":16,"kind":"cmd","label":"sh loud.sh 1","detail":"","at":"260923 00:33:20.973"}
+{"ev":"closed","id":17,"status":"ok","elapsed_ms":1,"out":{"lines":1},"cost":null,"turns":null,"tokens":null}
+{"ev":"closed","id":18,"status":"ok","elapsed_ms":1798,"out":{"lines":8},"cost":null,"turns":null,"tokens":null}
+{"ev":"closed","id":16,"status":"ok","elapsed_ms":1799,"out":null,"cost":null,"turns":null,"tokens":null}
+{"ev":"opened","id":19,"parent":15,"kind":"guard","label":"true","detail":"","at":"260923 00:33:22.772"}
+{"ev":"opened","id":20,"parent":19,"kind":"cmd","label":"sh tail.sh","detail":"","at":"260923 00:33:22.776"}

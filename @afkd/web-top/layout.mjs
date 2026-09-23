@@ -77,30 +77,96 @@ const WIDE_RANGES = [
   // (🚀 `NodeKind::Workflow`, the root glyph of every run tree). Deliberately not the whole
   // block: past `0x1f6c5` it is scattered singletons, and `🛠` (U+1F6E0) is *Neutral* — one
   // cell in `unicode-width` 0.2, which is this table's default, and where such a symbol is
-  // meant to paint two it carries VS16, which `clusterWidth` resolves first. The gap at
+  // meant to paint two it carries VS16, which `clusterWidth` resolves first — two cells
+  // because U+1F6E0 is one of `EMOJI_PRESENTATION_BASES`. The gap at
   // `0x1f650-0x1f67f` (Ornamental Dingbats, Neutral) is why the run above stops at `1f64f`.
   [0x1f680, 0x1f6c5], // transport and map symbols, the Wide run
   [0x1f900, 0x1faff], // supplemental symbols and pictographs (🧵 🪦 …)
   [0x20000, 0x3fffd], // CJK unified ideographs, planes 2 and 3
 ];
 
-/// U+FE0F, the emoji variation selector. A cluster carrying it is drawn in emoji
-/// presentation and measures **two** cells even where its base scalar is Ambiguous or
-/// Neutral — the dependency `layout::STOPPED_ICON` (`▪️`) and `layout::STALE_MARKER` (`🕸️`)
-/// both already record, and the reason neither may be spelled without it.
-const VS16 = "️";
+/// U+FE0F, the emoji variation selector. A cluster whose base *starts an emoji presentation
+/// sequence* — is immediately followed by it and listed in `EMOJI_PRESENTATION_BASES`, the
+/// rule `unicode-width`'s `starts_emoji_presentation_seq` applies — measures **two** cells
+/// even where its base scalar is Ambiguous or Neutral. That is the dependency
+/// `layout::STOPPED_ICON` (`▪️`) and `layout::STALE_MARKER` (`🕸️`) both already record, and
+/// the reason neither may be spelled without it. On any other base the selector is ignored
+/// and the base's own width stands: U+2605 with it is still one cell.
+const VS16 = 0xfe0f;
+
+/// The bases of every `<base> FE0F ; emoji style` line in Unicode 17.0.0's
+/// `emoji-variation-sequences.txt`, the version `unicode-width` 0.2.2 was generated from, as
+/// runs of code points. The vendored copy is
+/// `crates/cli/tests/fixtures/emoji-variation-sequences.txt`, and
+/// `every_emoji_presentation_base_measures_alike_in_afkd_top_and_web_top` fails when a
+/// `unicode-width` bump moves the list: re-vendor the file at the crate's Unicode version and
+/// regenerate this from it with the crate's own rule,
+/// `^([0-9A-F]+)\s+FE0F\s*;\s*emoji style`.
+const EMOJI_PRESENTATION_BASES = [
+  [0x23, 0x23], [0x2a, 0x2a], [0x30, 0x39], [0xa9, 0xa9], [0xae, 0xae], [0x203c, 0x203c],
+  [0x2049, 0x2049], [0x2122, 0x2122], [0x2139, 0x2139], [0x2194, 0x2199], [0x21a9, 0x21aa],
+  [0x231a, 0x231b], [0x2328, 0x2328], [0x23cf, 0x23cf], [0x23e9, 0x23f3], [0x23f8, 0x23fa],
+  [0x24c2, 0x24c2], [0x25aa, 0x25ab], [0x25b6, 0x25b6], [0x25c0, 0x25c0], [0x25fb, 0x25fe],
+  [0x2600, 0x2604], [0x260e, 0x260e], [0x2611, 0x2611], [0x2614, 0x2615], [0x2618, 0x2618],
+  [0x261d, 0x261d], [0x2620, 0x2620], [0x2622, 0x2623], [0x2626, 0x2626], [0x262a, 0x262a],
+  [0x262e, 0x262f], [0x2638, 0x263a], [0x2640, 0x2640], [0x2642, 0x2642], [0x2648, 0x2653],
+  [0x265f, 0x2660], [0x2663, 0x2663], [0x2665, 0x2666], [0x2668, 0x2668], [0x267b, 0x267b],
+  [0x267e, 0x267f], [0x2692, 0x2697], [0x2699, 0x2699], [0x269b, 0x269c], [0x26a0, 0x26a1],
+  [0x26a7, 0x26a7], [0x26aa, 0x26ab], [0x26b0, 0x26b1], [0x26bd, 0x26be], [0x26c4, 0x26c5],
+  [0x26c8, 0x26c8], [0x26ce, 0x26cf], [0x26d1, 0x26d1], [0x26d3, 0x26d4], [0x26e9, 0x26ea],
+  [0x26f0, 0x26f5], [0x26f7, 0x26fa], [0x26fd, 0x26fd], [0x2702, 0x2702], [0x2705, 0x2705],
+  [0x2708, 0x270d], [0x270f, 0x270f], [0x2712, 0x2712], [0x2714, 0x2714], [0x2716, 0x2716],
+  [0x271d, 0x271d], [0x2721, 0x2721], [0x2728, 0x2728], [0x2733, 0x2734], [0x2744, 0x2744],
+  [0x2747, 0x2747], [0x274c, 0x274c], [0x274e, 0x274e], [0x2753, 0x2755], [0x2757, 0x2757],
+  [0x2763, 0x2764], [0x2795, 0x2797], [0x27a1, 0x27a1], [0x27b0, 0x27b0], [0x27bf, 0x27bf],
+  [0x2934, 0x2935], [0x2b05, 0x2b07], [0x2b1b, 0x2b1c], [0x2b50, 0x2b50], [0x2b55, 0x2b55],
+  [0x3030, 0x3030], [0x303d, 0x303d], [0x3297, 0x3297], [0x3299, 0x3299], [0x1f004, 0x1f004],
+  [0x1f170, 0x1f171], [0x1f17e, 0x1f17f], [0x1f202, 0x1f202], [0x1f21a, 0x1f21a],
+  [0x1f22f, 0x1f22f], [0x1f237, 0x1f237], [0x1f30d, 0x1f30f], [0x1f315, 0x1f315],
+  [0x1f31c, 0x1f31c], [0x1f321, 0x1f321], [0x1f324, 0x1f32c], [0x1f336, 0x1f336],
+  [0x1f378, 0x1f378], [0x1f37d, 0x1f37d], [0x1f393, 0x1f393], [0x1f396, 0x1f397],
+  [0x1f399, 0x1f39b], [0x1f39e, 0x1f39f], [0x1f3a7, 0x1f3a7], [0x1f3ac, 0x1f3ae],
+  [0x1f3c2, 0x1f3c2], [0x1f3c4, 0x1f3c4], [0x1f3c6, 0x1f3c6], [0x1f3ca, 0x1f3ce],
+  [0x1f3d4, 0x1f3e0], [0x1f3ed, 0x1f3ed], [0x1f3f3, 0x1f3f3], [0x1f3f5, 0x1f3f5],
+  [0x1f3f7, 0x1f3f7], [0x1f408, 0x1f408], [0x1f415, 0x1f415], [0x1f41f, 0x1f41f],
+  [0x1f426, 0x1f426], [0x1f43f, 0x1f43f], [0x1f441, 0x1f442], [0x1f446, 0x1f449],
+  [0x1f44d, 0x1f44e], [0x1f453, 0x1f453], [0x1f46a, 0x1f46a], [0x1f47d, 0x1f47d],
+  [0x1f4a3, 0x1f4a3], [0x1f4b0, 0x1f4b0], [0x1f4b3, 0x1f4b3], [0x1f4bb, 0x1f4bb],
+  [0x1f4bf, 0x1f4bf], [0x1f4cb, 0x1f4cb], [0x1f4da, 0x1f4da], [0x1f4df, 0x1f4df],
+  [0x1f4e4, 0x1f4e6], [0x1f4ea, 0x1f4ed], [0x1f4f7, 0x1f4f7], [0x1f4f9, 0x1f4fb],
+  [0x1f4fd, 0x1f4fd], [0x1f508, 0x1f508], [0x1f50d, 0x1f50d], [0x1f512, 0x1f513],
+  [0x1f549, 0x1f54a], [0x1f550, 0x1f567], [0x1f56f, 0x1f570], [0x1f573, 0x1f579],
+  [0x1f587, 0x1f587], [0x1f58a, 0x1f58d], [0x1f590, 0x1f590], [0x1f5a5, 0x1f5a5],
+  [0x1f5a8, 0x1f5a8], [0x1f5b1, 0x1f5b2], [0x1f5bc, 0x1f5bc], [0x1f5c2, 0x1f5c4],
+  [0x1f5d1, 0x1f5d3], [0x1f5dc, 0x1f5de], [0x1f5e1, 0x1f5e1], [0x1f5e3, 0x1f5e3],
+  [0x1f5e8, 0x1f5e8], [0x1f5ef, 0x1f5ef], [0x1f5f3, 0x1f5f3], [0x1f5fa, 0x1f5fa],
+  [0x1f610, 0x1f610], [0x1f687, 0x1f687], [0x1f68d, 0x1f68d], [0x1f691, 0x1f691],
+  [0x1f694, 0x1f694], [0x1f698, 0x1f698], [0x1f6ad, 0x1f6ad], [0x1f6b2, 0x1f6b2],
+  [0x1f6b9, 0x1f6ba], [0x1f6bc, 0x1f6bc], [0x1f6cb, 0x1f6cb], [0x1f6cd, 0x1f6cf],
+  [0x1f6e0, 0x1f6e5], [0x1f6e9, 0x1f6e9], [0x1f6f0, 0x1f6f0], [0x1f6f3, 0x1f6f3],
+];
+
+/// Whether `cluster`, whose first code point is `base`, starts an emoji presentation
+/// sequence: `base` immediately followed by VS16, and listed. A VS16 deeper in — a ZWJ
+/// sequence's later component — does not count, as it does not in `unicode-width`.
+function startsEmojiPresentation(cluster, base) {
+  return (
+    cluster.codePointAt(base > 0xffff ? 2 : 1) === VS16 &&
+    EMOJI_PRESENTATION_BASES.some(([lo, hi]) => base >= lo && base <= hi)
+  );
+}
 
 /// Marks and format characters that take no cell of their own: a combining mark rides the
 /// grapheme it modifies, and a zero-width joiner or bidi control paints nothing.
 const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}]$/u;
 
 /// The cells one **grapheme cluster** occupies: `0` for a lone zero-width scalar, `2` for an
-/// emoji-presentation or East Asian Wide/Fullwidth cluster, `1` otherwise.
+/// emoji-presentation-sequence or East Asian Wide/Fullwidth cluster, `1` otherwise.
 function clusterWidth(cluster) {
   if (cluster.length === 1 && ZERO_WIDTH.test(cluster)) return 0;
-  if (cluster.includes(VS16)) return 2;
   const base = cluster.codePointAt(0);
   if (base === undefined) return 0;
+  if (startsEmojiPresentation(cluster, base)) return 2;
   for (const [lo, hi] of WIDE_RANGES) {
     if (base >= lo && base <= hi) return 2;
   }
@@ -159,6 +225,14 @@ function clipWidth(text, budget) {
 function padWidth(text, width) {
   const pad = width - textWidth(text);
   return pad > 0 ? text + " ".repeat(pad) : text;
+}
+
+/// `text` flushed to `align`'s edge of `width` cells — [`padWidth`] for `"left"`, the same
+/// display-width pad leading instead for `"right"`. `shell::aligned_cell`'s twin.
+function alignWidth(text, width, align) {
+  if (align === "left") return padWidth(text, width);
+  const pad = width - textWidth(text);
+  return pad > 0 ? " ".repeat(pad) + text : text;
 }
 
 // --- cells and rows ----------------------------------------------------------------
@@ -661,13 +735,16 @@ function planLoadStrip(board, now, cols) {
 
 /// `layout::COLUMN_ORDER` and each column's Title-case label (ADR-0032). `Column::label` is
 /// crate-internal in afkd, so — like `web/frames`'s `COLUMNS` — this is the spelling restated
-/// here, in the order the five render.
+/// here, in the order the five render. `align` is `Column::align`: the two **duration**
+/// columns flush right so their magnitudes stack on one screen column — a `4s` ends where a
+/// `59m 47s` ends — and the text columns read left. Every entry spells its edge, as the Rust
+/// match spells every variant.
 const COLUMNS = [
-  { key: "service", label: "Service" },
-  { key: "state", label: "State" },
-  { key: "trigger", label: "Trigger" },
-  { key: "liveness", label: "Last Activity" },
-  { key: "next", label: "Next Run" },
+  { key: "service", label: "Service", align: "left" },
+  { key: "state", label: "State", align: "left" },
+  { key: "trigger", label: "Trigger", align: "left" },
+  { key: "liveness", label: "Last Activity", align: "right" },
+  { key: "next", label: "Next Run", align: "right" },
 ];
 
 /// The fixed reserves, `shell::*_COL_WIDTH`. `service` has none: it is the content-fit column
@@ -980,7 +1057,12 @@ function buildRows(board, filter, collapsed) {
       const last = depth === 0 || i + 1 === level.length;
       const prefix = depth === 0 ? "" : guides.join("") + (last ? TREE_CONNECTOR_LAST : TREE_CONNECTOR_MID);
       if (entry.kind === "service") {
-        rows.push({ kind: "service", svc: entry.svc, depth, prefix });
+        // `layout::top_level_lead`, read "in exactly one place": a **top-level** service
+        // spends the two-cell chevron lead-in here, where the tree is walked, so its icon
+        // lands in the group-icon column. It is not synthesised downstream, because the run
+        // view's pinned header composes its own row with `layout::service_row`'s empty
+        // connector (`runHeaderCells`' `prefix: ""`) and that `""` has to reach the render.
+        rows.push({ kind: "service", svc: entry.svc, depth, prefix: depth === 0 ? TREE_TOP_LEVEL_INDENT : prefix });
       } else {
         rows.push({ kind: "group", path: entry.path, depth, prefix, collapsed: folded(entry.path) });
         if (folded(entry.path)) return;
@@ -1044,7 +1126,11 @@ function identityOf(row) {
   }
   const svc = row.svc;
   return {
-    prefix: row.depth === 0 ? TREE_TOP_LEVEL_INDENT : row.prefix,
+    // The prefix the caller resolved, honoured as given — `buildRows`' walk spends the
+    // top-level lead-in and the pinned header spends nothing, and only the caller can tell
+    // those two apart (`layout.rs`: "in the flat overview the list row for a top-level
+    // service is *byte-identical* to the pinned header row").
+    prefix: row.prefix,
     body: `${cardIcon(svc)} ${reconcileMarker(svc)}${svc.confined ? CONFINED_MARKER : ""}`,
     name: displayedName(svc, row.depth),
     // `shell::row_line_style`: a **stopped** row recedes whole-line so a shelf of switched-off
@@ -3034,7 +3120,7 @@ function scrollbarCell(bar, row) {
 
 /// `logview::scoped_entries` — the ring entries the log pane renders, oldest → newest: the
 /// whole ring unscoped, or just the entries the tree cursor's node emitted when scoped. A
-/// scope with no output of its own yields an empty pane and an honest `0–0/0`.
+/// scope with no output of its own yields an empty pane rather than falling back to the ring.
 function scopedEntries(ring, scope) {
   return scope === null ? ring : nodeEntries(ring, scope);
 }
@@ -3089,13 +3175,6 @@ function expandLog(entries, width) {
 function logTop(scroll, total, viewport) {
   const max = Math.max(0, total - Math.max(1, viewport));
   return scroll === "follow" ? max : Math.min(Math.max(0, scroll), max);
-}
-
-/// `logview::log_view`'s 1-based inclusive physical-row range, e.g. `128–139/139`. An empty
-/// (or empty-scoped) log reads `0–0/0`.
-function logRange(total, top, shown) {
-  if (total === 0) return "0–0/0";
-  return `${top + 1}–${Math.max(top + shown, top + 1)}/${total}`;
 }
 
 /// `treeview::tree_nav_hints` — the tree pane's own nav keys for the combined footer: cursor
@@ -3400,18 +3479,18 @@ function runHeaderCells(plan) {
 }
 
 /// The shown pane's own title: a bold fixed `Tree`, or the scope-aware `Log · <node>` /
-/// `Log · all` with its `start–end/total` range. With one pane on screen the title is the only
-/// thing saying which pane you are in, so it is always bold — there is no second title left to
-/// contrast a dim one against. The range says where in the ring the pane is sitting and the
-/// scope what it is filtered to; `logview` composes both onto a title its own pane then
-/// dropped, and on this page there is nowhere else for them to go.
+/// `Log · all`. With one pane on screen the title is the only thing saying which pane you are
+/// in, so it is always bold — there is no second title left to contrast a dim one against, and
+/// the scope is what says what the pane is filtered to.
+///
+/// The `start–end/total` range `logview` composes is deliberately **not** painted, because the
+/// terminal does not paint it either: `logview.rs`'s own field doc says the title is *"retained
+/// on the neutral view … but the split pane renders a fixed `Log` label"*, and `shell.rs`
+/// composes the painted title from the scope alone. The scrollbar this pane already draws down
+/// its right edge is the live answer to "where in the ring am I".
 function paneTitleCells(plan) {
   if (plan.focus === "tree") return [cell("Tree", { fg: "bright", bold: true })];
-  const shown = Math.min(plan.viewport, Math.max(0, plan.log.total - plan.log.top));
-  return [
-    cell(`Log · ${plan.log.scope ?? "all"}`, { fg: "bright", bold: true }),
-    cell(` · ${logRange(plan.log.total, plan.log.top, shown)}`, { fg: "legend", dim: true }),
-  ];
+  return [cell(`Log · ${plan.log.scope ?? "all"}`, { fg: "bright", bold: true })];
 }
 
 /// The run view composed onto a `cols × rows` grid: the header band and the pane's title band
@@ -3579,12 +3658,13 @@ function withOverlays(frame, board, options, cols, rows) {
 }
 
 /// The column header row — the visible labels in their own columns, painted bold, the same
-/// weight `render_list` gives it.
+/// weight `render_list` gives it, each flushed to its column's edge as the body cells are.
 function columnHeaderCells(visible, widths) {
   const out = [];
   visible.forEach((column, i) => {
     if (i > 0) out.push(blank(COLUMN_SPACING));
-    out.push(cell(padWidth(clipWidth(column.label, widths[column.key]), widths[column.key]), {
+    const width = widths[column.key];
+    out.push(cell(alignWidth(clipWidth(column.label, width), width, column.align), {
       fg: "bright",
       bold: true,
     }));
@@ -3659,8 +3739,10 @@ function bodyRowCells(row, visible, widths, laneCols, rollups, now) {
       }
       break;
     }
-    out.push(...fitted);
-    out.push(blank(width - spent));
+    // The pad goes on the side away from the column's edge, one plain run either way, so
+    // only the value cell itself moves between a left and a right column.
+    if (column.align === "right") out.push(blank(width - spent), ...fitted);
+    else out.push(...fitted, blank(width - spent));
   });
   return out;
 }

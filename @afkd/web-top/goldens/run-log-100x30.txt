@@ -1,6 +1,6 @@
-  🔹 noisy                       ● Idle                Every 1h             1s              59m 58s 
+🔹 noisy                         ● Idle                Every 1h                        1s    59m 58s
                                                                                                     
-Log · all · 1–10/10                                                                                 
+Log · all                                                                                           
                                                                                                     
 [noisy]           [RUN] run_cmd: /tmp/afkd-fixture/bin/noise.sh                                     
 [noisy]           [/tmp/afkd-fixture/bin/noise.sh] red text and a reset                             
@@ -30,9 +30,9 @@ k/j or ↑↓ scroll  PgUp/PgDn page  f follow ●    Tab tree    o/Esc back  q 
 Ctrl+U/D ½page    g/G top/bot                   s scope     ? help                                  
 
 ── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -64,7 +64,7 @@ bbbbbbbbnlllllllllbbbnllllllllllllllllllllllllllbnllllllllllbnllllnnnnnnnnnnnnnn
 ── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
 ....................................................................................................
 ....................................................................................................
-bbbbbbbbbdddddddddd.................................................................................
+bbbbbbbbb...........................................................................................
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................

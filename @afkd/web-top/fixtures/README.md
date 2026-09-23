@@ -1,12 +1,14 @@
-# Recorded wire captures
+# Recorded wire captures and run corpora
 
-Every `.jsonl` here is what a real afkd daemon wrote to its control socket, line for line.
-Nothing is hand-written: `fold.test.mjs` derives its expectations from these frames, so a
-re-capture cannot quietly make an assertion vacuous, and a frame shape this fold has never
-actually seen cannot sneak into the suite as a guess about the wire.
+Every `.jsonl` here is what a real afkd daemon wrote to its control socket, line for line,
+and the two `runs*/` trees are `cp -r` copies of a real daemon's `<state dir>/runs`. Nothing
+is hand-written: the suites derive their expectations from these files, so a re-capture
+cannot quietly make an assertion vacuous, and a frame shape this fold has never actually
+seen — or a run-dir layout the daemon has never actually written — cannot sneak into the
+suite as a guess.
 
 They ride into every operator's plugin directory on `afkd install`, so they stay small —
-about 63 KB for the seven of them.
+about 100 KB for all of them.
 
 ## How they were recorded
 
@@ -43,7 +45,7 @@ the lane can be filled and a third fire parks `queued`; a service that prints an
 adversarial line set; one that exits non-zero; one nested workflow
 (`in_parallel` → `times` → `if`); and one removed by the reload.
 
-## The seven files
+## The eight captures
 
 | File | What was driven |
 |---|---|
@@ -53,9 +55,21 @@ adversarial line set; one that exits non-zero; one nested workflow
 | `noise.jsonl` | The supervisor vocabulary and the adversarial log set: a fire that prints SGR, an OSC residue, an embedded `\r`, tabs, `U+202E`, CJK, an emoji and a zero-width space; a fire that fails; a stop/start round trip (`service_stopping` → `service_paused{true}` → `service_paused{false}` → `service_armed`); a re-arm whose `init` faults again (`service_crashed`, twice, which is the daemon's repeat alarm); and a **mid-fire** stop, whose `service_stopping` and settling `service_paused{true}` bracket the drained fire's own `fire_ok`. |
 | `deep-fail.jsonl` | A nested workflow that **fails below its root**, which none of the five above do: a `guard` whose predicate came back false, closing `skipped` over an `else` body whose `run_cmd` failed; an agent (`mender`) that closed `ok` over a tool call the transcript marked `is_error`; and an agent (`scribe`) whose two tool calls both passed. Those are the tree pane's three non-obvious rules — the worst-hidden-status rollup, the recovered `↻` marker, and the per-kind `agent` collapse default with its failing-subtree escape hatch — and a golden that never sees them pins nothing. |
 | `loud-fail.jsonl` | One service whose `run_cmd` prints eight lines and **exits 3**, so a `cmd` leaf closes `failed` with its own output attributed to it. That pairing exists nowhere else in the corpus: `noise.jsonl`'s failing fire and `deep-fail.jsonl`'s failing leaves all close with **zero** node-tagged ring lines, which renders `with_bodies`' auto-expand arm — a failed leaf showing its output unasked — true and invisible. Its stderr line also lands *third* in the ring though the shell printed it last, which is the real interleaving of two pipes and the reason the body is asserted in ring order. |
+| `backfill.jsonl` | One fire with the recorder attached **mid-fire**, so its `meta.snapshot` carries the service `busy` and the live frames are the second half of a run whose first half is already on disk. Recorded beside the two run corpora below, in the fourth session. |
 | `reload.jsonl` | A real reconcile: a running service removed (`orphaned`, then a `meta.dropped` when it stops), one whose display metadata drifted (`changed`), one whose recipe drifted while running (`stale`), one added (`added`), and the post-reload `order`. |
 
 `meta.host_load` rides along in all of them.
+
+## The two run corpora
+
+| Tree | What it holds |
+|---|---|
+| `runs/` | `<state dir>/runs` copied once the fourth session's last fire had finished: four run dirs across two daemon generations, of which the window walk keeps three. |
+| `runs-midfire/` | The same tree copied **during** that fire, so its newest run dir is an in-progress one whose trace still has open nodes and whose `run.log` stops mid-output. |
+
+Neither is read in place. Git carries no mtimes, and `recent_run_dirs` orders a service's run
+dirs by mtime — so `backfill.test.mjs` copies the tree to a scratch dir and restores each run
+dir's mtime from the instant its own name encodes, which is the chronology git *does* carry.
 
 ### The second session, and what it did not touch
 
@@ -92,6 +106,51 @@ service and one step, `run_cmd` on a shell script that prints seven lines to std
 stderr, and exits 3. Eight lines is deliberate — `treeview::BODY_ELIDE` is five, so the rendered
 body shows five and counts three, which is the elision boundary with a live case on both sides of
 it. One line carries CJK, so the body row's own width measuring is exercised rather than assumed.
+
+### The fourth session: the disk backfill
+
+`backfill.jsonl`, `runs/` and `runs-midfire/` were recorded together, in one session, the same
+way again — `afkd 0.2.130` (debug), a throwaway daemon, an isolated `HOME` under `/tmp`, the
+three home variables cleared, one service on an `every 1h` cadence fired by name over the
+socket, no provider trigger. None of the earlier files was re-recorded, so no existing golden
+moved.
+
+Its config is one service, `ops::監視` — namespaced and wide-glyph on purpose, so the `::` to
+`__` run-dir encoding and a CJK path segment are on the path of every read — over one workflow:
+an `in_parallel` of a loud command and a quiet one, then an `if run_cmd "true" { … }`, then a
+third command. The loud one prints the adversarial line set a quarter of a second apart (SGR,
+an OSC residue, an embedded `\r`, tabs, `U+202E`, CJK, an emoji, a zero-width space); the
+spacing is what makes a mid-fire copy land *inside* the output rather than before or after it.
+
+The session, in order:
+
+1. a daemon starts and the service fires once — that generation's run dir;
+2. the daemon takes its `SIGINT` and a **second** daemon starts, which re-mints the trace id
+   allocator. That is the generation boundary `tree_backfill_window` stops before, and it is
+   really in the corpus rather than asserted over one that cannot show it;
+3. the second generation fires twice, so the window is genuinely **multi-dir**;
+4. a fourth fire starts, the recorder attaches ~0.8s **into** it — so its `meta.snapshot`
+   carries the service `busy` — and `runs-midfire/` is copied ~1.5s later, while the fire is
+   still opening nodes and printing;
+5. the fire finishes, `runs/` is copied, and the daemon takes its `SIGINT` with the recorder
+   still attached.
+
+So `runs-midfire/` and the live half of `backfill.jsonl` are two views of the **same**
+in-progress run, overlapping on both the nodes opened in that window and the lines written in
+it. That overlap is the only thing that makes `backfill.test.mjs`'s seam assertions mean
+anything, and it exists because both came out of one session rather than being arranged.
+
+`runs/` holds four run dirs and the window walk keeps **three**: the fourth is the first
+daemon's, whose ids were re-minted under it.
+
+Two things this session could not record, and does not fake:
+
+- **A fire-less lifecycle run dir.** One is persisted only by a service under `in_sandbox`,
+  whose `init` opens a lone `sandbox` node and nothing else — and this host's kernel refuses
+  `bwrap` a user namespace, so the sandbox never enters. The walk rule that skips such a dir is
+  therefore exercised by the Rust's own tests and by nothing here.
+- **`service_checking` / `service_check_done`**, for the same reason as every other session
+  below.
 
 ## What is *not* in here, and why nothing hand-writes it
 

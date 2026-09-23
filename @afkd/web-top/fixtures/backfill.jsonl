@@ -1,0 +1,43 @@
+{"type":"meta","meta":"snapshot","services":[{"name":"ops::監視","state":"busy","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":802,"group":"ops","icon":"🔹","description":"ウェブ — the wide one","queue":"","queue_priority":"","orphan":false,"stale":false,"last_activity_ms":31,"state_ms":802,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":3,"run_failures_total":0,"run_time_total_ms":11558,"ok_run_time_total_ms":11558}],"uptime_ms":8829}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1677197312,"mem_total":32964685824,"rx_bps":1681,"tx_bps":731}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679253504,"mem_total":32964685824,"rx_bps":725,"tx_bps":795}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] pass 1 line 5: tab\tseparated\tcolumns","node":18}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] pass 1 line 6: bidi ‮override‬ back","node":18}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] pass 1 line 7: CJK 監視サービスの担当者","node":18}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] pass 1 line 8: emoji 🚀 and zero​width","node":18}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [OK] run_cmd: sh loud.sh 1 (exit 0, 1.80s)"}
+{"type":"trace","service":"ops::監視","event":{"op":"closed","id":18,"status":"ok","elapsed_ms":1798,"out":{"out":"lines","n":8}}}
+{"type":"trace","service":"ops::監視","event":{"op":"closed","id":16,"status":"ok","elapsed_ms":1799}}
+{"type":"trace","service":"ops::監視","event":{"op":"opened","node":{"id":19,"parent":15,"kind":"guard","label":"true","detail":""},"at":{"year":2026,"month":9,"day":23,"hour":0,"minute":33,"second":22,"millis":772}}}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [RUN] run_cmd: true"}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [OK] run_cmd: true (exit 0, 3ms)"}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [if] true -> true"}
+{"type":"trace","service":"ops::監視","event":{"op":"opened","node":{"id":20,"parent":19,"kind":"cmd","label":"sh tail.sh","detail":""},"at":{"year":2026,"month":9,"day":23,"hour":0,"minute":33,"second":22,"millis":776}}}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [RUN] run_cmd: sh tail.sh"}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] the guarded tail, line A","node":20}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679499264,"mem_total":32964685824,"rx_bps":853,"tx_bps":862}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] the guarded tail, line B","node":20}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] the guarded tail, line C","node":20}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [OK] run_cmd: sh tail.sh (exit 0, 1.02s)"}
+{"type":"trace","service":"ops::監視","event":{"op":"closed","id":20,"status":"ok","elapsed_ms":1018,"out":{"out":"lines","n":3}}}
+{"type":"trace","service":"ops::監視","event":{"op":"closed","id":19,"status":"ok","elapsed_ms":1022}}
+{"type":"trace","service":"ops::監視","event":{"op":"opened","node":{"id":21,"parent":15,"kind":"cmd","label":"sh coda.sh","detail":""},"at":{"year":2026,"month":9,"day":23,"hour":0,"minute":33,"second":23,"millis":796}}}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [RUN] run_cmd: sh coda.sh"}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] the coda, line one","node":21}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679798272,"mem_total":32964685824,"rx_bps":922,"tx_bps":999}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] the coda, line two","node":21}
+{"type":"log","service":"ops::監視","stream":"stdout","line":"[ops::監視] [sh] the coda, line three","node":21}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [OK] run_cmd: sh coda.sh (exit 0, 1.02s)"}
+{"type":"trace","service":"ops::監視","event":{"op":"closed","id":21,"status":"ok","elapsed_ms":1020,"out":{"out":"lines","n":3}}}
+{"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [wf] run_workflow record_pass: finished (3.84s)"}
+{"type":"trace","service":"ops::監視","event":{"op":"closed","id":15,"status":"ok","elapsed_ms":3844}}
+{"type":"event","event":"fire_ok","service":"ops::監視","elapsed_ms":3844}
+{"type":"event","event":"service_next_fire","service":"ops::監視","next_ms":3599999}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679745024,"mem_total":32964685824,"rx_bps":874,"tx_bps":925}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":1679745024,"mem_total":32964685824,"rx_bps":731,"tx_bps":133}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679745024,"mem_total":32964685824,"rx_bps":2842,"tx_bps":1880}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679745024,"mem_total":32964685824,"rx_bps":661,"tx_bps":798}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679745024,"mem_total":32964685824,"rx_bps":850,"tx_bps":945}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"ops::監視"}
+{"type":"event","event":"service_paused","service":"ops::監視","paused":true}

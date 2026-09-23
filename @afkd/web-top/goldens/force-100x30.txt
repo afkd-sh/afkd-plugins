@@ -3,17 +3,17 @@ CPU             ▁   1% · Mem             ▁ 1.5G/31G · Net ↓           �
                                                                                                     
 Service                          State                 Trigger              Last Activity   Next Run
   🧹 janitor                     ■ Stopping 1s         Every 1h                                     
-⊟ 📦 ops                         ✕ Crashed                                  2s                      
-├─ 🔹 nightly                    ● Idle                Every 1h                             59m 54s 
-├─ 🔷 sleeper                    ▶ Busy 2s             Every 1h             2s                      
+⊟ 📦 ops                         ✕ Crashed                                             2s           
+├─ 🔹 nightly                    ● Idle                Every 1h                              59m 54s
+├─ 🔷 sleeper                    ▶ Busy 2s             Every 1h                        2s           
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
 └─ ⊟ 📦 db        ┌ Force-stop ─────────────────────────────────────────────────┐                   
-   └─ 🔹 vacuum   │                                                             │           59m 54s 
-  🔹 🔒archivist  │  Force-stop 1 stuck service?                                │           59m 54s 
-  🔹 noisy        │                                                             │           59m 58s 
-  🔸 flaky        │    🧹 janitor                                               │           59m 58s 
-  🔹 deep         │                                                             │           59m 54s 
-  🔹 spare        │  Force kills the running work & abandons the wedged thread  │           59m 54s 
+   └─ 🔹 vacuum   │                                                             │            59m 54s
+  🔹 🔒archivist  │  Force-stop 1 stuck service?                                │            59m 54s
+  🔹 noisy        │                                                             │      1s    59m 58s
+  🔸 flaky        │    🧹 janitor                                               │      1s    59m 58s
+  🔹 deep         │                                                             │            59m 54s
+  🔹 spare        │  Force kills the running work & abandons the wedged thread  │            59m 54s
                   │  The service reclaims once the abandoned thread finishes    │                   
 Queue             │                                                             │sm   Held   Waiting
 🧵 heavy (high)   │  y force  n cancel                                          │     1      0      
@@ -36,16 +36,16 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
 rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnncccccccccccccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnrbbbbbbbbbbbbrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnrrrrrrrn
-rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnrnnnnnnnnnnnrrrrrrrn
+rrrrrrnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnrnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnrnnnnnnnnnnnnnnnnnnn
 bbbbbnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnnnnnnnnrnnbnlllllnnbnllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn

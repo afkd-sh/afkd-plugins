@@ -9,11 +9,11 @@ Service                                                                        S
 ├─ 🔸 b│  Ctrl+R is afkd's reload: the page takes it, so the browser does not reload the tab.                                                           │       
 └─ ⊟ 📦│                                                                                                                                                │       
    └─  │  global                                                                queues — The relay has no lane verb          PgDn        Page down      │       
-  🔹 🔒│  q/Ctrl+C    Quit — The browser owns Ctrl+C                            h/←         Narrow the lane at the cursor    g           Top            │9m 47s 
-  🔹 no│  Ctrl+R      Reload config                                             l/→         Widen the lane at the cursor     G           Bottom         │9m 47s 
-  🔹 fl│  ?           Close help                                                                                             f           Toggle follow  │9m 47s 
-  🔹 de│                                                                        output                                                                  │9m 52s 
-  🔹 sp│  overview                                                              Tab         Show the other pane              info                       │9m 47s 
+  🔹 🔒│  q/Ctrl+C    Quit — The browser owns Ctrl+C                            h/←         Narrow the lane at the cursor    g           Top            │59m 47s
+  🔹 no│  Ctrl+R      Reload config                                             l/→         Widen the lane at the cursor     G           Bottom         │59m 47s
+  🔹 fl│  ?           Close help                                                                                             f           Toggle follow  │59m 47s
+  🔹 de│                                                                        output                                                                  │59m 52s
+  🔹 sp│  overview                                                              Tab         Show the other pane              info                       │59m 47s
        │  s           Start service                                             s           Scope log to node / all          i/Esc       Back to list   │       
 Queue  │  x           Stop service                                              o/Esc       Back to list                                                │Waiting
 🧵 heav│  t           Trigger an idle service                                                                                confirm                    │1      
@@ -55,11 +55,11 @@ rrrnnnnrnnllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll
 rrrnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
 rrrnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnn
 rrrrrrnrnnbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbblllllllllllllllllllllllllllllnnnnnnnnnnbbbbbbbbbbbnlllllllllnnnnnnrnnnnnnn
-rrnnnnnrnnbbbbbbbbbbbnllllllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllllllllllllnnnnbbbbbbbbbbbnlllnnnnnnnnnnnnrrrrrrrn
-rrnnnnnrnnbbbbbbbbbbbnlllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllllllllllllllllllnnnnnbbbbbbbbbbbnllllllnnnnnnnnnrrrrrrrn
-rrnnnnnrnnbbbbbbbbbbbnllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllnnrrrrrrrn
-rrnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
-rrnnnnnrnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllnnnnnnnnnnnnnnbbbbnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrn
+rrnnnnnrnnbbbbbbbbbbbnllllllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllllllllllllnnnnbbbbbbbbbbbnlllnnnnnnnnnnnnrrrrrrrr
+rrnnnnnrnnbbbbbbbbbbbnlllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllllllllllllllllllnnnnnbbbbbbbbbbbnllllllnnnnnnnnnrrrrrrrr
+rrnnnnnrnnbbbbbbbbbbbnllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllnnrrrrrrrr
+rrnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrr
+rrnnnnnrnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllnnnnnnnnnnnnnnbbbbnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrr
 nnnnnnnrnnbbbbbbbbbbbnlllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnlllllllllllllllllllllllnnnnnnnnnnbbbbbbbbbbbnllllllllllllnnnrnnnnnnn
 bbbbbnnrnnbbbbbbbbbbbnllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbbbbbb
 nnnnnnnrnnbbbbbbbbbbbnlllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbnnnnnnnnnnnnnnnnnnnnrnnnnnnn

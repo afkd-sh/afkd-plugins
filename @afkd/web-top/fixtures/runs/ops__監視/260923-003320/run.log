@@ -1,0 +1,28 @@
+260923 00:33:20.973 [ops::監視] [wf] run_workflow record_pass: start
+260923 00:33:20.973 [ops::監視] [RUN] run_cmd: sh quiet.sh
+260923 00:33:20.973 [ops::監視] [RUN] run_cmd: sh loud.sh 1
+260923 00:33:20.975 [ops::監視] [sh] the quiet branch, one line
+260923 00:33:20.975 [ops::監視] [sh] pass 1 line 1: plain ascii
+260923 00:33:20.975 [ops::監視] [OK] run_cmd: sh quiet.sh (exit 0, 1ms)
+260923 00:33:21.229 [ops::監視] [sh] pass 1 line 2: [1;32mSGR green[0m and back
+260923 00:33:21.488 [ops::監視] [sh] pass 1 line 3: ]0;window titleOSC residue
+260923 00:33:21.744 [ops::監視] [sh] pass 1 line 4: carriagereturn embedded
+260923 00:33:21.997 [ops::監視] [sh] pass 1 line 5: tab	separated	columns
+260923 00:33:22.256 [ops::監視] [sh] pass 1 line 6: bidi ‮override‬ back
+260923 00:33:22.514 [ops::監視] [sh] pass 1 line 7: CJK 監視サービスの担当者
+260923 00:33:22.771 [ops::監視] [sh] pass 1 line 8: emoji 🚀 and zero​width
+260923 00:33:22.772 [ops::監視] [OK] run_cmd: sh loud.sh 1 (exit 0, 1.80s)
+260923 00:33:22.773 [ops::監視] [RUN] run_cmd: true
+260923 00:33:22.776 [ops::監視] [OK] run_cmd: true (exit 0, 3ms)
+260923 00:33:22.776 [ops::監視] [if] true -> true
+260923 00:33:22.777 [ops::監視] [RUN] run_cmd: sh tail.sh
+260923 00:33:22.781 [ops::監視] [sh] the guarded tail, line A
+260923 00:33:23.288 [ops::監視] [sh] the guarded tail, line B
+260923 00:33:23.794 [ops::監視] [sh] the guarded tail, line C
+260923 00:33:23.795 [ops::監視] [OK] run_cmd: sh tail.sh (exit 0, 1.02s)
+260923 00:33:23.796 [ops::監視] [RUN] run_cmd: sh coda.sh
+260923 00:33:23.801 [ops::監視] [sh] the coda, line one
+260923 00:33:24.309 [ops::監視] [sh] the coda, line two
+260923 00:33:24.816 [ops::監視] [sh] the coda, line three
+260923 00:33:24.817 [ops::監視] [OK] run_cmd: sh coda.sh (exit 0, 1.02s)
+260923 00:33:24.817 [ops::監視] [wf] run_workflow record_pass: finished (3.84s)

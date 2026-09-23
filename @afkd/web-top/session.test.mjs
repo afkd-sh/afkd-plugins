@@ -691,6 +691,12 @@ test("the daemon's own two messages become the flash, and control_no_op does not
   // `meta.error` appears in **no** capture: earning one means configuring a provider trigger,
   // which `fixtures/README.md` says the recorder refuses to do. So this one frame is built from
   // `proto.rs`'s `Meta::Error` shape and is called out here as the hand-built frame it is.
+  //
+  // The daemon is no longer its only producer: the relay **composes** one of these when the
+  // runs base its backfill would read is missing or unreadable, so the flash an operator sees
+  // then is this arm. Its sentence is not copied here — that would be a second spelling to keep
+  // in step — because `e2e_web_top.rs` asserts the shape the relay really writes (a `meta.error`
+  // naming the path, in this plugin's own voice) against a live daemon.
   const error = { type: "meta", meta: "error", message: "no such service: nightlyy" };
   assert.equal(flashOf(noteFrame(newSession(), error, BASE), BASE), error.message);
 

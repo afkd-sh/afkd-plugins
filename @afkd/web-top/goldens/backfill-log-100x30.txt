@@ -1,0 +1,94 @@
+🔷 ops::監視                     ▶ Busy 2s             Every 1h                        1s           
+                                                                                                    
+Log · all                                                                                           
+                                                                                                    
+[ops::監視] [sh] pass 1 line 1: plain ascii                                                        ░
+[ops::監視] [OK] run_cmd: sh quiet.sh (exit 0, 1ms)                                                ░
+[ops::監視] [sh] pass 1 line 2: SGR green and back                                                 ░
+[ops::監視] [sh] pass 1 line 3: ]0;window titleOSC residue                                         ░
+[ops::監視] [sh] pass 1 line 4: carriagereturn embedded                                            █
+[ops::監視] [sh] pass 1 line 5: tab separated columns                                              █
+[ops::監視] [sh] pass 1 line 6: bidi override back                                                 █
+[ops::監視] [sh] pass 1 line 7: CJK 監視サービスの担当者                                           █
+[ops::監視] [sh] pass 1 line 8: emoji 🚀 and zerowidth                                             █
+[ops::監視] [OK] run_cmd: sh loud.sh 1 (exit 0, 1.80s)                                             █
+[ops::監視] [RUN] run_cmd: true                                                                    █
+[ops::監視] [OK] run_cmd: true (exit 0, 3ms)                                                       █
+[ops::監視] [if] true -> true                                                                      █
+[ops::監視] [RUN] run_cmd: sh tail.sh                                                              █
+[ops::監視] [sh] the guarded tail, line A                                                          █
+[ops::監視] [sh] the guarded tail, line B                                                          █
+[ops::監視] [sh] the guarded tail, line C                                                          █
+[ops::監視] [OK] run_cmd: sh tail.sh (exit 0, 1.02s)                                               █
+[ops::監視] [RUN] run_cmd: sh coda.sh                                                              █
+[ops::監視] [sh] the coda, line one                                                                █
+[ops::監視] [sh] the coda, line two                                                                █
+[ops::監視] [sh] the coda, line three                                                              █
+[ops::監視] [OK] run_cmd: sh coda.sh (exit 0, 1.02s)                                               █
+[ops::監視] [wf] run_workflow record_pass: finished (3.84s)                                        █
+k/j or ↑↓ scroll  PgUp/PgDn page  f follow ●    Tab tree    o/Esc back  q quit                      
+Ctrl+U/D ½page    g/G top/bot                   s scope     ? help                                  
+
+── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
+nnnnnnrrnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnr
+bbbbbbbbbnllllllllbbbbbbbbbnllllllbnllllllllllllbbbnllllllllbbbbbnllllllbnllllnnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbnlllllllllbbbnllllllllllllllllllllllllllbnllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+
+── weight · . plain · d dim · b bold · s selection band · D band, dim · B band, bold
+.................................bbbbbbbbb..........................................................
+....................................................................................................
+bbbbbbbbb...........................................................................................
+....................................................................................................
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
+....................................................................................................
+....................................................................................................

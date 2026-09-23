@@ -2,12 +2,12 @@ afkd 0.2.123 · ● Running 12s · 8 up · 2 down                               
 CPU           ▁▁▁   1% · Mem           ▁▁▁ 1.5G/31G · Net ↓         ▆▁▁  717/s ↑         ▂▁▁  959/s 
                                                                                                     
 Service                          State                 Trigger              Last Activity   Next Run
-⊟ 📦 ops                         ✕ Crashed                                  4s                      
-├─ 🔹 nightly                    ▷ Queued 2s           Every 1h             9s                      
-├─ 🔷 sleeper                    ▶ Busy 4s             Every 1h             4s                      
+⊟ 📦 ops                         ✕ Crashed                                             4s           
+├─ 🔹 nightly                    ▷ Queued 2s           Every 1h                        9s           
+├─ 🔷 sleeper                    ▶ Busy 4s             Every 1h                        4s           
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
-└─ ⊟ 📦 db                                                                  5s                      
-   └─ 🔷 vacuum                  ▶ Busy 5s             Every 1h             5s                      
+└─ ⊟ 📦 db                                                                             5s           
+   └─ 🔷 vacuum                  ▶ Busy 5s             Every 1h                        5s           
                                                                                                     
 Queue             Slots                                                 Parallelism   Held   Waiting
 🧵 heavy (high)   ▮▮ ╎ ∙                                                2             2      1      
