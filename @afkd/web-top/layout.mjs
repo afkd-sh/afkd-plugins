@@ -97,7 +97,7 @@ const VS16 = 0xfe0f;
 /// The bases of every `<base> FE0F ; emoji style` line in Unicode 17.0.0's
 /// `emoji-variation-sequences.txt`, the version `unicode-width` 0.2.2 was generated from, as
 /// runs of code points. The vendored copy is
-/// `crates/cli/tests/fixtures/emoji-variation-sequences.txt`, and
+/// `drift/@afkd/web-top/tests/fixtures/emoji-variation-sequences.txt`, and
 /// `every_emoji_presentation_base_measures_alike_in_afkd_top_and_web_top` fails when a
 /// `unicode-width` bump moves the list: re-vendor the file at the crate's Unicode version and
 /// regenerate this from it with the crate's own rule,

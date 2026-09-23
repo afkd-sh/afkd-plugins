@@ -1,4 +1,4 @@
-// The session's own suite: `node --test plugins/@afkd/web-top/session.test.mjs`.
+// The session's own suite: `node --test @afkd/web-top/session.test.mjs`.
 //
 // Every board here is **folded from a recorded capture** under `fixtures/` at a fixed synthetic
 // clock — the rule `fixtures/README.md` states, and the reason a re-capture cannot quietly make
@@ -695,7 +695,7 @@ test("the daemon's own two messages become the flash, and control_no_op does not
   // The daemon is no longer its only producer: the relay **composes** one of these when the
   // runs base its backfill would read is missing or unreadable, so the flash an operator sees
   // then is this arm. Its sentence is not copied here — that would be a second spelling to keep
-  // in step — because `e2e_web_top.rs` asserts the shape the relay really writes (a `meta.error`
+  // in step — because the drift gate's `drift.rs` asserts the shape the relay really writes (a `meta.error`
   // naming the path, in this plugin's own voice) against a live daemon.
   const error = { type: "meta", meta: "error", message: "no such service: nightlyy" };
   assert.equal(flashOf(noteFrame(newSession(), error, BASE), BASE), error.message);

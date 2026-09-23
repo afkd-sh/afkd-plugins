@@ -10,7 +10,7 @@
 // Each fixture-driven test opens by asserting the recording actually contains the variety
 // it claims, so a degenerate capture fails loudly instead of passing.
 //
-// Run: `node --test plugins/@afkd/web-top/`
+// Run: `node --test @afkd/web-top/`
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

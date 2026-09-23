@@ -1,19 +1,18 @@
-// The keymap transcription's own suite: `node --test plugins/@afkd/web-top/keymap.test.mjs`.
+// The keymap transcription's own suite: `node --test @afkd/web-top/keymap.test.mjs`.
 //
 // This is the pinning test the card asks for. `keymap.mjs` is a hand-written copy of afkd's
 // `DEFAULT_KEYS`, and a hand-written copy of a table in another language is exactly the kind of
 // thing that rots — so every assertion below reads the **Rust** and holds the javascript to it:
 // the 51 rows in order, the eight scopes and their dotted names, the glyph vocabulary, and the
 // drain's refusal set. A row gained, lost or rebound over there is a failing test here, which is
-// the only thing that makes "the stock keymap, transcribed" a claim rather than a hope.
+// the only thing that makes "the stock keymap, transcribed" a claim rather than a hope. The Rust
+// is read out of the afkd checkout `AFKD_SRC` names, and those tests skip without one.
 //
 // Each read is guarded the way `web/scripts/check-dist.mjs` guards its palette read: if the
 // regex finds implausibly little, the test fails *with that* as its message, so a renamed
 // constant reddens rather than silently comparing against an empty list.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -33,16 +32,14 @@ import {
   primary,
   resolve,
 } from "./keymap.mjs";
+import { NO_AFKD_SRC, afkdSource } from "./testkit.mjs";
 
-const HERE = import.meta.dirname;
-const REPO = join(HERE, "..", "..", "..");
-
-const KEYMAP_RS = readFileSync(join(REPO, "crates", "config", "src", "keymap.rs"), "utf8");
-const KEYS_RS = readFileSync(join(REPO, "crates", "tui", "src", "keys.rs"), "utf8");
+const KEYMAP_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "config", "src", "keymap.rs");
+const KEYS_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "tui", "src", "keys.rs");
 
 // --- AC1: the transcription is the Rust table ---------------------------------------
 
-test("the 51 rows are DEFAULT_KEYS's, in order", () => {
+test("the 51 rows are DEFAULT_KEYS's, in order", { skip: NO_AFKD_SRC }, () => {
   // The slice itself, bounded so a `(Scope::…, "…", "…")` tuple elsewhere in the file cannot
   // drift into the comparison.
   const from = KEYMAP_RS.indexOf("const DEFAULT_KEYS: &[(Scope, &str, &str)] = &[");
@@ -71,7 +68,7 @@ test("the 51 rows are DEFAULT_KEYS's, in order", () => {
   assert.equal(DEFAULT_KEYS.length, 51, "…and it is still 51 rows");
 });
 
-test("the scopes are Scope's, in its own order", () => {
+test("the scopes are Scope's, in its own order", { skip: NO_AFKD_SRC }, () => {
   const arms = [...KEYMAP_RS.matchAll(/Scope::(\w+) => "([\w.]+)",/g)].map(([, , name]) => name);
   assert.equal(arms.length, 8, "the dsl_name read found the eight arms");
   assert.deepEqual(SCOPES, arms, "SCOPES is dsl_name's list in its own order");
@@ -103,7 +100,7 @@ test("the alternates are transcribed, not collapsed to the first", () => {
 
 // --- the glyph vocabulary ------------------------------------------------------------
 
-test("the glyphs are keys::glyph's", () => {
+test("the glyphs are keys::glyph's", { skip: NO_AFKD_SRC }, () => {
   // `named_glyph`'s arms, read out of the Rust and keyed by the token `NamedKey::to_token`
   // spells — so both halves of the pair come from the file rather than from this test.
   const token = Object.fromEntries(
@@ -196,7 +193,7 @@ test("every action is described, and either handled or noted", () => {
   assert.deepEqual(PARTIAL, ["overview.service_peek", "overview.show_output", "overview.show_info"]);
 });
 
-test("the drain refuses exactly the actions keys.rs refuses", () => {
+test("the drain refuses exactly the actions keys.rs refuses", { skip: NO_AFKD_SRC }, () => {
   // `keys::REFUSED_WHILE_QUITTING` is a list of `act::` constants; each constant's value is the
   // scope-qualified action name, so the two are joined through the `act` module's own
   // definitions rather than through a second transcription.

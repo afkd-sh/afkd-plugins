@@ -1,5 +1,6 @@
-// The screen machinery two suites share: a rendered grid's three planes, the committed
-// golden they are diffed against, and the structural invariants every screen holds.
+// The machinery the suites share: a rendered grid's three planes, the committed golden they
+// are diffed against, the structural invariants every screen holds, and the read of afkd's
+// own source the transcription tests hold the javascript to.
 //
 // It lives beside the modules rather than inside `layout.test.mjs` because
 // `backfill.test.mjs` renders the same panes off a **disk** replay and diffs them against
@@ -22,6 +23,22 @@ const WRITING = process.argv.includes("--write-goldens");
 const HERE = import.meta.dirname;
 /// Where the committed screens live, beside this file.
 const GOLDENS = join(HERE, "goldens");
+
+// --- afkd's own source ---------------------------------------------------------------
+
+/// The afkd checkout `AFKD_SRC` names. afkd lives in a repository of its own, so a test that
+/// reads its Rust runs only where one is named, and skips everywhere else — the release
+/// workflow included — with [`NO_AFKD_SRC`] as its reason rather than failing on a missing file.
+const AFKD_SRC = process.env.AFKD_SRC ?? "";
+
+/// The `skip` option for a test that reads afkd's Rust: `false` with a checkout, the reason
+/// without one.
+export const NO_AFKD_SRC = AFKD_SRC === "" ? "AFKD_SRC names no afkd checkout to read the Rust from" : false;
+
+/// One of afkd's own source files, `parts` relative to the checkout's root.
+export function afkdSource(...parts) {
+  return readFileSync(join(AFKD_SRC, ...parts), "utf8");
+}
 
 // --- the fixtures ------------------------------------------------------------------
 

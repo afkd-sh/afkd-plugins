@@ -154,8 +154,9 @@ Two properties it holds on purpose:
 
 Its suite is `fold.test.mjs`, driven by JSONL captured off a real daemon under
 `fixtures/` — see [`fixtures/README.md`](fixtures/README.md) for how each file was
-recorded and what it holds. Run it with `node --test plugins/@afkd/web-top/fold.test.mjs`;
-`cargo test` runs it too, and skips loudly on a host with no `node`.
+recorded and what it holds. Run it with `node --test @afkd/web-top/fold.test.mjs`;
+the drift gate's `cargo test` runs it too ([against a real afkd](#against-a-real-afkd)), and
+skips loudly on a host with no `node`.
 
 ## The layout
 
@@ -196,7 +197,7 @@ each cell says it in, and its weight-or-band, one letter per cell so the planes 
 text in any terminal. A cell's look is half its meaning here (the gated footer hints, the
 trend lanes' recession, the bold column header, the selection bar), and a text-only golden
 would pass over a page painted flat. They are regenerated deliberately — `node
-plugins/@afkd/web-top/layout.test.mjs --write-goldens` — never by the test run.
+@afkd/web-top/layout.test.mjs --write-goldens` — never by the test run.
 `paint.test.mjs` and `input.test.mjs` cover the two DOM-touching modules against a **stub**
 DOM: a painter that makes no layout decision should need no layout engine to test, and a key
 seam that captures rather than steals should need no browser to prove it — the stub is the
@@ -384,6 +385,24 @@ Whether it *says* so depends on which kind of "cannot be read" it is:
   every install before its first fire. Silent, on both channels. `afkd top` reads the same disk
   and says nothing about it either, and a page that flashed at every tab until the first fire
   would be louder than the terminal over the same state.
+
+## Against a real afkd
+
+Everything above is held to afkd by the drift gate beside this directory, in
+[`drift/@afkd/web-top`](../../drift/@afkd/web-top). It installs this tree into a throwaway
+`$HOME`, runs it under a real daemon, and diffs the page's screen against the one `afkd top`
+paints on a PTY of the same size, cell for cell. Run it from the repository root:
+
+```console
+$ AFKD_SRC=/path/to/afkd cargo test
+```
+
+The daemon is the `afkd` first on `PATH` — the install an operator runs, never a build — so
+the gate answers whether this page matches the afkd it will meet. `AFKD_SRC` names an afkd
+checkout for the checks that read afkd's own source: the keymap and palette transcriptions,
+the rail glyph table, the variation-selector scan, the index entry, and the `unicode-width`
+every width here is measured against. Without one those checks skip and say so, which is how
+the release workflow runs this directory's suites.
 
 ## What this card deliberately does not do
 

@@ -1,4 +1,4 @@
-// The layout's own suite: `node --test plugins/@afkd/web-top/layout.test.mjs`.
+// The layout's own suite: `node --test @afkd/web-top/layout.test.mjs`.
 //
 // Every board here is **folded from a recorded capture** under `fixtures/` at a fixed
 // synthetic clock — the rule `fixtures/README.md` states, and the reason a re-capture cannot
@@ -22,10 +22,9 @@ import { fold, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, SCOPES, all, idOf, primary } from "./keymap.mjs";
 import { TREND_LADDER, bodyHeight, formatElapsed, infoScrollMax, infoView, layout, runMetrics, scrollOffset, textWidth, visibleRows } from "./layout.mjs";
 import { newSession, press } from "./session.mjs";
-import { BASE, STEP, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, screenText } from "./testkit.mjs";
+import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, screenText } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
-const REPO = join(HERE, "..", "..", "..");
 
 // --- AC1: the whole overview -------------------------------------------------------
 
@@ -395,7 +394,7 @@ test("every right-flushed run ends where its header ends", () => {
 
 // --- AC4: the palette ---------------------------------------------------------------
 
-test("the stylesheet spends only the product's palette", () => {
+test("the stylesheet spends only the product's palette", { skip: NO_AFKD_SRC }, () => {
   const raw = readFileSync(join(HERE, "dashboard.css"), "utf8");
   // Comments first: the file's own header names the two near-twins it dropped on the way
   // across from the site (`#8c949d`, `#fcfcfc`), and a scan that counted those as colours on
@@ -404,7 +403,7 @@ test("the stylesheet spends only the product's palette", () => {
   // The nine the terminal paints, read **out of the Rust** rather than transcribed — the same
   // relation `web/scripts/check-dist.mjs` holds for the site's window, so a rename in
   // `palette.rs` reddens here.
-  const rust = readFileSync(join(REPO, "crates", "tui", "src", "palette.rs"), "utf8");
+  const rust = afkdSource("crates", "tui", "src", "palette.rs");
   const product = [...rust.matchAll(/Color::from_u32\(0x00([0-9a-f]{2})_([0-9a-f]{4})\)/g)].map(
     ([, hi, lo]) => `#${hi}${lo}`,
   );
@@ -2169,7 +2168,7 @@ test("both panes carry the scrollbar over their own total, viewport and top", ()
   }
 });
 
-test("the rail glyphs measure as the tui measures them", () => {
+test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, () => {
   // Every glyph `treeview::kind_glyph` and `status_glyph` put on a row, keyed by the Rust's own
   // arm names and pinned to the width `unicode-width` 0.2 gives it in the terminal.
   //
@@ -2199,7 +2198,7 @@ test("the rail glyphs measure as the tui measures them", () => {
   // Read the two tables **out of the Rust** and hold this one to them, so a glyph changed or
   // added there reddens here rather than shipping a row that overruns behind a golden that pins
   // the overrun as correct.
-  const rust = readFileSync(join(REPO, "crates", "tui", "src", "treeview.rs"), "utf8");
+  const rust = afkdSource("crates", "tui", "src", "treeview.rs");
   const armsOf = (from) => {
     const body = rust.slice(rust.indexOf("{", from), rust.indexOf("\n}", from));
     return [...body.matchAll(/NodeKind::(\w+) => "([^"]+)"/g)].map(([, arm, glyph]) => [arm, glyph]);

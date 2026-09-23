@@ -1,4 +1,4 @@
-// The key seam's own suite: `node --test plugins/@afkd/web-top/input.test.mjs`.
+// The key seam's own suite: `node --test @afkd/web-top/input.test.mjs`.
 //
 // `input.mjs` is the one module here that touches a browser event, so it is exercised against a
 // **stub** one — an element with an `addEventListener`, a `focus` and an `ownerDocument` that

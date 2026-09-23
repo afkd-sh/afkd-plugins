@@ -1,4 +1,4 @@
-// The disk backfill's suite: `node --test plugins/@afkd/web-top/backfill.test.mjs`.
+// The disk backfill's suite: `node --test @afkd/web-top/backfill.test.mjs`.
 //
 // The relay reads the daemon's own run corpus off disk and serves it as `backfill` /
 // `backfill_log` frames ahead of a subscriber's live stream. This suite drives that read

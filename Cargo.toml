@@ -1,0 +1,6 @@
+# The repository's Rust: the gates that hold a plugin to a real afkd, one member per plugin
+# that has one. A workspace at the root keeps `target/` here, outside the plugin trees that
+# `afkd install` copies whole.
+[workspace]
+resolver = "2"
+members = ["drift/@afkd/web-top"]

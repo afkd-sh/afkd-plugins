@@ -1,4 +1,4 @@
-// The painter's own suite: `node --test plugins/@afkd/web-top/paint.test.mjs`.
+// The painter's own suite: `node --test @afkd/web-top/paint.test.mjs`.
 //
 // `paint.mjs` is the one module here that touches the DOM, so it is exercised against a
 // **stub** one — a dozen lines of `createElement`/`append`/`remove`, which is all it uses.

@@ -34,19 +34,14 @@ jobs:
         with:
           node-version: '24'
 
-      # A red suite must not publish. Five of the plugin's six suites run here; the sixth,
-      # `keymap.test.mjs`, and two tests inside `layout.test.mjs` are drift gates that read
-      # afkd's Rust sources (`crates/config/src/keymap.rs`, `crates/tui/src/keys.rs`,
-      # `palette.rs`, `treeview.rs`) and hold the javascript to them row for row. Those
-      # sources are not in this repository, so — like the PTY gate the README names — they
-      # stay upstream, where the whole suite runs on every change.
+      # A red suite must not publish, so every one of the plugin's suites runs here. The
+      # tests in them that read afkd's own Rust (`keymap.test.mjs`'s transcription checks and
+      # two in `layout.test.mjs`) skip themselves: afkd is a repository of its own, and no
+      # checkout of it is here for `AFKD_SRC` to name. They run with the drift gate under
+      # `drift/`, on a host that has an afkd.
       - name: The plugin's own suites
         working-directory: '@afkd/web-top'
-        run: |
-          node --test fold.test.mjs paint.test.mjs session.test.mjs input.test.mjs
-          node --test \
-            --test-skip-pattern='^(the stylesheet spends only the product.s palette|the rail glyphs measure as the tui measures them)$' \
-            layout.test.mjs
+        run: node --test *.test.mjs
 
       # `cp -a` then `tar`, so the mode bits ride: afkd places what the archive holds and
       # there is no build step, so `web-top` has to arrive executable or the daemon cannot
@@ -75,6 +70,6 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/web-top/afkd-plugin.toml')
           test -n "$version"
-          printf '`afkd install @afkd/web-top`, or `afkd update @afkd/web-top` if you already have it.\n\nSynced from the afkd repository at %s.\n' "$GITHUB_SHA" > notes.md
+          printf '`afkd install @afkd/web-top`, or `afkd update @afkd/web-top` if you already have it.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete web-top --yes --cleanup-tag || true
           gh release create web-top --target "$GITHUB_SHA" --title "@afkd/web-top $version" --notes-file notes.md afkd-web-top.tar.gz

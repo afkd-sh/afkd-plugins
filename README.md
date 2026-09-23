@@ -7,13 +7,19 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   control wire to a browser.
 
 Each plugin carries its own README, its own `node --test` suite and its own
-fixtures, and is imported here from the afkd repository. The PTY drift gate
-that diffs web-top's screen against a real `afkd top` stays in that repository,
-where the daemon it has to build lives; this copy is downstream of it. So do
-the suites that read afkd's Rust sources and hold the javascript to them —
-`keymap.test.mjs`, and two tests inside `layout.test.mjs` — for the same
-reason: the sources they read are not here. Everything else runs on every push,
-in `.github/workflows/release.yml`, and a red suite does not publish.
+fixtures. A plugin that has to be held to a real afkd also has a drift gate,
+under `drift/` at the plugin's own path. Every gate is a member of the Cargo
+workspace at the root, so one command runs them all:
+
+```console
+$ AFKD_SRC=/path/to/afkd cargo test
+```
+
+A gate runs the `afkd` first on `PATH`, the installed one, and never builds
+afkd. `AFKD_SRC` names an afkd checkout for the tests that read afkd's own
+source, in a gate and in a plugin's own suites alike; without one those tests
+skip and say so. That is how `.github/workflows/release.yml` runs a plugin's
+suites on every push, and a red suite does not publish.
 
 ## Installing
 
@@ -24,6 +30,8 @@ plugin index, so a name is enough:
 afkd install @afkd/web-top
 ```
 
-`afkd update @afkd/web-top` picks up the next release. Each plugin's release
-tag is fixed and moves onto the newest release, because `afkd update`
-re-fetches the source URL it recorded at install time.
+`afkd update @afkd/web-top` picks up the next release, provided it raises the
+`version` in the plugin's `afkd-plugin.toml`: afkd decides that an install is
+already current on the version alone. Each plugin's release tag is fixed and
+moves onto the newest release, because `afkd update` re-fetches the source URL
+it recorded at install time.
