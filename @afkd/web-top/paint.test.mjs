@@ -209,6 +209,45 @@ test("a glyph outside ASCII is boxed alone, so a wider face cannot clip the text
   assert.match(css, /\.row > span\.glyph \{[^}]*overflow:\s*visible/, "a glyph box lets its overhang show");
 });
 
+test("a glyph its face draws wider than its cells is shrunk into them", () => {
+  // The bug a real browser showed next: once the `▷` could overhang its box, a face that draws
+  // it a full em wide, as a CJK one does, laid it across the blank after it, and `▷ Queued`
+  // read `▷Queued`. A terminal keeps such a glyph inside its own cells, so the page does too:
+  // `top.mjs` measures the advance each glyph is really drawn at, and the painter hands its
+  // box the factor that brings that back to the cells the layout gave it.
+  const root = element("div");
+  const asked = [];
+  const drawn = { "▷": 1.25, "●": 1.004, "🔹": 2.1, "├": 1 };
+  const measure = (text, classes) => {
+    asked.push([text, classes]);
+    return drawn[text];
+  };
+  const row = [cell("▷ Queued", { fg: "accent-dim" }), cell("● Idle", { fg: "idle", bold: true }), cell("🔹├", { fg: "ink" })];
+  paint(root, [row], measure);
+  const spans = root.children[0].children;
+  assert.deepEqual(
+    spans.map((s) => [s.textContent, s.style.props["--fit"]]),
+    [["▷", "0.8"], [" Queued", "1"], ["●", "1"], [" Idle", "1"], ["🔹", "0.952"], ["├", "1"]],
+    "a wider glyph is shrunk to its cells, a hair over is layout rounding, and ASCII is never touched",
+  );
+  assert.deepEqual(
+    asked,
+    [["▷", "fg-accent-dim glyph"], ["●", "fg-idle glyph bold"], ["🔹", "fg-ink glyph"], ["├", "fg-ink glyph"]],
+    "only a glyph is measured, and in the look it is painted in, since the weight moves the advance",
+  );
+  // A span the next frame hands an ASCII run gives its old factor back rather than keeping it.
+  paint(root, [[cell("Queued ok", { fg: "accent-dim" })]], measure);
+  assert.equal(root.children[0].children[0].style.props["--fit"], "1", "a reused span drops the glyph's factor");
+  // With nothing measured — the stub DOM, a probe not laid out yet — everything is drawn as is.
+  paint(root, [row]);
+  assert.ok(root.children[0].children.every((s) => s.style.props["--fit"] === "1"), "no measure, no shrink");
+  const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
+  assert.match(css, /\.row > span\.glyph \{[^}]*font-size:\s*calc\(var\(--fit, 1\) \* 1em\)/, "the stylesheet draws a glyph at its factor");
+  assert.match(css, /\.row > span\.glyph \{[^}]*line-height:\s*var\(--cell-h\)/, "…on a box still a whole row tall");
+  const shell = readFileSync(join(HERE, "top.mjs"), "utf8");
+  assert.match(shell, /paint\(screen, rendered, .*measure\(/, "top.mjs hands the painter its measure");
+});
+
 test("the stylesheet spends what the painter publishes", () => {
   // The two halves of the geometry have to meet: the painter writes a per-run `--cells` and
   // `top.mjs` writes the probed `--cell-w`/`--cell-h`, and the stylesheet is the only place
@@ -217,9 +256,19 @@ test("the stylesheet spends what the painter publishes", () => {
   const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
   assert.match(css, /width:\s*calc\(var\(--cells[^)]*\) \* var\(--cell-w\)\)/, "a run's box is its cell count times the probed cell");
   assert.match(css, /height:\s*var\(--cell-h\)/, "a row's height is the probed line");
-  assert.match(css, /overflow:\s*hidden/, "and a glyph the font drew wider than its box clips rather than shoving the row");
+  assert.match(css, /overflow:\s*hidden/, "and a run the font drew wider than its box clips rather than shoving the row");
   const shell = readFileSync(join(HERE, "top.mjs"), "utf8");
   for (const property of ["--cell-w", "--cell-h"]) {
     assert.ok(shell.includes(`"${property}"`), `top.mjs publishes ${property} from its own probe`);
   }
+});
+
+test("the grid draws no frame round itself", () => {
+  // The screen takes focus on load so it can take keys, and 0.3 drew an inset accent ring on
+  // `:focus-visible` to say so — which `autofocus` matches, so the page opened with a cyan line
+  // round the whole screen that `afkd top` never draws. Neither the browser's outline nor a ring
+  // of the page's own may come back.
+  const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
+  assert.match(css, /#screen:focus \{[^}]*outline:\s*none/, "the browser's outline is off");
+  assert.doesNotMatch(css, /box-shadow|border:|outline:(?!\s*none)/, "and nothing else frames the grid");
 });

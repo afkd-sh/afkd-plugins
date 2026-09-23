@@ -15,8 +15,8 @@ Service                          State                 Trigger              Last
   🔹 deep                        ● Id│                        │                        7s    59m 52s
   🔹 spare                       ● Id│  1 skipped             │                              59m 47s
                                      │                        │                                     
-Queue             Slots              │  y stop  n cancel      │         Parallelism   Held   Waiting
-🧵 heavy (high)   ▮▮ ╎ ∙             │                        │         2             2      1      
+Queue      Slots                     │  y stop  n cancel      │         Parallelism   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙                    │                        │         2             2      1      
                                      └────────────────────────┘                                     
                                                                                                     
                                                                                                     
@@ -47,8 +47,8 @@ rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnlllllllllnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnnnnnnnnbbbbbnnnnnnnnnnnnnnrnnbnllllnnbnllllllnnnnnnrnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnnnnnnnnaarrrennnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnrnnbnllllnnbnllllllnnnnnnrnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn

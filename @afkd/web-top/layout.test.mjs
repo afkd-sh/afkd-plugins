@@ -174,7 +174,9 @@ test("renders the whole overview at 100x30", () => {
   for (const label of ["Queue", "Slots", "Parallelism", "Held", "Waiting"]) {
     assert.ok(lines[queueHeader].includes(label), `the section's ${label} column`);
   }
-  assert.match(lines[queueHeader + 1], /^🧵 heavy \(high\) +▮▮ ╎ ∙ +2 +2 +1/, "the `heavy` lane, held and waited on");
+  // The lane by its name alone, as the terminal's section reads it: its `high` priority is
+  // the info view's `Queue` row's to print, not this row's.
+  assert.match(lines[queueHeader + 1], /^🧵 heavy +▮▮ ╎ ∙ +2 +2 +1/, "the `heavy` lane, held and waited on");
   // The footer, with a real hint on it.
   assert.ok(lines.slice(-3).some((l) => l.includes("? help")), "the footer legend");
 });

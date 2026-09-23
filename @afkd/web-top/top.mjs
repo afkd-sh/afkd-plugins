@@ -16,6 +16,7 @@ import { paint } from "./paint.mjs";
 import { flashOf, needleOf, newSession, noteFrame, rowsOf, selectedIndex, typingOf } from "./session.mjs";
 
 const probe = document.getElementById("probe");
+const glyphProbe = document.getElementById("glyph-probe");
 const screen = document.getElementById("screen");
 
 /// The probe's own length in cells, so the advance is a hundredth of a measured run rather
@@ -38,6 +39,11 @@ let streamId = null;
 let version = "";
 let notice = "connecting";
 let repaint = null;
+// How many cells each glyph is really drawn across, keyed by its classes and its text, and the
+// advance those were measured at. A fallback face does not change between frames, so a glyph
+// is measured once — until a zoom or a font swap moves the cell, which moves every glyph too.
+const drawn = new Map();
+let drawnAt = 0;
 
 /// The viewport in cells. The probe is re-read on every measure rather than cached: a zoom, a
 /// font swap and a device-pixel-ratio change each move the advance without moving the layout,
@@ -46,7 +52,7 @@ function grid() {
   const box = probe.getBoundingClientRect();
   const advance = box.width / PROBE_CELLS;
   const line = box.height;
-  if (!(advance > 0) || !(line > 0)) return { cols: 80, rows: 24 };
+  if (!(advance > 0) || !(line > 0)) return { cols: 80, rows: 24, advance: 0 };
   // The one measurement, published to the stylesheet as well as spent here. A run's box is
   // `--cells × --cell-w`, so the width a row is composed to and the width it paints at are the
   // same arithmetic — `1ch` is not, and on a host whose monospace stack resolves one face for
@@ -58,7 +64,26 @@ function grid() {
   return {
     cols: Math.max(1, Math.floor(window.innerWidth / advance)),
     rows: Math.max(1, Math.floor(window.innerHeight / line)),
+    advance,
   };
+}
+
+/// How many cells of `advance` pixels the visitor's face draws `text` across, read off the
+/// glyph probe in the glyph's own classes, since a bold face draws wider than a regular one.
+function measure(text, classes, advance) {
+  if (advance !== drawnAt) {
+    drawn.clear();
+    drawnAt = advance;
+  }
+  const key = `${classes}\n${text}`;
+  let cells = drawn.get(key);
+  if (cells === undefined) {
+    glyphProbe.className = classes;
+    glyphProbe.textContent = text;
+    cells = glyphProbe.getBoundingClientRect().width / advance;
+    drawn.set(key, cells);
+  }
+  return cells;
 }
 
 /// The options `layout()` and `bodyHeight()` are both read through — one description of what
@@ -88,7 +113,7 @@ function view(cols, rows, now) {
 
 /// Lay the board out at whatever the viewport currently measures and paint it.
 function render() {
-  const { cols, rows } = grid();
+  const { cols, rows, advance } = grid();
   const rendered = layout(board, view(cols, rows, performance.now()));
   // The connection's own state is not board state — the fold paints nothing and knows nothing
   // about a socket — so it is overwritten onto the screen's last row, where a terminal would
@@ -101,7 +126,8 @@ function render() {
     const pad = " ".repeat(Math.max(0, cols - textWidth(text)));
     rendered[rendered.length - 1] = [cell(text, { fg: "legend" }), cell(pad)];
   }
-  paint(screen, rendered);
+  // A probe with no layout yet has no cell to measure a glyph against, so it shrinks none.
+  paint(screen, rendered, advance > 0 ? (text, classes) => measure(text, classes, advance) : null);
 }
 
 function schedulePaint() {

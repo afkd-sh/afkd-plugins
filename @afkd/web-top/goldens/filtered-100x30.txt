@@ -9,8 +9,8 @@ Service                          State                 Trigger              Last
 └─ ⊟ 📦 db                                                                             5s           
    └─ 🔷 vacuum                  ▶ Busy 5s             Every 1h                        5s           
                                                                                                     
-Queue             Slots                                                 Parallelism   Held   Waiting
-🧵 heavy (high)   ▮▮ ╎ ∙                                                2             2      1      
+Queue      Slots                                                        Parallelism   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙                                                       2             2      1      
                                                                                                     
                                                                                                     
                                                                                                     
@@ -41,8 +41,8 @@ rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnnnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -73,8 +73,8 @@ sssssssssssssssssssssssssssssssssBBBBBBBBBssssssssssssssssssssssssssssssssssssss
 ....................................................................................................
 .................................bbbbbbbbb..........................................................
 ....................................................................................................
-bbbbb.............bbbbb.................................................bbbbbbbbbbb...bbbb...bbbbbbb
-..................bb...d............................................................................
+bbbbb......bbbbb........................................................bbbbbbbbbbb...bbbb...bbbbbbb
+...........bb...d...................................................................................
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................

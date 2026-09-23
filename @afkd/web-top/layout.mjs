@@ -1390,20 +1390,13 @@ function queueBarCells(parallelism, held, budget) {
   return queueRun(Math.max(capacity, held), budget);
 }
 
-/// The lane's identity text — `🧵 <lane> (<priority>)`, with no parenthetical when the lane
-/// reports none. The spelling the terminal's info view already uses for a lane
-/// (`infoview`'s `Queue` row); the tui's own `Queues` section has no room for it, this page's
-/// column is fit to whatever it costs, and the card asks for the priority on the row.
-function laneIdentity(lane) {
-  return lane.priority === "" ? lane.lane : `${lane.lane} (${lane.priority})`;
-}
-
 /// One lane row's five cells at the section's elastic widths — `layout::queue_lane_line`,
 /// hued as `shell::queue_lane_spans` hues it: the bar's held cells take the `Busy` badge's
 /// accent, its free cells and the door recede, and the pips take `Queued`'s own tier, because
-/// a fire outside the door is exactly a queued one.
+/// a fire outside the door is exactly a queued one. The identity is the lane's name alone, as
+/// the terminal's is; its priority is the info view's `Queue` row's to print.
 function queueLaneCells(cols, lane) {
-  const identity = truncateWidth(laneIdentity(lane), Math.max(0, cols.name - QUEUE_LANE_PREFIX_W));
+  const identity = truncateWidth(lane.lane, Math.max(0, cols.name - QUEUE_LANE_PREFIX_W));
   const barBudget = Math.max(0, cols.slots - (QUEUE_FENCE_W + QUEUE_WAIT_CELLS));
   const [cells, barHidden] = queueBarCells(lane.parallelism, lane.held, barBudget);
   const filled = Math.min(lane.held, cells);
@@ -3715,7 +3708,7 @@ export function layout(board, options) {
   const visible = visibleColumns(cols);
   const widths = {};
   for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols);
-  const laneCols = queueCols(cols, lanes.reduce((w, l) => Math.max(w, textWidth(laneIdentity(l))), 0));
+  const laneCols = queueCols(cols, lanes.reduce((w, l) => Math.max(w, textWidth(l.lane)), 0));
   // The rollups a header shows. `fold.mjs`'s `groups()` buckets by the **exact** group
   // string and says so: "the fold has no tree to collapse into yet … the nesting belongs
   // with the paint". This is the paint, so the transitive fold (ADR-0073 — a crash three

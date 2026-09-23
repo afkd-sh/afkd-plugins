@@ -4073,19 +4073,6 @@ const LEDGER_SOURCE: &str = "layout.mjs";
 /// code closed reddens it as stale — this table is the contract, not a second copy of it.
 const LEDGER: &[Divergence] = &[
     Divergence {
-        surface: "Queues",
-        field: "Queue",
-        intent: "the tui's own `Queues` section has no room for it",
-        why: "a lane reads `heavy (normal)`, the priority the terminal's section drops",
-    },
-    Divergence {
-        surface: "Queues",
-        field: "Slots origin",
-        intent: "column is fit to whatever it costs",
-        why: "the `Queue` column is fit to that longer identity, so `Slots` opens later; the \
-              columns after it are right-anchored and do not move",
-    },
-    Divergence {
         surface: "Info",
         field: "Started",
         intent: "`Started` and `Last run` are **absent**, not forgotten",
@@ -4145,7 +4132,7 @@ fn intent_at(entry: &Divergence) -> String {
 }
 
 /// The lane [`ledger_config`] declares. A bare `queue heavy` resolves to the `normal`
-/// priority, which is the card's own `heavy (normal)`.
+/// priority, which neither surface's `Queues` section prints.
 const LANE: &str = "heavy";
 
 /// The service the ledger leg opens the info view on, and the keys that get both surfaces
@@ -4173,7 +4160,7 @@ const INFO_SECTIONS: usize = 5;
 fn ledger_config() -> String {
     const OPENER: &str = "service ops::backup {\n";
     // A fixture edit that renamed the service would otherwise drop the lane in silence, and
-    // the `Queues` entries would then read as stale for a reason neither surface is at.
+    // the `Queues` section would then go uncompared for a reason neither surface is at.
     assert_eq!(
         DRIFT_SERVICES.matches(OPENER).count(),
         1,
@@ -4268,8 +4255,8 @@ fn list_divergences(surface: &str, top: &Screen, plugin: &Screen, out: &mut Obse
 }
 
 /// The `Queues` section: its labels, each label's origin, the lane-row count, and each
-/// column's cells — each surface sliced by **its own** header's spans, since the plugin's
-/// wider `Queue` column would otherwise leak `(normal)` into the terminal's `Slots` span and
+/// column's cells — each surface sliced by **its own** header's spans, since a `Queue` column
+/// one surface fit wider would otherwise leak its tail into the other's `Slots` span and
 /// report a `Slots` difference that is really the `Queue` one.
 fn queue_divergences(top: &Screen, plugin: &Screen, out: &mut Observed) {
     let header = |screen: &Screen| {
@@ -4642,7 +4629,7 @@ fn check_ledger(observed: &Observed, top: &Captured, plugin: &Captured) -> Resul
         }
         if screens.overview.queue_rows().is_empty() {
             return Err(fault(format!(
-                "{whose}'s overview drew no lane row, so the `Queues` entries were never compared"
+                "{whose}'s overview drew no lane row, so the `Queues` section was never compared"
             )));
         }
         let rows = screens.flat.service_rows().len();
@@ -4668,12 +4655,11 @@ fn check_ledger(observed: &Observed, top: &Captured, plugin: &Captured) -> Resul
 
 #[test]
 fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
-    // The overview leg covers the one surface the two agree on, and is silent — by scope —
-    // about the three places the plugin diverges on purpose: the `Queues` section's lane
-    // priority, the info view, and the flat arm. So a *fourth* divergence in those places
-    // would redden nothing. This leg reads all three screens off both surfaces for one
-    // fixture, collects every field that differs, and holds that set **equal** to
-    // [`LEDGER`]: a new divergence is unlisted, a closed one is stale, and both are red.
+    // The overview leg covers the list, and is silent — by scope — about the `Queues` section,
+    // the info view and the flat arm, so a divergence in any of those would redden nothing.
+    // This leg reads all three screens off both surfaces for one fixture, collects every
+    // field that differs, and holds that set **equal** to [`LEDGER`]: a new divergence is
+    // unlisted, a closed one is stale, and both are red.
     if !python3_available() {
         eprintln!("skipping the ledger leg: python3 is not on PATH, and the relay that carries the frames is python");
         return;
@@ -4815,12 +4801,11 @@ fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
         fault.message
     );
 
-    // A closed divergence: the lane's priority dropped from the page's identity. The `Queue`
-    // column is then fit to the bare name, exactly as the terminal's is, and both `Queues`
-    // entries describe a difference the code no longer has.
+    // A closed divergence: the page's `Last activity` row dropped, which the terminal's
+    // `Activity` box never had, so its entry describes a difference the code no longer has.
     let closed = mutate(
-        "return lane.priority === \"\" ? lane.lane : `${lane.lane} (${lane.priority})`;",
-        "return lane.lane;",
+        r#"field("Last activity", activity.text === "" ? "none" : activity.text),"#,
+        "",
     );
     let fault = check_ledger(&observe(&terminal, &closed), &terminal, &closed)
         .expect_err("a divergence the code closed has to redden the ledger that still names it");
@@ -4828,13 +4813,9 @@ fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
         (fault.unlisted.as_slice(), fault.stale.as_slice()),
         (
             [].as_slice(),
-            [
-                "Queues · Queue".to_string(),
-                "Queues · Slots origin".to_string()
-            ]
-            .as_slice()
+            ["Info · Last activity".to_string()].as_slice()
         ),
-        "the fault names exactly the two entries the code closed: {}",
+        "the fault names exactly the entry the code closed: {}",
         fault.message
     );
     assert!(
@@ -4862,15 +4843,14 @@ fn every_ledger_entry_names_a_line_that_intends_it() {
             entry.key()
         );
     }
-    // The `Queues` section and the info view each have an entry, so a ledger trimmed to agree
-    // with a broken reader cannot drop a whole surface. The flat arm has none: it is compared
-    // as strictly as the grouped tree, and any divergence there is unlisted.
-    for surface in ["Queues", "Info"] {
-        assert!(
-            LEDGER.iter().any(|entry| entry.surface == surface),
-            "the ledger covers the `{surface}` surface"
-        );
-    }
+    // The info view has entries, so a ledger trimmed to agree with a broken reader cannot drop
+    // the surface. The `Queues` section and the flat arm have none: they are compared as
+    // strictly as the grouped tree, any divergence there is unlisted, and [`check_ledger`]'s
+    // floors keep an empty reading of either from agreeing with itself.
+    assert!(
+        LEDGER.iter().any(|entry| entry.surface == "Info"),
+        "the ledger covers the `Info` surface"
+    );
 }
 
 /// The field names of a `view` object literal, read out of `source` between `opener` and

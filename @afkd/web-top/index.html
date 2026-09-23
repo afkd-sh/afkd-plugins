@@ -11,6 +11,9 @@
      height — measured rather than assumed, because the grid is sized in cells and a cell is
      whatever this visitor's monospace stack turns out to be. -->
 <span id="probe">0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000</span>
+<!-- Its twin for one glyph at a time: `top.mjs` dresses it in a glyph's classes and reads how
+     wide the visitor's face really draws it, so the grid can shrink it into its own cells. -->
+<span id="glyph-probe"></span>
 <!-- The grid takes focus so it can take keys: `tabindex` makes it focusable at all and
      `autofocus` hands it the keyboard on load, so a page that just opened is already
      pressable. Keys are captured, never stolen — `input.mjs` reads a keydown only while this

@@ -959,7 +959,6 @@ test("the queue lanes read held, waiting and the max parallelism", () => {
   assert.ok(onLanes.length >= 3, `the capture puts several services on a lane (${onLanes.length})`);
   assert.ok(onLanes.some((s) => s.state === "busy"), "…one holding a slot");
   assert.ok(onLanes.some((s) => s.state === "queued"), "…one waiting at the door");
-  assert.ok(new Set(onLanes.map((s) => s.queue_priority)).size >= 2, "…at more than one level");
 
   const lanes = queues(fold(seed(), snapshot, 1_000));
   assert.deepEqual(
@@ -974,9 +973,6 @@ test("the queue lanes read held, waiting and the max parallelism", () => {
     assert.equal(lane.waiting, members.filter((s) => s.state === "queued").length, "waiting");
     const widths = members.map((s) => s.queue_parallelism).filter((n) => n !== undefined);
     assert.equal(lane.parallelism, widths.length === 0 ? null : Math.max(...widths), "the max over members");
-    // The level is per-service metadata, so the lane takes it from the first member that
-    // reports one — and the lane's own members really do disagree, which is the point.
-    assert.equal(lane.priority, members.find((s) => s.queue_priority !== "")?.queue_priority ?? "");
   }
   const heavy = lanes.find((l) => l.held > 0);
   assert.ok(heavy && heavy.waiting > 0, "a lane reads both its holders and its waiters");

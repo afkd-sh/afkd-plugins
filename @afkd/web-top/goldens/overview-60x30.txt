@@ -15,8 +15,8 @@ Service           State                 Last Activity
   🔹 deep         ● Idle                           7s       
   🔹 spare        ● Idle                                    
                                                             
-Queue        Slots              Parallelism   Held   Waiting
-🧵 heavy …   ▮▮ ╎ ∙             2             2      1      
+Queue      Slots                Parallelism   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙               2             2      1      
                                                             
                                                             
                                                             
@@ -47,8 +47,8 @@ rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnnnbbbbbnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -79,8 +79,8 @@ ssssssssssssssssssDDDDDDDDDsssssssssssssssssssssssssssssssss
 ............................................................
 ............................................................
 ............................................................
-bbbbb........bbbbb..............bbbbbbbbbbb...bbbb...bbbbbbb
-.............bb...d.........................................
+bbbbb......bbbbb................bbbbbbbbbbb...bbbb...bbbbbbb
+...........bb...d...........................................
 ............................................................
 ............................................................
 ............................................................

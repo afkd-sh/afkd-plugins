@@ -97,18 +97,11 @@ body {
   overflow: hidden;
 }
 
-/* The focus ring. The UA outline is drawn *outside* the box, and this box is the viewport, so
-   the default would be painted off-screen entirely — the one affordance saying "this grid has
-   the keyboard" would be invisible. An inset ring in the accent hue puts it back on the grid,
-   and `:focus-visible` keeps it off a pointer click, which is the convention every browser
-   holds. It costs no cell: an inset box-shadow paints over the ground, not in the flow. */
+/* No focus ring, the browser's or one of the page's own: `afkd top` frames nothing, and the
+   grid has held the keyboard since it loaded (`autofocus`), so a ring could only draw a line
+   round the whole screen that the terminal never shows. */
 #screen:focus {
   outline: none;
-}
-
-#screen:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 1px var(--term-accent-dim);
 }
 
 /* One row, one line. `height` rather than `line-height` alone so a row with no ink (the
@@ -126,10 +119,11 @@ body {
  * at whatever advance that face uses, which is not two cells. A row painted as plain text
  * therefore drifts out of column at the first emoji, and every column right of it drifts with
  * it. So the box is sized from the count `layout.mjs` measured (`--cells`, one per run) and
- * the glyph is clipped into it: the terminal's own contract, where a cluster occupies the
- * cells the layout reserved and a font that disagrees loses the overhang rather than the
- * alignment. The cell is `--cell-w`, the page's own probed advance — the very number it
- * derived `cols` from — so a row of `cols` cells is exactly the viewport wide. */
+ * the text is held to it: the terminal's own contract, where a cluster occupies the cells the
+ * layout reserved and a font that disagrees never costs the alignment — a run is clipped, and
+ * a glyph shrunk into its box (below). The cell is `--cell-w`, the page's own probed advance
+ * — the very number it derived `cols` from — so a row of `cols` cells is exactly the viewport
+ * wide. */
 .row > span {
   display: inline-block;
   width: calc(var(--cells, 0) * var(--cell-w));
@@ -137,20 +131,29 @@ body {
   vertical-align: top;
 }
 
-/* A glyph outside printable ASCII has a box of its own (`paint.mjs`), and a face that draws it
-   wider than its cells paints the overhang over the cell after it rather than losing it — a
-   terminal's own answer to a wide fallback. Its box keeps its width, so nothing moves; raised,
-   so the next run's band cannot paint over the overhang. */
+/* A glyph outside printable ASCII has a box of its own (`paint.mjs`), drawn in whatever face
+   the visitor has it in. A terminal keeps a glyph inside its own cells whatever its face, so
+   this does too: `--fit` is how far `top.mjs` measured that face's advance to overrun the
+   cells, and the glyph is drawn that much smaller — `▷ Queued`, never `▷Queued`. The box
+   keeps its width and a whole row's height, so nothing moves and a smaller glyph stays on the
+   row's middle rather than riding up to its top. Any ink a face draws past its own advance
+   still shows over the next cell rather than being cut, raised so that cell's band cannot
+   cover it. */
 .row > span.glyph {
+  font-size: calc(var(--fit, 1) * 1em);
+  line-height: var(--cell-h);
   overflow: visible;
   position: relative;
   z-index: 1;
 }
 
-/* The probe: a hundred `0`s in the grid's own face, laid out but invisible, from which the
-   page derives the cell advance and the line height. It must stay in flow — `display: none`
-   would measure nothing — so it is pulled out of view rather than hidden. */
-#probe {
+/* The probes: a hundred `0`s in the grid's own face, from which the page derives the cell
+   advance and the line height, and one glyph at a time, from which it learns how wide the
+   visitor's face really draws it. Laid out but invisible: they must stay in flow —
+   `display: none` would measure nothing — so they are pulled out of view rather than
+   hidden. */
+#probe,
+#glyph-probe {
   position: absolute;
   top: -1000px;
   left: 0;

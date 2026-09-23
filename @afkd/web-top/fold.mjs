@@ -1030,10 +1030,7 @@ export function groups(board) {
  *
  * `parallelism` is the **max** over members (a husk that learned its lane from a live event
  * reports none, and must not drag the lane's width down to nothing), `held` counts the
- * members holding a slot and `waiting` those at the door. `priority` is carried although
- * `QueueLane` does not: it is per-service config metadata, so the lane takes it from any
- * member that reports one and leaves it `""` when none does — exactly as the tui's `Queue`
- * row then renders no parenthetical.
+ * members holding a slot and `waiting` those at the door.
  */
 export function queues(board) {
   const lanes = [];
@@ -1043,12 +1040,11 @@ export function queues(board) {
     if (svc === undefined || svc.queue === "") continue;
     let lane = byName[svc.queue];
     if (lane === undefined) {
-      lane = { lane: svc.queue, members: [], priority: "", parallelism: null, held: 0, waiting: 0 };
+      lane = { lane: svc.queue, members: [], parallelism: null, held: 0, waiting: 0 };
       byName[svc.queue] = lane;
       lanes.push(lane);
     }
     lane.members.push(name);
-    if (lane.priority === "") lane.priority = svc.queuePriority;
     if (svc.queueParallelism !== null) {
       lane.parallelism = lane.parallelism === null ? svc.queueParallelism : Math.max(lane.parallelism, svc.queueParallelism);
     }

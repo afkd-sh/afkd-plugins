@@ -15,8 +15,8 @@ Service                          State                 Trigger              Last
   🔹 deep         │                                                             │            59m 54s
   🔹 spare        │  Force kills the running work & abandons the wedged thread  │            59m 54s
                   │  The service reclaims once the abandoned thread finishes    │                   
-Queue             │                                                             │sm   Held   Waiting
-🧵 heavy (high)   │  y force  n cancel                                          │     1      0      
+Queue      Slots  │                                                             │sm   Held   Waiting
+🧵 heavy   ▮▯     │  y force  n cancel                                          │     1      0      
                   │                                                             │                   
                   └─────────────────────────────────────────────────────────────┘                   
                                                                                                     
@@ -47,8 +47,8 @@ rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
 rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnrnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnrnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnnnnnnnnrnnbnlllllnnbnllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnbbbbbnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnarnnnnnrnnbnlllllnnbnllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn

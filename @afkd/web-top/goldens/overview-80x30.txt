@@ -15,8 +15,8 @@ Service           State                 Last Activity   Next Run
   🔹 deep         ● Idle                           7s    59m 52s                
   🔹 spare        ● Idle                                 59m 47s                
                                                                                 
-Queue             Slots                             Parallelism   Held   Waiting
-🧵 heavy (high)   ▮▮ ╎ ∙                            2             2      1      
+Queue      Slots                                    Parallelism   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙                                   2             2      1      
                                                                                 
                                                                                 
                                                                                 
@@ -47,8 +47,8 @@ rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnnnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -79,8 +79,8 @@ ssssssssssssssssssDDDDDDDDDsssssssssssssssssssssssssssssssssssssssssssssssssssss
 ................................................................................
 ................................................................................
 ................................................................................
-bbbbb.............bbbbb.............................bbbbbbbbbbb...bbbb...bbbbbbb
-..................bb...d........................................................
+bbbbb......bbbbb....................................bbbbbbbbbbb...bbbb...bbbbbbb
+...........bb...d...............................................................
 ................................................................................
 ................................................................................
 ................................................................................
