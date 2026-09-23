@@ -28,7 +28,7 @@ Installing a companion does not start it; the config naming it does.
 
 ```console
 $ afkd install @afkd/web-top
-Installed @afkd/web-top 0.3.2 (companion)
+Installed @afkd/web-top 0.3.3 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -74,7 +74,7 @@ sentence when it fails.
 | `GET /session.mjs` | the **session** — this tab's cursor, folds, filter, modal, overlay and flash, and the dispatch that turns a press into wire commands |
 | `GET /input.mjs` | the **key seam** — a browser `keydown` turned into an afkd chord, and the verbs posted back |
 | `GET /paint.mjs` | the **painter** — those cells as DOM text, and nothing else |
-| `GET /dashboard.css` | the palette and the grid's type |
+| `GET /dashboard.css` | the palette, the grid's type and the embedded cell face |
 | `GET /stream` | this subscriber's own attach, as an event stream |
 | `POST /command` | `{"stream":"<id>","command":"fire","service":"nightly"}` → one `command` frame |
 
@@ -189,6 +189,19 @@ Three properties, and the reason for each:
 hundred-character span for the monospace advance and the line height, derives `(cols, rows)`
 from the viewport, and re-lays out. The terminal sheds against whatever pane it has; this
 does the same against the browser window.
+
+**The page carries its own face for the symbols.** A terminal draws `▷`, `▯`, `●` and the box
+lines in its monospace face; a browser draws them in whatever face the visitor has, and a
+fallback face sizes a shape for text rather than for a cell — one `▷` came out a full em wide,
+one `▯` a sliver. So `dashboard.css` embeds *afkd cells*: every symbol the layout draws, and
+the box-drawing, block and geometric-shape blocks whole, cut out of DejaVu Sans Mono and
+renamed as its license asks. It heads the font stack but claims no text, so the visitor's own
+monospace face still draws every letter and sets the rows' metrics. `face.test.mjs` reads the
+embedded font back and holds it to the layout; after the layout draws a new symbol, recut it
+with `python3 tools/@afkd/web-top/cell-face.py` (fontTools, and DejaVu's TTFs) from the
+repository root. Anything still left to a visitor's face — an emoji, a CJK name — is measured
+once, then centred on its cells at its own size and shrunk only when its ink is wider than they
+are.
 
 Its suites are `layout.test.mjs` — fixture-driven the same way and gated by the same `cargo
 test` bridge — plus `keymap.test.mjs`, `session.test.mjs` and `input.test.mjs` beside it. A golden holds the screen as **three planes** — what it says, the palette role

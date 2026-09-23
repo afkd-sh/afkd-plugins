@@ -22,11 +22,13 @@
 // ASCII, the one repertoire every monospace face draws at its own advance, coalesces into
 // runs; every other cluster gets a box of its own, the way a terminal gives each cell one.
 //
-// And like a terminal, the page keeps that glyph inside its box. Left at its own size, a face
-// that draws `▷` a full em wide lays it across the blank after it and `▷ Queued` reads
-// `▷Queued`; clipped, it loses its right edge. So the one number the painter cannot know —
-// how wide the visitor's face really draws a glyph — is handed in by `top.mjs`, and the
-// glyph's box gets the factor (`--fit`) that shrinks it back to the cells it was given.
+// And like a terminal, the page keeps that glyph inside its box. Left where a fallback face
+// puts it, a `▷` drawn a full em wide lays itself across the blank after it and `▷ Queued`
+// reads `▷Queued`; clipped, it loses its right edge; shrunk until that em fits one cell, it is
+// a speck, since most of the em is margin. So the one thing the painter cannot know — where
+// the visitor's face really puts a glyph's ink — is handed in by `top.mjs`, and the glyph's
+// box gets the indent (`--shift`) that centres the ink on its cells and the factor (`--fit`)
+// that shrinks it only when it is wider than they are.
 //
 // Keeping the split strict is the rest of the point. It is what lets the whole dashboard be
 // rendered to text and diffed against committed golden screens under `node --test` with no
@@ -45,12 +47,21 @@ function alike(a, b) {
 /// Whether a cluster is printable ASCII, and so safe to share a box with its neighbours.
 const PLAIN = /^[\x20-\x7e]+$/;
 
-/// How far a glyph drawn `drawn` cells wide must shrink to fit the `cells` it was given. It is
-/// never grown, and one within a hundredth of its cells is left as it is: that is the layout's
-/// sub-pixel rounding, not a wider face.
-function fitOf(drawn, cells) {
-  const fit = cells / drawn;
-  return fit < 0.99 ? Math.floor(fit * 1000) / 1000 : 1;
+/// Where a glyph sits in the `cells` it was given, from how the visitor's face draws it: its
+/// `advance`, and its ink's `left` and `right` edges from the pen, all in cells. `fit` is the
+/// factor it is drawn at and `shift` how far its pen moves, in cells.
+///
+/// A face that draws the glyph at the grid's own advance (to a hundredth: layout rounding)
+/// placed it in its cell on purpose — a `├` meets the next cell's line at the edge — so it is
+/// left exactly where it is. Any other face is a fallback, whose margins say nothing about a
+/// cell, so its ink is centred on the cells at its own size and shrunk only when it is wider
+/// than they are. A glyph with no ink has nothing to place.
+function placeOf(metrics, cells) {
+  const { advance, left, right } = metrics ?? {};
+  const ink = right - left;
+  if (!(ink > 0) || Math.abs(advance - cells) <= cells / 100) return { fit: 1, shift: 0 };
+  const fit = ink > cells ? Math.floor((cells / ink) * 1000) / 1000 : 1;
+  return { fit, shift: Math.round(((cells - ink * fit) / 2 - left * fit) * 1000) / 1000 };
 }
 
 /// The class list one run's look resolves to — `fg-<role>` always, `glyph` on a box of its
@@ -75,8 +86,9 @@ function classesOf(cell) {
  * viewport, not the frame count. Rows past the new screen's height are dropped and missing
  * ones appended, which is the only structural work a resize costs.
  *
- * `measure(text, classes)` is how many cells the page's face really draws a glyph across,
- * dressed in the classes it is painted with. Without one, every glyph is drawn at its size.
+ * `measure(text, classes)` is how the page's face really draws a glyph dressed in the
+ * classes it is painted with: `{ advance, left, right }`, in cells from the pen. Without one,
+ * every glyph is drawn where its face puts it.
  */
 export function paint(root, rows, measure = null) {
   while (root.childElementCount > rows.length) root.lastElementChild.remove();
@@ -117,14 +129,20 @@ export function paint(root, rows, measure = null) {
         span.dataset.cells = cells;
         span.style.setProperty("--cells", cells);
       }
-      // …and how far its glyph shrinks to stay inside that box — `--fit`, which the stylesheet
-      // turns into a font size. Printable ASCII is drawn at the grid's own advance, so only a
-      // glyph is measured; every span carries the factor, so a reused one never keeps a stale
-      // glyph's.
-      const fit = String(run.plain || measure === null ? 1 : fitOf(measure(run.text, classes), run.width));
+      // …and where its glyph sits inside that box — `--fit` and `--shift`, which the stylesheet
+      // turns into a font size and an indent. Printable ASCII is drawn at the grid's own
+      // advance, so only a glyph is measured; every span carries both, so a reused one never
+      // keeps a stale glyph's.
+      const place = run.plain || measure === null ? { fit: 1, shift: 0 } : placeOf(measure(run.text, classes), run.width);
+      const fit = String(place.fit);
+      const shift = String(place.shift);
       if (span.dataset.fit !== fit) {
         span.dataset.fit = fit;
         span.style.setProperty("--fit", fit);
+      }
+      if (span.dataset.shift !== shift) {
+        span.dataset.shift = shift;
+        span.style.setProperty("--shift", shift);
       }
       if (span.textContent !== run.text) span.textContent = run.text;
     });

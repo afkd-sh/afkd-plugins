@@ -39,11 +39,15 @@ let streamId = null;
 let version = "";
 let notice = "connecting";
 let repaint = null;
-// How many cells each glyph is really drawn across, keyed by its classes and its text, and the
-// advance those were measured at. A fallback face does not change between frames, so a glyph
-// is measured once — until a zoom or a font swap moves the cell, which moves every glyph too.
+// How each glyph is really drawn — its advance and its ink's edges, in cells — keyed by its
+// classes and its text, and the advance those were measured at. A face does not change between
+// frames, so a glyph is measured once: until a zoom or a font swap moves the cell, or a face
+// finishes loading, either of which can move every glyph.
 const drawn = new Map();
 let drawnAt = 0;
+/// Where a glyph's ink is measured. The DOM reports only a glyph's advance, and it is the ink
+/// inside that advance a fallback face misplaces.
+const ink = document.createElement("canvas").getContext("2d");
 
 /// The viewport in cells. The probe is re-read on every measure rather than cached: a zoom, a
 /// font swap and a device-pixel-ratio change each move the advance without moving the layout,
@@ -68,22 +72,30 @@ function grid() {
   };
 }
 
-/// How many cells of `advance` pixels the visitor's face draws `text` across, read off the
-/// glyph probe in the glyph's own classes, since a bold face draws wider than a regular one.
+/// How the visitor's face draws `text` dressed in `classes`, in cells of `advance` pixels: the
+/// advance off the glyph probe, which lays it out as a row does, and the ink's left and right
+/// edges off a canvas set in the probe's computed font — the weight moves both.
 function measure(text, classes, advance) {
   if (advance !== drawnAt) {
     drawn.clear();
     drawnAt = advance;
   }
   const key = `${classes}\n${text}`;
-  let cells = drawn.get(key);
-  if (cells === undefined) {
+  let metrics = drawn.get(key);
+  if (metrics === undefined) {
     glyphProbe.className = classes;
     glyphProbe.textContent = text;
-    cells = glyphProbe.getBoundingClientRect().width / advance;
-    drawn.set(key, cells);
+    const style = getComputedStyle(glyphProbe);
+    ink.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const box = ink.measureText(text);
+    metrics = {
+      advance: glyphProbe.getBoundingClientRect().width / advance,
+      left: -box.actualBoundingBoxLeft / advance,
+      right: box.actualBoundingBoxRight / advance,
+    };
+    drawn.set(key, metrics);
   }
-  return cells;
+  return metrics;
 }
 
 /// The options `layout()` and `bodyHeight()` are both read through — one description of what
@@ -210,6 +222,12 @@ setInterval(render, HEARTBEAT_MS);
 // and re-measuring after the swap would lay the first screen out on a grid the page never
 // draws on.
 document.fonts.ready.then(render);
+// A face that finishes loading after a glyph was measured — the page's own cell face, which
+// loads only once a symbol it covers is on screen — draws that glyph somewhere else.
+document.fonts.addEventListener("loadingdone", () => {
+  drawn.clear();
+  render();
+});
 render();
 
 installKeys({

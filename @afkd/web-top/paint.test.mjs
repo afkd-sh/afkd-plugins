@@ -209,40 +209,75 @@ test("a glyph outside ASCII is boxed alone, so a wider face cannot clip the text
   assert.match(css, /\.row > span\.glyph \{[^}]*overflow:\s*visible/, "a glyph box lets its overhang show");
 });
 
-test("a glyph its face draws wider than its cells is shrunk into them", () => {
-  // The bug a real browser showed next: once the `▷` could overhang its box, a face that draws
-  // it a full em wide, as a CJK one does, laid it across the blank after it, and `▷ Queued`
-  // read `▷Queued`. A terminal keeps such a glyph inside its own cells, so the page does too:
-  // `top.mjs` measures the advance each glyph is really drawn at, and the painter hands its
-  // box the factor that brings that back to the cells the layout gave it.
+test("a glyph from a fallback face is centred on its cells, and shrunk only as far as its ink needs", () => {
+  // Two bugs a real browser showed, one after the other. Left at its own size, a fallback face
+  // that draws `▷` a full em wide laid it across the blank after it and `▷ Queued` read
+  // `▷Queued`. Shrunk until that *advance* fit one cell, the same face drew a speck, because
+  // most of its advance is empty margin — and `▯` went the same way. So `top.mjs` measures
+  // where a glyph's ink really falls, and a glyph its face does not draw at the grid's own
+  // advance is centred on its cells at its own size, shrunk only when its ink is wider than
+  // they are. A face that does draw it at the grid's advance placed it there on purpose — a
+  // `├` meets its neighbour at the cell's edge — so it is left exactly where it is.
   const root = element("div");
   const asked = [];
-  const drawn = { "▷": 1.25, "●": 1.004, "🔹": 2.1, "├": 1 };
+  // In cells from the pen: the face's advance, and its ink's left and right edges.
+  const drawn = {
+    "▷": { advance: 2, left: 0.5, right: 1.75 }, // a CJK face's: a wide margin, ink wider than its cell
+    "▯": { advance: 1.5, left: 0.5, right: 1 }, // a wide margin, ink that fits
+    "●": { advance: 1.004, left: 0.1, right: 0.9 }, // the grid's own face, to layout rounding
+    "🔹": { advance: 2.25, left: 0.25, right: 2 }, // an emoji face, a little wider than two cells
+    "├": { advance: 1, left: 0.45, right: 1 }, // the grid's own face, meeting the next cell's line
+    "　": { advance: 1.667, left: 0, right: 0 }, // a wide blank, with no ink to place
+  };
   const measure = (text, classes) => {
     asked.push([text, classes]);
     return drawn[text];
   };
-  const row = [cell("▷ Queued", { fg: "accent-dim" }), cell("● Idle", { fg: "idle", bold: true }), cell("🔹├", { fg: "ink" })];
+  const row = [
+    cell("▷ Queued", { fg: "accent-dim" }),
+    cell("▯", { fg: "recede" }),
+    cell("● Idle", { fg: "idle", bold: true }),
+    cell("🔹├　", { fg: "ink" }),
+  ];
   paint(root, [row], measure);
   const spans = root.children[0].children;
   assert.deepEqual(
-    spans.map((s) => [s.textContent, s.style.props["--fit"]]),
-    [["▷", "0.8"], [" Queued", "1"], ["●", "1"], [" Idle", "1"], ["🔹", "0.952"], ["├", "1"]],
-    "a wider glyph is shrunk to its cells, a hair over is layout rounding, and ASCII is never touched",
+    spans.map((s) => [s.textContent, s.style.props["--fit"], s.style.props["--shift"]]),
+    [
+      ["▷", "0.8", "-0.4"],
+      [" Queued", "1", "0"],
+      ["▯", "1", "-0.25"],
+      ["●", "1", "0"],
+      [" Idle", "1", "0"],
+      ["🔹", "1", "-0.125"],
+      ["├", "1", "0"],
+      ["　", "1", "0"],
+    ],
+    "a fallback glyph is centred and shrunk only past its ink, the grid's own face and ASCII are never touched",
   );
   assert.deepEqual(
     asked,
-    [["▷", "fg-accent-dim glyph"], ["●", "fg-idle glyph bold"], ["🔹", "fg-ink glyph"], ["├", "fg-ink glyph"]],
-    "only a glyph is measured, and in the look it is painted in, since the weight moves the advance",
+    [
+      ["▷", "fg-accent-dim glyph"],
+      ["▯", "fg-recede glyph"],
+      ["●", "fg-idle glyph bold"],
+      ["🔹", "fg-ink glyph"],
+      ["├", "fg-ink glyph"],
+      ["　", "fg-ink glyph"],
+    ],
+    "only a glyph is measured, and in the look it is painted in, since the weight moves the ink",
   );
-  // A span the next frame hands an ASCII run gives its old factor back rather than keeping it.
+  // A span the next frame hands an ASCII run gives its old placement back rather than keeping it.
   paint(root, [[cell("Queued ok", { fg: "accent-dim" })]], measure);
-  assert.equal(root.children[0].children[0].style.props["--fit"], "1", "a reused span drops the glyph's factor");
+  const reused = root.children[0].children[0].style.props;
+  assert.deepEqual([reused["--fit"], reused["--shift"]], ["1", "0"], "a reused span drops the glyph's placement");
   // With nothing measured — the stub DOM, a probe not laid out yet — everything is drawn as is.
   paint(root, [row]);
-  assert.ok(root.children[0].children.every((s) => s.style.props["--fit"] === "1"), "no measure, no shrink");
+  const unmeasured = root.children[0].children.map((s) => [s.style.props["--fit"], s.style.props["--shift"]]);
+  assert.ok(unmeasured.every(([fit, shift]) => fit === "1" && shift === "0"), "no measure, no placement");
   const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
   assert.match(css, /\.row > span\.glyph \{[^}]*font-size:\s*calc\(var\(--fit, 1\) \* 1em\)/, "the stylesheet draws a glyph at its factor");
+  assert.match(css, /\.row > span\.glyph \{[^}]*text-indent:\s*calc\(var\(--shift, 0\) \* var\(--cell-w\)\)/, "…moved by its shift in cells");
   assert.match(css, /\.row > span\.glyph \{[^}]*line-height:\s*var\(--cell-h\)/, "…on a box still a whole row tall");
   const shell = readFileSync(join(HERE, "top.mjs"), "utf8");
   assert.match(shell, /paint\(screen, rendered, .*measure\(/, "top.mjs hands the painter its measure");

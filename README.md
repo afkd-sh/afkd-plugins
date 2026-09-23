@@ -7,9 +7,10 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   control wire to a browser.
 
 Each plugin carries its own README, its own `node --test` suite and its own
-fixtures. A plugin that has to be held to a real afkd also has a drift gate,
-under `drift/` at the plugin's own path. Every gate is a member of the Cargo
-workspace at the root, so one command runs them all:
+fixtures. A script a plugin is built with but does not ship lives under
+`tools/` at the plugin's own path. A plugin that has to be held to a real afkd
+also has a drift gate, under `drift/` at the plugin's own path. Every gate is a
+member of the Cargo workspace at the root, so one command runs them all:
 
 ```console
 $ AFKD_SRC=/path/to/afkd cargo test
