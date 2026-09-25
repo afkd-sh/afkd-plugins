@@ -1,4 +1,6 @@
 /target
+# A standalone plugin crate builds into its own `target/`, inside the tree `afkd install` copies.
+/@afkd/*/target
 
 # Python bytecode, written beside web-top whenever something imports the relay as a module.
 __pycache__/
