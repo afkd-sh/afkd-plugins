@@ -2,14 +2,15 @@
 //! exchanges, the typed [`GiteaError`], the **real [`Gitea`] HTTP client** over the
 //! `/api/v1` surface, and a `#[cfg(test)]` in-memory `MockClient` for offline tests.
 //!
-//! Ported from afkd's `crates/gitea/src/client.rs`, issue side. All Gitea-specific
+//! Ported from afkd's `crates/gitea/src/client.rs`, issue and PR sides. All Gitea-specific
 //! knowledge lives here — every `/api/v1` endpoint path, every request payload, the
 //! `Authorization: token <PAT>` credential, and the JSON shapes — so the version-drift
 //! blast radius is **one file**. Each endpoint carries a citing comment so a drift fix is
 //! a one-place edit. The plumbing underneath is [`crate::http`] and [`crate::rfc3339`].
 //!
 //! The seam ([`GiteaClient`]) carries only what the kind needs, **by meaning** (resolve
-//! the current user, list issues, claim by marker and label, read comments). The response
+//! the current user, list issues and PRs, claim by marker and label, read comments and
+//! reviews). The response
 //! *parsing* is split into pure functions ([`parse_issues`] and friends) that are
 //! unit-tested with no network; the HTTP layer itself is exercised against a loopback
 //! `Stub` (no external host).
@@ -106,6 +107,30 @@ pub(crate) struct IssueComment {
     pub(crate) created_at: SystemTime,
     /// When the comment was last updated, as Gitea reports it.
     pub(crate) updated_at: SystemTime,
+}
+
+/// A pull request: the unit of work the PR-review kind iterates. `head_branch` is
+/// threaded into the run so a prompted `git fetch`/checkout reconstructs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PullRequest {
+    /// The per-repo PR number.
+    pub(crate) number: u64,
+    /// The PR's head branch (the pushed branch the iteration run checks out).
+    pub(crate) head_branch: String,
+    /// The PR author (matched against the bot's own login for `author_me`).
+    pub(crate) user: User,
+}
+
+/// A pull-request review, with its author and submission time (the `submitted_at` the
+/// watermark compares alongside comment `updated_at`s).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Review {
+    /// The review's stable id.
+    pub(crate) id: u64,
+    /// The review author.
+    pub(crate) user: User,
+    /// When the review was submitted, as Gitea reports it.
+    pub(crate) submitted_at: SystemTime,
 }
 
 /// A repository label: a name, the numeric id needed to remove it from an issue
@@ -215,7 +240,7 @@ impl HttpError for GiteaError {
     }
 }
 
-/// The Gitea operations the issue kind needs, by meaning (not by REST shape).
+/// The Gitea operations the two kinds need, by meaning (not by REST shape).
 pub(crate) trait GiteaClient {
     /// Resolve the authenticated user (the PAT's own login) — `GET /user`.
     fn current_user(&self) -> Result<User, GiteaError>;
@@ -227,6 +252,9 @@ pub(crate) trait GiteaClient {
     /// `GET /repos/{o}/{r}/issues?type=issues&state&labels`.
     fn list_issues(&self, repo: &Repo, state: &str, labels: &str)
         -> Result<Vec<Issue>, GiteaError>;
+
+    /// List the open pull requests of `repo` — `GET /repos/{o}/{r}/pulls?state=open`.
+    fn list_open_pulls(&self, repo: &Repo) -> Result<Vec<PullRequest>, GiteaError>;
 
     /// Read one issue (the claim re-read) — `GET /repos/{o}/{r}/issues/{index}`.
     fn get_issue(&self, repo: &Repo, index: u64) -> Result<Issue, GiteaError>;
@@ -291,6 +319,9 @@ pub(crate) trait GiteaClient {
     /// sits beside, and it moves the comment's `updated_at` — which is what a rival's
     /// claim decision reads as liveness.
     fn edit_comment(&self, repo: &Repo, comment_id: u64, text: &str) -> Result<(), GiteaError>;
+
+    /// List a PR's reviews — `GET /repos/{o}/{r}/pulls/{index}/reviews`.
+    fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GiteaError>;
 }
 
 /// Sharing a client behind an [`Arc`](std::sync::Arc) keeps it a [`GiteaClient`],
@@ -309,6 +340,9 @@ impl<T: GiteaClient> GiteaClient for std::sync::Arc<T> {
         labels: &str,
     ) -> Result<Vec<Issue>, GiteaError> {
         (**self).list_issues(repo, state, labels)
+    }
+    fn list_open_pulls(&self, repo: &Repo) -> Result<Vec<PullRequest>, GiteaError> {
+        (**self).list_open_pulls(repo)
     }
     fn get_issue(&self, repo: &Repo, index: u64) -> Result<Issue, GiteaError> {
         (**self).get_issue(repo, index)
@@ -362,6 +396,9 @@ impl<T: GiteaClient> GiteaClient for std::sync::Arc<T> {
     }
     fn edit_comment(&self, repo: &Repo, comment_id: u64, text: &str) -> Result<(), GiteaError> {
         (**self).edit_comment(repo, comment_id, text)
+    }
+    fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GiteaError> {
+        (**self).list_pull_reviews(repo, index)
     }
 }
 
@@ -434,6 +471,17 @@ impl GiteaClient for Gitea {
             .query("labels", labels);
         let body = self.http.send(stage, req)?;
         parse_issues(stage, &body)
+    }
+
+    fn list_open_pulls(&self, repo: &Repo) -> Result<Vec<PullRequest>, GiteaError> {
+        let stage = "list pulls";
+        // GET /api/v1/repos/{o}/{r}/pulls?state=open → the repo's open PRs.
+        let req = self
+            .http
+            .request("GET", &format!("/repos/{}/{}/pulls", repo.owner, repo.name))
+            .query("state", "open");
+        let body = self.http.send(stage, req)?;
+        parse_pulls(stage, &body)
     }
 
     fn get_issue(&self, repo: &Repo, index: u64) -> Result<Issue, GiteaError> {
@@ -626,6 +674,16 @@ impl GiteaClient for Gitea {
             .send_json(stage, req, &json!({ "body": text }))
             .map(|_| ())
     }
+
+    fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GiteaError> {
+        let stage = "list reviews";
+        // GET /api/v1/repos/{o}/{r}/pulls/{index}/reviews → the PR's reviews.
+        let body = self.http.get(
+            stage,
+            &format!("/repos/{}/{}/pulls/{index}/reviews", repo.owner, repo.name),
+        )?;
+        parse_reviews(stage, &body)
+    }
 }
 
 // --- Pure parsing (no network): the Gitea JSON shapes. -----------------------
@@ -665,6 +723,15 @@ pub(crate) fn parse_issue(stage: &'static str, body: &str) -> Result<Issue, Gite
     value_to_issue(&value).ok_or_else(|| GiteaError::decode(stage, "issue missing number"))
 }
 
+/// Parse a pulls array into [`PullRequest`]s.
+pub(crate) fn parse_pulls(stage: &'static str, body: &str) -> Result<Vec<PullRequest>, GiteaError> {
+    let value = GiteaError::decode_json(stage, body)?;
+    Ok(GiteaError::as_array(stage, &value, "pulls")?
+        .iter()
+        .filter_map(value_to_pull)
+        .collect())
+}
+
 /// Parse a labels array into [`Label`]s.
 pub(crate) fn parse_labels(stage: &'static str, body: &str) -> Result<Vec<Label>, GiteaError> {
     let value = GiteaError::decode_json(stage, body)?;
@@ -694,6 +761,15 @@ pub(crate) fn parse_comments(
 pub(crate) fn parse_comment(stage: &'static str, body: &str) -> Result<IssueComment, GiteaError> {
     let value = GiteaError::decode_json(stage, body)?;
     value_to_comment(&value).ok_or_else(|| GiteaError::decode(stage, "comment missing id"))
+}
+
+/// Parse a reviews array into [`Review`]s.
+pub(crate) fn parse_reviews(stage: &'static str, body: &str) -> Result<Vec<Review>, GiteaError> {
+    let value = GiteaError::decode_json(stage, body)?;
+    Ok(GiteaError::as_array(stage, &value, "reviews")?
+        .iter()
+        .filter_map(value_to_review)
+        .collect())
 }
 
 fn value_to_user(v: &Value) -> Option<User> {
@@ -753,6 +829,24 @@ fn value_to_issue(v: &Value) -> Option<Issue> {
     })
 }
 
+fn value_to_pull(v: &Value) -> Option<PullRequest> {
+    let number = v.get("number")?.as_u64()?;
+    let head_branch = v
+        .get("head")
+        .and_then(|h| h.get("ref"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let user = v.get("user").and_then(value_to_user).unwrap_or(User {
+        login: String::new(),
+    });
+    Some(PullRequest {
+        number,
+        head_branch,
+        user,
+    })
+}
+
 fn value_to_comment(v: &Value) -> Option<IssueComment> {
     let id = v.get("id")?.as_u64()?;
     let user = v.get("user").and_then(value_to_user).unwrap_or(User {
@@ -781,6 +875,23 @@ fn value_to_comment(v: &Value) -> Option<IssueComment> {
         user,
         created_at,
         updated_at,
+    })
+}
+
+fn value_to_review(v: &Value) -> Option<Review> {
+    let id = v.get("id")?.as_u64()?;
+    let user = v.get("user").and_then(value_to_user).unwrap_or(User {
+        login: String::new(),
+    });
+    let submitted_at = v
+        .get("submitted_at")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339)
+        .unwrap_or(UNIX_EPOCH);
+    Some(Review {
+        id,
+        user,
+        submitted_at,
     })
 }
 
@@ -862,8 +973,10 @@ mod mock {
         me: Mutex<String>,
         repos: Mutex<HashMap<String, Vec<Repo>>>,
         issues: Mutex<Vec<Issue>>,
+        pulls: Mutex<Vec<PullRequest>>,
         labels: Mutex<Vec<Label>>,
         comments: Mutex<HashMap<u64, Vec<IssueComment>>>,
+        reviews: Mutex<HashMap<u64, Vec<Review>>>,
         actions: Mutex<Vec<Action>>,
         /// How many `list_issue_comments` calls were attempted — the seam a test
         /// reads to pin the default claim path's comment traffic at zero.
@@ -943,6 +1056,27 @@ mod mock {
             });
         }
 
+        /// Seed an open PR authored by `author`, on head branch `head`. Gitea models a
+        /// PR as an issue too, so a matching open issue entry is seeded so the
+        /// label/assignee claim (which acts on the issue index) finds it.
+        pub(crate) fn add_pull(&self, number: u64, author: &str, head: &str) {
+            lock(&self.pulls).push(PullRequest {
+                number,
+                head_branch: head.to_string(),
+                user: User {
+                    login: author.to_string(),
+                },
+            });
+            lock(&self.issues).push(Issue {
+                number,
+                title: format!("PR {number}"),
+                body: String::new(),
+                state: "open".to_string(),
+                labels: Vec::new(),
+                assignees: Vec::new(),
+            });
+        }
+
         /// Seed a comment on an issue/PR by `author`, updated `secs` after epoch.
         pub(crate) fn add_comment(&self, index: u64, id: u64, author: &str, secs: u64) {
             self.add_comment_body(index, id, author, &format!("comment {id}"), secs);
@@ -986,6 +1120,17 @@ mod mock {
                     created_at: UNIX_EPOCH + Duration::from_secs(created),
                     updated_at: UNIX_EPOCH + Duration::from_secs(updated),
                 });
+        }
+
+        /// Seed a review on a PR by `author`, submitted `secs` after epoch.
+        pub(crate) fn add_review(&self, index: u64, id: u64, author: &str, secs: u64) {
+            lock(&self.reviews).entry(index).or_default().push(Review {
+                id,
+                user: User {
+                    login: author.to_string(),
+                },
+                submitted_at: UNIX_EPOCH + Duration::from_secs(secs),
+            });
         }
 
         /// Make every call belonging to `stage` fail with a transport error — the
@@ -1162,6 +1307,11 @@ mod mock {
                 .filter(|i| labels.is_empty() || !defined || i.has_label(labels))
                 .cloned()
                 .collect())
+        }
+
+        fn list_open_pulls(&self, _repo: &Repo) -> Result<Vec<PullRequest>, GiteaError> {
+            self.guard("list pulls")?;
+            Ok(lock(&self.pulls).clone())
         }
 
         fn get_issue(&self, _repo: &Repo, index: u64) -> Result<Issue, GiteaError> {
@@ -1394,6 +1544,11 @@ mod mock {
                 body: text.to_string(),
             });
             Ok(())
+        }
+
+        fn list_pull_reviews(&self, _repo: &Repo, index: u64) -> Result<Vec<Review>, GiteaError> {
+            self.guard("list reviews")?;
+            Ok(lock(&self.reviews).get(&index).cloned().unwrap_or_default())
         }
     }
 
@@ -1754,6 +1909,17 @@ mod parse_tests {
     }
 
     #[test]
+    fn parse_pulls_reads_head_branch_and_author() {
+        let body = r#"[{"number":12,"title":"PR","body":"","head":{"ref":"feature/x"},
+                        "user":{"login":"bot"}}]"#;
+        let pulls = parse_pulls("list pulls", body).unwrap();
+        assert_eq!(pulls.len(), 1);
+        assert_eq!(pulls[0].number, 12);
+        assert_eq!(pulls[0].head_branch, "feature/x");
+        assert_eq!(pulls[0].user.login, "bot");
+    }
+
+    #[test]
     fn parse_repos_reads_full_name_pairs() {
         let body = r#"[{"full_name":"acme/widgets"},{"full_name":"acme/gadgets"}]"#;
         let repos = parse_repos("list org repos", body).unwrap();
@@ -1810,6 +1976,30 @@ mod parse_tests {
         // equal to `updated_at`, which is what a fallback to the sibling would give.
         assert_eq!(comments[2].created_at, UNIX_EPOCH);
         assert_eq!(comments[2].updated_at, t0);
+    }
+
+    /// A review reads its author and its `submitted_at` through the same RFC-3339
+    /// reader a comment does — a `+02:00` stamp lands where the `Z` one would — and a
+    /// review sent without a stamp degrades to the epoch.
+    #[test]
+    fn parse_reviews_reads_author_and_submitted_at() {
+        let reviews = parse_reviews(
+            "list reviews",
+            r#"[{"id":2,"user":{"login":"human"},"submitted_at":"2021-01-01T00:00:00Z"},
+                {"id":3,"user":{"login":"陳大文"},"submitted_at":"2021-01-01T04:00:00+02:00"},
+                {"id":4,"user":{"login":"álvaro"}}]"#,
+        )
+        .unwrap();
+        let t0 = UNIX_EPOCH + Duration::from_secs(1_609_459_200);
+        assert_eq!(reviews.len(), 3);
+        assert_eq!(
+            (reviews[0].id, reviews[0].user.login.as_str()),
+            (2, "human")
+        );
+        assert_eq!(reviews[0].submitted_at, t0);
+        assert_eq!(reviews[1].user.login, "陳大文");
+        assert_eq!(reviews[1].submitted_at, t0 + Duration::from_secs(7_200));
+        assert_eq!(reviews[2].submitted_at, UNIX_EPOCH);
     }
 
     /// The POST reply decodes through the very same `value_to_comment` the list
@@ -2150,6 +2340,17 @@ mod http_tests {
     }
 
     #[test]
+    fn list_open_pulls_sends_state_open() {
+        let stub = Stub::serve(ok_json("[]"));
+        let client = stub.client("t");
+        client.list_open_pulls(&repo()).unwrap();
+        let req = stub.captured();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path(), "/api/v1/repos/acme/widgets/pulls");
+        assert!(req.has_query("state", "open"));
+    }
+
+    #[test]
     fn get_issue_reads_the_index_path() {
         let stub = Stub::serve(ok_json(r#"{"number":5,"title":"T","state":"open"}"#));
         let client = stub.client("t");
@@ -2300,6 +2501,16 @@ mod http_tests {
         let req = stub.captured();
         assert_eq!(req.method, "GET");
         assert_eq!(req.path(), "/api/v1/repos/acme/widgets/issues/5/comments");
+    }
+
+    #[test]
+    fn list_pull_reviews_reads_the_reviews_path() {
+        let stub = Stub::serve(ok_json("[]"));
+        let client = stub.client("t");
+        client.list_pull_reviews(&repo(), 5).unwrap();
+        let req = stub.captured();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path(), "/api/v1/repos/acme/widgets/pulls/5/reviews");
     }
 
     /// The wire contract *and* the read-back: the POST still carries the body on
@@ -2499,6 +2710,24 @@ mod http_tests {
                 }
             ),
             "a 500 on the comments GET must propagate out of list_issue_comments, got {err:?}"
+        );
+        let _ = stub.captured();
+    }
+
+    #[test]
+    fn list_pull_reviews_propagates_a_forge_error() {
+        let stub = Stub::serve(server_error());
+        let client = stub.client("t");
+        let err = client.list_pull_reviews(&repo(), 5).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GiteaError::Status {
+                    stage: "list reviews",
+                    status: 500
+                }
+            ),
+            "a 500 on the reviews GET must propagate out of list_pull_reviews, got {err:?}"
         );
         let _ = stub.captured();
     }

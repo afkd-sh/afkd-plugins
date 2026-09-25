@@ -1,9 +1,10 @@
-//! Read the `gitea` kind's settings block — as afkd lowers it to JSON in `hello` — into a
-//! typed [`GiteaConfig`], and wire its lifecycle moments to the action vocabulary.
+//! Read the `gitea` and `gitea_pr_review` kinds' settings blocks — as afkd lowers them to
+//! JSON in `hello` — into a typed [`GiteaConfig`], and wire their lifecycle moments to the
+//! action vocabulary.
 //!
 //! afkd has already held the block to the manifest before this plugin is spawned: every
-//! key is one the manifest declares, `token` is present, only `discuss_with` is
-//! written twice, and only the four `on_*` keys carry a block. What is left here is the
+//! key is one the kind's manifest table declares, `token` is present, only `discuss_with`
+//! is written twice, and only the `on_*` keys carry a block. What is left here is the
 //! part a manifest cannot say — exactly one of `repo`/`org`, a label action naming one
 //! label, a `comment` carrying text, a `discuss_with` naming someone, and `@{run:…}`
 //! legality per moment — in the built-in trigger's own sentences. The cadence and the
@@ -28,7 +29,8 @@ pub(crate) enum DiscussWith {
     Logins(Vec<String>),
 }
 
-/// A validated `gitea` trigger configuration.
+/// A validated `gitea` or `gitea_pr_review` trigger configuration. The keys one kind
+/// does not declare stay at their defaults for the other.
 ///
 /// `Debug` is **hand-written** so the `token` never reaches a diagnostic.
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -43,6 +45,8 @@ pub(crate) struct GiteaConfig {
     pub(crate) token: String,
     /// The eligibility source label (empty when not given).
     pub(crate) source_label: String,
+    /// Restrict the PR kind to the bot's own PRs (the `author_me` flag).
+    pub(crate) author_me: bool,
     /// Actions performed when work on an issue begins.
     pub(crate) on_claim: Vec<LifecycleAction>,
     /// Actions performed when an issue's work finishes successfully.
@@ -68,6 +72,7 @@ impl std::fmt::Debug for GiteaConfig {
             .field("org", &self.org)
             .field("token", &redact(&self.token))
             .field("source_label", &self.source_label)
+            .field("author_me", &self.author_me)
             .field("on_claim", &self.on_claim)
             .field("on_done", &self.on_done)
             .field("on_fail", &self.on_fail)
@@ -136,11 +141,57 @@ pub(crate) const DURATION_KEYS: &[&str] = &["poll_interval", "follow_comments"];
 #[cfg(test)]
 pub(crate) const REQUIRED_ISSUE_KEYS: &[&str] = &["token"];
 
+/// The `gitea_pr_review` kind's full key set, exactly the built-in's `ALLOWED_PR_KEYS`:
+/// the shared keys plus `author_me` (and, notably, **not** `source_label`).
+#[cfg(test)]
+pub(crate) const ALLOWED_PR_KEYS: &[&str] = &[
+    "base_url",
+    "repo",
+    "org",
+    "token",
+    "author_me",
+    "follow_comments",
+    "max_attempts",
+    "poll_interval",
+    "on_claim",
+    "on_done",
+    "on_fail",
+];
+
+/// The keys a `gitea_pr_review` block may write more than once: none.
+#[cfg(test)]
+pub(crate) const REPEATABLE_PR_KEYS: &[&str] = &[];
+
+/// The keys a `gitea_pr_review` block must carry: the forge `token`, as for `gitea`.
+#[cfg(test)]
+pub(crate) const REQUIRED_PR_KEYS: &[&str] = &["token"];
+
 /// Read the lowered `settings` into a [`GiteaConfig`] for the `gitea` kind, or report
 /// the first setting it cannot use.
 pub(crate) fn issue_config(settings: &Value) -> Result<GiteaConfig, SettingsError> {
     let empty = Map::new();
     let settings = settings.as_object().unwrap_or(&empty);
+    let mut cfg = shared_config(settings)?;
+    cfg.source_label = opt_scalar(settings, "source_label");
+    cfg.on_park = parse_block(settings.get("on_park"), true)?;
+    cfg.discuss_with = parse_discuss_with(settings)?;
+    Ok(cfg)
+}
+
+/// Read the lowered `settings` into a [`GiteaConfig`] for the `gitea_pr_review` kind, or
+/// report the first setting it cannot use. `author_me` is a flag: its presence is the
+/// setting, whatever it carries.
+pub(crate) fn pr_config(settings: &Value) -> Result<GiteaConfig, SettingsError> {
+    let empty = Map::new();
+    let settings = settings.as_object().unwrap_or(&empty);
+    let mut cfg = shared_config(settings)?;
+    cfg.author_me = settings.contains_key("author_me");
+    Ok(cfg)
+}
+
+/// The keys both kinds carry: the target (exactly one of `repo`/`org`), the forge
+/// coordinates, and the three lifecycle moments they share.
+fn shared_config(settings: &Map<String, Value>) -> Result<GiteaConfig, SettingsError> {
     let repo = opt_scalar(settings, "repo");
     let org = opt_scalar(settings, "org");
     require_exactly_one_target(&repo, &org)?;
@@ -149,14 +200,12 @@ pub(crate) fn issue_config(settings: &Value) -> Result<GiteaConfig, SettingsErro
         repo,
         org,
         token: opt_scalar(settings, "token"),
-        source_label: opt_scalar(settings, "source_label"),
         // `on_claim` runs before any fire, so a `@{run:…}` reference is illegal there;
-        // the three post-run moments receive the attempt's real facts.
+        // the post-run moments receive the attempt's real facts.
         on_claim: parse_block(settings.get("on_claim"), false)?,
         on_done: parse_block(settings.get("on_done"), true)?,
         on_fail: parse_block(settings.get("on_fail"), true)?,
-        on_park: parse_block(settings.get("on_park"), true)?,
-        discuss_with: parse_discuss_with(settings)?,
+        ..GiteaConfig::default()
     })
 }
 
@@ -450,6 +499,102 @@ mod tests {
         .expect("valid");
         assert_eq!(cfg.repo, "acme/widgets");
         assert_eq!(cfg.discuss_with, Some(DiscussWith::Anyone));
+    }
+
+    /// `author_me` is a flag: absent reads false, and any lowering of a present key —
+    /// the bare flag, a repeated one, a value beside a block — reads true.
+    #[test]
+    fn pr_config_reads_author_me_as_presence() {
+        assert!(!pr_config(&block(json!({}))).unwrap().author_me);
+        for flag in [
+            json!(true),
+            json!([true]),
+            json!({"@value": true}),
+            json!("yes"),
+        ] {
+            assert!(
+                pr_config(&block(json!({ "author_me": flag.clone() })))
+                    .unwrap()
+                    .author_me,
+                "{flag}"
+            );
+        }
+    }
+
+    /// The PR kind holds the rules it shares with `gitea` in the same sentences, and
+    /// reads none of the keys only `gitea` declares.
+    #[test]
+    fn pr_config_holds_the_shared_rules() {
+        let err = pr_config(&json!({"token": "t"})).unwrap_err();
+        assert_eq!(
+            (err.key.as_str(), err.problem.as_str()),
+            (
+                "repo",
+                "a gitea trigger needs exactly one of `repo` or `org` (neither was set)"
+            )
+        );
+        let err =
+            pr_config(&json!({"repo": "acme/widgets", "org": "acme", "token": "t"})).unwrap_err();
+        assert_eq!(
+            (err.key.as_str(), err.problem.as_str()),
+            (
+                "org",
+                "a gitea trigger takes exactly one of `repo` or `org` (both were set)"
+            )
+        );
+        let err = pr_config(&block(
+            json!({"on_claim": {"comment": ["spent @{run:cost}"]}}),
+        ))
+        .unwrap_err();
+        assert_eq!(err.key, "comment");
+        assert!(
+            err.problem.contains("no run happens at claim time"),
+            "{}",
+            err.problem
+        );
+
+        let cfg = pr_config(&json!({
+            "base_url": "https://gitea.example.com",
+            "org": "acme",
+            "token": "PAT",
+            "on_claim": {"assign_me": [true], "label_add": ["afkd/working"]},
+            "on_done": {"comment": ["round done in @{run:duration} 🚀"]},
+            "on_fail": {"label_remove": ["afkd/working"], "unassign": [true]},
+            // Not the PR kind's keys: afkd's manifest check refuses them before a
+            // `hello`, and were one to reach here it is not read.
+            "source_label": "afkd/ready",
+            "discuss_with": ["anyone"],
+            "on_park": {"close": [true]},
+        }))
+        .expect("valid");
+        assert_eq!(
+            (cfg.base_url.as_str(), cfg.org.as_str(), cfg.repo.as_str()),
+            ("https://gitea.example.com", "acme", "")
+        );
+        assert_eq!(
+            cfg.on_claim,
+            vec![
+                LifecycleAction::AssignMe,
+                LifecycleAction::LabelAdd("afkd/working".into()),
+            ]
+        );
+        assert_eq!(
+            cfg.on_done,
+            vec![LifecycleAction::Comment(
+                "round done in @{run:duration} 🚀".into()
+            )]
+        );
+        assert_eq!(
+            cfg.on_fail,
+            vec![
+                LifecycleAction::LabelRemove("afkd/working".into()),
+                LifecycleAction::Unassign,
+            ]
+        );
+        assert_eq!(cfg.source_label, "");
+        assert_eq!(cfg.discuss_with, None);
+        assert!(cfg.on_park.is_empty());
+        assert!(!cfg.author_me);
     }
 
     #[test]

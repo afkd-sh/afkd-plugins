@@ -1,5 +1,7 @@
 //! The plugin's state across calls, and one handler per call: the thin layer between
-//! afkd's wire ([`crate::wire`]) and the ported vendor half ([`crate::issue`]).
+//! afkd's wire ([`crate::wire`]) and the armed kind's vendor half ([`crate::issue`] or
+//! [`crate::pr`], behind [`crate::kind`]). Everything here is written once and shared by
+//! both kinds.
 //!
 //! Two things the wire forces that the built-in never had to do:
 //!
@@ -9,7 +11,7 @@
 //! - **`finish` always answers `ok`.** afkd crashes the service on a refused `finish`, and
 //!   has no "held" reply. The built-in's answer to a terminal lifecycle that did not land
 //!   — hold the claim, release it on the next beat, and on a second failure for the same
-//!   issue leave it for a human — is performed here, at once.
+//!   unit leave it for a human — is performed here, at once.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -19,19 +21,20 @@ use serde_json::json;
 use crate::claim::is_claim;
 use crate::client::{Gitea, GiteaClient};
 use crate::common::{ClaimFault, Clock, Diag};
-use crate::issue::{IssueUnits, Unit};
+use crate::issue::IssueUnits;
+use crate::kind::{ClaimedUnit, Units};
+use crate::pr::PrUnits;
 use crate::rfc3339::format_utc;
-use crate::settings::{issue_config, GiteaConfig};
+use crate::settings::{issue_config, pr_config, GiteaConfig};
 use crate::wire::{
     fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
 };
 
-/// The one kind this build provides.
+/// The issue kind.
 pub(crate) const ISSUE_KIND: &str = "gitea";
 
-/// The optional calls the `gitea` kind answers. It marks no failed attempt — the built-in
-/// keeps the spine's no-op there — so `attempt_failed` is not among them.
-pub(crate) const ISSUE_CALLS: [&str; 4] = ["release", "renew", "comments", "classify"];
+/// The pull-request review kind.
+pub(crate) const PR_KIND: &str = "gitea_pr_review";
 
 /// What the process does with one request.
 #[derive(Debug, PartialEq)]
@@ -52,23 +55,36 @@ pub(crate) struct Plugin {
     connect: Connect,
     clock: Box<dyn Clock>,
     diag: Box<dyn Diag>,
-    armed: Option<Armed>,
+    armed: Option<Box<dyn Service>>,
 }
 
-/// One armed `gitea` service.
-struct Armed {
-    units: IssueUnits,
+/// One armed service, whichever kind it is: the calls afkd makes after `hello`.
+trait Service {
+    /// The optional calls the armed kind answers, as `hello` lists them.
+    fn calls(&self) -> &'static [&'static str];
+    fn poll(&mut self, clock: &dyn Clock, diag: &dyn Diag) -> Answer;
+    fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer;
+    fn renew(&self, key: &str, renewal: u64, diag: &dyn Diag) -> Answer;
+    fn comments(&mut self, key: &str, diag: &dyn Diag) -> Answer;
+    fn classify(&self, scratch: &Path, outcome: UnitOutcome) -> UnitOutcome;
+    fn finish(&mut self, key: &str, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag)
+        -> Answer;
+}
+
+/// One armed service of kind `K`.
+struct Armed<K: Units> {
+    units: K,
     /// The token's login, resolved on the first `poll` and kept.
     me: Option<String>,
     /// The units handed over and not yet finished or released, by key.
-    live: BTreeMap<String, LiveUnit>,
+    live: BTreeMap<String, LiveUnit<K::Unit>>,
     /// The threads whose terminal lifecycle has failed once.
     undelivered: HashSet<String>,
 }
 
 /// A unit afkd is running.
-struct LiveUnit {
-    unit: Unit,
+struct LiveUnit<U> {
+    unit: U,
     /// The comment ids afkd has been told about: the unit's `seen`, then everything a
     /// `comments` reply carried or left out.
     reported: HashSet<String>,
@@ -99,6 +115,13 @@ impl Plugin {
     /// Answer one request.
     pub(crate) fn answer(&mut self, request: Request) -> Answer {
         let (clock, diag, armed) = (&*self.clock, &*self.diag, &mut self.armed);
+        // An optional call the armed kind never listed is refused as an unknown one is.
+        // Before any `hello`, `on_armed` below ends the process instead.
+        if let (Some(call), Some(service)) = (request.optional_call(), armed.as_deref()) {
+            if !service.calls().contains(&call) {
+                return unlisted(diag);
+            }
+        }
         match request {
             Request::Hello {
                 proto,
@@ -110,7 +133,9 @@ impl Plugin {
                     .ok();
                 Answer::Reply(
                     match armed {
-                        Some(_) => json!({"ok": true, "proto": PROTO, "calls": ISSUE_CALLS}),
+                        Some(service) => {
+                            json!({"ok": true, "proto": PROTO, "calls": service.calls()})
+                        }
                         None => json!({"ok": false, "proto": PROTO}),
                     }
                     .to_string(),
@@ -120,8 +145,8 @@ impl Plugin {
             Request::Release { key } => on_armed(armed, |a| a.release(&key, diag)),
             Request::Renew { key, renewal } => on_armed(armed, |a| a.renew(&key, renewal, diag)),
             Request::Comments { key } => on_armed(armed, |a| a.comments(&key, diag)),
-            Request::Classify { scratch, outcome } => on_armed(armed, |_| {
-                let outcome = IssueUnits::classify(Path::new(&scratch), outcome);
+            Request::Classify { scratch, outcome } => on_armed(armed, |a| {
+                let outcome = a.classify(Path::new(&scratch), outcome);
                 Answer::Reply(json!({ "outcome": outcome }).to_string())
             }),
             Request::Finish {
@@ -129,19 +154,25 @@ impl Plugin {
                 outcome,
                 facts,
             } => on_armed(armed, |a| a.finish(&key, outcome, &facts, diag)),
-            Request::Unknown => {
-                diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
-                Answer::Reply(json!({"ok": false}).to_string())
-            }
+            Request::Unknown => unlisted(diag),
         }
     }
 }
 
+/// The reply to a call this plugin did not list in its `hello` reply.
+fn unlisted(diag: &dyn Diag) -> Answer {
+    diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
+    Answer::Reply(json!({"ok": false}).to_string())
+}
+
 /// Run `f` on the armed kind — or end the process, since afkd sends nothing but `hello`
 /// before a `hello` it has seen accepted.
-fn on_armed(armed: &mut Option<Armed>, f: impl FnOnce(&mut Armed) -> Answer) -> Answer {
+fn on_armed(
+    armed: &mut Option<Box<dyn Service>>,
+    f: impl FnOnce(&mut dyn Service) -> Answer,
+) -> Answer {
     match armed {
-        Some(armed) => f(armed),
+        Some(armed) => f(armed.as_mut()),
         None => Answer::Fatal("afkd sent a call before a `hello` this plugin accepted".into()),
     }
 }
@@ -154,21 +185,23 @@ fn arm(
     proto: u32,
     kind: &str,
     settings: &serde_json::Value,
-) -> Result<Armed, String> {
+) -> Result<Box<dyn Service>, String> {
     if proto != PROTO {
         return Err(format!(
             "afkd speaks plugin protocol {proto}, and this plugin speaks {PROTO}"
         ));
     }
-    if kind != ISSUE_KIND {
-        return Err(format!("kind `{kind}` is not provided by @afkd/gitea"));
-    }
-    let cfg = issue_config(settings).map_err(|e| format!("trigger {kind}: {e}"))?;
-    Ok(Armed {
-        units: IssueUnits::new(connect(&cfg), &cfg),
-        me: None,
-        live: BTreeMap::new(),
-        undelivered: HashSet::new(),
+    let fault = |e| format!("trigger {kind}: {e}");
+    Ok(match kind {
+        ISSUE_KIND => {
+            let cfg = issue_config(settings).map_err(fault)?;
+            Box::new(Armed::new(IssueUnits::new(connect(&cfg), &cfg)))
+        }
+        PR_KIND => {
+            let cfg = pr_config(settings).map_err(fault)?;
+            Box::new(Armed::new(PrUnits::new(connect(&cfg), &cfg)))
+        }
+        _ => return Err(format!("kind `{kind}` is not provided by @afkd/gitea")),
     })
 }
 
@@ -177,7 +210,22 @@ fn idle() -> Answer {
     Answer::Reply(json!({"fire": false}).to_string())
 }
 
-impl Armed {
+impl<K: Units> Armed<K> {
+    fn new(units: K) -> Self {
+        Self {
+            units,
+            me: None,
+            live: BTreeMap::new(),
+            undelivered: HashSet::new(),
+        }
+    }
+}
+
+impl<K: Units> Service for Armed<K> {
+    fn calls(&self) -> &'static [&'static str] {
+        K::CALLS
+    }
+
     /// One beat: resolve the identity if it is not yet known, then run the claim race. A
     /// transient forge failure is the built-in's idle beat, diagnosed; a definite one
     /// ends the service with its sentence.
@@ -270,7 +318,7 @@ impl Armed {
                 return null();
             }
         };
-        let me = live.unit.claimed_as.as_str();
+        let me = live.unit.claimed_as();
         let mut fresh: Vec<_> = all
             .into_iter()
             .filter(|c| {
@@ -305,9 +353,13 @@ impl Armed {
         Answer::Reply(line)
     }
 
+    fn classify(&self, scratch: &Path, outcome: UnitOutcome) -> UnitOutcome {
+        K::classify(scratch, outcome)
+    }
+
     /// Run a finished unit's terminal lifecycle. Always `ok` (see the module doc): a
     /// lifecycle that did not land is released at once so the next poll retries the
-    /// issue, and the second time the same issue fails that way it is left for a human.
+    /// unit, and the second time the same unit fails that way it is left for a human.
     fn finish(
         &mut self,
         key: &str,
@@ -385,11 +437,16 @@ mod tests {
             Self { plugin, mock, diag }
         }
 
-        /// The same, armed over `settings`.
+        /// The same, armed as the `gitea` kind over `settings`.
         fn armed(settings: serde_json::Value) -> Self {
+            Self::armed_as(ISSUE_KIND, settings)
+        }
+
+        /// The same, armed as `kind` over `settings`.
+        fn armed_as(kind: &str, settings: serde_json::Value) -> Self {
             let mut f = Self::new();
             let hello =
-                f.call(json!({"call": "hello", "proto": 1, "kind": "gitea", "settings": settings}));
+                f.call(json!({"call": "hello", "proto": 1, "kind": kind, "settings": settings}));
             assert_eq!(hello["ok"], true, "{:?}", f.diag.lines());
             f
         }
@@ -415,6 +472,11 @@ mod tests {
         json!({"repo": "acme/widgets", "token": "PAT", "source_label": "afkd/ready"})
     }
 
+    /// A `gitea_pr_review` block over the bot's own PRs.
+    fn pr_settings() -> serde_json::Value {
+        json!({"repo": "acme/widgets", "token": "PAT", "author_me": true})
+    }
+
     #[test]
     fn hello_lists_exactly_the_calls_the_kind_answers() {
         let mut f = Fixture::new();
@@ -426,16 +488,38 @@ mod tests {
         );
     }
 
+    /// The PR kind lists what it answers: no `classify`, since the built-in keeps the
+    /// spine's default and never parks a PR.
+    #[test]
+    fn a_pr_hello_lists_release_renew_comments() {
+        let mut f = Fixture::new();
+        let reply = f.call(
+            json!({"call": "hello", "proto": 1, "kind": "gitea_pr_review", "settings": pr_settings()}),
+        );
+        assert_eq!(
+            reply,
+            json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
+        );
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+    }
+
     /// Each refusal is `ok:false` with the problem, in the built-in's own words, on the
     /// diagnostic channel — and leaves the plugin unarmed.
     #[test]
     fn hello_refuses_what_the_kind_cannot_arm_with() {
         for (kind, proto, settings, problem) in [
             (
-                "gitea_pr_review",
+                "gitlab",
                 1,
                 settings(),
-                "kind `gitea_pr_review` is not provided by @afkd/gitea",
+                "kind `gitlab` is not provided by @afkd/gitea",
+            ),
+            (
+                "gitea_pr_review",
+                1,
+                json!({"repo": "acme/widgets", "org": "acme", "token": "PAT", "author_me": true}),
+                "trigger gitea_pr_review: setting `org`: a gitea trigger takes exactly one of \
+                 `repo` or `org` (both were set)",
             ),
             (
                 "gitea",
@@ -779,6 +863,57 @@ mod tests {
             .filter(|c| is_claim(&c.body))
             .count();
         assert_eq!(markers, 0);
+    }
+
+    /// `classify` is a call the PR kind does not list, so it is refused exactly as an
+    /// unknown call is — even with a park marker in the scratch directory, which only the
+    /// issue kind reads.
+    #[test]
+    fn a_pr_service_refuses_classify() {
+        let mut f = Fixture::armed_as(PR_KIND, pr_settings());
+        let scratch = TempDir::new();
+        std::fs::write(scratch.path().join("park"), b"").unwrap();
+        let reply = f.call(json!({"call": "classify", "key": "acme/widgets#7#1",
+                                  "scratch": scratch.path().to_str().unwrap(), "outcome": "failed"}));
+        assert_eq!(reply, json!({"ok": false}));
+        assert_eq!(
+            f.diag.lines(),
+            ["afkd sent a call this plugin did not list in its `hello` reply"]
+        );
+    }
+
+    /// A PR unit's `seen` is its claim-time thread, and the `comments` reply builds on
+    /// it: the review feedback the brief already carried never comes back, and only
+    /// what humans said after the claim does — the bot's own reply and markers aside.
+    #[test]
+    fn a_pr_comments_reply_leaves_out_the_claim_time_thread() {
+        let mut f = Fixture::armed_as(PR_KIND, pr_settings());
+        f.mock
+            .add_pull(7, "björn-öst[bot]", "feature/retry-backoff");
+        f.mock.add_comment_body(
+            7,
+            41,
+            "陳大文",
+            "看起来不对 🚨\n\nThe backoff never caps.",
+            1_790_330_000,
+        );
+        f.mock.add_review(7, 51, "carol", 1_790_330_100);
+        let unit = f.poll()["unit"].clone();
+        assert_eq!(unit["seen"], json!(["41"]));
+        let key = unit["key"].clone();
+
+        f.mock
+            .add_comment_body(7, 42, "björn-öst[bot]", "Pushed a cap.", 1_790_330_280);
+        f.mock
+            .add_comment_body(7, 43, "álvaro", "Also the jitter?", 1_790_330_300);
+        let reply = f.call(json!({"call": "comments", "key": key}));
+        assert_eq!(
+            reply,
+            json!({"comments": [
+                {"id": "43", "author": "álvaro", "author_name": "álvaro",
+                 "body": "Also the jitter?", "at": "2026-09-25T09:58:20Z"},
+            ]})
+        );
     }
 
     #[test]

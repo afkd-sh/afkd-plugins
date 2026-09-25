@@ -6,8 +6,8 @@ source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-gitea"
 
-# The built-in `gitea` kind's vocabulary, key for key, so every config that validates
-# against the built-in validates against this plugin with no edit.
+# The built-in `gitea` and `gitea_pr_review` kinds' vocabularies, key for key, so every
+# config that validates against the built-ins validates against this plugin with no edit.
 [[trigger]]
 kind = "gitea"
 settings = [
@@ -49,5 +49,42 @@ repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "co
 
 [[trigger.block]]
 path = "on_park"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+
+[[trigger]]
+kind = "gitea_pr_review"
+settings = [
+  "base_url",
+  "repo",
+  "org",
+  "token",
+  "author_me",
+  "follow_comments",
+  "max_attempts",
+  "poll_interval",
+  "on_claim",
+  "on_done",
+  "on_fail",
+]
+required = ["token"]
+repeatable = []
+durations = ["poll_interval", "follow_comments"]
+run_kind = "pr"
+display_name = "Gitea PRs"
+info_keys = []
+
+[[trigger.block]]
+path = "on_claim"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+
+[[trigger.block]]
+path = "on_done"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+
+[[trigger.block]]
+path = "on_fail"
 settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
 repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]

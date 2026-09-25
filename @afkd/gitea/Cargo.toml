@@ -3,7 +3,7 @@ name = "afkd-gitea"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The @afkd/gitea trigger plugin: Gitea issues as afkd units, over the plugin wire"
+description = "The @afkd/gitea trigger plugin: Gitea issues and pull-request reviews as afkd units, over the plugin wire"
 
 [[bin]]
 name = "afkd-gitea"

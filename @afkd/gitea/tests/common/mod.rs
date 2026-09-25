@@ -82,8 +82,13 @@ impl Plugin {
 
     /// Spawn and greet with `settings` for the `gitea` kind, asserting it arms.
     pub fn armed(settings: Value) -> Self {
+        Self::armed_as("gitea", settings)
+    }
+
+    /// Spawn and greet with `settings` for `kind`, asserting it arms.
+    pub fn armed_as(kind: &str, settings: Value) -> Self {
         let mut plugin = Self::spawn();
-        let reply = plugin.hello("gitea", settings);
+        let reply = plugin.hello(kind, settings);
         assert_eq!(reply["ok"], true, "hello refused: {}", plugin.stderr());
         plugin
     }

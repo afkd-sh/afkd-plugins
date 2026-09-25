@@ -1,13 +1,15 @@
 //! A stateful fake Gitea on a loopback socket: the `/api/v1` routes the plugin's client
-//! calls, over repositories, issues, labels and comments the test seeds and then reads
-//! back. std and `serde_json` only, and nothing from the plugin crate, so another suite
+//! calls, over repositories, issues, pull requests, reviews, labels and comments the test
+//! seeds and then reads back. std and `serde_json` only, and nothing from the plugin crate, so another suite
 //! can `#[path]`-include it.
 //!
 //! It models the Gitea behaviours the kind depends on: a label add naming a label the
 //! repository does not define is **dropped** and answered `200` with the issue's
 //! resulting labels; adding an **exclusive** scoped label strips its scope siblings; an
-//! assignee `PATCH` replaces the whole set; a comment carries separate `created_at` and
-//! `updated_at`, stamped from a clock the test moves. Every request is recorded, and any
+//! assignee `PATCH` replaces the whole set; a pull request is an issue too, so its labels,
+//! assignees, state and comments are the issue's, and only an open one is listed; a
+//! comment carries separate `created_at` and `updated_at`, and a review a `submitted_at`,
+//! stamped from a clock the test moves. Every request is recorded, and any
 //! route can be made to answer a status instead.
 
 #![allow(dead_code)]
@@ -55,6 +57,23 @@ pub struct Issue {
     pub assignees: Vec<String>,
 }
 
+/// What a pull request adds to the issue it also is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pull {
+    pub author: String,
+    pub head: String,
+}
+
+/// A review on a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Review {
+    pub id: u64,
+    pub repo: String,
+    pub number: u64,
+    pub author: String,
+    pub submitted: u64,
+}
+
 /// A comment on an issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Comment {
@@ -76,6 +95,9 @@ struct State {
     orgs: BTreeMap<String, Vec<String>>,
     /// Keyed by `(owner/name, number)`.
     issues: BTreeMap<(String, u64), Issue>,
+    /// The issues that are pull requests, by the same key.
+    pulls: BTreeMap<(String, u64), Pull>,
+    reviews: Vec<Review>,
     labels: BTreeMap<String, Vec<Label>>,
     comments: Vec<Comment>,
     /// A route name → the status it answers instead.
@@ -170,6 +192,35 @@ impl FakeGitea {
                 assignees: assignees.iter().map(|a| a.to_string()).collect(),
             },
         );
+    }
+
+    /// Seed an open pull request by `author` from branch `head` — and the issue it also
+    /// is, unlabelled and unassigned.
+    pub fn pull(&self, repo: &str, number: u64, title: &str, author: &str, head: &str) {
+        self.issue(repo, number, title, "", &[], &[]);
+        lock(&self.state).pulls.insert(
+            (repo.to_string(), number),
+            Pull {
+                author: author.to_string(),
+                head: head.to_string(),
+            },
+        );
+    }
+
+    /// Seed a review by `author` on a pull request, submitted `ago` seconds before now;
+    /// returns its id.
+    pub fn review(&self, repo: &str, number: u64, author: &str, ago: u64) -> u64 {
+        let mut s = lock(&self.state);
+        s.next_id += 1;
+        let (id, submitted) = (s.next_id, s.now - ago);
+        s.reviews.push(Review {
+            id,
+            repo: repo.to_string(),
+            number,
+            author: author.to_string(),
+            submitted,
+        });
+        id
     }
 
     /// Take `label` off an issue, as a human does.
@@ -479,6 +530,8 @@ fn route(s: &mut State, method: &str, path: &str, body: &str) -> (u16, Value) {
         ("GET", ["user"]) => "current user",
         ("GET", ["orgs", _, "repos"]) => "list org repos",
         ("GET", ["repos", _, _, "issues"]) => "list issues",
+        ("GET", ["repos", _, _, "pulls"]) => "list pulls",
+        ("GET", ["repos", _, _, "pulls", _, "reviews"]) => "list reviews",
         ("GET", ["repos", _, _, "issues", "comments", _]) => "get comment",
         ("DELETE", ["repos", _, _, "issues", "comments", _]) => "delete comment",
         ("PATCH", ["repos", _, _, "issues", "comments", _]) => "edit comment",
@@ -514,11 +567,50 @@ fn route(s: &mut State, method: &str, path: &str, body: &str) -> (u16, Value) {
         }
         "list issues" => {
             let repo = repo();
+            // The client asks `type=issues`, which leaves the pull requests out.
             let list: Vec<Value> = s
                 .issues
                 .iter()
-                .filter(|((r, _), i)| *r == repo && i.state == "open")
+                .filter(|(k, i)| k.0 == repo && i.state == "open" && !s.pulls.contains_key(k))
                 .map(|((r, n), i)| issue_json(s, r, *n, i))
+                .collect();
+            (200, Value::Array(list))
+        }
+        "list pulls" => {
+            let repo = repo();
+            let list: Vec<Value> = s
+                .pulls
+                .iter()
+                .filter(|(k, _)| k.0 == repo && s.issues[*k].state == "open")
+                .map(|((_, n), p)| {
+                    let issue = &s.issues[&(repo.clone(), *n)];
+                    json!({
+                        "number": n,
+                        "title": issue.title,
+                        "body": issue.body,
+                        "state": issue.state,
+                        "head": { "ref": p.head },
+                        "user": user(&p.author),
+                    })
+                })
+                .collect();
+            (200, Value::Array(list))
+        }
+        "list reviews" => {
+            let (repo, n) = (repo(), number(4));
+            let list: Vec<Value> = s
+                .reviews
+                .iter()
+                .filter(|r| r.repo == repo && r.number == n)
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "user": user(&r.author),
+                        "state": "COMMENTED",
+                        "body": "",
+                        "submitted_at": stamp(r.submitted),
+                    })
+                })
                 .collect();
             (200, Value::Array(list))
         }

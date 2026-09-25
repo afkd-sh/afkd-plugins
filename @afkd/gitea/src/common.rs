@@ -1,4 +1,5 @@
-//! Drive scaffolding the issue kind is built from (ADR-0031): the env spellings, the
+//! Drive scaffolding both kinds are built from (ADR-0031): the target, the poll's scan
+//! budget, the env spellings, the
 //! credentials-env builder, the lifecycle-action executor over the [`GiteaClient`] seam,
 //! the **claim** — a `[afkd-claim]` marker comment decided by [`crate::claim`]'s pure
 //! winner rule — and the three seams the rest is written against: the [`Clock`] the
@@ -56,6 +57,16 @@ pub(crate) const ENV_BASE_URL: &str = "GITEA_BASE_URL";
 pub(crate) const ENV_REPO: &str = "GITEA_REPO";
 /// Env var carrying the active issue number to the run.
 pub(crate) const ENV_ISSUE_NUMBER: &str = "GITEA_ISSUE_NUMBER";
+/// Env var carrying the active PR number to a PR-review run.
+pub(crate) const ENV_PR_NUMBER: &str = "GITEA_PR_NUMBER";
+/// Env var carrying the active PR's head branch to a PR-review run.
+pub(crate) const ENV_PR_BRANCH: &str = "GITEA_PR_BRANCH";
+
+/// How long one `poll`'s scan may run before it stops considering further repos and
+/// candidates, leaving them to the next beat. afkd ends the service if a call takes 60
+/// seconds, and an org-wide scan against a slow forge could; this keeps the scan well
+/// inside it. A claim already under way is always finished.
+pub(crate) const POLL_BUDGET: Duration = Duration::from_secs(20);
 
 /// Lock `m`, recovering the data from a poisoned lock rather than panicking: a panic
 /// elsewhere must not take every later caller down with it.
@@ -119,6 +130,68 @@ pub(crate) enum ClaimFault<E> {
 impl<E> From<E> for ClaimFault<E> {
     fn from(e: E) -> Self {
         Self::Transient(e)
+    }
+}
+
+/// Where a kind draws its units from: one repo, or every repo of an org.
+pub(crate) enum Target {
+    /// A single `owner/name` repository.
+    Single(Repo),
+    /// Every repository of the named org (resolved each poll).
+    Org(String),
+}
+
+impl Target {
+    /// Exactly one of `cfg.repo`/`cfg.org` is set (the settings layer enforces it); a
+    /// malformed `repo` degrades to an org-less, repo-less target that claims nothing.
+    pub(crate) fn new(cfg: &GiteaConfig) -> Self {
+        if !cfg.org.is_empty() {
+            return Target::Org(cfg.org.clone());
+        }
+        match Repo::parse(&cfg.repo) {
+            Some(repo) => Target::Single(repo),
+            None => Target::Org(String::new()),
+        }
+    }
+
+    /// The repositories to poll this round (one, or the org's current set).
+    pub(crate) fn repos(&self, client: &dyn GiteaClient) -> Result<Vec<Repo>, GiteaError> {
+        match self {
+            Target::Single(repo) => Ok(vec![repo.clone()]),
+            Target::Org(org) if org.is_empty() => Ok(Vec::new()),
+            Target::Org(org) => client.org_repos(org),
+        }
+    }
+}
+
+/// One `poll`'s scan against [`POLL_BUDGET`], started when the scan starts.
+pub(crate) struct ScanBudget<'a> {
+    clock: &'a dyn Clock,
+    diag: &'a dyn Diag,
+    started: Instant,
+}
+
+impl<'a> ScanBudget<'a> {
+    pub(crate) fn start(clock: &'a dyn Clock, diag: &'a dyn Diag) -> Self {
+        Self {
+            clock,
+            diag,
+            started: clock.now(),
+        }
+    }
+
+    /// Whether the scan has run its budget — said on the diagnostic channel when it
+    /// has, since the scan stops there.
+    pub(crate) fn spent(&self) -> bool {
+        let spent = self.clock.now().duration_since(self.started) >= POLL_BUDGET;
+        if spent {
+            self.diag.err(&format_args!(
+                "gitea poll: the scan ran past its {}s budget; the rest of it waits for the \
+                 next poll",
+                POLL_BUDGET.as_secs()
+            ));
+        }
+        spent
     }
 }
 
@@ -225,6 +298,14 @@ pub(crate) fn ensure_issue_labels(
     repo: &Repo,
 ) -> Result<(), ClaimFault<GiteaError>> {
     ensure_labels(client, repo, &[CLAIMED_LABEL, AWAITING_LABEL])
+}
+
+/// [`ensure_labels`] for the PR kind: only the status label, since a PR never parks.
+pub(crate) fn ensure_claimed_label(
+    client: &dyn GiteaClient,
+    repo: &Repo,
+) -> Result<(), ClaimFault<GiteaError>> {
+    ensure_labels(client, repo, &[CLAIMED_LABEL])
 }
 
 /// Classify a failed **claim status-label** write. That label is the re-pick gate, so a

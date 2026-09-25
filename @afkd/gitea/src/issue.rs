@@ -22,35 +22,21 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-use std::time::Duration;
 
 use crate::claim::is_claim;
 use crate::client::{GiteaClient, GiteaError, Issue, IssueComment, Repo};
 use crate::common::{
     apply_actions, claim_issue, claim_key_for, claim_label_fault, comment_watermark, creds_env,
     delete_marker, ensure_issue_labels, new_reply_comments, park_issue, release_claim,
-    release_stale, renew_marker, unit_key, ClaimFault, Claimed, Clock, Diag, AWAITING_LABEL,
-    CLAIMED_LABEL, ENV_ISSUE_NUMBER, ENV_REPO,
+    release_stale, renew_marker, unit_key, ClaimFault, Claimed, Clock, Diag, ScanBudget, Target,
+    AWAITING_LABEL, CLAIMED_LABEL, ENV_ISSUE_NUMBER, ENV_REPO,
 };
 use crate::feedback::{render_feedback_section, FeedbackItem};
+use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::LifecycleAction;
 use crate::settings::{DiscussWith, GiteaConfig};
 use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
 use crate::{ISSUE_DIR, NUMBER_FILE, PARK_FILE, TASK_FILE};
-
-/// How long one `poll`'s scan may run before it stops considering further repos and
-/// candidates, leaving them to the next beat. afkd ends the service if a call takes 60
-/// seconds, and an org-wide scan against a slow forge could; this keeps the scan well
-/// inside it. A claim already under way is always finished.
-pub(crate) const POLL_BUDGET: Duration = Duration::from_secs(20);
-
-/// Where the kind draws issues from: one repo, or every repo of an org.
-enum Target {
-    /// A single `owner/name` repository.
-    Single(Repo),
-    /// Every repository of the named org (resolved each poll).
-    Org(String),
-}
 
 /// One issue taken on as a unit of work.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +70,16 @@ impl Unit {
     /// `thread`, the same across every claim, so an agent session resumes per issue.
     pub(crate) fn thread(&self) -> String {
         unit_key(&self.repo, self.number)
+    }
+}
+
+impl ClaimedUnit for Unit {
+    fn thread(&self) -> String {
+        Unit::thread(self)
+    }
+
+    fn claimed_as(&self) -> &str {
+        &self.claimed_as
     }
 }
 
@@ -136,17 +132,9 @@ impl IssueUnits {
     /// Exactly one of `cfg.repo`/`cfg.org` is set (the settings layer enforces it); a
     /// malformed `repo` degrades to an org-less, repo-less target that claims nothing.
     pub(crate) fn new(client: Box<dyn GiteaClient>, cfg: &GiteaConfig) -> Self {
-        let target = if !cfg.org.is_empty() {
-            Target::Org(cfg.org.clone())
-        } else {
-            match Repo::parse(&cfg.repo) {
-                Some(repo) => Target::Single(repo),
-                None => Target::Org(String::new()),
-            }
-        };
         Self {
             client,
-            target,
+            target: Target::new(cfg),
             source_label: cfg.source_label.clone(),
             on_claim: cfg.on_claim.clone(),
             on_done: cfg.on_done.clone(),
@@ -160,15 +148,6 @@ impl IssueUnits {
     /// Resolve the authenticated user (the claim identity).
     pub(crate) fn resolve_me(&self) -> Result<String, GiteaError> {
         Ok(self.client.current_user()?.login)
-    }
-
-    /// The repositories to poll this round (one, or the org's current set).
-    fn repos(&self) -> Result<Vec<Repo>, GiteaError> {
-        match &self.target {
-            Target::Single(repo) => Ok(vec![repo.clone()]),
-            Target::Org(org) if org.is_empty() => Ok(Vec::new()),
-            Target::Org(org) => self.client.org_repos(org),
-        }
     }
 
     /// The candidate issues for one repo: the open issues **assigned to the bot**, those
@@ -215,33 +194,23 @@ impl IssueUnits {
     /// Find the first eligible issue across the polled repos and claim it — the claim
     /// race runs here, inside afkd's `poll`.
     ///
-    /// The scan stops once it has run [`POLL_BUDGET`], checked before each repo and
-    /// before each claim attempt, and answers "nothing this beat".
+    /// The scan stops once it has run [`POLL_BUDGET`](crate::common::POLL_BUDGET),
+    /// checked before each repo and before each claim attempt, and answers "nothing this
+    /// beat".
     pub(crate) fn try_claim_next(
         &self,
         me: &str,
         diag: &dyn Diag,
         clock: &dyn Clock,
     ) -> Result<Option<Unit>, ClaimFault<GiteaError>> {
-        let started = clock.now();
-        let spent = || {
-            let spent = clock.now().duration_since(started) >= POLL_BUDGET;
-            if spent {
-                diag.err(&format_args!(
-                    "gitea poll: the scan ran past its {}s budget; the rest of it waits \
-                     for the next poll",
-                    POLL_BUDGET.as_secs()
-                ));
-            }
-            spent
-        };
+        let budget = ScanBudget::start(clock, diag);
         // Resolve the `discuss_with` gate once per poll, never per issue.
         let gate = self
             .discuss_with
             .as_ref()
             .map(|dw| DiscussGate::resolve(dw, me));
-        for repo in self.repos()? {
-            if spent() {
+        for repo in self.target.repos(&*self.client)? {
+            if budget.spent() {
                 return Ok(None);
             }
             // The managed labels are ensured lazily, once per repo per **claiming** poll,
@@ -268,7 +237,7 @@ impl IssueUnits {
                     feedback = replies;
                     before_comments = comments.iter().map(|c| c.id).collect();
                 }
-                if spent() {
+                if budget.spent() {
                     return Ok(None);
                 }
                 if !ensured {
@@ -481,6 +450,56 @@ impl IssueUnits {
     }
 }
 
+/// The `gitea` kind behind the plugin's seam: the inherent methods above, as they are.
+impl Units for IssueUnits {
+    type Unit = Unit;
+
+    /// It marks no failed attempt — the built-in keeps the spine's no-op there — so
+    /// `attempt_failed` is not among them.
+    const CALLS: &'static [&'static str] = &["release", "renew", "comments", "classify"];
+
+    fn resolve_me(&self) -> Result<String, GiteaError> {
+        IssueUnits::resolve_me(self)
+    }
+
+    fn try_claim_next(
+        &self,
+        me: &str,
+        diag: &dyn Diag,
+        clock: &dyn Clock,
+    ) -> Result<Option<Unit>, ClaimFault<GiteaError>> {
+        IssueUnits::try_claim_next(self, me, diag, clock)
+    }
+
+    fn wire_unit(&self, unit: &Unit) -> WireUnit {
+        IssueUnits::wire_unit(self, unit)
+    }
+
+    fn release(&self, unit: &Unit, diag: &dyn Diag) {
+        IssueUnits::release(self, unit, diag);
+    }
+
+    fn release_stale(&self, key: &str, diag: &dyn Diag) -> Option<bool> {
+        IssueUnits::release_stale(self, key, diag)
+    }
+
+    fn renew(&self, unit: &Unit, renewal: u64, diag: &dyn Diag) {
+        IssueUnits::renew(self, unit, renewal, diag);
+    }
+
+    fn comments(&self, unit: &Unit) -> Result<Vec<IssueComment>, GiteaError> {
+        IssueUnits::comments(self, unit)
+    }
+
+    fn classify(scratch: &Path, verdict: UnitOutcome) -> UnitOutcome {
+        IssueUnits::classify(scratch, verdict)
+    }
+
+    fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag) -> bool {
+        IssueUnits::finish(self, unit, outcome, facts, diag)
+    }
+}
+
 /// The tail decision for one candidate issue: whether it fires, and the replies to retain
 /// for the brief — computed together so the fire rule and the delivered delta cannot
 /// drift apart.
@@ -557,6 +576,7 @@ mod tests {
             org: String::new(),
             token: "PAT".into(),
             source_label: "afkd/ready".into(),
+            author_me: false,
             on_claim,
             on_done,
             on_fail,
@@ -2151,7 +2171,7 @@ mod tests {
         }
     }
 
-    /// A scan that runs past [`POLL_BUDGET`] stops claiming and says so, well inside
+    /// A scan that runs past [`POLL_BUDGET`](crate::common::POLL_BUDGET) stops claiming and says so, well inside
     /// afkd's 60-second call deadline. Every candidate here loses its race to a live
     /// rival, and each attempt settles one second, so the twenty-first candidate is the
     /// first the budget turns away — and nothing after it is posted to either.

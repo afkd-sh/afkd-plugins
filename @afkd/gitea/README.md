@@ -1,15 +1,18 @@
 # `@afkd/gitea`
 
-A **provider** plugin: the `gitea` trigger kind, which turns open issues on a Gitea
-repository — or every repository of an org — into afkd runs, and reflects progress back
-through each issue's assignee, labels and state. It also ships the `gitea` skill an agent
-uses to answer the issue: open the pull request, post comments and attachments, and ask a
-question that parks the issue until a human replies.
+A **provider** plugin with two trigger kinds. [`gitea`](#gitea-issues) turns open issues on
+a Gitea repository — or every repository of an org — into afkd runs, and reflects progress
+back through each issue's assignee, labels and state.
+[`gitea_pr_review`](#gitea_pr_review-pull-request-review) runs the review loop on open pull
+requests: it fires whenever a human leaves feedback newer than the bot's last word. It also
+ships the `gitea` skill an agent uses to answer the issue or the review: open the pull
+request, post comments and attachments, and ask a question that parks the issue until a
+human replies.
 
-It is afkd's built-in Gitea issue trigger, moved out of afkd: the same keys, the same claim
-markers and lifecycle comments on the issue, the same claim-journal keys and session
+They are afkd's built-in Gitea triggers, moved out of afkd: the same keys, the same claim
+markers and lifecycle comments on the issue or PR, the same claim-journal keys and session
 threads, the same run environment and the same brief. A claim the built-in left on a live
-issue is recognised, renewed and released by the plugin, and the other way round, so
+issue or PR is recognised, renewed and released by the plugin, and the other way round, so
 switching from one to the other strands nothing. The few places the plugin behaves
 differently are listed [at the end](#where-it-differs-from-the-built-in). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks.
@@ -31,8 +34,8 @@ $ afkd install /path/to/afkd-plugins/@afkd/gitea
 afkd copies the tree and runs `cargo build --release --locked` in it, so the host needs a
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
 the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs). An afkd that
-still has `gitea` compiled in refuses the install, because a plugin may not shadow a
-built-in kind; use the built-in there, with exactly the same config.
+still has `gitea` or `gitea_pr_review` compiled in refuses the install, because a plugin
+may not shadow a built-in kind; use the built-ins there, with exactly the same config.
 
 ## Name the skill
 
@@ -44,8 +47,11 @@ agent fixer { worker claude { model sonnet; skills @afkd/gitea/gitea } }
 ```
 
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
-`GITEA_TOKEN`, `GITEA_BASE_URL`, `GITEA_REPO` and `GITEA_ISSUE_NUMBER` every run of this
-kind carries.
+`GITEA_TOKEN`, `GITEA_BASE_URL`, `GITEA_REPO` and `GITEA_ISSUE_NUMBER` every `gitea` run
+carries. A `gitea_pr_review` run carries `GITEA_PR_NUMBER` and `GITEA_PR_BRANCH` (the PR's
+head branch, to fetch and check out) in place of `GITEA_ISSUE_NUMBER`, and the bare PR
+number under `pr/number` in its scratch directory, so the same skill reads and answers the
+PR.
 
 ## `gitea` (issues)
 
@@ -249,6 +255,72 @@ per interval **per running issue**, plus one at the end of each run, and nothing
 while no run is in flight. All of this is afkd's own mid-run watch; the plugin only reads
 the thread for it.
 
+## `gitea_pr_review` (pull-request review)
+
+Fires on open pull requests — optionally only the bot's own — and re-fires when a human
+leaves feedback newer than the bot's last word, for an automated review loop.
+
+It takes the **same shared keys, lifecycle blocks, and `repo`/`org` "exactly one" rule and
+defaults** (`max_attempts` `1`, `poll_interval` `30s`) as [`gitea`](#gitea-issues) above.
+The one difference is the key it adds in place of `source_label`:
+
+| Key         | Value    | Notes                                                       |
+|-------------|----------|-------------------------------------------------------------|
+| `author_me` | (flag)   | restrict to the bot's own PRs; `source_label` is **not** a key here |
+
+**Cadence.** Polls the forge every `poll_interval` for open PRs, optionally narrowed to the
+bot's own via `author_me`, across a single `repo` or every repo of an `org`. Concurrency,
+retries, and the `on_*` lifecycle actions behave as for `gitea`.
+
+**When a PR fires.** A PR is eligible when it carries **feedback newer than the bot's last
+word**: the newest of the bot's own comments (by when they were last edited) and reviews
+(by when they were submitted) is the watermark, and any other author's comment or review
+after it is new feedback. A PR the bot has never spoken on counts all of its feedback as
+new. Claim markers never count, the bot's own or a rival's. It is the agent's reply,
+posted through the skill, that answers a round; until it does, the same feedback fires the
+PR again on a later poll. The loop ends when a human merges or closes the PR, which drops
+it from the open set — so there is no `close` to put in `on_done`.
+
+**The claim.** The same `[afkd-claim]` marker as `gitea`, kept alive while the run is and
+taken off the thread when it ends. The plugin adds `afkd/claimed` when it wins a PR, and
+creates that label in the repository if it is missing (plain, never exclusive, as for
+`gitea`) — but here it is only **status**: the watermark, not the label, decides whether a
+PR is claimed again, so the label stays on the PR between rounds and nothing needs to
+remove it. There is no `on_park`, no `discuss_with` and no clarification gate: a round
+either finishes (`on_done`) or fails (`on_fail`).
+
+**The brief.** A run's `task.md` names the PR and carries the new feedback, oldest first,
+each item attributed to its author; a review appears as its id, for the agent to read with
+the skill:
+
+```markdown
+Address review feedback on PR #7.
+
+## New feedback
+
+**陳大文:** the backoff never caps — see `retry.rs`
+
+**carol:** (review 1042)
+```
+
+`follow_comments` works as for `gitea`: afkd asks the plugin for the PR's comments while a
+round runs, and the comments the brief was built from are never delivered again.
+
+```conf
+service reviews {
+  work_dir "/srv/acme/widgets"
+  trigger gitea_pr_review {
+    base_url  "https://gitea.example.com"
+    repo      "acme/widgets"
+    token     "REPLACE_ME"
+    author_me
+
+    on_done { unassign }
+  }
+  run { run_cmd "cat $AFKD_SCRATCH_DIR/task.md" }
+}
+```
+
 ## Where it differs from the built-in
 
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
@@ -269,7 +341,9 @@ few things. Each is deliberate, and none changes what a config means.
   cannot be carried out, the built-in holds the claim and releases it on its next poll.
   The plugin releases it straight away — drops `afkd/claimed` and the marker — so the next
   poll retries the issue. The second time the same issue fails that way it is left
-  claimed, for a human, exactly as the built-in does; both say so in the service log.
+  claimed, for a human, exactly as the built-in does; both say so in the service log. A
+  `gitea_pr_review` PR is not held by its label, so one whose feedback is still
+  unanswered is claimed again by that feedback either way.
 - **One reply is at most 64 KiB.** A brief longer than that is cut to fit, with a note at
   the end telling the agent to read the whole issue through the skill. A thread with more
   new comments than fit in one reply delivers the newest, and names the ones left out.
@@ -278,5 +352,7 @@ few things. Each is deliberate, and none changes what a config means.
   repositories for the next poll.
 - **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
   issue acme/widgets#7` where the built-in's opens `# Work item from gitea issue
-  acme/widgets#7`, and a comment delivered mid-run calls the issue "this work item" rather
-  than "this issue".
+  acme/widgets#7` — and a review round's `# Work item from plugin pr acme/widgets#7` where
+  the built-in's opens `# Work item from gitea pr acme/widgets#7` — and a comment delivered
+  mid-run calls the issue or PR "this work item" rather than "this issue" or "this pull
+  request".

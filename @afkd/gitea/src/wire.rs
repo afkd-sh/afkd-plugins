@@ -46,10 +46,26 @@ pub(crate) enum Request {
         scratch: String,
         outcome: UnitOutcome,
     },
-    /// A call this plugin does not know — `attempt_failed`, which it never lists, or one
-    /// from a later afkd.
+    /// A call this plugin does not know — `attempt_failed`, which neither kind lists, or
+    /// one from a later afkd.
     #[serde(other)]
     Unknown,
+}
+
+impl Request {
+    /// The name `hello` lists this call under, when it is one a kind may or may not
+    /// answer; `None` for the calls every kind answers, and for [`Unknown`](Self::Unknown).
+    pub(crate) fn optional_call(&self) -> Option<&'static str> {
+        match self {
+            Request::Release { .. } => Some("release"),
+            Request::Renew { .. } => Some("renew"),
+            Request::Comments { .. } => Some("comments"),
+            Request::Classify { .. } => Some("classify"),
+            Request::Hello { .. } | Request::Poll | Request::Finish { .. } | Request::Unknown => {
+                None
+            }
+        }
+    }
 }
 
 /// A unit's terminal disposition, as `finish` and `classify` spell it.
