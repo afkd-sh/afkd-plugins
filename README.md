@@ -5,6 +5,8 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
 
 - [`@afkd/web-top`](@afkd/web-top) — a companion that relays `afkd top`'s
   control wire to a browser.
+- [`@afkd/gitea`](@afkd/gitea) — Gitea issues and pull-request reviews as afkd
+  triggers, with the skill an agent answers them through.
 
 Each plugin carries its own README, its own `node --test` suite and its own
 fixtures. A script a plugin is built with but does not ship lives under
