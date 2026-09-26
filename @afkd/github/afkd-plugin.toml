@@ -43,3 +43,42 @@ repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "co
 path = "on_fail"
 settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
 repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+
+# The built-in `github_pr_review` kind's vocabulary, key for key: the `github` kind's keys
+# with `author_me` in place of `source_label`, and the same three lifecycle blocks (GitHub
+# has no `on_park`).
+[[trigger]]
+kind = "github_pr_review"
+settings = [
+  "host",
+  "repo",
+  "token",
+  "author_me",
+  "follow_comments",
+  "max_attempts",
+  "poll_interval",
+  "on_claim",
+  "on_done",
+  "on_fail",
+]
+required = ["token"]
+repeatable = []
+durations = ["poll_interval", "follow_comments"]
+run_kind = "pr"
+display_name = "GitHub PRs"
+info_keys = []
+
+[[trigger.block]]
+path = "on_claim"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+
+[[trigger.block]]
+path = "on_done"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+
+[[trigger.block]]
+path = "on_fail"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]

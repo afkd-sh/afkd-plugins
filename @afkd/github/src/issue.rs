@@ -333,6 +333,7 @@ mod tests {
             on_claim,
             on_done,
             on_fail,
+            ..GithubConfig::default()
         }
     }
 

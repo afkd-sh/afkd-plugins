@@ -5,11 +5,11 @@
 //! replies and nothing else; every diagnostic goes to stderr, which afkd streams into the
 //! service log under `[@afkd/github:err]`.
 //!
-//! The `github` kind ([`issue`]) is the vendor half of afkd's built-in GitHub issue
-//! trigger, ported. It keeps the built-in's claim markers, lifecycle comments,
-//! claim-journal keys, session threads, run env and brief, so a claim either one left on a
-//! live issue is recognised, renewed and released by the other. `hello` names the kind, and
-//! [`plugin`] dispatches on it, so a second kind slots in beside this one.
+//! Two kinds, each the vendor half of an afkd built-in trigger, ported: `github`
+//! ([`issue`]) and `github_pr_review` ([`pr`]). They keep the built-ins' claim markers,
+//! lifecycle comments, claim-journal keys, session threads, run env and briefs, so a claim
+//! either one left on a live issue or pull request is recognised, renewed and released by
+//! the other. `hello` names the kind, and [`plugin`] dispatches on it.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -17,6 +17,7 @@
 mod claim;
 mod client;
 mod common;
+mod feedback;
 mod http;
 mod issue;
 mod kind;
@@ -24,6 +25,7 @@ mod lifecycle;
 #[cfg(test)]
 mod manifest;
 mod plugin;
+mod pr;
 mod rfc3339;
 mod run_ref;
 mod settings;
@@ -41,7 +43,10 @@ pub(crate) const TASK_FILE: &str = "task.md";
 /// which issue a run belongs to.
 pub(crate) const ISSUE_DIR: &str = "issue";
 
-/// The file under [`ISSUE_DIR`] holding the bare number.
+/// The scratch sub-location holding the bare PR number, the PR kind's [`ISSUE_DIR`].
+pub(crate) const PR_DIR: &str = "pr";
+
+/// The file under [`ISSUE_DIR`] or [`PR_DIR`] holding the bare number.
 pub(crate) const NUMBER_FILE: &str = "number";
 
 fn main() {

@@ -95,9 +95,8 @@ fn hello_arms_and_lists_every_call_it_answers() {
 }
 
 /// What `hello` cannot arm with answers `ok:false`, with the problem on stderr in the
-/// built-in's own sentence — a kind this plugin does not provide (the PR-review kind is
-/// not in this plugin yet), a block the manifest cannot refuse, and a protocol from a
-/// later afkd.
+/// built-in's own sentence — a kind this plugin does not provide, a block the manifest
+/// cannot refuse (on either kind), and a protocol from a later afkd.
 #[test]
 fn hello_refuses_what_it_cannot_arm_with() {
     let fake = forge();
@@ -105,12 +104,14 @@ fn hello_refuses_what_it_cannot_arm_with() {
     no_repo["repo"] = json!("");
     let mut claim_cost = settings(&fake);
     claim_cost["on_claim"] = json!({"comment": ["claimed; budget @{run:cost}"]});
+    let mut pr_no_repo = pr_settings(&fake);
+    pr_no_repo["repo"] = json!("");
     for (kind, proto, settings, sentence) in [
         (
-            "github_pr_review",
+            "github_pr",
             1,
             settings(&fake),
-            "kind `github_pr_review` is not provided by @afkd/github",
+            "kind `github_pr` is not provided by @afkd/github",
         ),
         (
             "gitlab",
@@ -136,6 +137,13 @@ fn hello_refuses_what_it_cannot_arm_with() {
             2,
             settings(&fake),
             "afkd speaks plugin protocol 2, and this plugin speaks 1",
+        ),
+        (
+            "github_pr_review",
+            1,
+            pr_no_repo,
+            "trigger github_pr_review: setting `repo`: a github trigger needs a `repo` \
+             (`owner/name`)",
         ),
     ] {
         let mut plugin = Plugin::spawn();
@@ -338,7 +346,7 @@ fn an_empty_repo_polls_idle_and_a_closed_claimed_unlabelled_or_pull_request_is_p
     fake.close(REPO, 4);
     fake.issue(REPO, 5, "not for us", "", &[], &[HUMAN]);
     // A pull request wearing the source label: GitHub lists it among the issues.
-    fake.pull(REPO, 6, "Fix the boat", &["afkd/ready"]);
+    fake.pull(REPO, 6, HUMAN, "fix/the-boat", &["afkd/ready"], &[]);
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert!(
         fake.seen().iter().all(|r| r.method == "GET"),
@@ -770,5 +778,479 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
         stderr.contains("did not fit afkd's 64 KiB plugin line"),
         "{stderr}"
     );
+    plugin.finish();
+}
+
+// --- github_pr_review ---
+
+/// The PR's head branch: non-ASCII, and crossing to the run verbatim.
+const BRANCH: &str = "fix/重试-retry-cap";
+/// The human's review comment on PR #7: multi-line, with an indented code line and a
+/// trailing newline the brief trims.
+const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max_backoff = 0\n";
+
+/// A repo with the bot's own PR #7 on [`BRANCH`], a human assigned to it, and the human's
+/// review comment two minutes old — new feedback, since the bot has not spoken. Returns
+/// the fake and the comment's id.
+fn pr_forge() -> (FakeGithub, u64) {
+    let fake = FakeGithub::start(ME);
+    fake.pull(REPO, 7, ME, BRANCH, &[], &[HUMAN]);
+    let review = fake.comment(REPO, 7, HUMAN, REVIEW, 120);
+    (fake, review)
+}
+
+/// A full `github_pr_review` block, lowered to JSON as afkd lowers it — `author_me` a bare
+/// flag — and afkd's own three keys along for the ride.
+fn pr_settings(fake: &FakeGithub) -> Value {
+    json!({
+        "host": fake.host(),
+        "repo": REPO,
+        "token": TOKEN,
+        "author_me": true,
+        "poll_interval": "30s",
+        "max_attempts": "1",
+        "follow_comments": "2m",
+        "on_claim": {"assign_me": [true], "label_add": ["afkd/reviewing"]},
+        "on_done": {"label_remove": ["afkd/reviewing"]},
+        "on_fail": {"label_remove": ["afkd/reviewing"], "unassign": [true], "comment": [
+            "Stopped after @{run:duration} for @{run:cost} — log: .afkd/runs/@{run:name}/run.log"
+        ]},
+    })
+}
+
+/// The `finish` envelope's facts for a PR round, as afkd writes them.
+fn pr_facts(signal: &str, reason: Option<&str>) -> Value {
+    json!({"signal": signal, "reason": reason, "duration_ms": 168000, "cost": 0.4217,
+           "turns": 12, "tokens": null, "run_name": "260925-095800-pr-7-1"})
+}
+
+/// Whether the fake saw a write — anything but a `GET`.
+fn wrote(fake: &FakeGithub) -> bool {
+    fake.seen().iter().any(|r| r.method != "GET")
+}
+
+#[test]
+fn pr_hello_lists_release_renew_comments() {
+    let (fake, _) = pr_forge();
+    let mut plugin = Plugin::spawn();
+    assert_eq!(
+        plugin.hello("github_pr_review", pr_settings(&fake)),
+        json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
+    );
+    assert!(fake.seen().is_empty(), "hello touches no forge");
+    plugin.finish();
+}
+
+/// The won race over a PR with a human's new comment hands over exactly the unit the
+/// built-in would have run: its journal key and session thread, the claim-time thread as
+/// `seen`, its identity, the five env names the skill reads with the branch verbatim, and
+/// the scratch layout with the review brief unframed. The open pulls were listed as the
+/// built-in lists them, the PR's reviews were read, and every write went to the PR's
+/// issue paths — a PR is an issue — at the GHES root with the token as a `Bearer`. A
+/// second poll, the claim still live, hands over nothing: our own older marker out-orders
+/// the new one, which is taken straight back.
+#[test]
+fn pr_a_won_race_hands_over_the_built_ins_unit() {
+    let (fake, review) = pr_forge();
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let marker = markers(&fake, 7);
+    assert_eq!(marker.len(), 1, "one marker, ours");
+    assert_eq!(
+        reply["unit"],
+        json!({
+            "id": "7",
+            "key": format!("acme/widgets#7#{}", marker[0]),
+            "thread": "acme/widgets#7",
+            "seen": [review.to_string()],
+            "self": ME,
+            "env": {
+                "GITHUB_HOST": fake.host(),
+                "GITHUB_PR_BRANCH": BRANCH,
+                "GITHUB_PR_NUMBER": "7",
+                "GITHUB_REPO": REPO,
+                "GITHUB_TOKEN": TOKEN,
+            },
+            "files": [
+                {"path": "task.md", "text": "Address review feedback on PR #7.\n\n\
+                    ## New feedback\n\n**陳大文:** 看起来不对 🚨 — the cap never applies:\n\n    \
+                    max_backoff = 0\n"},
+                {"path": "pr/number", "text": "7"},
+            ],
+        })
+    );
+
+    assert_eq!(labels(&fake, 7), ["afkd/claimed", "afkd/reviewing"]);
+    assert_eq!(assignees(&fake, 7), [HUMAN, ME], "the human was kept");
+    let seen = fake.seen();
+    let list = seen
+        .iter()
+        .find(|r| r.path == "/api/v3/repos/acme/widgets/pulls")
+        .expect("the pulls were listed");
+    assert_eq!(list.query, [("state".to_string(), "open".to_string())]);
+    assert!(
+        seen.iter()
+            .any(|r| r.method == "GET" && r.path == "/api/v3/repos/acme/widgets/pulls/7/reviews"),
+        "the reviews were read: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .filter(|r| r.method != "GET")
+            .all(|r| r.path.starts_with("/api/v3/repos/acme/widgets/issues/")),
+        "a write left the PR's issue paths: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .all(|r| r.path.starts_with("/api/v3/") && r.auth == format!("Bearer {TOKEN}")),
+        "{seen:?}"
+    );
+
+    assert_eq!(plugin.poll(), json!({"fire": false}), "the claim is live");
+    assert_eq!(
+        markers(&fake, 7),
+        marker,
+        "the second marker was taken back"
+    );
+    plugin.finish();
+}
+
+/// A review alone is a round: the bot answered the human's comment, and the only word
+/// newer than its reply is a submitted review, which fires the PR and briefs as the
+/// reviewer's `(review N)` line — the comment already answered stays out of it.
+#[test]
+fn pr_a_review_alone_fires_the_round() {
+    let fake = FakeGithub::start(ME);
+    fake.pull(REPO, 7, ME, BRANCH, &[], &[]);
+    fake.comment(REPO, 7, HUMAN, REVIEW, 400);
+    fake.comment(REPO, 7, ME, "Pushed 3f2a1c: the cap applies now.", 300);
+    let review = fake.review(REPO, 7, "álvaro", 60);
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(unit["id"], "7", "{}", plugin.stderr());
+    assert_eq!(
+        unit["files"][0]["text"],
+        format!("Address review feedback on PR #7.\n\n## New feedback\n\n**álvaro:** (review {review})\n")
+    );
+    plugin.finish();
+}
+
+/// A live rival marker a minute older out-orders ours: nothing is handed over, our marker
+/// is taken back, and no status is written.
+#[test]
+fn pr_a_lost_race_hands_over_nothing_and_takes_its_marker_back() {
+    let (fake, _) = pr_forge();
+    let rival = fake.comment(REPO, 7, "autocoder", "[afkd-claim] owner=autocoder", 60);
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    assert_eq!(
+        markers(&fake, 7),
+        [rival],
+        "only the rival's marker is left"
+    );
+    assert!(labels(&fake, 7).is_empty(), "{:?}", labels(&fake, 7));
+    assert_eq!(assignees(&fake, 7), [HUMAN]);
+    let writes: Vec<_> = fake
+        .seen()
+        .into_iter()
+        .filter(|r| r.method != "GET")
+        .map(|r| (r.method, r.path))
+        .collect();
+    assert_eq!(
+        writes.len(),
+        2,
+        "our marker, posted and deleted: {writes:?}"
+    );
+    plugin.finish();
+}
+
+/// The bot has answered the human's comment, and nothing newer has arrived — a review
+/// older than its reply included: the PR is idle, and the poll posts nothing at all.
+#[test]
+fn pr_with_no_new_feedback_does_not_fire() {
+    let (fake, _) = pr_forge();
+    fake.review(REPO, 7, "álvaro", 90);
+    fake.comment(REPO, 7, ME, "Pushed 3f2a1c: the cap applies now.", 30);
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    assert!(
+        !wrote(&fake),
+        "an idle PR is never claimed: {:?}",
+        fake.seen()
+    );
+    plugin.finish();
+}
+
+/// The only comment newer than the bot's reply is a rival's claim marker — a stale one,
+/// over an hour old, so it could never win a race. Nothing is posted, which proves the PR
+/// was refused as having no new feedback rather than lost to the marker.
+#[test]
+fn pr_whose_only_new_comment_is_a_claim_marker_does_not_fire() {
+    let fake = FakeGithub::start(ME);
+    fake.pull(REPO, 7, ME, BRANCH, &[], &[]);
+    fake.comment(REPO, 7, HUMAN, REVIEW, 7_400);
+    fake.comment(REPO, 7, ME, "Pushed 3f2a1c: the cap applies now.", 7_300);
+    fake.comment(REPO, 7, "autocoder", "[afkd-claim] owner=autocoder", 3_700);
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    assert!(!wrote(&fake), "a marker is not feedback: {:?}", fake.seen());
+    plugin.finish();
+}
+
+/// Under `author_me` a human's PR is passed over, feedback and all, and nothing is
+/// posted; a service armed without the flag, on the same forge, claims it.
+#[test]
+fn pr_author_me_filters_foreign_prs() {
+    let fake = FakeGithub::start(ME);
+    fake.pull(REPO, 8, HUMAN, "fix/y", &[], &[]);
+    fake.comment(REPO, 8, "álvaro", "Exponential, please — see §4 🙏", 60);
+
+    let mut mine = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    assert_eq!(mine.poll(), json!({"fire": false}));
+    assert!(!wrote(&fake), "{:?}", fake.seen());
+    assert!(
+        fake.seen().iter().all(|r| !r.path.ends_with("/reviews")),
+        "a filtered PR's feedback is never read: {:?}",
+        fake.seen()
+    );
+    mine.finish();
+
+    let mut settings = pr_settings(&fake);
+    settings.as_object_mut().unwrap().remove("author_me");
+    let mut anyone = Plugin::armed_as("github_pr_review", settings);
+    let unit = anyone.poll()["unit"].clone();
+    assert_eq!(unit["id"], "8");
+    assert_eq!(unit["env"]["GITHUB_PR_BRANCH"], "fix/y");
+    anyone.finish();
+}
+
+#[test]
+fn pr_renew_rewrites_the_marker_in_place() {
+    let (fake, _) = pr_forge();
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let marker = markers(&fake, 7)[0];
+    let comment = |fake: &FakeGithub| {
+        fake.comments(REPO, 7)
+            .into_iter()
+            .find(|c| c.id == marker)
+            .expect("the marker")
+    };
+    let before = comment(&fake);
+    fake.advance(300);
+    assert_eq!(
+        plugin.call(json!({"call": "renew", "key": unit["key"], "renewal": 1})),
+        json!({"ok": true})
+    );
+    let after = comment(&fake);
+    assert_eq!(after.body, "[afkd-claim] owner=björn-öst[bot] renewal=1");
+    assert_eq!(after.created, before.created);
+    assert_eq!(
+        after.updated,
+        before.updated + 300,
+        "the liveness stamp moved"
+    );
+    let patch = fake
+        .seen()
+        .into_iter()
+        .rfind(|r| r.method == "PATCH")
+        .unwrap();
+    assert_eq!(
+        patch.path,
+        format!("/api/v3/repos/acme/widgets/issues/comments/{marker}")
+    );
+    plugin.finish();
+}
+
+/// `comments` reports what afkd has not been told about: the claim-time review comment
+/// (`seen`), the marker and the bot's own reply are left out; a second read carries only
+/// what is new; and a forge that cannot be read is `null`.
+#[test]
+fn pr_comments_report_what_afkd_has_not_seen() {
+    let (fake, _) = pr_forge();
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let read = |plugin: &mut Plugin| plugin.call(json!({"call": "comments", "key": unit["key"]}));
+
+    fake.advance(60);
+    let a = fake.comment(REPO, 7, HUMAN, "还有 — the jitter too.\n", 0);
+    fake.advance(1);
+    fake.comment(REPO, 7, ME, "On it.", 0);
+    fake.advance(1);
+    let b = fake.comment(REPO, 7, "álvaro", "Exponential, please — see §4 🙏", 0);
+    assert_eq!(
+        read(&mut plugin),
+        json!({"comments": [
+            {"id": a.to_string(), "author": HUMAN, "author_name": HUMAN,
+             "body": "还有 — the jitter too.\n", "at": "2026-09-25T09:59:00Z"},
+            {"id": b.to_string(), "author": "álvaro", "author_name": "álvaro",
+             "body": "Exponential, please — see §4 🙏", "at": "2026-09-25T09:59:02Z"},
+        ]})
+    );
+
+    fake.advance(30);
+    let c = fake.comment(REPO, 7, "álvaro", "…and cap it at 30s.", 0);
+    let reply = read(&mut plugin);
+    assert_eq!(reply["comments"].as_array().unwrap().len(), 1);
+    assert_eq!(reply["comments"][0]["id"], c.to_string());
+
+    fake.fail("list comments", 500);
+    assert_eq!(read(&mut plugin), json!({"comments": null}));
+    assert!(
+        plugin
+            .stderr_soon("list comments")
+            .contains("afkd-github: github list comments: forge returned status 500"),
+        "{}",
+        plugin.stderr()
+    );
+    plugin.finish();
+}
+
+/// `release` undoes a claim in full — the status label, the bot's assignment (the human's
+/// is kept) and the marker — whether afkd hands a live unit straight back or its reaper
+/// sends a crashed run's key to a fresh child, before any poll. A pre-marker key names
+/// nothing (`null`).
+#[test]
+fn pr_release_undoes_the_claim_in_full() {
+    let (fake, _) = pr_forge();
+    let mut first = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let live = first.poll()["unit"]["key"].clone();
+    assert_eq!(
+        first.call(json!({"call": "release", "key": live})),
+        json!({"released": true})
+    );
+    assert_eq!(
+        labels(&fake, 7),
+        ["afkd/reviewing"],
+        "only the status label goes"
+    );
+    assert_eq!(assignees(&fake, 7), [HUMAN], "only afkd let go");
+    assert!(markers(&fake, 7).is_empty());
+
+    // Claimed again, then the child dies mid-run.
+    let crashed = first.poll()["unit"]["key"].clone();
+    assert_eq!(assignees(&fake, 7), [HUMAN, ME]);
+    drop(first);
+
+    let mut fresh = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let from = fake.seen().len();
+    assert_eq!(
+        fresh.call(json!({"call": "release", "key": crashed})),
+        json!({"released": true})
+    );
+    assert_eq!(
+        fake.seen()[from].path,
+        "/api/v3/user",
+        "the identity came first"
+    );
+    assert!(!labels(&fake, 7).contains(&"afkd/claimed".to_string()));
+    assert_eq!(assignees(&fake, 7), [HUMAN]);
+    assert!(markers(&fake, 7).is_empty());
+
+    assert_eq!(
+        fresh.call(json!({"call": "release", "key": "acme/widgets#7"})),
+        json!({"released": null})
+    );
+    fresh.finish();
+}
+
+/// A clean round runs `on_done` and drops the marker, and nothing closes the PR — a
+/// human's merge ends the loop.
+#[test]
+fn pr_a_clean_finish_runs_on_done_and_leaves_the_pr_open() {
+    let (fake, _) = pr_forge();
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", pr_facts("proceed", None)),
+        json!({"ok": true})
+    );
+    let pr = fake.issue_state(REPO, 7);
+    assert_eq!(pr.labels, ["afkd/claimed"]);
+    assert_eq!(pr.state, "open");
+    assert!(markers(&fake, 7).is_empty());
+    assert!(
+        fake.seen().iter().all(|r| !r.body.contains("\"state\"")),
+        "{:?}",
+        fake.seen()
+    );
+    plugin.finish();
+}
+
+/// A failed round runs `on_fail`: the working label goes, only the bot is unassigned,
+/// and the comment carries the run's facts — 168000 ms is `2m48s`, 0.4217 is `$0.42`.
+#[test]
+fn pr_a_failed_finish_runs_on_fail() {
+    let (fake, review) = pr_forge();
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let reply = finish(
+        &mut plugin,
+        &unit,
+        "failed",
+        pr_facts("fault", Some("cargo test: 3 failed")),
+    );
+    assert_eq!(reply, json!({"ok": true}));
+    let pr = fake.issue_state(REPO, 7);
+    assert_eq!(pr.labels, ["afkd/claimed"]);
+    assert_eq!(pr.assignees, [HUMAN], "only afkd let go");
+    assert_eq!(pr.state, "open");
+    let said: Vec<(u64, String)> = fake
+        .comments(REPO, 7)
+        .into_iter()
+        .map(|c| (c.id, c.body))
+        .collect();
+    assert_eq!(said[0], (review, REVIEW.to_string()));
+    assert_eq!(
+        said[1].1,
+        "Stopped after 2m48s for $0.42 — log: .afkd/runs/260925-095800-pr-7-1/run.log"
+    );
+    assert_eq!(said.len(), 2, "the marker went: {said:?}");
+    plugin.finish();
+}
+
+/// An `on_fail` that does not land is `held`: the marker still goes and the claim stays;
+/// afkd's later `release` of the key undoes it. The comment `on_fail` posted before its
+/// `unassign` failed is the bot's last word, so the PR waits for the human — the label is
+/// status, not the gate — and once they reply, it is claimed afresh.
+#[test]
+fn pr_an_undelivered_finish_is_held_and_release_recovers_it() {
+    let (fake, _) = pr_forge();
+    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let key = unit["key"].as_str().unwrap().to_string();
+    fake.fail("remove assignees", 500);
+
+    assert_eq!(
+        finish(&mut plugin, &unit, "failed", pr_facts("fault", None)),
+        json!({"ok": true, "held": true})
+    );
+    let stderr = plugin.stderr_soon("afkd holds the claim");
+    assert_eq!(
+        stderr,
+        format!(
+            "afkd-github: github remove assignees: forge returned status 500\n\
+             afkd-github: could not deliver the terminal lifecycle for {key}; afkd holds the \
+             claim and releases it on a later beat\n"
+        )
+    );
+    assert!(markers(&fake, 7).is_empty(), "the marker goes regardless");
+    assert!(labels(&fake, 7).contains(&"afkd/claimed".to_string()));
+    assert_eq!(assignees(&fake, 7), [HUMAN, ME], "the claim stays");
+
+    fake.heal("remove assignees");
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": key})),
+        json!({"released": true})
+    );
+    assert!(!labels(&fake, 7).contains(&"afkd/claimed".to_string()));
+    assert_eq!(assignees(&fake, 7), [HUMAN]);
+    assert_eq!(plugin.poll(), json!({"fire": false}), "the bot spoke last");
+
+    fake.advance(60);
+    fake.comment(REPO, 7, HUMAN, "Still failing on CI — see the job log.", 0);
+    let again = plugin.poll()["unit"].clone();
+    assert_eq!(again["id"], "7", "claimed afresh");
+    assert_ne!(again["key"], unit["key"]);
     plugin.finish();
 }

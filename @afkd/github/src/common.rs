@@ -50,6 +50,10 @@ pub(crate) const ENV_HOST: &str = "GITHUB_HOST";
 pub(crate) const ENV_REPO: &str = "GITHUB_REPO";
 /// Env var carrying the active issue number to the run.
 pub(crate) const ENV_ISSUE_NUMBER: &str = "GITHUB_ISSUE_NUMBER";
+/// Env var carrying the active PR number to the run (the PR kind).
+pub(crate) const ENV_PR_NUMBER: &str = "GITHUB_PR_NUMBER";
+/// Env var carrying the active PR's head branch to the run (the PR kind).
+pub(crate) const ENV_PR_BRANCH: &str = "GITHUB_PR_BRANCH";
 
 /// How long one `poll`'s scan may run before it stops considering further candidates,
 /// leaving them to the next beat. afkd ends the service if a call takes 60 seconds, and
@@ -941,6 +945,10 @@ mod tests {
         assert_eq!(
             (ENV_REPO, ENV_ISSUE_NUMBER, CLAIMED_LABEL),
             ("GITHUB_REPO", "GITHUB_ISSUE_NUMBER", "afkd/claimed")
+        );
+        assert_eq!(
+            (ENV_PR_NUMBER, ENV_PR_BRANCH),
+            ("GITHUB_PR_NUMBER", "GITHUB_PR_BRANCH")
         );
         let repo = repo();
         assert_eq!(unit_key(&repo, 7), "acme/widgets#7");

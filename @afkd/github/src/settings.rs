@@ -1,5 +1,6 @@
-//! Read the `github` kind's settings block — as afkd lowers it to JSON in `hello` — into
-//! a typed [`GithubConfig`], and wire its lifecycle moments to the action vocabulary.
+//! Read a kind's settings block — as afkd lowers it to JSON in `hello` — into a typed
+//! [`GithubConfig`], and wire its lifecycle moments to the action vocabulary. The two
+//! kinds share one config struct where their keys overlap, as the built-in's do.
 //!
 //! afkd has already held the block to the manifest before this plugin is spawned: every
 //! key is one the kind's manifest table declares, `token` is present, no key is written
@@ -17,7 +18,8 @@ use serde_json::{Map, Value};
 
 use crate::lifecycle::{parse_block, LifecycleAction};
 
-/// A validated `github` trigger configuration.
+/// A validated `github` or `github_pr_review` trigger configuration: one struct covers
+/// the union of both kinds' keys.
 ///
 /// `Debug` is **hand-written** so the `token` never reaches a diagnostic.
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -29,13 +31,15 @@ pub(crate) struct GithubConfig {
     pub(crate) repo: String,
     /// The personal access token.
     pub(crate) token: String,
-    /// The eligibility source label (empty when not given).
+    /// The eligibility source label (issue kind only; empty when not given).
     pub(crate) source_label: String,
-    /// Actions performed when work on an issue begins.
+    /// Restrict the PR kind to the bot's own PRs (the `author_me` flag; PR kind only).
+    pub(crate) author_me: bool,
+    /// Actions performed when work on a unit begins.
     pub(crate) on_claim: Vec<LifecycleAction>,
-    /// Actions performed when an issue's work finishes successfully.
+    /// Actions performed when a unit's work finishes successfully.
     pub(crate) on_done: Vec<LifecycleAction>,
-    /// Actions performed when an issue's work fails (or parks: GitHub has no `on_park`).
+    /// Actions performed when a unit's work fails (or parks: GitHub has no `on_park`).
     pub(crate) on_fail: Vec<LifecycleAction>,
 }
 
@@ -49,6 +53,7 @@ impl std::fmt::Debug for GithubConfig {
             .field("repo", &self.repo)
             .field("token", &redact(&self.token))
             .field("source_label", &self.source_label)
+            .field("author_me", &self.author_me)
             .field("on_claim", &self.on_claim)
             .field("on_done", &self.on_done)
             .field("on_fail", &self.on_fail)
@@ -113,23 +118,67 @@ pub(crate) const DURATION_KEYS: &[&str] = &["poll_interval", "follow_comments"];
 #[cfg(test)]
 pub(crate) const REQUIRED_ISSUE_KEYS: &[&str] = &["token"];
 
+/// The `github_pr_review` kind's full key set, exactly the built-in's `ALLOWED_PR_KEYS`:
+/// the shared keys plus `author_me` (and, notably, **not** `source_label`).
+#[cfg(test)]
+pub(crate) const ALLOWED_PR_KEYS: &[&str] = &[
+    "host",
+    "repo",
+    "token",
+    "author_me",
+    "follow_comments",
+    "max_attempts",
+    "poll_interval",
+    "on_claim",
+    "on_done",
+    "on_fail",
+];
+
+/// The keys a `github_pr_review` block may write more than once: none — the built-in's
+/// `REPEATABLE_PR_KEYS` reads no key as a sequence.
+#[cfg(test)]
+pub(crate) const REPEATABLE_PR_KEYS: &[&str] = &[];
+
+/// The keys a `github_pr_review` block must carry: the forge `token`, as for `github`.
+#[cfg(test)]
+pub(crate) const REQUIRED_PR_KEYS: &[&str] = &["token"];
+
 /// Read the lowered `settings` into a [`GithubConfig`] for the `github` kind, or report
 /// the first setting it cannot use.
 pub(crate) fn issue_config(settings: &Value) -> Result<GithubConfig, SettingsError> {
     let empty = Map::new();
     let settings = settings.as_object().unwrap_or(&empty);
+    let mut cfg = shared_config(settings)?;
+    cfg.source_label = opt_scalar(settings, "source_label");
+    Ok(cfg)
+}
+
+/// Read the lowered `settings` into a [`GithubConfig`] for the `github_pr_review` kind,
+/// or report the first setting it cannot use. `author_me` is a flag: its presence is the
+/// setting, whatever it carries — the built-in's `settings.has`.
+pub(crate) fn pr_review_config(settings: &Value) -> Result<GithubConfig, SettingsError> {
+    let empty = Map::new();
+    let settings = settings.as_object().unwrap_or(&empty);
+    let mut cfg = shared_config(settings)?;
+    cfg.author_me = settings.contains_key("author_me");
+    Ok(cfg)
+}
+
+/// The keys both kinds carry: the single `repo` target, the forge coordinates, and the
+/// three lifecycle moments.
+fn shared_config(settings: &Map<String, Value>) -> Result<GithubConfig, SettingsError> {
     let repo = opt_scalar(settings, "repo");
     require_repo(&repo)?;
     Ok(GithubConfig {
         host: opt_scalar(settings, "host"),
         repo,
         token: opt_scalar(settings, "token"),
-        source_label: opt_scalar(settings, "source_label"),
         // `on_claim` runs before any fire, so a `@{run:…}` reference is illegal there;
         // the terminal moments receive the attempt's real facts.
         on_claim: parse_block(settings.get("on_claim"), false)?,
         on_done: parse_block(settings.get("on_done"), true)?,
         on_fail: parse_block(settings.get("on_fail"), true)?,
+        ..GithubConfig::default()
     })
 }
 
@@ -203,16 +252,24 @@ mod tests {
     }
 
     /// Neither an absent nor an empty `repo` is acceptable — it is the whole target — and a
-    /// flag-shaped one is no repo at all, exactly as the built-in reads it.
+    /// flag-shaped one is no repo at all, exactly as the built-in reads it, on both kinds
+    /// in the one sentence.
     #[test]
-    fn a_missing_repo_faults_with_the_in_tree_sentence() {
-        for settings in [
+    fn a_missing_repo_faults_on_both_kinds() {
+        for (settings, config) in [
             json!({"token": "t"}),
             json!({"repo": "", "token": "t"}),
             json!({"repo": true, "token": "t"}),
             json!({"repo": {"assign_me": [true]}, "token": "t"}),
-        ] {
-            let err = issue_config(&settings).unwrap_err();
+        ]
+        .into_iter()
+        .flat_map(|s| {
+            [
+                (s.clone(), issue_config as fn(&Value) -> _),
+                (s, pr_review_config),
+            ]
+        }) {
+            let err = config(&settings).unwrap_err();
             assert_eq!(err.key, "repo", "{settings}");
             assert_eq!(
                 err.problem,
@@ -224,12 +281,14 @@ mod tests {
             );
         }
         // A malformed but non-empty `repo` arms, as the built-in's does: it claims nothing.
-        assert_eq!(
-            issue_config(&json!({"repo": "not-a-repo", "token": "t"}))
-                .expect("arms")
-                .repo,
-            "not-a-repo"
-        );
+        for config in [issue_config, pr_review_config] {
+            assert_eq!(
+                config(&json!({"repo": "not-a-repo", "token": "t"}))
+                    .expect("arms")
+                    .repo,
+                "not-a-repo"
+            );
+        }
     }
 
     /// Each moment reaches the parser under its own `run_refs_allowed`, into its own
@@ -267,13 +326,15 @@ mod tests {
             ]
         );
 
-        // The very same comment is a hard fault at claim time.
-        let err = issue_config(&block(json!({"on_claim": {"comment": [terminal]}}))).unwrap_err();
-        assert_eq!(err.key, "comment");
-        assert_eq!(
-            err.problem,
-            "`@{run:duration}` references the run's facts, but no run happens at claim time"
-        );
+        // The very same comment is a hard fault at claim time, on either kind.
+        for config in [issue_config, pr_review_config] {
+            let err = config(&block(json!({"on_claim": {"comment": [terminal]}}))).unwrap_err();
+            assert_eq!(err.key, "comment");
+            assert_eq!(
+                err.problem,
+                "`@{run:duration}` references the run's facts, but no run happens at claim time"
+            );
+        }
     }
 
     /// Two of one verb run in the order they were written, a slashed and a non-ASCII label
@@ -334,5 +395,82 @@ mod tests {
         );
         assert!(shown.contains("<set>"), "presence should show: {shown}");
         assert!(format!("{:?}", GithubConfig::default()).contains("<unset>"));
+
+        let cfg = pr_review_config(&block(json!({"author_me": true}))).expect("valid");
+        assert!(format!("{cfg:?}").contains("author_me: true"), "{cfg:?}");
+    }
+
+    /// `author_me` is a flag: absent reads false, and any lowering of a present key —
+    /// the bare flag, a repeated one, a value beside a block — reads true.
+    #[test]
+    fn review_config_reads_author_me_flag() {
+        assert!(!pr_review_config(&block(json!({}))).unwrap().author_me);
+        for flag in [
+            json!(true),
+            json!([true]),
+            json!({"@value": true}),
+            json!("yes"),
+        ] {
+            assert!(
+                pr_review_config(&block(json!({ "author_me": flag.clone() })))
+                    .unwrap()
+                    .author_me,
+                "{flag}"
+            );
+        }
+        // The issue kind never reads it.
+        assert!(
+            !issue_config(&block(json!({"author_me": true})))
+                .unwrap()
+                .author_me
+        );
+    }
+
+    /// The PR kind reads the keys it shares with `github` the same way, and not the key
+    /// only `github` declares.
+    #[test]
+    fn pr_review_config_reads_the_shared_keys() {
+        let cfg = pr_review_config(&json!({
+            "host": "ghe.example.com",
+            "repo": "acme/widgets",
+            "token": "PAT",
+            "author_me": true,
+            "on_claim": {"assign_me": [true], "label_add": ["afkd/reviewing"]},
+            "on_done": {"comment": ["round done in @{run:duration} 🚀"]},
+            "on_fail": {"label_remove": ["afkd/reviewing"], "unassign": [true]},
+            // afkd's own keys ride along unread.
+            "max_attempts": "2",
+            "poll_interval": "1m",
+            "follow_comments": "5m",
+            // Not the PR kind's key: afkd's manifest check refuses it before a `hello`,
+            // and were one to reach here it is not read.
+            "source_label": "afkd/ready",
+        }))
+        .expect("valid");
+        assert_eq!(cfg.host, "ghe.example.com");
+        assert_eq!(cfg.repo, "acme/widgets");
+        assert_eq!(cfg.token, "PAT");
+        assert!(cfg.author_me);
+        assert_eq!(cfg.source_label, "");
+        assert_eq!(
+            cfg.on_claim,
+            vec![
+                LifecycleAction::AssignMe,
+                LifecycleAction::LabelAdd("afkd/reviewing".into()),
+            ]
+        );
+        assert_eq!(
+            cfg.on_done,
+            vec![LifecycleAction::Comment(
+                "round done in @{run:duration} 🚀".into()
+            )]
+        );
+        assert_eq!(
+            cfg.on_fail,
+            vec![
+                LifecycleAction::LabelRemove("afkd/reviewing".into()),
+                LifecycleAction::Unassign,
+            ]
+        );
     }
 }

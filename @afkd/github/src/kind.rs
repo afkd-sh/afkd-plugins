@@ -2,7 +2,7 @@
 //! off a claimed unit. The wire's bookkeeping — the identity, the live units, the 64 KiB
 //! fitting, the `comments` delta, the `held` answer — is written once in `plugin.rs`
 //! against these two traits, so a kind differs only in its vendor half
-//! ([`crate::issue`]).
+//! ([`crate::issue`], [`crate::pr`]).
 
 use crate::client::{GithubError, IssueComment};
 use crate::common::{Clock, Diag};
@@ -10,7 +10,8 @@ use crate::wire::{Facts, UnitOutcome, WireUnit};
 
 /// A claimed unit, as the plugin's bookkeeping reads it.
 pub(crate) trait ClaimedUnit {
-    /// The unit's stable coordinate, `<owner>/<name>#<number>` — the wire unit's `thread`.
+    /// The unit's stable coordinate, `<owner>/<name>#<number>` of its issue or PR — the
+    /// wire unit's `thread`.
     fn thread(&self) -> String;
 
     /// The login the unit was claimed as — the wire unit's `self`.

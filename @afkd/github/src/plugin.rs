@@ -1,7 +1,7 @@
 //! The plugin's state across calls, and one handler per call: the thin layer between
-//! afkd's wire ([`crate::wire`]) and the armed kind's vendor half ([`crate::issue`],
-//! behind [`crate::kind`]). Everything here is written once, against the seam, so a
-//! second kind slots in beside the first.
+//! afkd's wire ([`crate::wire`]) and the armed kind's vendor half ([`crate::issue`] or
+//! [`crate::pr`], behind [`crate::kind`]). Everything here is written once, against the
+//! seam, so both kinds share every rule below.
 //!
 //! Three things the wire forces that the built-in never had to do:
 //!
@@ -27,14 +27,18 @@ use crate::client::{Github, GithubClient};
 use crate::common::{Clock, Diag};
 use crate::issue::IssueUnits;
 use crate::kind::{ClaimedUnit, Units};
+use crate::pr::PrUnits;
 use crate::rfc3339::format_utc;
-use crate::settings::{issue_config, GithubConfig};
+use crate::settings::{issue_config, pr_review_config, GithubConfig};
 use crate::wire::{
     fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
 };
 
 /// The issue kind.
 pub(crate) const ISSUE_KIND: &str = "github";
+
+/// The pull-request review kind.
+pub(crate) const PR_KIND: &str = "github_pr_review";
 
 /// What the process does with one request.
 #[derive(Debug, PartialEq)]
@@ -189,6 +193,10 @@ fn arm(
         ISSUE_KIND => {
             let cfg = issue_config(settings).map_err(fault)?;
             Box::new(Armed::new(IssueUnits::new(connect(&cfg), &cfg)))
+        }
+        PR_KIND => {
+            let cfg = pr_review_config(settings).map_err(fault)?;
+            Box::new(Armed::new(PrUnits::new(connect(&cfg), &cfg)))
         }
         _ => return Err(format!("kind `{kind}` is not provided by @afkd/github")),
     })
@@ -504,16 +512,39 @@ mod tests {
         assert_eq!(f.mock.user_reads(), 0, "hello touches no forge");
     }
 
+    /// The PR kind lists the same three calls — no `classify`, since a PR never parks —
+    /// and refuses the one it does not list.
+    #[test]
+    fn pr_hello_lists_exactly_the_calls_the_kind_answers() {
+        let mut f = Fixture::new();
+        let reply = f.call(json!({"call": "hello", "proto": 1, "kind": PR_KIND,
+                                  "service": "監視::reviews", "roster": ["監視::reviews"],
+                                  "owner": "陳大文",
+                                  "settings": {"repo": REPO, "token": "PAT",
+                                               "author_me": true}}));
+        assert_eq!(
+            reply,
+            json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
+        );
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+        assert_eq!(f.mock.user_reads(), 0, "hello touches no forge");
+        assert_eq!(
+            f.call(json!({"call": "classify", "key": "k", "scratch": "/tmp/s",
+                          "outcome": "failed"})),
+            json!({"ok": false})
+        );
+    }
+
     /// Each refusal is `ok:false` with the problem, in the built-in's own words, on the
     /// diagnostic channel — and leaves the plugin unarmed.
     #[test]
     fn hello_refuses_what_the_kind_cannot_arm_with() {
         for (kind, proto, settings, problem) in [
             (
-                "github_pr_review",
+                "github_pr",
                 1,
                 settings(),
-                "kind `github_pr_review` is not provided by @afkd/github",
+                "kind `github_pr` is not provided by @afkd/github",
             ),
             (
                 "gitea",
@@ -546,6 +577,13 @@ mod tests {
                 1,
                 json!({"repo": REPO, "token": "PAT", "on_done": {"label_add": [true]}}),
                 "trigger github: setting `label_add`: `label_add` expects a label name",
+            ),
+            (
+                "github_pr_review",
+                1,
+                json!({"repo": "", "token": "PAT", "author_me": true}),
+                "trigger github_pr_review: setting `repo`: a github trigger needs a `repo` \
+                 (`owner/name`)",
             ),
         ] {
             let mut f = Fixture::new();

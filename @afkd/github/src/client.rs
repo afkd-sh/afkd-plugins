@@ -1,8 +1,8 @@
-//! The mockable GitHub client seam the issue kind drives, the plain value types it
+//! The mockable GitHub client seam the kinds drive, the plain value types it
 //! exchanges, the typed [`GithubError`], the **real [`Github`] HTTP client** over the REST
 //! v3 surface, and a `#[cfg(test)]` in-memory `MockClient` for offline tests.
 //!
-//! Ported from afkd's `crates/github/src/client.rs`, issue side. All GitHub-specific
+//! Ported from afkd's `crates/github/src/client.rs`. All GitHub-specific
 //! knowledge lives here — every endpoint path, every request payload, the
 //! `Authorization: Bearer <token>` credential, the cloud-vs-GHES host resolution, and the
 //! JSON shapes — so the version-drift blast radius is **one file**. Each endpoint carries a
@@ -85,6 +85,30 @@ impl Issue {
     pub(crate) fn has_label(&self, name: &str) -> bool {
         self.labels.iter().any(|l| l == name)
     }
+}
+
+/// A pull request: the unit of work the PR-review kind iterates. `head_branch` is
+/// threaded into the run so a prompted `git fetch`/checkout reconstructs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PullRequest {
+    /// The per-repo PR number (GitHub numbers PRs and issues from one sequence).
+    pub(crate) number: u64,
+    /// The PR's head branch (the pushed branch the iteration run checks out).
+    pub(crate) head_branch: String,
+    /// The PR author (matched against the bot's own login for `author_me`).
+    pub(crate) user: User,
+}
+
+/// A pull-request review, with its author and submission time (the `submitted_at` the
+/// watermark compares alongside comment `updated_at`s).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Review {
+    /// The review's stable id.
+    pub(crate) id: u64,
+    /// The review author.
+    pub(crate) user: User,
+    /// When the review was submitted, as GitHub reports it.
+    pub(crate) submitted_at: SystemTime,
 }
 
 /// A top-level issue comment, with its author and its two times.
@@ -181,7 +205,7 @@ impl HttpError for GithubError {
     }
 }
 
-/// The GitHub operations the issue kind needs, by meaning (not by REST shape).
+/// The GitHub operations the kinds need, by meaning (not by REST shape).
 pub(crate) trait GithubClient {
     /// Resolve the authenticated user (the token's own login) — `GET /user`.
     fn current_user(&self) -> Result<User, GithubError>;
@@ -195,6 +219,9 @@ pub(crate) trait GithubClient {
         state: &str,
         labels: &str,
     ) -> Result<Vec<Issue>, GithubError>;
+
+    /// List the open pull requests of `repo` — `GET /repos/{o}/{r}/pulls?state=open`.
+    fn list_open_pulls(&self, repo: &Repo) -> Result<Vec<PullRequest>, GithubError>;
 
     /// Add assignees to an issue (additive) —
     /// `POST /repos/{o}/{r}/issues/{number}/assignees`.
@@ -252,6 +279,9 @@ pub(crate) trait GithubClient {
     /// beside, and it moves the comment's `updated_at` — which is what a rival's claim
     /// decision reads as liveness.
     fn edit_comment(&self, repo: &Repo, comment_id: u64, text: &str) -> Result<(), GithubError>;
+
+    /// List a PR's reviews — `GET /repos/{o}/{r}/pulls/{number}/reviews`.
+    fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError>;
 }
 
 /// Sharing a client behind an [`Arc`](std::sync::Arc) keeps it a [`GithubClient`], so a
@@ -267,6 +297,9 @@ impl<T: GithubClient> GithubClient for std::sync::Arc<T> {
         labels: &str,
     ) -> Result<Vec<Issue>, GithubError> {
         (**self).list_issues(repo, state, labels)
+    }
+    fn list_open_pulls(&self, repo: &Repo) -> Result<Vec<PullRequest>, GithubError> {
+        (**self).list_open_pulls(repo)
     }
     fn add_assignees(
         &self,
@@ -313,6 +346,9 @@ impl<T: GithubClient> GithubClient for std::sync::Arc<T> {
     }
     fn edit_comment(&self, repo: &Repo, comment_id: u64, text: &str) -> Result<(), GithubError> {
         (**self).edit_comment(repo, comment_id, text)
+    }
+    fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError> {
+        (**self).list_pull_reviews(repo, index)
     }
 }
 
@@ -393,6 +429,17 @@ impl GithubClient for Github {
             .query("labels", labels);
         let body = self.http.send(stage, req)?;
         parse_issues(stage, &body)
+    }
+
+    fn list_open_pulls(&self, repo: &Repo) -> Result<Vec<PullRequest>, GithubError> {
+        let stage = "list pulls";
+        // GET /repos/{o}/{r}/pulls?state=open → the repo's open PRs.
+        let req = self
+            .http
+            .request("GET", &format!("/repos/{}/{}/pulls", repo.owner, repo.name))
+            .query("state", "open");
+        let body = self.http.send(stage, req)?;
+        parse_pulls(stage, &body)
     }
 
     fn add_assignees(
@@ -546,6 +593,16 @@ impl GithubClient for Github {
             .send_json(stage, req, &json!({ "body": text }))
             .map(|_| ())
     }
+
+    fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError> {
+        let stage = "list reviews";
+        // GET /repos/{o}/{r}/pulls/{number}/reviews → the PR's reviews.
+        let body = self.http.get(
+            stage,
+            &format!("/repos/{}/{}/pulls/{index}/reviews", repo.owner, repo.name),
+        )?;
+        parse_reviews(stage, &body)
+    }
 }
 
 // --- Pure parsing (no network): the GitHub JSON shapes. ----------------------
@@ -576,6 +633,18 @@ fn is_pull_request(v: &Value) -> bool {
     v.get("pull_request").is_some_and(|pr| !pr.is_null())
 }
 
+/// Parse a pulls array into [`PullRequest`]s.
+pub(crate) fn parse_pulls(
+    stage: &'static str,
+    body: &str,
+) -> Result<Vec<PullRequest>, GithubError> {
+    let value = GithubError::decode_json(stage, body)?;
+    Ok(GithubError::as_array(stage, &value, "pulls")?
+        .iter()
+        .filter_map(value_to_pull)
+        .collect())
+}
+
 /// Parse an issue-comments array into [`IssueComment`]s.
 pub(crate) fn parse_comments(
     stage: &'static str,
@@ -596,6 +665,15 @@ pub(crate) fn parse_comments(
 pub(crate) fn parse_comment(stage: &'static str, body: &str) -> Result<IssueComment, GithubError> {
     let value = GithubError::decode_json(stage, body)?;
     value_to_comment(&value).ok_or_else(|| GithubError::decode(stage, "comment missing id"))
+}
+
+/// Parse a reviews array into [`Review`]s.
+pub(crate) fn parse_reviews(stage: &'static str, body: &str) -> Result<Vec<Review>, GithubError> {
+    let value = GithubError::decode_json(stage, body)?;
+    Ok(GithubError::as_array(stage, &value, "reviews")?
+        .iter()
+        .filter_map(value_to_review)
+        .collect())
 }
 
 fn value_to_user(v: &Value) -> Option<User> {
@@ -640,6 +718,24 @@ fn value_to_issue(v: &Value) -> Option<Issue> {
     })
 }
 
+fn value_to_pull(v: &Value) -> Option<PullRequest> {
+    let number = v.get("number")?.as_u64()?;
+    let head_branch = v
+        .get("head")
+        .and_then(|h| h.get("ref"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let user = v.get("user").and_then(value_to_user).unwrap_or(User {
+        login: String::new(),
+    });
+    Some(PullRequest {
+        number,
+        head_branch,
+        user,
+    })
+}
+
 fn value_to_comment(v: &Value) -> Option<IssueComment> {
     let id = v.get("id")?.as_u64()?;
     let user = v.get("user").and_then(value_to_user).unwrap_or(User {
@@ -668,6 +764,25 @@ fn value_to_comment(v: &Value) -> Option<IssueComment> {
         user,
         created_at,
         updated_at,
+    })
+}
+
+/// A review GitHub has not submitted yet (a `PENDING` one) carries no `submitted_at`; it
+/// reads as the epoch, so it is never newer than any watermark.
+fn value_to_review(v: &Value) -> Option<Review> {
+    let id = v.get("id")?.as_u64()?;
+    let user = v.get("user").and_then(value_to_user).unwrap_or(User {
+        login: String::new(),
+    });
+    let submitted_at = v
+        .get("submitted_at")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339)
+        .unwrap_or(UNIX_EPOCH);
+    Some(Review {
+        id,
+        user,
+        submitted_at,
     })
 }
 
@@ -746,13 +861,15 @@ mod mock {
     }
 
     /// One seeded issue, with the assignee set the kind never reads but the status
-    /// writes change.
+    /// writes change. A pull request is seeded as an issue too (`pull`), as GitHub models
+    /// one: the status writes act on its number, and its `state` is the PR's.
     struct Seeded {
         issue: Issue,
         assignees: Vec<String>,
+        pull: bool,
     }
 
-    /// An in-memory forge: tests seed issues and comments (each with an explicit
+    /// An in-memory forge: tests seed issues, PRs, comments and reviews (each with an explicit
     /// timestamp), drive the kind against it, and inspect the recorded [`Action`]s. A
     /// stage can be made to fail, the second a posted comment is stamped with can be
     /// frozen ([`MockClient::set_clock`], which is what makes a *same-second* claim race
@@ -762,7 +879,9 @@ mod mock {
     pub(crate) struct MockClient {
         me: Mutex<String>,
         issues: Mutex<Vec<Seeded>>,
+        pulls: Mutex<Vec<PullRequest>>,
         comments: Mutex<HashMap<u64, Vec<IssueComment>>>,
+        reviews: Mutex<HashMap<u64, Vec<Review>>>,
         actions: Mutex<Vec<Action>>,
         /// How many times `current_user` was asked, so a test can pin the identity to
         /// one resolve per armed service.
@@ -819,15 +938,41 @@ mod mock {
                     labels: labels.iter().map(|s| s.to_string()).collect(),
                 },
                 assignees: assignees.iter().map(|l| (*l).to_string()).collect(),
+                pull: false,
             });
         }
 
-        /// Close a seeded issue, as a human does.
+        /// Seed an open PR authored by `author`, on head branch `head`. GitHub models a
+        /// PR as an issue too, so a matching open issue record is seeded, which the status
+        /// writes (acting on the issue number) find and [`MockClient::close`] closes; the
+        /// issue list never returns it, as the real client's never does.
+        pub(crate) fn add_pull(&self, number: u64, author: &str, head: &str) {
+            lock(&self.pulls).push(PullRequest {
+                number,
+                head_branch: head.to_string(),
+                user: User {
+                    login: author.to_string(),
+                },
+            });
+            lock(&self.issues).push(Seeded {
+                issue: Issue {
+                    number,
+                    title: format!("PR {number}"),
+                    body: String::new(),
+                    state: "open".to_string(),
+                    labels: Vec::new(),
+                },
+                assignees: Vec::new(),
+                pull: true,
+            });
+        }
+
+        /// Close a seeded issue (or merge or close a PR), as a human does.
         pub(crate) fn close(&self, number: u64) {
             self.mutate(number, |s| s.issue.state = "closed".to_string());
         }
 
-        /// Seed a comment on an issue by `author`, updated `secs` after epoch.
+        /// Seed a comment on an issue or PR by `author`, updated `secs` after epoch.
         pub(crate) fn add_comment(&self, index: u64, id: u64, author: &str, secs: u64) {
             self.add_comment_body(index, id, author, &format!("comment {id}"), secs);
         }
@@ -869,6 +1014,17 @@ mod mock {
                     created_at: UNIX_EPOCH + Duration::from_secs(created),
                     updated_at: UNIX_EPOCH + Duration::from_secs(updated),
                 });
+        }
+
+        /// Seed a review on a PR by `author`, submitted `secs` after epoch.
+        pub(crate) fn add_review(&self, index: u64, id: u64, author: &str, secs: u64) {
+            lock(&self.reviews).entry(index).or_default().push(Review {
+                id,
+                user: User {
+                    login: author.to_string(),
+                },
+                submitted_at: UNIX_EPOCH + Duration::from_secs(secs),
+            });
         }
 
         /// Make every call belonging to `stage` fail with a transport error.
@@ -972,9 +1128,26 @@ mod mock {
             self.guard("list issues")?;
             Ok(lock(&self.issues)
                 .iter()
+                .filter(|s| !s.pull)
                 .map(|s| &s.issue)
                 .filter(|i| state == "all" || i.state == state)
                 .filter(|i| labels.is_empty() || i.has_label(labels))
+                .cloned()
+                .collect())
+        }
+
+        fn list_open_pulls(&self, _repo: &Repo) -> Result<Vec<PullRequest>, GithubError> {
+            self.guard("list pulls")?;
+            // A PR is open while its issue record is: a merge or close drops it out.
+            let issues = lock(&self.issues);
+            let open = |n: u64| {
+                issues
+                    .iter()
+                    .any(|s| s.pull && s.issue.number == n && s.issue.state == "open")
+            };
+            Ok(lock(&self.pulls)
+                .iter()
+                .filter(|p| open(p.number))
                 .cloned()
                 .collect())
         }
@@ -1139,6 +1312,11 @@ mod mock {
             });
             Ok(())
         }
+
+        fn list_pull_reviews(&self, _repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError> {
+            self.guard("list reviews")?;
+            Ok(lock(&self.reviews).get(&index).cloned().unwrap_or_default())
+        }
     }
 
     fn repo() -> Repo {
@@ -1244,6 +1422,46 @@ mod mock {
         assert_eq!(numbers("open", "afkd/ready"), [1]);
         assert_eq!(numbers("open", ""), [1, 2]);
         assert_eq!(numbers("all", "afkd/ready"), [1, 3]);
+    }
+
+    /// A seeded PR is an issue record the status writes find, but the issue list never
+    /// returns it (the real client's post-parse contract), and it stays in the open-pulls
+    /// list only while that record is open.
+    #[test]
+    fn a_seeded_pull_is_listed_as_a_pull_never_as_an_issue() {
+        let c = MockClient::new("me");
+        c.add_issue(1, "T", "B", &[]);
+        c.add_pull(7, "me", "fix/retry-cap");
+        c.add_pull(8, "someone", "feat/åäö");
+        let issues: Vec<u64> = c
+            .list_issues(&repo(), "all", "")
+            .unwrap()
+            .iter()
+            .map(|i| i.number)
+            .collect();
+        assert_eq!(issues, [1]);
+        c.add_label(&repo(), 7, "afkd/claimed").unwrap();
+        assert!(
+            c.has_label(7, "afkd/claimed"),
+            "a status write finds the PR"
+        );
+
+        let open = |c: &MockClient| -> Vec<(u64, String)> {
+            c.list_open_pulls(&repo())
+                .unwrap()
+                .into_iter()
+                .map(|p| (p.number, p.head_branch))
+                .collect()
+        };
+        assert_eq!(
+            open(&c),
+            [
+                (7, "fix/retry-cap".to_string()),
+                (8, "feat/åäö".to_string())
+            ]
+        );
+        c.close(7);
+        assert_eq!(open(&c), [(8, "feat/åäö".to_string())]);
     }
 
     /// The claim-marker round trip through the mock: the posted comment comes back
@@ -1478,6 +1696,88 @@ mod parse_tests {
 
         // A deleted account's comment keeps its place with an empty login.
         assert_eq!(comments[3].user.login, "");
+    }
+
+    /// A reviews page as GitHub serves it: a submitted review by a non-ASCII login, a
+    /// deleted account's, and a `PENDING` one with no `submitted_at`, which reads as the
+    /// epoch so it can never be newer than a watermark.
+    #[test]
+    fn parse_reviews_read_authors_and_times() {
+        let reviews = parse_reviews(
+            "list reviews",
+            r#"[
+                {"id":2,"user":{"login":"björn-öst"},"body":"Snyggt 👍","state":"APPROVED",
+                 "submitted_at":"2021-01-01T00:00:00Z"},
+                {"id":3,"user":null,"state":"COMMENTED",
+                 "submitted_at":"2021-01-01T02:00:00Z"},
+                {"id":4,"user":{"login":"human"},"state":"PENDING"}
+            ]"#,
+        )
+        .unwrap();
+        let t0 = UNIX_EPOCH + Duration::from_secs(1_609_459_200);
+        assert_eq!(
+            reviews,
+            [
+                Review {
+                    id: 2,
+                    user: User {
+                        login: "björn-öst".into()
+                    },
+                    submitted_at: t0,
+                },
+                Review {
+                    id: 3,
+                    user: User {
+                        login: String::new()
+                    },
+                    submitted_at: t0 + Duration::from_secs(7_200),
+                },
+                Review {
+                    id: 4,
+                    user: User {
+                        login: "human".into()
+                    },
+                    submitted_at: UNIX_EPOCH,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_pulls_reads_head_branch_and_author() {
+        let body = r#"[{"number":12,"title":"PR","body":"","head":{"ref":"feature/x"},
+                        "user":{"login":"bot"}},
+                       {"number":13,"title":"Rätta 🐛","state":"open",
+                        "head":{"ref":"fix/åäö","sha":"abc"},"user":{"login":"björn-öst[bot]"}},
+                       {"number":14,"user":null}]"#;
+        let pulls = parse_pulls("list pulls", body).unwrap();
+        assert_eq!(
+            pulls,
+            [
+                PullRequest {
+                    number: 12,
+                    head_branch: "feature/x".into(),
+                    user: User {
+                        login: "bot".into()
+                    },
+                },
+                PullRequest {
+                    number: 13,
+                    head_branch: "fix/åäö".into(),
+                    user: User {
+                        login: "björn-öst[bot]".into()
+                    },
+                },
+                // An absent head and a deleted author degrade to empty, not a dropped PR.
+                PullRequest {
+                    number: 14,
+                    head_branch: String::new(),
+                    user: User {
+                        login: String::new()
+                    },
+                },
+            ]
+        );
     }
 
     /// The POST reply decodes through the very same `value_to_comment` the list reply
@@ -1769,6 +2069,33 @@ mod http_tests {
     }
 
     #[test]
+    fn list_open_pulls_sends_state_open() {
+        let stub = Stub::serve(ok_json(
+            r#"[{"number":7,"head":{"ref":"fix/retry-cap"},"user":{"login":"bot"}}]"#,
+        ));
+        let client = stub.client("t");
+        let pulls = client.list_open_pulls(&repo()).unwrap();
+        assert_eq!(pulls[0].head_branch, "fix/retry-cap");
+        let req = stub.captured();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path(), "/api/v3/repos/acme/widgets/pulls");
+        assert!(req.has_query("state", "open"));
+    }
+
+    #[test]
+    fn list_pull_reviews_reads_the_reviews_path() {
+        let stub = Stub::serve(ok_json(
+            r#"[{"id":9,"user":{"login":"human"},"submitted_at":"2021-01-01T00:00:00Z"}]"#,
+        ));
+        let client = stub.client("t");
+        let reviews = client.list_pull_reviews(&repo(), 5).unwrap();
+        assert_eq!(reviews[0].id, 9);
+        let req = stub.captured();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path(), "/api/v3/repos/acme/widgets/pulls/5/reviews");
+    }
+
+    #[test]
     fn list_issues_over_the_wire_hands_back_issues_only() {
         // The whole seam, over a socket: a `GET /issues` page that mixes a real issue and
         // a source-labelled PR yields only the issue, so no PR ever reaches the kind's
@@ -2023,6 +2350,24 @@ mod http_tests {
                 }
             ),
             "a 500 on the comments GET must propagate out of list_issue_comments, got {err:?}"
+        );
+        let _ = stub.captured();
+    }
+
+    #[test]
+    fn list_pull_reviews_propagates_a_forge_error() {
+        let stub = Stub::serve("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");
+        let client = stub.client("t");
+        let err = client.list_pull_reviews(&repo(), 5).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GithubError::Status {
+                    stage: "list reviews",
+                    status: 500
+                }
+            ),
+            "a 500 on the reviews GET must propagate out of list_pull_reviews, got {err:?}"
         );
         let _ = stub.captured();
     }

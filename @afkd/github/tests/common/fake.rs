@@ -1,12 +1,15 @@
 //! A stateful fake GitHub Enterprise Server on a loopback socket: the `/api/v3` routes the
-//! plugin's client calls, over users, issues and comments the test seeds and then reads
-//! back. std and `serde_json` only, and nothing from the plugin crate, so another suite
+//! plugin's client calls, over users, issues, pull requests, comments and reviews the test
+//! seeds and then reads back. std and `serde_json` only, and nothing from the plugin crate, so another suite
 //! can `#[path]`-include it.
 //!
 //! It models the GitHub behaviours the kind depends on: every route hangs off `/api/v3`
 //! (a non-`github.com` host is GHES); the token rides `Authorization: Bearer`; the issue
 //! listing filters on `state` and on **every** comma-listed label, and folds pull requests
-//! in, each marked by a `pull_request` member; assignees are added and removed by login
+//! in, each marked by a `pull_request` member; a pull request is an issue — the status
+//! writes, the comment thread and a close act on it by its number — and the pulls listing
+//! filters on `state`, carrying each PR's author and head branch; a PR's reviews are listed
+//! off its `…/pulls/{number}/reviews` path; assignees are added and removed by login
 //! through the dedicated `…/assignees` endpoint (a `DELETE` carrying a body); a label is
 //! added by name (springing into being on first use) and removed by name on its own path
 //! segment, a label the issue does not carry being a `404`; a state `PATCH` closes;
@@ -54,6 +57,10 @@ pub struct Issue {
     pub assignees: Vec<String>,
     /// Whether this "issue" is a pull request GitHub folds into the issue listing.
     pub pull: bool,
+    /// A pull request's author (empty for a plain issue).
+    pub author: String,
+    /// A pull request's head branch (empty for a plain issue).
+    pub head: String,
 }
 
 /// A comment on an issue.
@@ -68,6 +75,16 @@ pub struct Comment {
     pub updated: u64,
 }
 
+/// A submitted review on a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Review {
+    pub id: u64,
+    pub repo: String,
+    pub number: u64,
+    pub author: String,
+    pub submitted: u64,
+}
+
 #[derive(Default)]
 struct State {
     /// The token's own login.
@@ -77,6 +94,7 @@ struct State {
     /// Keyed by `(owner/name, number)`.
     issues: BTreeMap<(String, u64), Issue>,
     comments: Vec<Comment>,
+    reviews: Vec<Review>,
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
     seen: Vec<Seen>,
@@ -96,6 +114,27 @@ impl State {
             value["pull_request"] = json!({"url": format!("pulls/{number}")});
         }
         value
+    }
+
+    fn pull_json(&self, number: u64, issue: &Issue) -> Value {
+        json!({
+            "number": number,
+            "title": issue.title,
+            "body": issue.body,
+            "state": issue.state,
+            "user": {"login": issue.author},
+            "head": {"ref": issue.head},
+        })
+    }
+
+    fn review_json(&self, review: &Review) -> Value {
+        json!({
+            "id": review.id,
+            "user": {"login": review.author},
+            "body": "",
+            "state": "COMMENTED",
+            "submitted_at": stamp(review.submitted),
+        })
     }
 
     fn comment_json(&self, comment: &Comment) -> Value {
@@ -170,39 +209,48 @@ impl FakeGithub {
         labels: &[&str],
         assignees: &[&str],
     ) {
-        self.seed(repo, number, title, body, labels, assignees, false);
-    }
-
-    /// Seed an open pull request, which the issue listing folds in beside the issues.
-    pub fn pull(&self, repo: &str, number: u64, title: &str, labels: &[&str]) {
-        self.seed(repo, number, title, "", labels, &[], true);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn seed(
-        &self,
-        repo: &str,
-        number: u64,
-        title: &str,
-        body: &str,
-        labels: &[&str],
-        assignees: &[&str],
-        pull: bool,
-    ) {
-        lock(&self.state).issues.insert(
-            (repo.to_string(), number),
+        self.seed(
+            repo,
+            number,
             Issue {
                 title: title.to_string(),
                 body: body.to_string(),
-                state: "open".to_string(),
-                labels: labels.iter().map(|l| l.to_string()).collect(),
-                assignees: assignees.iter().map(|a| a.to_string()).collect(),
-                pull,
+                ..open(labels, assignees)
             },
         );
     }
 
-    /// Close an issue, as a human does.
+    /// Seed an open pull request by `author` on branch `head`: the pulls listing carries
+    /// it, and the issue listing folds it in beside the issues.
+    pub fn pull(
+        &self,
+        repo: &str,
+        number: u64,
+        author: &str,
+        head: &str,
+        labels: &[&str],
+        assignees: &[&str],
+    ) {
+        self.seed(
+            repo,
+            number,
+            Issue {
+                title: format!("Pull request from {head}"),
+                pull: true,
+                author: author.to_string(),
+                head: head.to_string(),
+                ..open(labels, assignees)
+            },
+        );
+    }
+
+    fn seed(&self, repo: &str, number: u64, issue: Issue) {
+        lock(&self.state)
+            .issues
+            .insert((repo.to_string(), number), issue);
+    }
+
+    /// Close an issue (or merge or close a pull request), as a human does.
     pub fn close(&self, repo: &str, number: u64) {
         if let Some(issue) = lock(&self.state)
             .issues
@@ -245,6 +293,22 @@ impl FakeGithub {
         });
     }
 
+    /// Seed a review on pull request `number` by `author`, submitted `ago` seconds before
+    /// now; returns its id, drawn from the comments' sequence.
+    pub fn review(&self, repo: &str, number: u64, author: &str, ago: u64) -> u64 {
+        let mut s = lock(&self.state);
+        s.next_id += 1;
+        let (id, submitted) = (s.next_id, s.now - ago);
+        s.reviews.push(Review {
+            id,
+            repo: repo.to_string(),
+            number,
+            author: author.to_string(),
+            submitted,
+        });
+        id
+    }
+
     /// Make every request to `route` answer `status`.
     pub fn fail(&self, route: &str, status: u16) {
         lock(&self.state).faults.insert(route.to_string(), status);
@@ -271,6 +335,20 @@ impl FakeGithub {
 
     pub fn seen(&self) -> Vec<Seen> {
         lock(&self.state).seen.clone()
+    }
+}
+
+/// An open, untitled issue record carrying `labels` and `assignees`.
+fn open(labels: &[&str], assignees: &[&str]) -> Issue {
+    Issue {
+        title: String::new(),
+        body: String::new(),
+        state: "open".to_string(),
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+        assignees: assignees.iter().map(|a| a.to_string()).collect(),
+        pull: false,
+        author: String::new(),
+        head: String::new(),
     }
 }
 
@@ -464,6 +542,8 @@ fn route(
         ("PATCH", ["repos", _, _, "issues", "comments", _]) => "edit comment",
         ("DELETE", ["repos", _, _, "issues", "comments", _]) => "delete comment",
         ("GET", ["repos", _, _, "issues"]) => "list issues",
+        ("GET", ["repos", _, _, "pulls"]) => "list pulls",
+        ("GET", ["repos", _, _, "pulls", _, "reviews"]) => "list reviews",
         ("PATCH", ["repos", _, _, "issues", _]) => "set state",
         ("POST", ["repos", _, _, "issues", _, "assignees"]) => "add assignees",
         ("DELETE", ["repos", _, _, "issues", _, "assignees"]) => "remove assignees",
@@ -507,6 +587,29 @@ fn route(
                         && wanted.iter().all(|w| i.labels.contains(w))
                 })
                 .map(|((_, n), i)| s.issue_json(*n, i))
+                .collect();
+            (200, Value::Array(list))
+        }
+        "list pulls" => {
+            let state = param("state").unwrap_or_else(|| "open".to_string());
+            let list: Vec<Value> = s
+                .issues
+                .iter()
+                .filter(|((r, _), i)| *r == repo && i.pull && (state == "all" || i.state == state))
+                .map(|((_, n), i)| s.pull_json(*n, i))
+                .collect();
+            (200, Value::Array(list))
+        }
+        "list reviews" => {
+            let n = number(4);
+            if !s.issues.get(&(repo.clone(), n)).is_some_and(|i| i.pull) {
+                return not_found();
+            }
+            let list: Vec<Value> = s
+                .reviews
+                .iter()
+                .filter(|r| r.repo == repo && r.number == n)
+                .map(|r| s.review_json(r))
                 .collect();
             (200, Value::Array(list))
         }
