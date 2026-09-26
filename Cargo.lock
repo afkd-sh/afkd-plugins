@@ -261,6 +261,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
+name = "trello-drift"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
