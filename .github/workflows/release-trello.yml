@@ -1,0 +1,84 @@
+# Cut the release `afkd install @afkd/trello` fetches.
+#
+# afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose `@afkd/trello`
+# entry is to name this repository's `releases/download/trello/afkd-trello.tar.gz` (the entry
+# lands with the card that removes the built-in `trello` kind from afkd). afkd cannot
+# install a subdirectory of a monorepo — its git leg requires the manifest at the clone root,
+# and its tarball leg steps through exactly one wrapper directory — so the installable
+# artifact is this per-plugin tarball, whose single top-level directory is the plugin itself.
+# It ships source, not a binary: the manifest's `build` compiles it on the operator's host.
+#
+# The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
+# source URL it recorded at install time and never re-reads the index, so one unchanging
+# address is the only way an already-installed operator reaches the next version.
+name: Release @afkd/trello
+
+on:
+  push:
+    branches: [main]
+    paths: ['@afkd/trello/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-trello
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A red suite must not publish, so the plugin's own suite — its unit tests and the wire
+      # contract suite against the loopback fake Trello — runs here, `--locked` as afkd's own
+      # install builds it. The drift gate under `drift/` needs an afkd on PATH, so it runs on a
+      # host that has one, not here.
+      - name: The plugin's own suite
+        working-directory: '@afkd/trello'
+        run: cargo test --locked
+
+      # `cp -a` then `tar`, so the mode bits ride: the skill's scripts are run as they arrive.
+      # The suite above built `target/` inside the plugin, and the copy must not carry it: it
+      # is one runner's build, and afkd builds the plugin afresh on the host it lands on.
+      - name: Pack
+        run: |
+          cp -a '@afkd/trello' afkd-trello
+          rm -rf afkd-trello/target
+          tar czf afkd-trello.tar.gz afkd-trello
+          # Assert the shape rather than trust it. One top-level directory and no more — a
+          # second entry would be placed verbatim instead of unwrapped. The manifest is what
+          # afkd reads and the lockfile is what its `--locked` build needs. A `target/` would
+          # ship this runner's build. The listing is read from a file: under the runner's
+          # `pipefail`, a `grep -q` that stops reading early can fail `tar` on SIGPIPE, and a
+          # `! pipeline` never trips `-e`.
+          tar tzf afkd-trello.tar.gz > listing
+          roots=$(cut -d/ -f1 listing | sort -u)
+          test "$roots" = "afkd-trello"
+          grep -qx 'afkd-trello/afkd-plugin.toml' listing
+          grep -qx 'afkd-trello/Cargo.lock' listing
+          if grep '^afkd-trello/target\(/\|$\)' listing; then
+            echo "the tarball ships a target/" >&2
+            exit 1
+          fi
+          rm listing
+          # Unpacked, not read off the listing: `test -x` after extraction is the same
+          # question afkd's own unpack answers, asked the same way.
+          mkdir -p shape && tar xzf afkd-trello.tar.gz -C shape
+          test -x shape/afkd-trello/skills/trello/ask.py
+          rm -rf shape afkd-trello
+
+      # Delete-then-create, because a tag is unique and the replacement cannot be made
+      # first. The brief 404 window on the download URL is a loud, retryable failure for an
+      # `afkd update` that races it.
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/trello/afkd-plugin.toml')
+          test -n "$version"
+          printf '`afkd install @afkd/trello`, or `afkd update @afkd/trello` if you already have it.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          gh release delete trello --yes --cleanup-tag || true
+          gh release create trello --target "$GITHUB_SHA" --title "@afkd/trello $version" --notes-file notes.md afkd-trello.tar.gz
