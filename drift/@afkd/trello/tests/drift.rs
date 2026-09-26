@@ -14,6 +14,9 @@
 //!   renames the kind (`trello_probe`) and whose `exec` is a wrapper that renames `hello`'s
 //!   kind back — so the unmodified plugin binary meets afkd's real spine (journal, cadence,
 //!   watch, framing) before the rip-out, not after.
+//! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries:
+//!   against the built-in's vocabulary today, against the manifest's once the install goes
+//!   live.
 //! - The **transcription** leg holds the manifest's vocabulary, table for table, to the
 //!   built-in's in afkd's source and to the plugin's own ported copies.
 //!
@@ -409,6 +412,62 @@ fn the_plugin_binary_runs_on_the_real_spine_under_a_probe_kind() {
         panic!("the probe kind is never built in, yet afkd refused it:\n{report}");
     }
     drive_one_card(home.path(), "trello_probe");
+}
+
+/// The README's `conf` fences, each with the line its opener sits on. An indented fence
+/// (one inside a list item) has that indent stripped from its body.
+fn conf_fences(readme: &str) -> Vec<(usize, String)> {
+    let mut fences = Vec::new();
+    let mut open: Option<(usize, usize, Vec<&str>)> = None;
+    for (at, line) in readme.lines().enumerate() {
+        match open.as_mut() {
+            None if line.trim() == "```conf" => {
+                let indent = line.len() - line.trim_start().len();
+                open = Some((at + 1, indent, Vec::new()));
+            }
+            None => {}
+            Some(_) if line.trim() == "```" => {
+                let (opened, _, body) = open.take().expect("open");
+                fences.push((opened, body.join("\n") + "\n"));
+            }
+            Some((_, indent, body)) => body.push(line.get(*indent..).unwrap_or("").trim_end()),
+        }
+    }
+    assert!(open.is_none(), "every conf fence in the README closes");
+    fences
+}
+
+#[test]
+fn every_readme_conf_fence_validates() {
+    let readme = std::fs::read_to_string(plugin_root().join("README.md")).expect("the README");
+    let fences = conf_fences(&readme);
+    let openers = readme.lines().filter(|l| l.trim() == "```conf").count();
+    assert!(openers > 0, "the README carries conf fences");
+    assert_eq!(fences.len(), openers, "every conf opener yields a fence");
+
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    match install(home.path(), &stage(stage_dir.path())) {
+        Install::BuiltIn(_) => eprintln!(
+            "the afkd on PATH has `trello` built in: the fences validate against its vocabulary"
+        ),
+        Install::Placed => eprintln!("{NAME} installed: the fences validate against its manifest"),
+    }
+    for (n, (line, fence)) in fences.iter().enumerate() {
+        assert!(
+            !fence.trim().is_empty(),
+            "fence {} (README line {line}) is empty",
+            n + 1
+        );
+        write_config(home.path(), fence);
+        let (code, report) = validate(home.path());
+        assert_eq!(
+            code,
+            Some(0),
+            "fence {} (README line {line}) validates:\n{fence}\n{report}",
+            n + 1
+        );
+    }
 }
 
 // --- the transcription -----------------------------------------------------------------
