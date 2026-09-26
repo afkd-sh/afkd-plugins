@@ -3,4 +3,4 @@
 # `afkd install` copies whole.
 [workspace]
 resolver = "2"
-members = ["drift/@afkd/web-top", "drift/@afkd/gitea", "drift/@afkd/trello", "drift/@afkd/gitlab"]
+members = ["drift/@afkd/web-top", "drift/@afkd/gitea", "drift/@afkd/trello", "drift/@afkd/gitlab", "drift/@afkd/github"]
