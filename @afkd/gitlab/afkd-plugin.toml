@@ -1,0 +1,45 @@
+name = "@afkd/gitlab"
+version = "0.1.0"
+proto = 1
+shape = "provider"
+source = "https://github.com/afkd-sh/afkd-plugins"
+build = "cargo build --release --locked"
+exec = "target/release/afkd-gitlab"
+
+# The built-in `gitlab` kind's vocabulary, key for key, so every config that validates
+# against the built-in validates against this plugin with no edit.
+[[trigger]]
+kind = "gitlab"
+settings = [
+  "base_url",
+  "project",
+  "token",
+  "source_label",
+  "follow_comments",
+  "max_attempts",
+  "poll_interval",
+  "on_claim",
+  "on_done",
+  "on_fail",
+]
+required = ["token"]
+repeatable = []
+durations = ["poll_interval", "follow_comments"]
+run_kind = "issue"
+display_name = "GitLab issues"
+info_keys = []
+
+[[trigger.block]]
+path = "on_claim"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+
+[[trigger.block]]
+path = "on_done"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+
+[[trigger.block]]
+path = "on_fail"
+settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
