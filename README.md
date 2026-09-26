@@ -9,6 +9,8 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   triggers, with the skill an agent answers them through.
 - [`@afkd/trello`](@afkd/trello) — Trello cards as afkd triggers, with the skill an
   agent works the card through.
+- [`@afkd/gitlab`](@afkd/gitlab) — GitLab issues and merge-request reviews as afkd
+  triggers, with the skill an agent answers them through.
 
 Each plugin carries its own README, its own `node --test` suite and its own
 fixtures. A script a plugin is built with but does not ship lives under
