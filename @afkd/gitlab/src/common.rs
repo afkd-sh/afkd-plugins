@@ -1,8 +1,8 @@
-//! Drive scaffolding the kind is built from (ADR-0041): the env spellings, the poll's scan
-//! budget, the credentials-env builder, the lifecycle-action executor over the
+//! Drive scaffolding both kinds are built from (ADR-0041): the env spellings, the poll's
+//! scan budget, the credentials-env builder, the lifecycle-action executor over the
 //! [`GitlabClient`] seam, the **claim** — a `[afkd-claim]` marker note decided by
-//! [`crate::claim`]'s pure winner rule — and the two seams the rest is written against:
-//! the [`Clock`] the claim settles on and the [`Diag`] sink diagnostics go to.
+//! [`crate::claim`]'s pure winner rule — and the two seams the rest is written against: the
+//! [`Clock`] the claim settles on and the [`Diag`] sink diagnostics go to.
 //!
 //! Ported from afkd's `crates/gitlab/src/common.rs`. The claim is a marker, not an
 //! assignee: GitLab's assignee write is a **replace-set** `PUT` (`assignee_ids`), so an
@@ -50,6 +50,10 @@ pub(crate) const ENV_BASE_URL: &str = "GITLAB_BASE_URL";
 pub(crate) const ENV_PROJECT: &str = "GITLAB_PROJECT";
 /// Env var carrying the active issue iid to the run.
 pub(crate) const ENV_ISSUE_NUMBER: &str = "GITLAB_ISSUE_NUMBER";
+/// Env var carrying the active MR iid to the run.
+pub(crate) const ENV_MR_NUMBER: &str = "GITLAB_MR_NUMBER";
+/// Env var carrying the active MR's source branch to the run.
+pub(crate) const ENV_MR_BRANCH: &str = "GITLAB_MR_BRANCH";
 
 /// How long one `poll`'s scan may run before it stops considering further candidates,
 /// leaving them to the next beat. afkd ends the service if a call takes 60 seconds, and
@@ -132,7 +136,7 @@ impl<'a> ScanBudget<'a> {
 }
 
 /// The credentials merged into every run's environment: the token and base URL (the
-/// project + iid are per-unit).
+/// project, the iid and an MR's branch are per-unit).
 pub(crate) fn creds_env(cfg: &GitlabConfig) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     env.insert(ENV_TOKEN.to_string(), cfg.token.clone());
@@ -485,13 +489,13 @@ mod tests {
     /// decades from the epoch the seeded fixtures sit at.
     const T: u64 = 1_700_000_000;
 
-    /// Claim issue `iid` for `owner` against `c` on a fake clock — the shape every claim
-    /// test drives.
-    fn claim(c: &MockClient, iid: u64, owner: &User) -> Claimed {
+    /// Claim item `(kind, iid)` for `owner` against `c` on a fake clock — the shape every
+    /// claim test drives.
+    fn claim(c: &MockClient, kind: ItemKind, iid: u64, owner: &User) -> Claimed {
         claim_item(
             c,
             &project(),
-            ItemKind::Issue,
+            kind,
             iid,
             owner,
             &FakeClock::new(),
@@ -500,11 +504,11 @@ mod tests {
         .expect("the claim ran")
     }
 
-    /// The `[afkd-claim]` markers left on issue `iid`, as `(id, body)`. Read through the
-    /// trait's own list call — the same thing the claim reads — so no test-only accessor
-    /// can disagree with production about what is on the thread.
-    fn markers_on(c: &MockClient, iid: u64) -> Vec<(u64, String)> {
-        c.list_notes(&project(), ItemKind::Issue, iid)
+    /// The `[afkd-claim]` markers left on item `(kind, iid)`, as `(id, body)`. Read through
+    /// the trait's own list call — the same thing the claim reads — so no test-only
+    /// accessor can disagree with production about what is on the thread.
+    fn markers_on(c: &MockClient, kind: ItemKind, iid: u64) -> Vec<(u64, String)> {
+        c.list_notes(&project(), kind, iid)
             .expect("read the thread")
             .into_iter()
             .filter(|n| is_claim(&n.body))
@@ -523,11 +527,11 @@ mod tests {
             .collect()
     }
 
-    /// The id of the surviving marker `owner` posted on `iid` — the winner's, by
+    /// The id of the surviving marker `owner` posted on `(kind, iid)` — the winner's, by
     /// construction (a loser deletes its own on the way out).
-    fn surviving_marker(c: &MockClient, iid: u64, owner: &str) -> u64 {
+    fn surviving_marker(c: &MockClient, kind: ItemKind, iid: u64, owner: &str) -> u64 {
         let text = claim_text(owner);
-        markers_on(c, iid)
+        markers_on(c, kind, iid)
             .into_iter()
             .find(|(_, body)| *body == text)
             .map(|(id, _)| id)
@@ -547,22 +551,25 @@ mod tests {
         c.add_issue(7, "T", "B", &["afkd::ready"]);
         c.set_clock(T);
 
-        let first = claim(&c, 7, &bot(1, "bot-a"));
-        let second = claim(&c, 7, &bot(2, "bot-b"));
+        let first = claim(&c, ItemKind::Issue, 7, &bot(1, "bot-a"));
+        let second = claim(&c, ItemKind::Issue, 7, &bot(2, "bot-b"));
 
         // Exactly one win, and it is the earlier id — the tie-break, not the order of the
         // calls (both markers carry second `T`).
-        assert_eq!(first, Claimed::Won(surviving_marker(&c, 7, "bot-a")));
+        assert_eq!(
+            first,
+            Claimed::Won(surviving_marker(&c, ItemKind::Issue, 7, "bot-a"))
+        );
         assert_eq!(second, Claimed::Lost);
         // One marker survives on the thread, and it is the *winner's*.
         assert_eq!(
-            markers_on(&c, 7)
+            markers_on(&c, ItemKind::Issue, 7)
                 .into_iter()
                 .map(|(_, body)| body)
                 .collect::<Vec<_>>(),
             vec![claim_text("bot-a")]
         );
-        let winner = surviving_marker(&c, 7, "bot-a");
+        let winner = surviving_marker(&c, ItemKind::Issue, 7, "bot-a");
         assert_eq!(deleted(&c).len(), 1, "one delete: {:?}", deleted(&c));
         assert!(
             !deleted(&c).contains(&winner),
@@ -570,12 +577,12 @@ mod tests {
         );
     }
 
-    /// The N-way shape of the same rule: five contenders in one second leave one winner,
-    /// four losses, and one marker.
+    /// The N-way shape of the same rule, on the **MR** kind: five contenders in one second
+    /// leave one winner, four losses, and one marker.
     #[test]
     fn n_contenders_in_the_same_second_yield_exactly_one_winner() {
         let c = MockClient::new(1, "bot-1");
-        c.add_issue(3, "T", "B", &["afkd::ready"]);
+        c.add_mr(3, 1, "bot-1", "feature/x");
         c.set_clock(T);
 
         // A non-ASCII owner among them: the identity is handed through verbatim, and the
@@ -584,7 +591,7 @@ mod tests {
         let outcomes: Vec<Claimed> = owners
             .iter()
             .enumerate()
-            .map(|(i, o)| claim(&c, 3, &bot(i as u64 + 1, o)))
+            .map(|(i, o)| claim(&c, ItemKind::MergeRequest, 3, &bot(i as u64 + 1, o)))
             .collect();
 
         assert_eq!(
@@ -597,7 +604,7 @@ mod tests {
             "the first-posted (smallest id) wins: {outcomes:?}"
         );
         assert_eq!(
-            markers_on(&c, 3)
+            markers_on(&c, ItemKind::MergeRequest, 3)
                 .into_iter()
                 .map(|(_, body)| body)
                 .collect::<Vec<_>>(),
@@ -641,9 +648,9 @@ mod tests {
         // and so strictly ahead of us in the order.
         c.rival_claims_next(99, "rival", 42, T - 1);
 
-        assert_eq!(claim(&c, 7, &me()), Claimed::Lost);
+        assert_eq!(claim(&c, ItemKind::Issue, 7, &me()), Claimed::Lost);
         assert_eq!(
-            markers_on(&c, 7),
+            markers_on(&c, ItemKind::Issue, 7),
             vec![(42, claim_text("rival"))],
             "our marker is gone; the rival's is untouched"
         );
@@ -654,6 +661,34 @@ mod tests {
             "the claim writes no assignee and no label at all: {:?}",
             c.actions()
         );
+    }
+
+    /// The claim is routed by `kind`: a marker posted on MR !7 is invisible to a claim of
+    /// issue #7, so two items sharing an iid never contend. (GitLab's two paths are the
+    /// vendor's genuine divergence; a hard-coded one would silently read the wrong
+    /// thread.)
+    #[test]
+    fn a_claim_reads_only_its_own_kinds_thread() {
+        let c = MockClient::new(1, "me");
+        c.add_issue(7, "T", "B", &["afkd::ready"]);
+        c.add_mr(7, 1, "me", "feature/x");
+        c.set_clock(T);
+        // An earlier, still-live rival marker — on the MR's thread only.
+        c.add_note_body(
+            ItemKind::MergeRequest,
+            7,
+            42,
+            99,
+            "rival",
+            &claim_text("rival"),
+            T - 1,
+        );
+
+        assert!(
+            matches!(claim(&c, ItemKind::Issue, 7, &me()), Claimed::Won(_)),
+            "the MR's marker never reaches the issue's claim"
+        );
+        assert_eq!(claim(&c, ItemKind::MergeRequest, 7, &me()), Claimed::Lost);
     }
 
     /// The marker order is each note's **creation** time: a rival created before ours but
@@ -675,7 +710,7 @@ mod tests {
             T - 10,
             T + 9_000,
         );
-        assert_eq!(claim(&c, 7, &me()), Claimed::Lost);
+        assert_eq!(claim(&c, ItemKind::Issue, 7, &me()), Claimed::Lost);
 
         // Created after ours, edited before it: never a threat.
         let c = MockClient::new(1, "me");
@@ -691,7 +726,10 @@ mod tests {
             T + 10,
             T - 10,
         );
-        assert!(matches!(claim(&c, 7, &me()), Claimed::Won(_)));
+        assert!(matches!(
+            claim(&c, ItemKind::Issue, 7, &me()),
+            Claimed::Won(_)
+        ));
     }
 
     /// A failed re-read deletes our marker before propagating: the error is still the
@@ -716,7 +754,11 @@ mod tests {
         assert_eq!(err.stage(), "list notes");
 
         c.clear_failure();
-        assert!(markers_on(&c, 7).is_empty(), "{:?}", markers_on(&c, 7));
+        assert!(
+            markers_on(&c, ItemKind::Issue, 7).is_empty(),
+            "{:?}",
+            markers_on(&c, ItemKind::Issue, 7)
+        );
         assert_eq!(deleted(&c).len(), 1);
     }
 
@@ -740,7 +782,7 @@ mod tests {
                 T - age,
             );
 
-            let outcome = claim(&c, 7, &me());
+            let outcome = claim(&c, ItemKind::Issue, 7, &me());
             assert_eq!(
                 matches!(outcome, Claimed::Lost),
                 blocks,
@@ -862,7 +904,7 @@ mod tests {
             c.has_label(ItemKind::Issue, 7, "afkd::ready"),
             "the source label is kept"
         );
-        assert!(markers_on(&c, 7).is_empty());
+        assert!(markers_on(&c, ItemKind::Issue, 7).is_empty());
         assert_eq!(
             c.assignee_ids(ItemKind::Issue, 7),
             vec![99],
@@ -892,7 +934,7 @@ mod tests {
             ["gitlab remove label: no response (mock failure)"]
         );
         assert!(c.assignee_ids(ItemKind::Issue, 7).is_empty());
-        assert!(markers_on(&c, 7).is_empty());
+        assert!(markers_on(&c, ItemKind::Issue, 7).is_empty());
     }
 
     /// The reaper's key handling over the shapes it can be handed: a well-formed
@@ -922,7 +964,10 @@ mod tests {
             ),
             Some(true)
         );
-        assert!(markers_on(&c, 7).is_empty(), "the marker was reaped");
+        assert!(
+            markers_on(&c, ItemKind::Issue, 7).is_empty(),
+            "the marker was reaped"
+        );
         assert!(!c.has_label(ItemKind::Issue, 7, CLAIMED_LABEL));
         assert_eq!(c.assignee_ids(ItemKind::Issue, 7), vec![99]);
 
@@ -989,13 +1034,13 @@ mod tests {
     }
 
     #[test]
-    fn do_action_comment_posts_the_text() {
+    fn do_action_comment_posts_the_text_on_the_kind() {
         let c = MockClient::new(1, "me");
-        c.add_issue(3, "T", "B", &[]);
+        c.add_mr(3, 1, "me", "topic");
         do_action(
             &c,
             &project(),
-            ItemKind::Issue,
+            ItemKind::MergeRequest,
             3,
             &LifecycleAction::Comment("handled by afkd".into()),
             &me(),
@@ -1004,7 +1049,8 @@ mod tests {
         .unwrap();
         assert!(c.actions().iter().any(|a| matches!(
             a,
-            Action::Comment { kind: ItemKind::Issue, body, .. } if body == "handled by afkd"
+            Action::Comment { kind: ItemKind::MergeRequest, body, .. }
+                if body == "handled by afkd"
         )));
     }
 
@@ -1043,17 +1089,17 @@ mod tests {
         // A `@{run:…}` comment posts the rendered facts at run end (ADR-0064), the fire's
         // own run directory name among them.
         let c = MockClient::new(1, "me");
-        c.add_issue(3, "T", "B", &[]);
+        c.add_mr(3, 1, "me", "topic");
         let facts = Facts {
             duration_ms: 5_000,
             cost: 1.5,
             turns: Some(3),
-            run_name: Some("260722-141802-issue-3-1".into()),
+            run_name: Some("260722-141802-mr-3-1".into()),
         };
         do_action(
             &c,
             &project(),
-            ItemKind::Issue,
+            ItemKind::MergeRequest,
             3,
             &LifecycleAction::Comment(
                 "done in @{run:duration} — @{run:cost}, @{run:turns} turns — \
@@ -1067,9 +1113,9 @@ mod tests {
         assert!(
             c.actions().iter().any(|a| matches!(
                 a,
-                Action::Comment { body, .. }
+                Action::Comment { kind: ItemKind::MergeRequest, body, .. }
                     if body == "done in 5.00s — $1.50, 3 turns — \
-                                log: .afkd/runs/afkd::selfdev/260722-141802-issue-3-1/run.log"
+                                log: .afkd/runs/afkd::selfdev/260722-141802-mr-3-1/run.log"
             )),
             "{:?}",
             c.actions()
@@ -1077,8 +1123,8 @@ mod tests {
     }
 
     /// The env and key spellings the skill and the claim journal read, pinned: the
-    /// credentials under their `GITLAB_*` names, and the thread and journal key built from
-    /// the raw project setting, not its encoded form.
+    /// credentials and per-unit names under their `GITLAB_*` spellings, and the thread and
+    /// journal key built from the raw project setting, not its encoded form.
     #[test]
     fn the_env_and_key_spellings_are_the_built_ins() {
         let cfg = GitlabConfig {
@@ -1095,6 +1141,15 @@ mod tests {
                 ),
                 ("GITLAB_TOKEN".to_string(), "PAT".to_string()),
             ])
+        );
+        assert_eq!(
+            [ENV_PROJECT, ENV_ISSUE_NUMBER, ENV_MR_NUMBER, ENV_MR_BRANCH],
+            [
+                "GITLAB_PROJECT",
+                "GITLAB_ISSUE_NUMBER",
+                "GITLAB_MR_NUMBER",
+                "GITLAB_MR_BRANCH"
+            ]
         );
         let project = Project::new("acme/sub.group/widgets");
         assert_eq!(unit_key(&project, 7), "acme/sub.group/widgets#7");

@@ -109,10 +109,10 @@ fn hello_refuses_what_it_cannot_arm_with() {
     claim_cost["on_claim"] = json!({"comment": ["claimed; budget @{run:cost}"]});
     for (kind, proto, settings, sentence) in [
         (
-            "gitlab_mr_review",
+            "gitlab_mr",
             1,
             settings(&fake),
-            "kind `gitlab_mr_review` is not provided by @afkd/gitlab",
+            "kind `gitlab_mr` is not provided by @afkd/gitlab",
         ),
         (
             "gitea",
@@ -139,6 +139,14 @@ fn hello_refuses_what_it_cannot_arm_with() {
             2,
             settings(&fake),
             "afkd speaks plugin protocol 2, and this plugin speaks 1",
+        ),
+        (
+            "gitlab_mr_review",
+            1,
+            json!({"base_url": fake.base_url(), "project": "", "token": TOKEN,
+                   "author_me": true}),
+            "trigger gitlab_mr_review: setting `project`: a gitlab trigger needs a `project` \
+             (numeric id or path-with-namespace)",
         ),
     ] {
         let mut plugin = Plugin::spawn();
@@ -711,5 +719,461 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
         stderr.contains("did not fit afkd's 64 KiB plugin line"),
         "{stderr}"
     );
+    plugin.finish();
+}
+
+// --- gitlab_mr_review ---
+
+/// The MR's source branch: non-ASCII, and crossing to the run verbatim.
+const BRANCH: &str = "feature/重试-backoff";
+/// The human's review note on MR !7: multi-line, with an indented code line and a trailing
+/// newline the brief trims.
+const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max_backoff = 0\n";
+
+/// A project with the bot's own MR !7 on [`BRANCH`], a human assigned to it, and the
+/// human's review note two minutes old — new feedback, since the bot has not spoken.
+/// Returns the fake and the note's id.
+fn mr_forge() -> (FakeGitlab, u64) {
+    let fake = FakeGitlab::start(ME_ID, ME);
+    fake.user(99, HUMAN);
+    fake.mr(PROJECT, 7, ME, BRANCH, &[HUMAN]);
+    let review = fake.mr_note(PROJECT, 7, HUMAN, REVIEW, 120);
+    (fake, review)
+}
+
+/// A full `gitlab_mr_review` block, lowered to JSON as afkd lowers it — `author_me` a bare
+/// flag — and afkd's own three keys along for the ride.
+fn mr_settings(fake: &FakeGitlab) -> Value {
+    json!({
+        "base_url": fake.base_url(),
+        "project": PROJECT,
+        "token": TOKEN,
+        "author_me": true,
+        "poll_interval": "30s",
+        "max_attempts": "1",
+        "follow_comments": "2m",
+        "on_claim": {"assign_me": [true], "label_add": ["afkd::reviewing"]},
+        "on_done": {"label_remove": ["afkd::reviewing"]},
+        "on_fail": {"label_remove": ["afkd::reviewing"], "unassign": [true], "comment": [
+            "Stopped after @{run:duration} for @{run:cost} — log: .afkd/runs/@{run:name}/run.log"
+        ]},
+    })
+}
+
+/// The `finish` envelope's facts for an MR round, as afkd writes them.
+fn mr_facts(signal: &str, reason: Option<&str>) -> Value {
+    json!({"signal": signal, "reason": reason, "duration_ms": 168000, "cost": 0.4217,
+           "turns": 12, "tokens": null, "run_name": "260925-095800-mr-7-1"})
+}
+
+/// The ids of the claim markers on an MR.
+fn mr_markers(fake: &FakeGitlab, iid: u64) -> Vec<u64> {
+    fake.mr_notes(PROJECT, iid)
+        .into_iter()
+        .filter(|n| n.body.starts_with("[afkd-claim]"))
+        .map(|n| n.id)
+        .collect()
+}
+
+/// Whether the fake saw a write — anything but a `GET`.
+fn wrote(fake: &FakeGitlab) -> bool {
+    fake.seen().iter().any(|r| r.method != "GET")
+}
+
+#[test]
+fn mr_hello_lists_release_renew_comments() {
+    let (fake, _) = mr_forge();
+    let mut plugin = Plugin::spawn();
+    assert_eq!(
+        plugin.hello("gitlab_mr_review", mr_settings(&fake)),
+        json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
+    );
+    assert!(fake.seen().is_empty(), "hello touches no forge");
+    plugin.finish();
+}
+
+/// The won race over an MR with new human feedback hands over exactly the unit the
+/// built-in would have run: its journal key and session thread, the claim-time thread as
+/// `seen`, its identity, the five env names the skill reads with the branch verbatim, and
+/// the scratch layout with the review brief unframed. Every write went to the MR's own
+/// paths. A second poll, the claim still live, hands over nothing: our own older marker
+/// out-orders the new one, which is taken straight back.
+#[test]
+fn mr_a_won_race_hands_over_the_built_ins_unit() {
+    let (fake, review) = mr_forge();
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let marker = mr_markers(&fake, 7);
+    assert_eq!(marker.len(), 1, "one marker, ours");
+    assert_eq!(
+        reply["unit"],
+        json!({
+            "id": "7",
+            "key": format!("acme/sub.group/widgets#7#{}", marker[0]),
+            "thread": "acme/sub.group/widgets#7",
+            "seen": [review.to_string()],
+            "self": ME,
+            "env": {
+                "GITLAB_BASE_URL": fake.base_url(),
+                "GITLAB_MR_BRANCH": BRANCH,
+                "GITLAB_MR_NUMBER": "7",
+                "GITLAB_PROJECT": PROJECT,
+                "GITLAB_TOKEN": TOKEN,
+            },
+            "files": [
+                {"path": "task.md", "text": "Address review feedback on MR !7.\n\n\
+                    ## New feedback\n\n**陳大文:** 看起来不对 🚨 — the cap never applies:\n\n    \
+                    max_backoff = 0\n"},
+                {"path": "mr/number", "text": "7"},
+            ],
+        })
+    );
+
+    let mr = fake.mr_state(PROJECT, 7);
+    assert_eq!(mr.labels, ["afkd::claimed", "afkd::reviewing"]);
+    assert_eq!(mr.assignees, [HUMAN, ME], "the human was kept");
+    let seen = fake.seen();
+    let list = seen
+        .iter()
+        .find(|r| r.path == format!("/api/v4/projects/{ENCODED}/merge_requests"))
+        .expect("the MRs were listed");
+    assert_eq!(list.query, [("state".to_string(), "opened".to_string())]);
+    let mr_path = format!("/api/v4/projects/{ENCODED}/merge_requests/7");
+    assert!(
+        seen.iter()
+            .filter(|r| r.method != "GET")
+            .all(|r| r.path.starts_with(&mr_path)),
+        "a write left the MR's paths: {seen:?}"
+    );
+    assert!(seen.iter().all(|r| !r.path.contains("/issues")), "{seen:?}");
+
+    assert_eq!(plugin.poll(), json!({"fire": false}), "the claim is live");
+    assert_eq!(
+        mr_markers(&fake, 7),
+        marker,
+        "the second marker was taken back"
+    );
+    plugin.finish();
+}
+
+/// A live rival marker a minute older out-orders ours: nothing is handed over, our marker
+/// is taken back, and no status is written.
+#[test]
+fn mr_a_lost_race_hands_over_nothing_and_takes_its_marker_back() {
+    let (fake, _) = mr_forge();
+    let rival = fake.mr_note(PROJECT, 7, "autocoder", "[afkd-claim] owner=autocoder", 60);
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    assert_eq!(
+        mr_markers(&fake, 7),
+        [rival],
+        "only the rival's marker is left"
+    );
+    let mr = fake.mr_state(PROJECT, 7);
+    assert!(mr.labels.is_empty(), "{:?}", mr.labels);
+    assert_eq!(mr.assignees, [HUMAN]);
+    assert!(
+        fake.seen().iter().all(|r| r.method != "PUT"),
+        "no status write: {:?}",
+        fake.seen()
+    );
+    plugin.finish();
+}
+
+/// The bot has answered the human's note, and nothing newer has arrived: the MR is idle,
+/// and the poll posts nothing at all.
+#[test]
+fn mr_with_no_new_feedback_does_not_fire() {
+    let (fake, _) = mr_forge();
+    fake.mr_note(PROJECT, 7, ME, "Pushed 3f2a1c: the cap applies now.", 30);
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    assert!(
+        !wrote(&fake),
+        "an idle MR is never claimed: {:?}",
+        fake.seen()
+    );
+    plugin.finish();
+}
+
+/// The only note newer than the bot's reply is a rival's claim marker — a stale one, over
+/// an hour old, so it could never win a race. Nothing is posted, which proves the MR was
+/// refused as having no new feedback rather than lost to the marker.
+#[test]
+fn mr_whose_only_new_note_is_a_claim_marker_does_not_fire() {
+    let fake = FakeGitlab::start(ME_ID, ME);
+    fake.mr(PROJECT, 7, ME, BRANCH, &[]);
+    fake.mr_note(PROJECT, 7, HUMAN, REVIEW, 7_400);
+    fake.mr_note(PROJECT, 7, ME, "Pushed 3f2a1c: the cap applies now.", 7_300);
+    fake.mr_note(
+        PROJECT,
+        7,
+        "autocoder",
+        "[afkd-claim] owner=autocoder",
+        3_700,
+    );
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    assert!(!wrote(&fake), "a marker is not feedback: {:?}", fake.seen());
+    plugin.finish();
+}
+
+/// Under `author_me` a human's MR is passed over, feedback and all, and nothing is
+/// posted; a service armed without the flag, on the same forge, claims it.
+#[test]
+fn mr_author_me_filters_foreign_mrs() {
+    let fake = FakeGitlab::start(ME_ID, ME);
+    fake.mr(PROJECT, 8, HUMAN, "fix/y", &[]);
+    fake.mr_note(PROJECT, 8, "álvaro", "Exponential, please — see §4 🙏", 60);
+
+    let mut mine = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    assert_eq!(mine.poll(), json!({"fire": false}));
+    assert!(!wrote(&fake), "{:?}", fake.seen());
+    mine.finish();
+
+    let mut settings = mr_settings(&fake);
+    settings.as_object_mut().unwrap().remove("author_me");
+    let mut anyone = Plugin::armed_as("gitlab_mr_review", settings);
+    let unit = anyone.poll()["unit"].clone();
+    assert_eq!(unit["id"], "8");
+    assert_eq!(unit["env"]["GITLAB_MR_BRANCH"], "fix/y");
+    anyone.finish();
+}
+
+#[test]
+fn mr_renew_rewrites_the_marker_in_place() {
+    let (fake, _) = mr_forge();
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let marker = mr_markers(&fake, 7)[0];
+    let note = |fake: &FakeGitlab| {
+        fake.mr_notes(PROJECT, 7)
+            .into_iter()
+            .find(|n| n.id == marker)
+            .expect("the marker")
+    };
+    let before = note(&fake);
+    fake.advance(300);
+    assert_eq!(
+        plugin.call(json!({"call": "renew", "key": unit["key"], "renewal": 1})),
+        json!({"ok": true})
+    );
+    let after = note(&fake);
+    assert_eq!(after.body, "[afkd-claim] owner=björn-öst[bot] renewal=1");
+    assert_eq!(after.created, before.created);
+    assert_eq!(
+        after.updated,
+        before.updated + 300,
+        "the liveness stamp moved"
+    );
+    let put = fake
+        .seen()
+        .into_iter()
+        .rfind(|r| r.method == "PUT")
+        .unwrap();
+    assert_eq!(
+        put.path,
+        format!("/api/v4/projects/{ENCODED}/merge_requests/7/notes/{marker}")
+    );
+    plugin.finish();
+}
+
+/// `comments` reports what afkd has not been told about: the claim-time review note
+/// (`seen`), the marker and the bot's own reply are left out; a second read carries only
+/// what is new; and a forge that cannot be read is `null`.
+#[test]
+fn mr_comments_report_what_afkd_has_not_seen() {
+    let (fake, _) = mr_forge();
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let read = |plugin: &mut Plugin| plugin.call(json!({"call": "comments", "key": unit["key"]}));
+
+    fake.advance(60);
+    let a = fake.mr_note(PROJECT, 7, HUMAN, "还有 — the jitter too.\n", 0);
+    fake.advance(1);
+    fake.mr_note(PROJECT, 7, ME, "On it.", 0);
+    fake.advance(1);
+    let b = fake.mr_note(PROJECT, 7, "álvaro", "Exponential, please — see §4 🙏", 0);
+    assert_eq!(
+        read(&mut plugin),
+        json!({"comments": [
+            {"id": a.to_string(), "author": HUMAN, "author_name": HUMAN,
+             "body": "还有 — the jitter too.\n", "at": "2026-09-25T09:59:00Z"},
+            {"id": b.to_string(), "author": "álvaro", "author_name": "álvaro",
+             "body": "Exponential, please — see §4 🙏", "at": "2026-09-25T09:59:02Z"},
+        ]})
+    );
+
+    fake.advance(30);
+    let c = fake.mr_note(PROJECT, 7, "álvaro", "…and cap it at 30s.", 0);
+    let reply = read(&mut plugin);
+    assert_eq!(reply["comments"].as_array().unwrap().len(), 1);
+    assert_eq!(reply["comments"][0]["id"], c.to_string());
+
+    fake.fail("list notes", 500);
+    assert_eq!(read(&mut plugin), json!({"comments": null}));
+    assert!(
+        plugin
+            .stderr_soon("list notes")
+            .contains("afkd-gitlab: gitlab list notes: forge returned status 500"),
+        "{}",
+        plugin.stderr()
+    );
+    plugin.finish();
+}
+
+/// `release` undoes a claim in full — the status label, the bot's assignment (the human's
+/// is kept) and the marker — whether afkd hands a live unit straight back or its reaper
+/// sends a crashed run's key to a fresh child, before any poll. A pre-marker key names
+/// nothing (`null`).
+#[test]
+fn mr_release_undoes_the_claim_in_full() {
+    let (fake, _) = mr_forge();
+    let mut first = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let live = first.poll()["unit"]["key"].clone();
+    assert_eq!(
+        first.call(json!({"call": "release", "key": live})),
+        json!({"released": true})
+    );
+    let mr = fake.mr_state(PROJECT, 7);
+    assert_eq!(mr.labels, ["afkd::reviewing"], "only the status label goes");
+    assert_eq!(mr.assignees, [HUMAN], "only afkd let go");
+    assert!(mr_markers(&fake, 7).is_empty());
+
+    // Claimed again, then the child dies mid-run.
+    let crashed = first.poll()["unit"]["key"].clone();
+    assert_eq!(fake.mr_state(PROJECT, 7).assignees, [HUMAN, ME]);
+    drop(first);
+
+    let mut fresh = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let from = fake.seen().len();
+    assert_eq!(
+        fresh.call(json!({"call": "release", "key": crashed})),
+        json!({"released": true})
+    );
+    let seen = fake.seen();
+    assert_eq!(seen[from].path, "/api/v4/user", "the identity came first");
+    let mr = fake.mr_state(PROJECT, 7);
+    assert!(!mr.labels.contains(&"afkd::claimed".to_string()));
+    assert_eq!(mr.assignees, [HUMAN]);
+    assert!(mr_markers(&fake, 7).is_empty());
+
+    assert_eq!(
+        fresh.call(json!({"call": "release", "key": "acme/sub.group/widgets#7"})),
+        json!({"released": null})
+    );
+    fresh.finish();
+}
+
+/// A clean round runs `on_done` and drops the marker, and nothing closes the MR — a
+/// human's merge ends the loop.
+#[test]
+fn mr_a_clean_finish_runs_on_done_and_drops_the_marker() {
+    let (fake, _) = mr_forge();
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", mr_facts("proceed", None)),
+        json!({"ok": true})
+    );
+    let mr = fake.mr_state(PROJECT, 7);
+    assert_eq!(mr.labels, ["afkd::claimed"]);
+    assert_eq!(mr.state, "opened");
+    assert!(mr_markers(&fake, 7).is_empty());
+    assert!(
+        fake.seen().iter().all(|r| !r.body.contains("state_event")),
+        "{:?}",
+        fake.seen()
+    );
+    plugin.finish();
+}
+
+/// A failed round runs `on_fail`: the working label goes, only the bot is unassigned,
+/// and the comment carries the run's facts — 168000 ms is `2m48s`, 0.4217 is `$0.42`.
+#[test]
+fn mr_a_failed_finish_runs_on_fail() {
+    let (fake, review) = mr_forge();
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let reply = finish(
+        &mut plugin,
+        &unit,
+        "failed",
+        mr_facts("fault", Some("cargo test: 3 failed")),
+    );
+    assert_eq!(reply, json!({"ok": true}));
+    let mr = fake.mr_state(PROJECT, 7);
+    assert_eq!(mr.labels, ["afkd::claimed"]);
+    assert_eq!(mr.assignees, [HUMAN], "only afkd let go");
+    let said: Vec<(u64, String)> = fake
+        .mr_notes(PROJECT, 7)
+        .into_iter()
+        .map(|n| (n.id, n.body))
+        .collect();
+    assert_eq!(said[0], (review, REVIEW.to_string()));
+    assert_eq!(
+        said[1].1,
+        "Stopped after 2m48s for $0.42 — log: .afkd/runs/260925-095800-mr-7-1/run.log"
+    );
+    assert_eq!(said.len(), 2, "the marker went: {said:?}");
+    plugin.finish();
+}
+
+/// An `on_fail` that does not land is `held`: the marker still goes and the claim stays;
+/// afkd's later `release` undoes it. The comment `on_fail` posted before its `unassign`
+/// failed is the bot's last word, so the MR waits for the human — and once they reply,
+/// it is claimed afresh.
+#[test]
+fn mr_an_undelivered_finish_is_held_and_release_recovers_it() {
+    let (fake, _) = mr_forge();
+    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let key = unit["key"].as_str().unwrap().to_string();
+    fake.fail("set assignees", 500);
+
+    assert_eq!(
+        finish(&mut plugin, &unit, "failed", mr_facts("fault", None)),
+        json!({"ok": true, "held": true})
+    );
+    let stderr = plugin.stderr_soon("afkd holds the claim");
+    assert_eq!(
+        stderr,
+        format!(
+            "afkd-gitlab: gitlab set assignees: forge returned status 500\n\
+             afkd-gitlab: could not deliver the terminal lifecycle for {key}; afkd holds the \
+             claim and releases it on a later beat\n"
+        )
+    );
+    assert!(
+        mr_markers(&fake, 7).is_empty(),
+        "the marker goes regardless"
+    );
+    assert!(fake
+        .mr_state(PROJECT, 7)
+        .labels
+        .contains(&"afkd::claimed".to_string()));
+
+    fake.heal("set assignees");
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": key})),
+        json!({"released": true})
+    );
+    let mr = fake.mr_state(PROJECT, 7);
+    assert!(!mr.labels.contains(&"afkd::claimed".to_string()));
+    assert_eq!(mr.assignees, [HUMAN]);
+    assert_eq!(plugin.poll(), json!({"fire": false}), "the bot spoke last");
+
+    fake.advance(60);
+    fake.mr_note(
+        PROJECT,
+        7,
+        HUMAN,
+        "Still failing on CI — see the job log.",
+        0,
+    );
+    let again = plugin.poll()["unit"].clone();
+    assert_eq!(again["id"], "7", "claimed afresh");
+    assert_ne!(again["key"], unit["key"]);
     plugin.finish();
 }

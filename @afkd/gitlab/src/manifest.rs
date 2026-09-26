@@ -10,9 +10,10 @@
 use std::collections::BTreeMap;
 
 use crate::lifecycle::LIFECYCLE_KEYS;
-use crate::plugin::ISSUE_KIND;
+use crate::plugin::{ISSUE_KIND, MR_KIND};
 use crate::settings::{
-    ALLOWED_ISSUE_KEYS, DURATION_KEYS, REPEATABLE_ISSUE_KEYS, REQUIRED_ISSUE_KEYS,
+    ALLOWED_ISSUE_KEYS, ALLOWED_MR_KEYS, DURATION_KEYS, REPEATABLE_ISSUE_KEYS, REPEATABLE_MR_KEYS,
+    REQUIRED_ISSUE_KEYS, REQUIRED_MR_KEYS,
 };
 
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
@@ -129,16 +130,26 @@ fn a_manifest_declares_the_ported_vocabulary() {
         .iter()
         .map(|t| t.table["kind"][0].as_str())
         .collect();
-    assert_eq!(kinds, [ISSUE_KIND], "one kind");
+    assert_eq!(kinds, [ISSUE_KIND, MR_KIND]);
     for (trigger, (allowed, required, repeatable, run_kind, display_name, paths)) in
-        triggers.iter().zip([(
-            ALLOWED_ISSUE_KEYS,
-            REQUIRED_ISSUE_KEYS,
-            REPEATABLE_ISSUE_KEYS,
-            "issue",
-            "GitLab issues",
-            &["on_claim", "on_done", "on_fail"][..],
-        )])
+        triggers.iter().zip([
+            (
+                ALLOWED_ISSUE_KEYS,
+                REQUIRED_ISSUE_KEYS,
+                REPEATABLE_ISSUE_KEYS,
+                "issue",
+                "GitLab issues",
+                &["on_claim", "on_done", "on_fail"][..],
+            ),
+            (
+                ALLOWED_MR_KEYS,
+                REQUIRED_MR_KEYS,
+                REPEATABLE_MR_KEYS,
+                "mr",
+                "GitLab MRs",
+                &["on_claim", "on_done", "on_fail"][..],
+            ),
+        ])
     {
         let (kind, table) = (&trigger.table["kind"][0], trigger.table);
         assert_eq!(table["settings"], owned(allowed), "{kind}");

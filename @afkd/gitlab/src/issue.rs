@@ -351,6 +351,7 @@ mod tests {
             project: "group/widgets".into(),
             token: "PAT".into(),
             source_label: "afkd::ready".into(),
+            author_me: false,
             on_claim,
             on_done,
             on_fail,

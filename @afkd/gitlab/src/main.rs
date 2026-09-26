@@ -5,11 +5,13 @@
 //! replies and nothing else; every diagnostic goes to stderr, which afkd streams into the
 //! service log under `[@afkd/gitlab:err]`.
 //!
-//! The `gitlab` kind ([`issue`]) is the vendor half of afkd's built-in GitLab issue
-//! trigger, ported. It keeps the built-in's claim markers, lifecycle comments,
-//! claim-journal keys, session threads, run env and brief, so a claim either one left on a
-//! live issue is recognised, renewed and released by the other. `hello` names the kind, and
-//! [`plugin`] dispatches on it, so a second kind slots in beside this one.
+//! Two kinds, each the vendor half of one of afkd's built-in GitLab triggers, ported: the
+//! `gitlab` kind ([`issue`]) takes open, source-labelled issues, and the
+//! `gitlab_mr_review` kind ([`mr`]) takes the bot's open merge requests that carry
+//! feedback newer than its last word. Both keep the built-in's claim markers, lifecycle
+//! comments, claim-journal keys, session threads, run env and brief, so a claim either one
+//! left on a live issue or MR is recognised, renewed and released by the other. `hello`
+//! names the kind, and [`plugin`] dispatches on it.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -23,6 +25,7 @@ mod kind;
 mod lifecycle;
 #[cfg(test)]
 mod manifest;
+mod mr;
 mod plugin;
 mod rfc3339;
 mod run_ref;
@@ -41,7 +44,11 @@ pub(crate) const TASK_FILE: &str = "task.md";
 /// which issue a run belongs to.
 pub(crate) const ISSUE_DIR: &str = "issue";
 
-/// The file under [`ISSUE_DIR`] holding the bare iid.
+/// The scratch sub-location holding the bare MR iid, so the bundled skill can find which
+/// merge request a run belongs to.
+pub(crate) const MR_DIR: &str = "mr";
+
+/// The file under [`ISSUE_DIR`] or [`MR_DIR`] holding the bare iid.
 pub(crate) const NUMBER_FILE: &str = "number";
 
 fn main() {

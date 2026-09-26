@@ -1,16 +1,18 @@
 # `@afkd/gitlab`
 
-A **provider** plugin with one trigger kind, [`gitlab`](#gitlab-issues): it turns open
-issues on a GitLab project into afkd runs, and reflects progress back through each issue's
-assignees, labels and state. It also ships the `gitlab` skill an agent uses to answer the
-issue: read and post notes, fetch and post attachments, list the project's issues, and open
-a merge request.
+A **provider** plugin with two trigger kinds. [`gitlab`](#gitlab-issues) turns open issues
+on a GitLab project into afkd runs, and reflects progress back through each issue's
+assignees, labels and state. [`gitlab_mr_review`](#gitlab_mr_review-merge-request-review)
+re-fires a run on a merge request each time a human leaves a note newer than the bot's
+last word, for an automated review loop. The plugin also ships the `gitlab` skill an agent
+uses to answer the issue or merge request: read and post notes, fetch and post
+attachments, list the project's issues, and open a merge request.
 
-It is afkd's built-in GitLab issue trigger, moved out of afkd: the same keys, the same
-claim markers and lifecycle comments on the issue, the same claim-journal keys and session
-threads, the same run environment and the same brief. A claim the built-in left on a live
-issue is recognised, renewed and released by the plugin, and the other way round, so
-switching from one to the other strands nothing. The few places the plugin behaves
+It is afkd's two built-in GitLab triggers, moved out of afkd: the same keys, the same
+claim markers and lifecycle comments on the issue or merge request, the same claim-journal
+keys and session threads, the same run environment and the same brief. A claim the
+built-in left on a live issue or merge request is recognised, renewed and released by the
+plugin, and the other way round, so switching from one to the other strands nothing. The few places the plugin behaves
 differently are listed [at the end](#where-it-differs-from-the-built-in). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks.
 
@@ -31,7 +33,7 @@ $ afkd install /path/to/afkd-plugins/@afkd/gitlab
 afkd copies the tree and runs `cargo build --release --locked` in it, so the host needs a
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
 the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs). An afkd that
-still has `gitlab` compiled in refuses the install, because a plugin may not shadow a
+still has `gitlab` or `gitlab_mr_review` compiled in refuses the install, because a plugin may not shadow a
 built-in kind; use the built-in there, with exactly the same config.
 
 Run it on an afkd that understands a `held` finish (see
@@ -49,8 +51,9 @@ agent fixer { worker claude { model sonnet; skills @afkd/gitlab/gitlab } }
 
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
 `GITLAB_TOKEN`, `GITLAB_BASE_URL`, `GITLAB_PROJECT` and `GITLAB_ISSUE_NUMBER` every `gitlab`
-run carries, and falls back to the bare issue number under `issue/number` in the run's
-scratch directory.
+run carries — `GITLAB_MR_NUMBER` and `GITLAB_MR_BRANCH` in place of the issue number on a
+`gitlab_mr_review` run — and falls back to the bare number under `issue/number` or
+`mr/number` in the run's scratch directory.
 
 ## `gitlab` (issues)
 
@@ -174,6 +177,75 @@ interval **per running issue**, plus one at the end of each run, and nothing at 
 no run is in flight. All of this is afkd's own mid-run watch; the plugin only reads the
 thread for it.
 
+## `gitlab_mr_review` (merge-request review)
+
+Fires on open merge requests — optionally only the bot's own — and re-fires when a human
+leaves a note newer than the bot's last word, for an automated review loop.
+
+It takes the **same shared keys, lifecycle blocks, and defaults** (`max_attempts` `1`,
+`poll_interval` `30s`) and the required single `project` as [`gitlab`](#gitlab-issues)
+above. The one difference is the key it adds in place of `source_label`:
+
+| Key         | Value    | Notes                                                       |
+|-------------|----------|-------------------------------------------------------------|
+| `author_me` | (flag)   | restrict to the bot's own MRs; `source_label` is **not** a key here |
+
+**Cadence.** Polls the forge every `poll_interval` for the project's open merge requests,
+optionally narrowed to the bot's own via `author_me`. Concurrency, retries, and the `on_*`
+lifecycle actions behave as for `gitlab`.
+
+**When an MR fires.** Feedback is read from the MR's **notes** — GitLab has no separate
+review list. An MR is eligible when it carries **a note newer than the bot's last word**:
+the newest of the bot's own notes, by when it was last edited, is the watermark, and any
+other author's note touched after it is new feedback. An MR the bot has never spoken on
+counts all of its notes as new. Claim markers never count, the bot's own or a rival's. It
+is the agent's reply, posted through the skill, that answers a round; until it does, the
+same feedback fires the MR again on a later poll. A `comment` in `on_done` or `on_fail` is
+the bot speaking too, so it answers the round as well. The loop ends when a human merges or
+closes the MR, which drops it from the open set — so there is no `close` to put in
+`on_done`.
+
+**The claim.** The same `[afkd-claim]` marker as `gitlab`, kept alive while the run is and
+taken off the thread when it ends. The plugin adds `afkd::claimed` when it wins an MR, but
+here it is only **status**: the watermark, not the label, decides whether an MR is claimed
+again, so the label stays on the MR between rounds and nothing needs to remove it. There
+is no `on_park` and no clarification gate: a round either finishes (`on_done`) or fails
+(`on_fail`, which a parked round runs too).
+
+**The brief.** A run's `task.md` names the MR and carries the new feedback, oldest first,
+each note attributed to its author:
+
+```markdown
+Address review feedback on MR !7.
+
+## New feedback
+
+**陳大文:** the backoff never caps — see `retry.rs`
+
+**carol:** and the jitter is still zero
+```
+
+`follow_comments` works as for `gitlab`: afkd asks the plugin for the MR's notes while a
+round runs. The notes the brief was built from are never delivered again.
+
+```conf
+service reviews {
+  work_dir "/srv/acme/widgets"
+  trigger gitlab_mr_review {
+    base_url        "https://gitlab.example.com"
+    project         "group/widgets"
+    token           "REPLACE_ME"
+    author_me
+    follow_comments 60s
+
+    on_claim { assign_me; label_add "afkd::reviewing" }
+    on_done { label_remove "afkd::reviewing" }
+    on_fail { label_remove "afkd::reviewing"; unassign }
+  }
+  run { run_cmd "cat $AFKD_SCRATCH_DIR/task.md" }
+}
+```
+
 ## Where it differs from the built-in
 
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
@@ -184,7 +256,7 @@ few things. Each is deliberate, and none changes what a config means.
   block runs `assign_me`, `label_remove`, `label_add`, `comment`, `unassign`, `close`, with
   repeats in written order. That is the order every block on this page is written in; a
   block written otherwise — `on_done { close; label_add "shipped" }` — adds the label
-  before it closes, and if the add fails the issue is left open.
+  before it closes, and if the add fails the issue or merge request is left open.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd holds
   the block to the plugin's declared keys before the plugin ever runs. What it cannot see —
   an empty `project`, a `label_add` naming no label, a `comment` with no text, a
@@ -196,7 +268,9 @@ few things. Each is deliberate, and none changes what a config means.
   the claim and asks the plugin to release it — `afkd::claimed`, the bot's assignment and
   the marker — on a later beat, so the issue is retried from the top. This needs an afkd
   that understands `held`; an older one ignores it and treats the finish as delivered, and
-  the issue keeps `afkd::claimed` and the bot's assignment until a human clears them.
+  the issue keeps `afkd::claimed` and the bot's assignment until a human clears them. A
+  `gitlab_mr_review` MR is not held by its label, so one whose feedback is still
+  unanswered is claimed again by that feedback either way.
 - **The identity is looked up by whichever call needs it first.** A release unassigns the
   bot by its user id, and afkd may ask for a release before it ever polls — after a
   restart, for a claim a crashed run left. If GitLab will not say who the token belongs to,
@@ -204,14 +278,19 @@ few things. Each is deliberate, and none changes what a config means.
   waits for the identity.
 - **No stop mid-claim.** The built-in abandons a claim a shutdown lands in the middle of;
   the plugin cannot see afkd stop, so it finishes the claim, and afkd hands the unit
-  straight back with a release. The issue ends where the built-in leaves it.
+  straight back with a release. The issue or merge request ends where the built-in leaves
+  it.
 - **One reply is at most 64 KiB.** A brief longer than that is cut to fit, with a note at
-  the end telling the agent to read the whole issue through the skill. A thread with more
-  new notes than fit in one reply delivers the newest, and names the ones left out.
+  the end telling the agent to read the whole issue through the skill — the words are the
+  same on a merge request's brief, and the skill reads the MR's notes there. A thread with
+  more new notes than fit in one reply delivers the newest, and names the ones left out.
 - **One poll scans for at most 20 seconds.** afkd gives a plugin 60 seconds to answer a
   poll, and each claim attempt waits a second for a rival's marker to show, so a scan that
-  keeps losing races stops after 20 and leaves the rest of the issues for the next poll.
+  keeps losing races stops after 20 and leaves the rest of the issues or merge requests
+  for the next poll.
 - **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
   issue group/widgets#7` where the built-in's opens `# Work item from gitlab issue
-  group/widgets#7`, and a note delivered mid-run calls the issue "this work item" rather
-  than "this issue".
+  group/widgets#7` — and a review round's `# Work item from plugin mr group/widgets#7`
+  where the built-in's opens `# Work item from gitlab mr group/widgets#7` — and a note
+  delivered mid-run calls the issue or merge request "this work item" rather than "this
+  issue" or "this merge request".

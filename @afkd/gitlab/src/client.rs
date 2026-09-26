@@ -1,13 +1,13 @@
-//! The mockable GitLab client seam the issue kind drives, the plain value types it
+//! The mockable GitLab client seam both kinds drive, the plain value types it
 //! exchanges, the typed [`GitlabError`], the **real [`Gitlab`] HTTP client** over the
 //! `/api/v4` surface, and a `#[cfg(test)]` in-memory `MockClient` for offline tests.
 //!
-//! Ported from afkd's `crates/gitlab/src/client.rs`, issue side. All GitLab-specific
-//! knowledge lives here — every `/api/v4` endpoint path, every request payload, the
-//! `PRIVATE-TOKEN` credential, the project-id encoding, and the JSON shapes — so the
-//! version-drift blast radius is **one file**. Each endpoint carries a citing comment so a
-//! drift fix is a one-place edit. The plumbing underneath is [`crate::http`] and
-//! [`crate::rfc3339`].
+//! Ported from afkd's `crates/gitlab/src/client.rs`, issue and merge-request sides. All
+//! GitLab-specific knowledge lives here — every `/api/v4` endpoint path, every request
+//! payload, the `PRIVATE-TOKEN` credential, the project-id encoding, and the JSON shapes —
+//! so the version-drift blast radius is **one file**. Each endpoint carries a citing
+//! comment so a drift fix is a one-place edit. The plumbing underneath is [`crate::http`]
+//! and [`crate::rfc3339`].
 //!
 //! GitLab diverges from Gitea in the deepest places: identity is an id **and** a username
 //! ([`User`]), an item's path segment is chosen by an [`ItemKind`], assignment writes
@@ -15,7 +15,7 @@
 //! to the item they sit on. A project id is a numeric id or a URL-encoded
 //! path-with-namespace ([`encode_project`]).
 //!
-//! The seam ([`GitlabClient`]) carries only what the kind needs, **by meaning**; the REST
+//! The seam ([`GitlabClient`]) carries only what the kinds need, **by meaning**; the REST
 //! shape stays confined to the [`Gitlab`] adapter. The response *parsing* is split into
 //! pure functions tested with no network, and the HTTP layer itself is exercised only
 //! against a loopback `Stub` (no external host).
@@ -67,21 +67,25 @@ pub(crate) struct User {
     pub(crate) username: String,
 }
 
-/// Which resource an item is. Threaded through the claim and the lifecycle so every
-/// item call builds its path from one place — the built-in's split between
-/// `/issues/:iid` and `/merge_requests/:iid`, of which this kind uses the first. [`Hash`]
-/// because the mock keys its note threads on `(kind, iid)`.
+/// Which resource an item is: an issue or a merge request. Threaded through the claim and
+/// the lifecycle so one set of calls drives both of GitLab's distinct `/issues/:iid` and
+/// `/merge_requests/:iid` paths. [`Hash`] because the mock keys its note threads on
+/// `(kind, iid)` — an issue and an MR sharing one iid are two distinct threads on the
+/// forge, and must be here too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ItemKind {
     /// An issue (`/projects/:id/issues/:iid`).
     Issue,
+    /// A merge request (`/projects/:id/merge_requests/:iid`).
+    MergeRequest,
 }
 
 impl ItemKind {
-    /// The path segment for this kind.
+    /// The path segment for this kind (`issues` / `merge_requests`).
     pub(crate) fn path(&self) -> &'static str {
         match self {
             ItemKind::Issue => "issues",
+            ItemKind::MergeRequest => "merge_requests",
         }
     }
 }
@@ -107,6 +111,19 @@ impl Issue {
     pub(crate) fn has_label(&self, name: &str) -> bool {
         self.labels.iter().any(|l| l == name)
     }
+}
+
+/// A merge request: the unit of work the MR kind iterates. Only what the kind reads —
+/// the listing is filtered to open MRs server-side, and the lifecycle reads assignees
+/// through the item calls, not off this record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MergeRequest {
+    /// The project-scoped MR id (`iid`).
+    pub(crate) iid: u64,
+    /// The MR's source branch (the pushed branch the review run checks out).
+    pub(crate) source_branch: String,
+    /// The MR author (matched by username against the bot for `author_me`).
+    pub(crate) author: User,
 }
 
 /// A **note** (comment) on an item, with its author and its two times.
@@ -203,7 +220,7 @@ impl HttpError for GitlabError {
     }
 }
 
-/// The GitLab operations the kind needs, by meaning (not by REST shape).
+/// The GitLab operations the kinds need, by meaning (not by REST shape).
 pub(crate) trait GitlabClient {
     /// Resolve the authenticated user (id + username) — `GET /user`.
     fn current_user(&self) -> Result<User, GitlabError>;
@@ -217,7 +234,11 @@ pub(crate) trait GitlabClient {
         labels: &str,
     ) -> Result<Vec<Issue>, GitlabError>;
 
-    /// Read the assignees of one item — `GET /projects/:id/issues/:iid`.
+    /// List a project's open merge requests —
+    /// `GET /projects/:id/merge_requests?state=opened`.
+    fn list_open_mrs(&self, project: &Project) -> Result<Vec<MergeRequest>, GitlabError>;
+
+    /// Read the assignees of one item — `GET /projects/:id/{issues|merge_requests}/:iid`.
     fn get_assignees(
         &self,
         project: &Project,
@@ -226,7 +247,7 @@ pub(crate) trait GitlabClient {
     ) -> Result<Vec<User>, GitlabError>;
 
     /// Replace an item's assignees (by id) —
-    /// `PUT /projects/:id/issues/:iid { assignee_ids }`.
+    /// `PUT /projects/:id/{issues|merge_requests}/:iid { assignee_ids }`.
     fn set_assignees(
         &self,
         project: &Project,
@@ -235,7 +256,8 @@ pub(crate) trait GitlabClient {
         ids: &[u64],
     ) -> Result<(), GitlabError>;
 
-    /// Add a label (by name) to an item — `PUT /projects/:id/issues/:iid { add_labels }`.
+    /// Add a label (by name) to an item —
+    /// `PUT /projects/:id/{issues|merge_requests}/:iid { add_labels }`.
     fn add_label(
         &self,
         project: &Project,
@@ -245,7 +267,7 @@ pub(crate) trait GitlabClient {
     ) -> Result<(), GitlabError>;
 
     /// Remove one label (by name) from an item —
-    /// `PUT /projects/:id/issues/:iid { remove_labels }`.
+    /// `PUT /projects/:id/{issues|merge_requests}/:iid { remove_labels }`.
     fn remove_label(
         &self,
         project: &Project,
@@ -255,7 +277,7 @@ pub(crate) trait GitlabClient {
     ) -> Result<(), GitlabError>;
 
     /// Set an item's state via a state event (`close`) —
-    /// `PUT /projects/:id/issues/:iid { state_event }`.
+    /// `PUT /projects/:id/{issues|merge_requests}/:iid { state_event }`.
     fn set_state(
         &self,
         project: &Project,
@@ -264,9 +286,9 @@ pub(crate) trait GitlabClient {
         event: &str,
     ) -> Result<(), GitlabError>;
 
-    /// List an item's notes — `GET /projects/:id/issues/:iid/notes`. The claim re-reads
-    /// them to decide who holds the item, and afkd's mid-run watch reads them through the
-    /// `comments` call.
+    /// List an item's notes — `GET /projects/:id/{issues|merge_requests}/:iid/notes`. The
+    /// claim re-reads them to decide who holds the item, the MR kind reads them for new
+    /// feedback, and afkd's mid-run watch reads them through the `comments` call.
     fn list_notes(
         &self,
         project: &Project,
@@ -276,7 +298,7 @@ pub(crate) trait GitlabClient {
 
     /// Post a literal comment (note) on an item, returning the created note (its id and
     /// creation time, which a claim marker needs to recognise and order its own word) —
-    /// `POST /projects/:id/issues/:iid/notes { body }`.
+    /// `POST /projects/:id/{issues|merge_requests}/:iid/notes { body }`.
     fn post_comment(
         &self,
         project: &Project,
@@ -286,8 +308,8 @@ pub(crate) trait GitlabClient {
     ) -> Result<Note, GitlabError>;
 
     /// Delete one note by id (releasing a claim marker) —
-    /// `DELETE /projects/:id/issues/:iid/notes/:note_id`. GitLab scopes the path to the
-    /// **item**, so the `kind`/`iid` ride along.
+    /// `DELETE /projects/:id/{issues|merge_requests}/:iid/notes/:note_id`. GitLab scopes
+    /// the path to the **item**, so the `kind`/`iid` ride along.
     fn delete_comment(
         &self,
         project: &Project,
@@ -297,9 +319,9 @@ pub(crate) trait GitlabClient {
     ) -> Result<(), GitlabError>;
 
     /// Rewrite one note's body by id (renewing a claim marker) —
-    /// `PUT /projects/:id/issues/:iid/notes/:note_id { body }`. Item-scoped like the
-    /// delete it sits beside, and it moves the note's `updated_at` — which is what a
-    /// rival's claim decision reads as liveness.
+    /// `PUT /projects/:id/{issues|merge_requests}/:iid/notes/:note_id { body }`.
+    /// Item-scoped like the delete it sits beside, and it moves the note's `updated_at` —
+    /// which is what a rival's claim decision reads as liveness.
     fn edit_comment(
         &self,
         project: &Project,
@@ -323,6 +345,9 @@ impl<T: GitlabClient> GitlabClient for std::sync::Arc<T> {
         labels: &str,
     ) -> Result<Vec<Issue>, GitlabError> {
         (**self).list_issues(project, state, labels)
+    }
+    fn list_open_mrs(&self, project: &Project) -> Result<Vec<MergeRequest>, GitlabError> {
+        (**self).list_open_mrs(project)
     }
     fn get_assignees(
         &self,
@@ -430,8 +455,8 @@ pub(crate) fn encode_project(project: &str) -> String {
     encode_segment(project)
 }
 
-/// The `/projects/:id/issues/:iid` path for an item — the shape every lifecycle write and
-/// every note call hangs off.
+/// The `/projects/:id/{issues|merge_requests}/:iid` path for an item — the shape every
+/// lifecycle write and every note call hangs off.
 fn item_path(project: &Project, kind: ItemKind, iid: u64) -> String {
     format!("/projects/{}/{}/{iid}", project.encoded(), kind.path())
 }
@@ -500,6 +525,21 @@ impl GitlabClient for Gitlab {
         parse_issues(stage, &body)
     }
 
+    fn list_open_mrs(&self, project: &Project) -> Result<Vec<MergeRequest>, GitlabError> {
+        let stage = "list merge requests";
+        // GET /api/v4/projects/:id/merge_requests?state=opened → the open MRs; a merged or
+        // closed MR leaves this set, which is what ends a review loop.
+        let req = self
+            .http
+            .request(
+                "GET",
+                &format!("/projects/{}/merge_requests", project.encoded()),
+            )
+            .query("state", "opened");
+        let body = self.http.send(stage, req)?;
+        parse_mrs(stage, &body)
+    }
+
     fn get_assignees(
         &self,
         project: &Project,
@@ -507,8 +547,8 @@ impl GitlabClient for Gitlab {
         iid: u64,
     ) -> Result<Vec<User>, GitlabError> {
         let stage = "get item";
-        // GET /api/v4/projects/:id/issues/:iid → the item (the assignee verbs read its
-        // assignees before replacing them).
+        // GET /api/v4/projects/:id/{issues|merge_requests}/:iid → the item (the assignee
+        // verbs read its assignees before replacing them).
         let body = self.http.get(stage, &item_path(project, kind, iid))?;
         parse_assignees(stage, &body)
     }
@@ -570,9 +610,9 @@ impl GitlabClient for Gitlab {
         iid: u64,
     ) -> Result<Vec<Note>, GitlabError> {
         let stage = "list notes";
-        // GET /api/v4/projects/:id/issues/:iid/notes → the item's notes (the claim's
-        // re-read, and the mid-run watch). Off the same `item_path` the note post and
-        // delete build from, so the kind routing cannot drift.
+        // GET /api/v4/projects/:id/{issues|merge_requests}/:iid/notes → the item's notes
+        // (the claim's re-read, and the mid-run watch). Off the same `item_path` the note
+        // post and delete build from, so the kind routing cannot drift.
         let body = self
             .http
             .get(stage, &format!("{}/notes", item_path(project, kind, iid)))?;
@@ -587,9 +627,9 @@ impl GitlabClient for Gitlab {
         text: &str,
     ) -> Result<Note, GitlabError> {
         let stage = "post comment";
-        // POST /api/v4/projects/:id/issues/:iid/notes { body } → a note (GitLab's
-        // comment). GitLab answers with the created note; it is decoded rather than
-        // discarded, so a claim marker can recognise and order its own word.
+        // POST /api/v4/projects/:id/{issues|merge_requests}/:iid/notes { body } → a note
+        // (GitLab's comment). GitLab answers with the created note; it is decoded rather
+        // than discarded, so a claim marker can recognise and order its own word.
         let req = self
             .http
             .request("POST", &format!("{}/notes", item_path(project, kind, iid)));
@@ -605,8 +645,8 @@ impl GitlabClient for Gitlab {
         note_id: u64,
     ) -> Result<(), GitlabError> {
         let stage = "delete comment";
-        // DELETE /api/v4/projects/:id/issues/:iid/notes/:note_id → drop ONE note, off
-        // the same `item_path` every other item write uses.
+        // DELETE /api/v4/projects/:id/{issues|merge_requests}/:iid/notes/:note_id → drop
+        // ONE note, off the same `item_path` every other item write uses.
         let req = self.http.request(
             "DELETE",
             &format!("{}/notes/{note_id}", item_path(project, kind, iid)),
@@ -623,8 +663,8 @@ impl GitlabClient for Gitlab {
         text: &str,
     ) -> Result<(), GitlabError> {
         let stage = "edit comment";
-        // PUT /api/v4/projects/:id/issues/:iid/notes/:note_id { body } → rewrite ONE
-        // note, off the same `item_path` the delete beside it builds from.
+        // PUT /api/v4/projects/:id/{issues|merge_requests}/:iid/notes/:note_id { body } →
+        // rewrite ONE note, off the same `item_path` the delete beside it builds from.
         let req = self.http.request(
             "PUT",
             &format!("{}/notes/{note_id}", item_path(project, kind, iid)),
@@ -651,6 +691,15 @@ pub(crate) fn parse_issues(stage: &'static str, body: &str) -> Result<Vec<Issue>
     Ok(GitlabError::as_array(stage, &value, "issues")?
         .iter()
         .filter_map(value_to_issue)
+        .collect())
+}
+
+/// Parse a merge-requests array into [`MergeRequest`]s.
+pub(crate) fn parse_mrs(stage: &'static str, body: &str) -> Result<Vec<MergeRequest>, GitlabError> {
+    let value = GitlabError::decode_json(stage, body)?;
+    Ok(GitlabError::as_array(stage, &value, "merge requests")?
+        .iter()
+        .filter_map(value_to_mr)
         .collect())
 }
 
@@ -726,6 +775,19 @@ fn value_to_issue(v: &Value) -> Option<Issue> {
             .unwrap_or("opened")
             .to_string(),
         labels: value_to_labels(v),
+    })
+}
+
+fn value_to_mr(v: &Value) -> Option<MergeRequest> {
+    let iid = v.get("iid")?.as_u64()?;
+    Some(MergeRequest {
+        iid,
+        source_branch: v
+            .get("source_branch")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        author: v.get("author").and_then(value_to_user).unwrap_or_default(),
     })
 }
 
@@ -853,16 +915,26 @@ mod mock {
         assignees: Vec<User>,
     }
 
-    /// An in-memory forge: tests seed issues and notes (each with an explicit timestamp),
-    /// drive the kind against it, and inspect the recorded [`Action`]s. A stage can be
-    /// made to fail, the second a posted note is stamped with can be frozen
-    /// ([`MockClient::set_clock`], which is what makes a *same-second* claim race
-    /// expressible), and a rival claim marker can be injected into the next note read to
-    /// exercise the lost-race path.
+    /// One seeded merge request, with the state, labels and assignees its trimmed record
+    /// leaves out.
+    struct SeededMr {
+        mr: MergeRequest,
+        state: String,
+        labels: Vec<String>,
+        assignees: Vec<User>,
+    }
+
+    /// An in-memory forge: tests seed issues, merge requests and notes (each with an
+    /// explicit timestamp), drive the kind against it, and inspect the recorded
+    /// [`Action`]s. A stage can be made to fail, the second a posted note is stamped with
+    /// can be frozen ([`MockClient::set_clock`], which is what makes a *same-second* claim
+    /// race expressible), and a rival claim marker can be injected into the next note read
+    /// to exercise the lost-race path.
     #[derive(Default)]
     pub(crate) struct MockClient {
         me: Mutex<User>,
         issues: Mutex<Vec<Seeded>>,
+        mrs: Mutex<Vec<SeededMr>>,
         /// Note threads, keyed by `(kind, iid)`.
         notes: Mutex<HashMap<(ItemKind, u64), Vec<Note>>>,
         actions: Mutex<Vec<Action>>,
@@ -937,6 +1009,37 @@ mod mock {
         pub(crate) fn close(&self, iid: u64) {
             self.mutate_item(ItemKind::Issue, iid, |_assignees, _labels, state| {
                 *state = "closed".to_string();
+            });
+        }
+
+        /// Seed an open MR authored by `(author_id, author_name)`, on `source_branch`, with
+        /// no labels or assignees.
+        pub(crate) fn add_mr(
+            &self,
+            iid: u64,
+            author_id: u64,
+            author_name: &str,
+            source_branch: &str,
+        ) {
+            lock(&self.mrs).push(SeededMr {
+                mr: MergeRequest {
+                    iid,
+                    source_branch: source_branch.to_string(),
+                    author: User {
+                        id: author_id,
+                        username: author_name.to_string(),
+                    },
+                },
+                state: "opened".to_string(),
+                labels: Vec::new(),
+                assignees: Vec::new(),
+            });
+        }
+
+        /// Merge or close a seeded MR, as a human does: it leaves the open set.
+        pub(crate) fn close_mr(&self, iid: u64) {
+            self.mutate_item(ItemKind::MergeRequest, iid, |_assignees, _labels, state| {
+                *state = "merged".to_string();
             });
         }
 
@@ -1068,6 +1171,10 @@ mod mock {
                     .iter()
                     .find(|s| s.issue.iid == iid)
                     .is_some_and(|s| s.issue.has_label(name)),
+                ItemKind::MergeRequest => lock(&self.mrs)
+                    .iter()
+                    .find(|s| s.mr.iid == iid)
+                    .is_some_and(|s| s.labels.iter().any(|l| l == name)),
             }
         }
 
@@ -1083,6 +1190,10 @@ mod mock {
                     .iter()
                     .find(|s| s.issue.iid == iid)
                     .map(|s| f(&s.assignees)),
+                ItemKind::MergeRequest => lock(&self.mrs)
+                    .iter()
+                    .find(|s| s.mr.iid == iid)
+                    .map(|s| f(&s.assignees)),
             }
         }
 
@@ -1097,6 +1208,11 @@ mod mock {
                 ItemKind::Issue => {
                     if let Some(s) = lock(&self.issues).iter_mut().find(|s| s.issue.iid == iid) {
                         f(&mut s.assignees, &mut s.issue.labels, &mut s.issue.state);
+                    }
+                }
+                ItemKind::MergeRequest => {
+                    if let Some(s) = lock(&self.mrs).iter_mut().find(|s| s.mr.iid == iid) {
+                        f(&mut s.assignees, &mut s.labels, &mut s.state);
                     }
                 }
             }
@@ -1134,6 +1250,15 @@ mod mock {
                 .filter(|i| state == "all" || i.state == state)
                 .filter(|i| labels.is_empty() || i.has_label(labels))
                 .cloned()
+                .collect())
+        }
+
+        fn list_open_mrs(&self, _project: &Project) -> Result<Vec<MergeRequest>, GitlabError> {
+            self.guard("list merge requests")?;
+            Ok(lock(&self.mrs)
+                .iter()
+                .filter(|s| s.state == "opened")
+                .map(|s| s.mr.clone())
                 .collect())
         }
 
@@ -1419,20 +1544,50 @@ mod mock {
         );
     }
 
+    /// A label write lands on the item its `kind` names: an issue and an MR sharing iid 3
+    /// are two items, and the MR's label never shows on the issue.
     #[test]
     fn label_add_then_remove_by_name_records_the_kind() {
         let c = MockClient::new(1, "me");
         c.add_issue(3, "T", "B", &[]);
-        c.add_label(&project(), ItemKind::Issue, 3, "afkd::claimed")
+        c.add_mr(3, 1, "me", "feature/x");
+        c.add_label(&project(), ItemKind::MergeRequest, 3, "afkd::claimed")
             .unwrap();
-        assert!(c.has_label(ItemKind::Issue, 3, "afkd::claimed"));
-        c.remove_label(&project(), ItemKind::Issue, 3, "afkd::claimed")
-            .unwrap();
+        assert!(c.has_label(ItemKind::MergeRequest, 3, "afkd::claimed"));
         assert!(!c.has_label(ItemKind::Issue, 3, "afkd::claimed"));
+        c.remove_label(&project(), ItemKind::MergeRequest, 3, "afkd::claimed")
+            .unwrap();
+        assert!(!c.has_label(ItemKind::MergeRequest, 3, "afkd::claimed"));
         assert!(c.actions().iter().any(|a| matches!(
             a,
-            Action::Unlabel { kind: ItemKind::Issue, name, .. } if name == "afkd::claimed"
+            Action::Unlabel { kind: ItemKind::MergeRequest, name, .. } if name == "afkd::claimed"
         )));
+    }
+
+    /// The open-MR listing is the open set only: a merged MR drops out of it, and the
+    /// listing has its own failure stage.
+    #[test]
+    fn list_open_mrs_lists_only_the_open_set() {
+        let c = MockClient::new(1, "me");
+        c.add_mr(7, 1, "me", "feature/重试-backoff");
+        c.add_mr(8, 2, "陳大文", "fix/y");
+        c.close_mr(8);
+        assert_eq!(
+            c.list_open_mrs(&project()).unwrap(),
+            [MergeRequest {
+                iid: 7,
+                source_branch: "feature/重试-backoff".into(),
+                author: User {
+                    id: 1,
+                    username: "me".into()
+                },
+            }]
+        );
+        c.fail("list merge requests");
+        assert_eq!(
+            c.list_open_mrs(&project()).unwrap_err().stage(),
+            "list merge requests"
+        );
     }
 
     #[test]
@@ -1453,11 +1608,11 @@ mod mock {
     #[test]
     fn post_then_delete_comment_round_trips_by_id() {
         let c = MockClient::new(7, "björn-öst[bot]");
-        c.add_note(ItemKind::Issue, 3, 42, 99, "josefandersson", 100);
+        c.add_note(ItemKind::MergeRequest, 3, 42, 99, "josefandersson", 100);
         let posted = c
             .post_comment(
                 &project(),
-                ItemKind::Issue,
+                ItemKind::MergeRequest,
                 3,
                 "[afkd-claim] owner=björn-öst[bot]\nheld until 12:00",
             )
@@ -1472,7 +1627,7 @@ mod mock {
         assert_eq!(posted.created_at, posted.updated_at);
         assert!(posted.created_at > UNIX_EPOCH + Duration::from_secs(100));
         assert_eq!(
-            c.list_notes(&project(), ItemKind::Issue, 3)
+            c.list_notes(&project(), ItemKind::MergeRequest, 3)
                 .unwrap()
                 .iter()
                 .map(|n| n.id)
@@ -1480,16 +1635,20 @@ mod mock {
             vec![42, posted.id],
             "the posted note joined the thread the claim re-reads"
         );
-        // It joined *that item's* thread: issue #4 is a separate one.
+        // It joined *that item's* thread: MR !4 is a separate one, and so is issue #3.
         assert!(c
-            .list_notes(&project(), ItemKind::Issue, 4)
+            .list_notes(&project(), ItemKind::MergeRequest, 4)
+            .unwrap()
+            .is_empty());
+        assert!(c
+            .list_notes(&project(), ItemKind::Issue, 3)
             .unwrap()
             .is_empty());
 
-        c.delete_comment(&project(), ItemKind::Issue, 3, posted.id)
+        c.delete_comment(&project(), ItemKind::MergeRequest, 3, posted.id)
             .unwrap();
         assert_eq!(
-            c.list_notes(&project(), ItemKind::Issue, 3)
+            c.list_notes(&project(), ItemKind::MergeRequest, 3)
                 .unwrap()
                 .iter()
                 .map(|n| n.id)
@@ -1498,7 +1657,7 @@ mod mock {
             "the deleted note left the thread"
         );
         assert!(c.actions().contains(&Action::DeleteComment {
-            kind: ItemKind::Issue,
+            kind: ItemKind::MergeRequest,
             iid: 3,
             id: posted.id,
         }));
@@ -1591,6 +1750,40 @@ mod parse_tests {
         let issues = parse_issues("list issues", body).unwrap();
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].labels, ["afkd::ready"]);
+    }
+
+    #[test]
+    fn parse_mrs_reads_source_branch_and_author() {
+        let body = r#"[
+            {"iid":12,"title":"修复 the retry storm 🚨","description":"","source_branch":"feature/重试-backoff",
+             "author":{"id":8,"username":"björn-öst[bot]"},"state":"opened","labels":["afkd::claimed"]},
+            {"iid":13,"source_branch":"fix/y"},
+            {"title":"no iid"}
+        ]"#;
+        let mrs = parse_mrs("list merge requests", body).unwrap();
+        assert_eq!(
+            mrs,
+            [
+                MergeRequest {
+                    iid: 12,
+                    source_branch: "feature/重试-backoff".into(),
+                    author: User {
+                        id: 8,
+                        username: "björn-öst[bot]".into()
+                    },
+                },
+                // A missing author is nobody (id 0, no username), as the built-in reads it
+                // — never `me`, so `author_me` skips it — and an entry with no `iid` is
+                // dropped rather than faulting the list.
+                MergeRequest {
+                    iid: 13,
+                    source_branch: "fix/y".into(),
+                    author: User::default(),
+                },
+            ]
+        );
+        let err = parse_mrs("list merge requests", r#"{"not":"array"}"#).unwrap_err();
+        assert_eq!(err.stage(), "list merge requests");
     }
 
     #[test]
@@ -1964,6 +2157,17 @@ mod http_tests {
     }
 
     #[test]
+    fn list_open_mrs_sends_state_opened() {
+        let stub = Stub::serve(ok_json("[]"));
+        let client = stub.client("t");
+        client.list_open_mrs(&project()).unwrap();
+        let req = stub.captured();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path(), "/api/v4/projects/acme%2Fwidgets/merge_requests");
+        assert!(req.has_query("state", "opened"));
+    }
+
+    #[test]
     fn get_assignees_reads_the_issue_item_path() {
         let stub = Stub::serve(ok_json(
             r#"{"iid":5,"assignees":[{"id":1,"username":"me"}]}"#,
@@ -1993,6 +2197,23 @@ mod http_tests {
             req.header("content-type").as_deref(),
             Some("application/json")
         );
+    }
+
+    #[test]
+    fn set_assignees_puts_the_assignee_ids_on_the_mr_path() {
+        let stub = Stub::serve(ok_json("{}"));
+        let client = stub.client("t");
+        client
+            .set_assignees(&project(), ItemKind::MergeRequest, 5, &[1])
+            .unwrap();
+        let req = stub.captured();
+        assert_eq!(req.method, "PUT");
+        // The MR path segment, not the issue one.
+        assert_eq!(
+            req.path(),
+            "/api/v4/projects/acme%2Fwidgets/merge_requests/5"
+        );
+        assert_eq!(req.json(), json!({"assignee_ids": [1]}));
     }
 
     #[test]
@@ -2035,56 +2256,82 @@ mod http_tests {
         assert_eq!(req.json(), json!({"state_event": "close"}));
     }
 
+    /// The notes list is `kind`-routed like every other item call: the MR kind reads the
+    /// `merge_requests` thread, the issue claim's re-read the `issues` one. A single
+    /// hard-coded path would silently read the wrong thread for one of them.
     #[test]
-    fn list_notes_reads_the_issue_notes_path() {
-        let stub = Stub::serve(ok_json("[]"));
-        let client = stub.client("t");
-        client.list_notes(&project(), ItemKind::Issue, 5).unwrap();
-        let req = stub.captured();
-        assert_eq!(req.method, "GET");
-        assert_eq!(req.path(), "/api/v4/projects/acme%2Fwidgets/issues/5/notes");
+    fn list_notes_reads_the_notes_path_of_each_kind() {
+        for (kind, path) in [
+            (
+                ItemKind::MergeRequest,
+                "/api/v4/projects/acme%2Fwidgets/merge_requests/5/notes",
+            ),
+            (
+                ItemKind::Issue,
+                "/api/v4/projects/acme%2Fwidgets/issues/5/notes",
+            ),
+        ] {
+            let stub = Stub::serve(ok_json("[]"));
+            let client = stub.client("t");
+            client.list_notes(&project(), kind, 5).unwrap();
+            let req = stub.captured();
+            assert_eq!(req.method, "GET");
+            assert_eq!(req.path(), path, "{kind:?}");
+        }
     }
 
-    /// The wire contract *and* the read-back: GitLab's `201` + created-note reply is
-    /// decoded into the id and creation time a claim marker needs. The body is a
-    /// multi-line, non-ASCII claim, and the stamps carry the fractional seconds GitLab
-    /// emits.
+    /// The wire contract *and* the read-back, on each kind's notes path: GitLab's `201` +
+    /// created-note reply is decoded into the id and creation time a claim marker needs.
+    /// The body is a multi-line, non-ASCII claim, and the stamps carry the fractional
+    /// seconds GitLab emits.
     #[test]
-    fn post_comment_posts_the_body_on_the_notes_path() {
-        let stub = Stub::serve(created_json(
-            r#"{"id":90210,"body":"[afkd-claim] owner=björn-öst[bot]\nheld until 12:00",
-                "author":{"id":7,"username":"björn-öst[bot]"},
-                "created_at":"2026-07-20T09:00:00.512Z","updated_at":"2026-07-20T09:00:00.512Z"}"#,
-        ));
-        let client = stub.client("t");
-        let posted = client
-            .post_comment(
-                &project(),
+    fn post_comment_posts_the_body_on_the_kind_notes_path() {
+        for (kind, path) in [
+            (
                 ItemKind::Issue,
-                5,
-                "[afkd-claim] owner=björn-öst[bot]\nheld until 12:00",
-            )
-            .unwrap();
-        assert_eq!(posted.id, 90210);
-        assert_eq!(posted.author.username, "björn-öst[bot]");
-        assert_eq!(
-            posted.body,
-            "[afkd-claim] owner=björn-öst[bot]\nheld until 12:00"
-        );
-        // Second granularity: the fractional part is dropped, and both stamps read alike.
-        assert_eq!(
-            posted.created_at,
-            UNIX_EPOCH + Duration::from_secs(1_784_538_000)
-        );
-        assert_eq!(posted.created_at, posted.updated_at);
+                "/api/v4/projects/acme%2Fwidgets/issues/5/notes",
+            ),
+            (
+                ItemKind::MergeRequest,
+                "/api/v4/projects/acme%2Fwidgets/merge_requests/5/notes",
+            ),
+        ] {
+            let stub = Stub::serve(created_json(
+                r#"{"id":90210,"body":"[afkd-claim] owner=björn-öst[bot]\nheld until 12:00",
+                    "author":{"id":7,"username":"björn-öst[bot]"},
+                    "created_at":"2026-07-20T09:00:00.512Z","updated_at":"2026-07-20T09:00:00.512Z"}"#,
+            ));
+            let client = stub.client("t");
+            let posted = client
+                .post_comment(
+                    &project(),
+                    kind,
+                    5,
+                    "[afkd-claim] owner=björn-öst[bot]\nheld until 12:00",
+                )
+                .unwrap();
+            assert_eq!(posted.id, 90210);
+            assert_eq!(posted.author.username, "björn-öst[bot]");
+            assert_eq!(
+                posted.body,
+                "[afkd-claim] owner=björn-öst[bot]\nheld until 12:00"
+            );
+            // Second granularity: the fractional part is dropped, and both stamps read
+            // alike.
+            assert_eq!(
+                posted.created_at,
+                UNIX_EPOCH + Duration::from_secs(1_784_538_000)
+            );
+            assert_eq!(posted.created_at, posted.updated_at);
 
-        let req = stub.captured();
-        assert_eq!(req.method, "POST");
-        assert_eq!(req.path(), "/api/v4/projects/acme%2Fwidgets/issues/5/notes");
-        assert_eq!(
-            req.json(),
-            json!({"body": "[afkd-claim] owner=björn-öst[bot]\nheld until 12:00"})
-        );
+            let req = stub.captured();
+            assert_eq!(req.method, "POST");
+            assert_eq!(req.path(), path, "{kind:?}");
+            assert_eq!(
+                req.json(),
+                json!({"body": "[afkd-claim] owner=björn-öst[bot]\nheld until 12:00"})
+            );
+        }
     }
 
     /// A reply that is not a note object (no `id`) is a staged decode error, not a
@@ -2111,47 +2358,61 @@ mod http_tests {
     }
 
     /// The delete path is **item**-scoped, hanging off the same `item_path` the POST
-    /// does.
+    /// does — so the `kind` routes the deletion exactly as it routes the post.
     #[test]
-    fn delete_comment_deletes_the_item_note_path() {
-        let stub = Stub::serve(no_content());
-        let client = stub.client("t");
-        client
-            .delete_comment(&project(), ItemKind::Issue, 5, 90210)
-            .unwrap();
-        let req = stub.captured();
-        assert_eq!(req.method, "DELETE");
-        assert_eq!(
-            req.path(),
-            "/api/v4/projects/acme%2Fwidgets/issues/5/notes/90210"
-        );
+    fn delete_comment_deletes_the_kind_note_path() {
+        for (kind, path) in [
+            (
+                ItemKind::Issue,
+                "/api/v4/projects/acme%2Fwidgets/issues/5/notes/90210",
+            ),
+            (
+                ItemKind::MergeRequest,
+                "/api/v4/projects/acme%2Fwidgets/merge_requests/5/notes/90210",
+            ),
+        ] {
+            let stub = Stub::serve(no_content());
+            let client = stub.client("t");
+            client.delete_comment(&project(), kind, 5, 90210).unwrap();
+            let req = stub.captured();
+            assert_eq!(req.method, "DELETE");
+            assert_eq!(req.path(), path, "{kind:?}");
+        }
     }
 
     /// The renewal's wire contract: a PUT on the **same** item-scoped note path the
-    /// DELETE uses, carrying the renewed body.
+    /// DELETE uses, carrying the renewed body — both kinds, so the routing cannot drift.
     #[test]
-    fn edit_comment_puts_the_item_note_path() {
-        let stub = Stub::serve(ok_json(r#"{"id":90210,"body":"x"}"#));
-        let client = stub.client("t");
-        client
-            .edit_comment(
-                &project(),
+    fn edit_comment_puts_the_kind_note_path() {
+        for (kind, path) in [
+            (
                 ItemKind::Issue,
-                5,
-                90210,
-                "[afkd-claim] owner=björn-öst[bot] renewal=7",
-            )
-            .unwrap();
-        let req = stub.captured();
-        assert_eq!(req.method, "PUT");
-        assert_eq!(
-            req.path(),
-            "/api/v4/projects/acme%2Fwidgets/issues/5/notes/90210"
-        );
-        assert_eq!(
-            req.json(),
-            json!({"body": "[afkd-claim] owner=björn-öst[bot] renewal=7"})
-        );
+                "/api/v4/projects/acme%2Fwidgets/issues/5/notes/90210",
+            ),
+            (
+                ItemKind::MergeRequest,
+                "/api/v4/projects/acme%2Fwidgets/merge_requests/5/notes/90210",
+            ),
+        ] {
+            let stub = Stub::serve(ok_json(r#"{"id":90210,"body":"x"}"#));
+            let client = stub.client("t");
+            client
+                .edit_comment(
+                    &project(),
+                    kind,
+                    5,
+                    90210,
+                    "[afkd-claim] owner=björn-öst[bot] renewal=7",
+                )
+                .unwrap();
+            let req = stub.captured();
+            assert_eq!(req.method, "PUT");
+            assert_eq!(req.path(), path, "{kind:?}");
+            assert_eq!(
+                req.json(),
+                json!({"body": "[afkd-claim] owner=björn-öst[bot] renewal=7"})
+            );
+        }
     }
 
     /// A reply that promises more body bytes (`Content-Length`) than it sends, then closes

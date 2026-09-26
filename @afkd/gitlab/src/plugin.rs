@@ -1,7 +1,7 @@
 //! The plugin's state across calls, and one handler per call: the thin layer between
-//! afkd's wire ([`crate::wire`]) and the armed kind's vendor half ([`crate::issue`],
-//! behind [`crate::kind`]). Everything here is written once, against the seam, so a
-//! second kind slots in beside the first.
+//! afkd's wire ([`crate::wire`]) and the armed kind's vendor half ([`crate::issue`] or
+//! [`crate::mr`], behind [`crate::kind`]). Everything here is written once, against the
+//! seam, so both kinds share every rule below.
 //!
 //! Three things the wire forces that the built-in never had to do:
 //!
@@ -27,14 +27,18 @@ use crate::client::{Gitlab, GitlabClient, User};
 use crate::common::{Clock, Diag};
 use crate::issue::IssueUnits;
 use crate::kind::{ClaimedUnit, Units};
+use crate::mr::MrUnits;
 use crate::rfc3339::format_utc;
-use crate::settings::{issue_config, GitlabConfig};
+use crate::settings::{issue_config, mr_review_config, GitlabConfig};
 use crate::wire::{
     fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
 };
 
 /// The issue kind.
 pub(crate) const ISSUE_KIND: &str = "gitlab";
+
+/// The merge-request review kind.
+pub(crate) const MR_KIND: &str = "gitlab_mr_review";
 
 /// What the process does with one request.
 #[derive(Debug, PartialEq)]
@@ -190,6 +194,10 @@ fn arm(
         ISSUE_KIND => {
             let cfg = issue_config(settings).map_err(fault)?;
             Box::new(Armed::new(IssueUnits::new(connect(&cfg), &cfg)))
+        }
+        MR_KIND => {
+            let cfg = mr_review_config(settings).map_err(fault)?;
+            Box::new(Armed::new(MrUnits::new(connect(&cfg), &cfg)))
         }
         _ => return Err(format!("kind `{kind}` is not provided by @afkd/gitlab")),
     })
@@ -504,16 +512,39 @@ mod tests {
         assert_eq!(f.mock.user_reads(), 0, "hello touches no forge");
     }
 
+    /// The MR kind lists the same three calls: it keeps the spine's default `classify`
+    /// (it never parks) and has no `attempt_failed` either, so both are refused.
+    #[test]
+    fn mr_hello_lists_exactly_the_calls_the_kind_answers() {
+        let mut f = Fixture::new();
+        let reply = f.call(json!({"call": "hello", "proto": 1, "kind": MR_KIND,
+                                  "service": "監視::reviews", "roster": ["監視::reviews"],
+                                  "owner": "陳大文",
+                                  "settings": {"project": PROJECT, "token": "PAT",
+                                               "author_me": true}}));
+        assert_eq!(
+            reply,
+            json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
+        );
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+        assert_eq!(f.mock.user_reads(), 0, "hello touches no forge");
+        assert_eq!(
+            f.call(json!({"call": "classify", "key": "k", "scratch": "/tmp/s",
+                          "outcome": "failed"})),
+            json!({"ok": false})
+        );
+    }
+
     /// Each refusal is `ok:false` with the problem, in the built-in's own words, on the
     /// diagnostic channel — and leaves the plugin unarmed.
     #[test]
     fn hello_refuses_what_the_kind_cannot_arm_with() {
         for (kind, proto, settings, problem) in [
             (
-                "gitlab_mr_review",
+                "gitlab_mr",
                 1,
                 settings(),
-                "kind `gitlab_mr_review` is not provided by @afkd/gitlab",
+                "kind `gitlab_mr` is not provided by @afkd/gitlab",
             ),
             (
                 "gitea",
@@ -547,6 +578,13 @@ mod tests {
                 1,
                 json!({"project": PROJECT, "token": "PAT", "on_done": {"label_add": [true]}}),
                 "trigger gitlab: setting `label_add`: `label_add` expects a label name",
+            ),
+            (
+                "gitlab_mr_review",
+                1,
+                json!({"project": "", "token": "PAT", "author_me": true}),
+                "trigger gitlab_mr_review: setting `project`: a gitlab trigger needs a \
+                 `project` (numeric id or path-with-namespace)",
             ),
         ] {
             let mut f = Fixture::new();

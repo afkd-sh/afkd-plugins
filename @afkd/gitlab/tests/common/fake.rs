@@ -1,16 +1,18 @@
 //! A stateful fake GitLab on a loopback socket: the `/api/v4` routes the plugin's client
-//! calls, over users, issues and notes the test seeds and then reads back. std and
-//! `serde_json` only, and nothing from the plugin crate, so another suite can
+//! calls, over users, issues, merge requests and notes the test seeds and then reads back.
+//! std and `serde_json` only, and nothing from the plugin crate, so another suite can
 //! `#[path]`-include it.
 //!
-//! It models the GitLab behaviours the kind depends on: a project is addressed by its
+//! It models the GitLab behaviours the kinds depend on: a project is addressed by its
 //! path-with-namespace percent-encoded into one `:id` segment; the issue listing filters on
-//! `state` and on **every** comma-listed label; an issue `PUT` replaces the whole assignee
-//! set (`assignee_ids`), adds and removes labels by name (`add_labels`/`remove_labels`, a
-//! label springing into being on first use) and closes on `state_event=close`; notes are
-//! scoped to their issue, carry separate `created_at` and `updated_at` stamped from a clock
-//! the test moves, and an edit moves only the second; a note that does not exist is a
-//! `404`. Every request is recorded, and any route can be made to answer a status instead.
+//! `state` and on **every** comma-listed label, the merge-request listing on `state`; an
+//! item `PUT` — issue or MR alike — replaces the whole assignee set (`assignee_ids`), adds
+//! and removes labels by name (`add_labels`/`remove_labels`, a label springing into being
+//! on first use) and closes on `state_event=close`; issue and MR iids are separate
+//! sequences, so notes are scoped to their item **and its kind**, carry separate
+//! `created_at` and `updated_at` stamped from a clock the test moves, and an edit moves
+//! only the second; an item or a note that does not exist is a `404`. Every request is
+//! recorded, and any route can be made to answer a status instead.
 
 #![allow(dead_code)]
 
@@ -49,11 +51,26 @@ pub struct Issue {
     pub assignees: Vec<String>,
 }
 
-/// A note on an issue.
+/// A merge request, its assignees by username.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mr {
+    pub state: String,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+}
+
+/// The path segment of an issue.
+const ISSUES: &str = "issues";
+/// The path segment of a merge request.
+const MRS: &str = "merge_requests";
+
+/// A note on an issue or a merge request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub id: u64,
     pub project: String,
+    /// The item's path segment: `issues` or `merge_requests`.
+    pub kind: &'static str,
     pub iid: u64,
     pub author: String,
     pub body: String,
@@ -61,13 +78,16 @@ pub struct Note {
     pub updated: u64,
 }
 
-/// An issue as the fake keeps it: assignees by user id, as GitLab writes them.
+/// An issue or a merge request as the fake keeps it: assignees by user id, as GitLab
+/// writes them. `author` and `source_branch` are an MR's alone.
 struct Stored {
     title: String,
     body: String,
     state: String,
     labels: Vec<String>,
     assignees: Vec<u64>,
+    author: u64,
+    source_branch: String,
 }
 
 #[derive(Default)]
@@ -80,6 +100,8 @@ struct State {
     users: BTreeMap<u64, String>,
     /// Keyed by `(project path, iid)`.
     issues: BTreeMap<(String, u64), Stored>,
+    /// Keyed by `(project path, iid)`: a separate sequence from the issues'.
+    mrs: BTreeMap<(String, u64), Stored>,
     notes: Vec<Note>,
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
@@ -102,6 +124,15 @@ impl State {
         json!({ "id": id, "username": self.users.get(&id).cloned().unwrap_or_default() })
     }
 
+    /// The store an item kind's path segment names.
+    fn items(&mut self, kind: &str) -> &mut BTreeMap<(String, u64), Stored> {
+        if kind == MRS {
+            &mut self.mrs
+        } else {
+            &mut self.issues
+        }
+    }
+
     fn issue_json(&self, iid: u64, issue: &Stored) -> Value {
         json!({
             "iid": iid,
@@ -111,6 +142,28 @@ impl State {
             "labels": issue.labels,
             "assignees": issue.assignees.iter().map(|id| self.user_json(*id)).collect::<Vec<_>>(),
         })
+    }
+
+    fn mr_json(&self, iid: u64, mr: &Stored) -> Value {
+        json!({
+            "iid": iid,
+            "title": mr.title,
+            "description": mr.body,
+            "source_branch": mr.source_branch,
+            "author": self.user_json(mr.author),
+            "state": mr.state,
+            "labels": mr.labels,
+            "assignees": mr.assignees.iter().map(|id| self.user_json(*id)).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The item `key` of `kind`, as its own route answers it.
+    fn item_json(&self, kind: &str, key: &(String, u64)) -> Value {
+        if kind == MRS {
+            self.mr_json(key.1, &self.mrs[key])
+        } else {
+            self.issue_json(key.1, &self.issues[key])
+        }
     }
 
     fn note_json(&self, note: &Note) -> Value {
@@ -206,8 +259,44 @@ impl FakeGitlab {
                 state: "opened".to_string(),
                 labels: labels.iter().map(|l| l.to_string()).collect(),
                 assignees,
+                author: 0,
+                source_branch: String::new(),
             },
         );
+    }
+
+    /// Seed an open, unlabelled merge request by `author` from `source_branch`; the author
+    /// and each assignee are usernames, registered if they are new.
+    pub fn mr(
+        &self,
+        project: &str,
+        iid: u64,
+        author: &str,
+        source_branch: &str,
+        assignees: &[&str],
+    ) {
+        let mut s = lock(&self.state);
+        let author = s.user_id(author);
+        let assignees = assignees.iter().map(|a| s.user_id(a)).collect();
+        s.mrs.insert(
+            (project.to_string(), iid),
+            Stored {
+                title: format!("Draft: MR !{iid}"),
+                body: String::new(),
+                state: "opened".to_string(),
+                labels: Vec::new(),
+                assignees,
+                author,
+                source_branch: source_branch.to_string(),
+            },
+        );
+    }
+
+    /// Merge a merge request, as a human does: it leaves the open set.
+    pub fn merge(&self, project: &str, iid: u64) {
+        if let Some(mr) = lock(&self.state).mrs.get_mut(&(project.to_string(), iid)) {
+            mr.state = "merged".to_string();
+        }
     }
 
     /// Close an issue, as a human does.
@@ -220,15 +309,25 @@ impl FakeGitlab {
         }
     }
 
-    /// Seed a note by `author`, created `ago` seconds before now; returns its id.
+    /// Seed a note by `author` on issue `iid`, created `ago` seconds before now; returns
+    /// its id.
     pub fn note(&self, project: &str, iid: u64, author: &str, body: &str, ago: u64) -> u64 {
         let mut s = lock(&self.state);
         s.user_id(author);
         let at = s.now - ago;
-        push_note(&mut s, project, iid, author, body, at)
+        push_note(&mut s, project, ISSUES, iid, author, body, at)
     }
 
-    /// Seed a note with a fixed id.
+    /// Seed a note by `author` on merge request `iid`, created `ago` seconds before now;
+    /// returns its id.
+    pub fn mr_note(&self, project: &str, iid: u64, author: &str, body: &str, ago: u64) -> u64 {
+        let mut s = lock(&self.state);
+        s.user_id(author);
+        let at = s.now - ago;
+        push_note(&mut s, project, MRS, iid, author, body, at)
+    }
+
+    /// Seed a note on issue `iid` with a fixed id.
     pub fn note_with_id(
         &self,
         id: u64,
@@ -244,6 +343,7 @@ impl FakeGitlab {
         s.notes.push(Note {
             id,
             project: project.to_string(),
+            kind: ISSUES,
             iid,
             author: author.to_string(),
             body: body.to_string(),
@@ -279,11 +379,36 @@ impl FakeGitlab {
         }
     }
 
+    /// A merge request as it stands, its assignees by username.
+    pub fn mr_state(&self, project: &str, iid: u64) -> Mr {
+        let s = lock(&self.state);
+        let mr = &s.mrs[&(project.to_string(), iid)];
+        Mr {
+            state: mr.state.clone(),
+            labels: mr.labels.clone(),
+            assignees: mr
+                .assignees
+                .iter()
+                .map(|id| s.users.get(id).cloned().unwrap_or_default())
+                .collect(),
+        }
+    }
+
+    /// The notes on issue `iid`.
     pub fn notes(&self, project: &str, iid: u64) -> Vec<Note> {
+        self.thread(project, ISSUES, iid)
+    }
+
+    /// The notes on merge request `iid`.
+    pub fn mr_notes(&self, project: &str, iid: u64) -> Vec<Note> {
+        self.thread(project, MRS, iid)
+    }
+
+    fn thread(&self, project: &str, kind: &str, iid: u64) -> Vec<Note> {
         lock(&self.state)
             .notes
             .iter()
-            .filter(|n| n.project == project && n.iid == iid)
+            .filter(|n| n.project == project && n.kind == kind && n.iid == iid)
             .cloned()
             .collect()
     }
@@ -293,12 +418,21 @@ impl FakeGitlab {
     }
 }
 
-fn push_note(s: &mut State, project: &str, iid: u64, author: &str, body: &str, at: u64) -> u64 {
+fn push_note(
+    s: &mut State,
+    project: &str,
+    kind: &'static str,
+    iid: u64,
+    author: &str,
+    body: &str,
+    at: u64,
+) -> u64 {
     s.next_id += 1;
     let id = s.next_id;
     s.notes.push(Note {
         id,
         project: project.to_string(),
+        kind,
         iid,
         author: author.to_string(),
         body: body.to_string(),
@@ -474,8 +608,9 @@ fn route(
     let name = match (method, segs.as_slice()) {
         ("GET", ["user"]) => "current user",
         ("GET", ["projects", _, "issues"]) => "list issues",
-        ("GET", ["projects", _, "issues", _]) => "get item",
-        ("PUT", ["projects", _, "issues", _]) => {
+        ("GET", ["projects", _, "merge_requests"]) => "list merge requests",
+        ("GET", ["projects", _, ISSUES | MRS, _]) => "get item",
+        ("PUT", ["projects", _, ISSUES | MRS, _]) => {
             if payload.get("assignee_ids").is_some() {
                 "set assignees"
             } else if payload.get("add_labels").is_some() {
@@ -486,16 +621,22 @@ fn route(
                 "set state"
             }
         }
-        ("GET", ["projects", _, "issues", _, "notes"]) => "list notes",
-        ("POST", ["projects", _, "issues", _, "notes"]) => "post comment",
-        ("PUT", ["projects", _, "issues", _, "notes", _]) => "edit comment",
-        ("DELETE", ["projects", _, "issues", _, "notes", _]) => "delete comment",
+        ("GET", ["projects", _, ISSUES | MRS, _, "notes"]) => "list notes",
+        ("POST", ["projects", _, ISSUES | MRS, _, "notes"]) => "post comment",
+        ("PUT", ["projects", _, ISSUES | MRS, _, "notes", _]) => "edit comment",
+        ("DELETE", ["projects", _, ISSUES | MRS, _, "notes", _]) => "delete comment",
         _ => return (404, json!({ "message": "404 Not Found" })),
     };
     if let Some(status) = s.faults.get(name) {
         return (*status, json!({ "message": "injected" }));
     }
     let project = segs.get(1).map_or(String::new(), |p| p.to_string());
+    // The item kind a per-item route addresses, as the static its notes are tagged with.
+    let kind = if segs.get(2) == Some(&MRS) {
+        MRS
+    } else {
+        ISSUES
+    };
     let number = |i: usize| segs.get(i).and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
     let param = |key: &str| query.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
     match name {
@@ -518,10 +659,20 @@ fn route(
                 .collect();
             (200, Value::Array(list))
         }
+        "list merge requests" => {
+            let state = param("state").unwrap_or_else(|| "all".to_string());
+            let list: Vec<Value> = s
+                .mrs
+                .iter()
+                .filter(|((p, _), m)| *p == project && (state == "all" || m.state == state))
+                .map(|((_, iid), m)| s.mr_json(*iid, m))
+                .collect();
+            (200, Value::Array(list))
+        }
         "get item" | "set assignees" | "add label" | "remove label" | "set state" => {
             let key = (project, number(3));
-            let Some(issue) = s.issues.get_mut(&key) else {
-                return (404, json!({ "message": "404 Issue Not Found" }));
+            let Some(issue) = s.items(kind).get_mut(&key) else {
+                return (404, json!({ "message": "404 Not Found" }));
             };
             match name {
                 "set assignees" => {
@@ -546,27 +697,26 @@ fn route(
                 }
                 _ => {}
             }
-            let issue = &s.issues[&key];
-            (200, s.issue_json(key.1, issue))
+            (200, s.item_json(kind, &key))
         }
         "list notes" => {
             let iid = number(3);
             let list: Vec<Value> = s
                 .notes
                 .iter()
-                .filter(|n| n.project == project && n.iid == iid)
+                .filter(|n| n.project == project && n.kind == kind && n.iid == iid)
                 .map(|n| s.note_json(n))
                 .collect();
             (200, Value::Array(list))
         }
         "post comment" => {
             let iid = number(3);
-            if !s.issues.contains_key(&(project.clone(), iid)) {
-                return (404, json!({ "message": "404 Issue Not Found" }));
+            if !s.items(kind).contains_key(&(project.clone(), iid)) {
+                return (404, json!({ "message": "404 Not Found" }));
             }
             let (me, now) = (s.me.clone(), s.now);
             let text = payload["body"].as_str().unwrap_or("").to_string();
-            let id = push_note(s, &project, iid, &me, &text, now);
+            let id = push_note(s, &project, kind, iid, &me, &text, now);
             let note = s
                 .notes
                 .iter()
@@ -580,7 +730,7 @@ fn route(
             let Some(at) = s
                 .notes
                 .iter()
-                .position(|n| n.project == project && n.iid == iid && n.id == id)
+                .position(|n| n.project == project && n.kind == kind && n.iid == iid && n.id == id)
             else {
                 return (404, json!({ "message": "404 Note Not Found" }));
             };
