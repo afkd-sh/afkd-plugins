@@ -1,0 +1,81 @@
+name = "@afkd/trello"
+version = "0.1.0"
+proto = 1
+shape = "provider"
+source = "https://github.com/afkd-sh/afkd-plugins"
+build = "cargo build --release --locked"
+exec = "target/release/afkd-trello"
+
+# The built-in `trello` kind's vocabulary, key for key, so every config that validates
+# against the built-in validates against this plugin with no edit.
+#
+# Every lifecycle key is repeatable: an `on_*` body is a sequence of actions. A `move_to`
+# block's `at` is repeatable too, because the built-in reads the first one and ignores a
+# second rather than refusing it; the plugin does the same.
+[[trigger]]
+kind = "trello"
+settings = [
+  "board",
+  "base_url",
+  "api_key",
+  "token",
+  "pick_from",
+  "require_member",
+  "require_label",
+  "without_label",
+  "discuss_with",
+  "min_age",
+  "follow_comments",
+  "max_attempts",
+  "poll_interval",
+  "on_claim",
+  "on_done",
+  "on_fail",
+  "on_park",
+]
+required = ["board", "api_key", "token"]
+repeatable = ["without_label", "discuss_with"]
+durations = ["poll_interval", "min_age", "follow_comments"]
+run_kind = "card"
+display_name = "Trello"
+info_keys = ["board", "pick_from", "require_label", "require_member", "poll_interval", "max_attempts"]
+
+[[trigger.block]]
+path = "on_claim"
+settings = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+repeatable = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+
+[[trigger.block]]
+path = "on_claim.move_to"
+settings = ["at"]
+repeatable = ["at"]
+
+[[trigger.block]]
+path = "on_done"
+settings = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+repeatable = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+
+[[trigger.block]]
+path = "on_done.move_to"
+settings = ["at"]
+repeatable = ["at"]
+
+[[trigger.block]]
+path = "on_fail"
+settings = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+repeatable = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+
+[[trigger.block]]
+path = "on_fail.move_to"
+settings = ["at"]
+repeatable = ["at"]
+
+[[trigger.block]]
+path = "on_park"
+settings = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+repeatable = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+
+[[trigger.block]]
+path = "on_park.move_to"
+settings = ["at"]
+repeatable = ["at"]
