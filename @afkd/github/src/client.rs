@@ -18,7 +18,7 @@
 //! pure functions tested with no network, and the HTTP layer itself is exercised only
 //! against a loopback `Stub` (no external host).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -282,6 +282,11 @@ pub(crate) trait GithubClient {
 
     /// List a PR's reviews — `GET /repos/{o}/{r}/pulls/{number}/reviews`.
     fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError>;
+
+    /// Hand over the current call's deadline, which every request until the next
+    /// hand-over must finish by — set before a call, cleared with `None` after it. A
+    /// client that sends no requests has nothing to bound and ignores it.
+    fn set_call_deadline(&self, _deadline: Option<Instant>) {}
 }
 
 /// Sharing a client behind an [`Arc`](std::sync::Arc) keeps it a [`GithubClient`], so a
@@ -349,6 +354,9 @@ impl<T: GithubClient> GithubClient for std::sync::Arc<T> {
     }
     fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError> {
         (**self).list_pull_reviews(repo, index)
+    }
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        (**self).set_call_deadline(deadline)
     }
 }
 
@@ -602,6 +610,10 @@ impl GithubClient for Github {
             &format!("/repos/{}/{}/pulls/{index}/reviews", repo.owner, repo.name),
         )?;
         parse_reviews(stage, &body)
+    }
+
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        self.http.set_deadline(deadline)
     }
 }
 
@@ -899,6 +911,9 @@ mod mock {
         /// into the thread: a marker that landed between our post and our re-read, with
         /// the test choosing its side of the `(created_at, id)` order.
         rival_on_read: Mutex<Option<IssueComment>>,
+        /// Every call deadline the client was handed, in order. Recorded only: the mock's
+        /// requests stay instant.
+        call_deadlines: Mutex<Vec<Option<Instant>>>,
     }
 
     /// The id/timestamp base a `post_comment` mints from: far above the small ids and
@@ -1096,6 +1111,11 @@ mod mock {
             {
                 f(s);
             }
+        }
+
+        /// Every call deadline handed to this client, in order.
+        pub(crate) fn call_deadlines(&self) -> Vec<Option<Instant>> {
+            lock(&self.call_deadlines).clone()
         }
 
         fn guard(&self, stage: &'static str) -> Result<(), GithubError> {
@@ -1316,6 +1336,10 @@ mod mock {
         fn list_pull_reviews(&self, _repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError> {
             self.guard("list reviews")?;
             Ok(lock(&self.reviews).get(&index).cloned().unwrap_or_default())
+        }
+
+        fn set_call_deadline(&self, deadline: Option<Instant>) {
+            lock(&self.call_deadlines).push(deadline);
         }
     }
 

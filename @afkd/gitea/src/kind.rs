@@ -5,6 +5,7 @@
 //! differ only in their vendor half ([`crate::issue`], [`crate::pr`]).
 
 use std::path::Path;
+use std::time::Instant;
 
 use crate::client::{GiteaError, IssueComment};
 use crate::common::{ClaimFault, Clock, Diag};
@@ -27,6 +28,10 @@ pub(crate) trait Units {
     /// The optional calls this kind answers, exactly as `hello` lists them. A call the
     /// kind does not list is refused before it reaches the kind.
     const CALLS: &'static [&'static str];
+
+    /// Set (or, with `None`, clear) the current call's deadline: kept for the poll's
+    /// claim reserve, and handed to the client, which clips every request to it.
+    fn set_call_deadline(&self, deadline: Option<Instant>);
 
     /// Resolve the authenticated user (the claim identity).
     fn resolve_me(&self) -> Result<String, GiteaError>;

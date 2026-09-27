@@ -287,7 +287,8 @@ few things. Each is deliberate, and none changes what a config means.
 - **One poll scans for at most 20 seconds.** afkd gives a plugin 60 seconds to answer a
   poll, and each claim attempt waits a second for a rival's marker to show, so a scan that
   keeps losing races stops after 20 and leaves the rest of the issues or merge requests
-  for the next poll.
+  for the next poll. And every call the plugin answers comes back within 45 seconds: a
+  forge too slow to answer in that time is treated as if it were down.
 - **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
   issue group/widgets#7` where the built-in's opens `# Work item from gitlab issue
   group/widgets#7` — and a review round's `# Work item from plugin mr group/widgets#7`

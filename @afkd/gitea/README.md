@@ -349,7 +349,8 @@ few things. Each is deliberate, and none changes what a config means.
   new comments than fit in one reply delivers the newest, and names the ones left out.
 - **One poll scans for at most 20 seconds.** afkd gives a plugin 60 seconds to answer a
   poll, so an org-wide scan against a slow forge stops after 20 and leaves the rest of the
-  repositories for the next poll.
+  repositories for the next poll. And every call the plugin answers comes back within 45
+  seconds: a forge too slow to answer in that time is treated as if it were down.
 - **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
   issue acme/widgets#7` where the built-in's opens `# Work item from gitea issue
   acme/widgets#7` — and a review round's `# Work item from plugin pr acme/widgets#7` where

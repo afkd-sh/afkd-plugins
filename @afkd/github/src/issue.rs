@@ -19,10 +19,12 @@
 //! degrades to a target that claims nothing.
 
 use std::collections::BTreeMap;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::client::{GithubClient, GithubError, Issue, IssueComment, Repo};
 use crate::common::{
-    apply_actions, claim_issue, claim_key_for, creds_env, delete_marker, release_claim,
+    apply_actions, claim_issue, claim_key_for, creds_env, delete_marker, lock, release_claim,
     release_stale, renew_marker, unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL,
     ENV_ISSUE_NUMBER, ENV_REPO,
 };
@@ -86,6 +88,9 @@ pub(crate) struct IssueUnits {
     on_fail: Vec<LifecycleAction>,
     /// The token and host every unit's `env` carries.
     creds: BTreeMap<String, String>,
+    /// The current call's deadline, `None` between calls: the poll's scan reads it for
+    /// its claim reserve.
+    call_deadline: Mutex<Option<Instant>>,
 }
 
 impl IssueUnits {
@@ -98,6 +103,7 @@ impl IssueUnits {
             on_done: cfg.on_done.clone(),
             on_fail: cfg.on_fail.clone(),
             creds: creds_env(cfg),
+            call_deadline: Mutex::new(None),
         }
     }
 
@@ -113,6 +119,10 @@ impl IssueUnits {
     ///
     /// The scan stops once it has run [`POLL_BUDGET`](crate::common::POLL_BUDGET), checked
     /// before each claim attempt, and answers "nothing this beat".
+    ///
+    /// It stops the same way, before any claim is posted, once less than
+    /// [`CLAIM_RESERVE`](crate::common::CLAIM_RESERVE) of the call's budget is left. A
+    /// claim already under way always finishes.
     pub(crate) fn try_claim_next(
         &self,
         me: &str,
@@ -122,7 +132,7 @@ impl IssueUnits {
         let Some(repo) = &self.repo else {
             return Ok(None);
         };
-        let budget = ScanBudget::start(clock, diag);
+        let budget = ScanBudget::start(clock, diag, *lock(&self.call_deadline));
         let issues = self.client.list_issues(repo, "open", &self.source_label)?;
         for issue in issues {
             if !self.eligible(&issue) {
@@ -240,6 +250,11 @@ impl Units for IssueUnits {
     /// spine's defaults for both — so `classify` and `attempt_failed` are not among them.
     const CALLS: &'static [&'static str] = &["release", "renew", "comments"];
 
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        *lock(&self.call_deadline) = deadline;
+        self.client.set_call_deadline(deadline);
+    }
+
     fn resolve_me(&self) -> Result<String, GithubError> {
         Ok(self.client.current_user()?.login)
     }
@@ -317,8 +332,9 @@ mod tests {
     use super::*;
     use crate::claim::{claim_renewal_text, claim_text, is_claim, split_claim_key, CLAIM_SETTLE};
     use crate::client::{Action, MockClient};
-    use crate::common::{CaptureDiag, FakeClock};
+    use crate::common::{CaptureDiag, FakeClock, CALL_BUDGET, CLAIM_RESERVE};
     use std::sync::Arc;
+    use std::time::Duration;
 
     fn cfg(
         on_claim: Vec<LifecycleAction>,
@@ -951,5 +967,39 @@ mod tests {
             h.diag.lines(),
             ["github poll: the scan ran past its 20s budget; the rest of it waits for the next poll"]
         );
+    }
+
+    // --- The call's claim reserve ---
+
+    const RESERVE_LINE: &str = "github poll: less than 10s of the call's 45s budget is left; the \
+                                rest of the scan waits for the next poll";
+
+    /// A call with less than the claim reserve left ends the scan before any marker is
+    /// posted, idle and with one line saying why — a claimable issue waits for the next
+    /// beat rather than risk a marker the call could not see through.
+    #[test]
+    fn a_scan_with_less_than_the_claim_reserve_left_posts_no_claim() {
+        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        h.client.add_issue(
+            7,
+            "Fix the 修复 path — 🚨",
+            "Steps:\n1. run it\n2. ship it",
+            &["afkd/ready"],
+        );
+        h.units.set_call_deadline(Some(
+            h.clock.now() + CLAIM_RESERVE - Duration::from_millis(1),
+        ));
+
+        assert!(h.poll().is_none(), "the beat ends idle");
+        assert_eq!(claim_markers_on(&h, 7), Vec::<String>::new());
+        assert!(h.client.actions().is_empty(), "{:?}", h.client.actions());
+        assert!(h.clock.sleeps().is_empty(), "no claim settled");
+        assert_eq!(h.diag.lines(), [RESERVE_LINE]);
+
+        // The same issue claims on a beat with the budget intact.
+        h.units.set_call_deadline(Some(h.clock.now() + CALL_BUDGET));
+        let unit = h.poll().expect("claimed");
+        assert_eq!(unit.number, 7);
+        assert_eq!(claim_markers_on(&h, 7).len(), 1);
     }
 }

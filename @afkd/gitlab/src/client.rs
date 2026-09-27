@@ -20,7 +20,7 @@
 //! pure functions tested with no network, and the HTTP layer itself is exercised only
 //! against a loopback `Stub` (no external host).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -330,6 +330,11 @@ pub(crate) trait GitlabClient {
         note_id: u64,
         text: &str,
     ) -> Result<(), GitlabError>;
+
+    /// Hand over the current call's deadline, which every request until the next
+    /// hand-over must finish by — set before a call, cleared with `None` after it. A
+    /// client that sends no requests has nothing to bound and ignores it.
+    fn set_call_deadline(&self, _deadline: Option<Instant>) {}
 }
 
 /// Sharing a client behind an [`Arc`](std::sync::Arc) keeps it a [`GitlabClient`], so a
@@ -428,6 +433,9 @@ impl<T: GitlabClient> GitlabClient for std::sync::Arc<T> {
         text: &str,
     ) -> Result<(), GitlabError> {
         (**self).edit_comment(project, kind, iid, note_id, text)
+    }
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        (**self).set_call_deadline(deadline)
     }
 }
 
@@ -672,6 +680,10 @@ impl GitlabClient for Gitlab {
         self.http
             .send_json(stage, req, &json!({ "body": text }))
             .map(|_| ())
+    }
+
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        self.http.set_deadline(deadline)
     }
 }
 
@@ -954,6 +966,9 @@ mod mock {
         /// thread: a marker that landed between our post and our re-read, with the test
         /// choosing its side of the `(created_at, id)` order.
         rival_on_read: Mutex<Option<Note>>,
+        /// Every call deadline the client was handed, in order. Recorded only: the mock's
+        /// requests stay instant.
+        call_deadlines: Mutex<Vec<Option<Instant>>>,
     }
 
     /// The id/timestamp base a `post_comment` mints from: far above the small ids and
@@ -1218,6 +1233,11 @@ mod mock {
             }
         }
 
+        /// Every call deadline handed to this client, in order.
+        pub(crate) fn call_deadlines(&self) -> Vec<Option<Instant>> {
+            lock(&self.call_deadlines).clone()
+        }
+
         fn guard(&self, stage: &'static str) -> Result<(), GitlabError> {
             if *lock(&self.fail_stage) == Some(stage) {
                 Err(GitlabError::Transport {
@@ -1470,6 +1490,10 @@ mod mock {
                 body: text.to_string(),
             });
             Ok(())
+        }
+
+        fn set_call_deadline(&self, deadline: Option<Instant>) {
+            lock(&self.call_deadlines).push(deadline);
         }
     }
 

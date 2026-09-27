@@ -1,5 +1,5 @@
-//! Drive scaffolding both kinds are built from (ADR-0031): the target, the poll's scan
-//! budget, the env spellings, the
+//! Drive scaffolding both kinds are built from (ADR-0031): the target, the call budget and
+//! the poll's scan budget, the env spellings, the
 //! credentials-env builder, the lifecycle-action executor over the [`GiteaClient`] seam,
 //! the **claim** — a `[afkd-claim]` marker comment decided by [`crate::claim`]'s pure
 //! winner rule — and the three seams the rest is written against: the [`Clock`] the
@@ -67,6 +67,18 @@ pub(crate) const ENV_PR_BRANCH: &str = "GITEA_PR_BRANCH";
 /// seconds, and an org-wide scan against a slow forge could; this keeps the scan well
 /// inside it. A claim already under way is always finished.
 pub(crate) const POLL_BUDGET: Duration = Duration::from_secs(20);
+
+/// The longest any one call afkd sends may take, request after request. afkd's reply
+/// deadline is 60 seconds and a missed reply ends the service; the 15 seconds between
+/// the two cover the claim's one-second settle, building the reply and the pipe. Every
+/// request of the call is clipped to what is left of it, and past it none is sent, so a
+/// forge too slow for it answers as a forge that is down.
+pub(crate) const CALL_BUDGET: Duration = Duration::from_secs(45);
+
+/// A scan with less than this left of the call's [`CALL_BUDGET`] posts no claim: a claim
+/// cut off after its marker comment lands leaves a live marker that [`claim_issue`] can no
+/// longer delete, keeping every service off the issue for the marker's lifetime.
+pub(crate) const CLAIM_RESERVE: Duration = Duration::from_secs(10);
 
 /// Lock `m`, recovering the data from a poisoned lock rather than panicking: a panic
 /// elsewhere must not take every later caller down with it.
@@ -164,34 +176,68 @@ impl Target {
     }
 }
 
-/// One `poll`'s scan against [`POLL_BUDGET`], started when the scan starts.
+/// One `poll`'s scan against [`POLL_BUDGET`], started when the scan starts, and against
+/// the [`CLAIM_RESERVE`] of the call's deadline, when the call has one.
 pub(crate) struct ScanBudget<'a> {
     clock: &'a dyn Clock,
     diag: &'a dyn Diag,
     started: Instant,
+    /// The call's deadline, `None` outside an armed call.
+    deadline: Option<Instant>,
 }
 
 impl<'a> ScanBudget<'a> {
-    pub(crate) fn start(clock: &'a dyn Clock, diag: &'a dyn Diag) -> Self {
+    pub(crate) fn start(
+        clock: &'a dyn Clock,
+        diag: &'a dyn Diag,
+        deadline: Option<Instant>,
+    ) -> Self {
         Self {
             clock,
             diag,
             started: clock.now(),
+            deadline,
         }
     }
 
-    /// Whether the scan has run its budget — said on the diagnostic channel when it
-    /// has, since the scan stops there.
+    /// Whether the scan has run its budget, or is short of the claim reserve — said on
+    /// the diagnostic channel when it is, since the scan stops there. One line per check,
+    /// and the scan's own budget is the one named when both are out.
     pub(crate) fn spent(&self) -> bool {
-        let spent = self.clock.now().duration_since(self.started) >= POLL_BUDGET;
-        if spent {
+        let now = self.clock.now();
+        if now.duration_since(self.started) >= POLL_BUDGET {
             self.diag.err(&format_args!(
                 "gitea poll: the scan ran past its {}s budget; the rest of it waits for the \
                  next poll",
                 POLL_BUDGET.as_secs()
             ));
+            return true;
         }
-        spent
+        self.reserve_short(now)
+    }
+
+    /// Whether less than the claim reserve of the call's budget is left — checked right
+    /// before a claim is posted, since the repo's label ensure sits between the scan's
+    /// check and its first claim. Reads no clock when the call has no deadline.
+    pub(crate) fn claim_reserve_short(&self) -> bool {
+        self.deadline.is_some() && self.reserve_short(self.clock.now())
+    }
+
+    /// Whether less than [`CLAIM_RESERVE`] is left of the call's deadline at `now`, said
+    /// on the diagnostic channel when it is.
+    fn reserve_short(&self, now: Instant) -> bool {
+        let short = self
+            .deadline
+            .is_some_and(|d| d.saturating_duration_since(now) < CLAIM_RESERVE);
+        if short {
+            self.diag.err(&format_args!(
+                "gitea poll: less than {}s of the call's {}s budget is left; the rest of the \
+                 scan waits for the next poll",
+                CLAIM_RESERVE.as_secs(),
+                CALL_BUDGET.as_secs()
+            ));
+        }
+        short
     }
 }
 
@@ -591,13 +637,15 @@ pub(crate) fn new_reply_comments(
 }
 
 /// A [`Clock`] for tests: `sleep` returns at once, records the wait, and moves `now` on
-/// by it; [`advance`](Self::advance) moves `now` without a sleep, standing in for a slow
-/// forge round trip.
+/// by it; [`advance`](Self::advance) moves `now` without a sleep, and a
+/// [`ticking`](Self::ticking) clock moves it on by a fixed step after every read — each
+/// standing in for a slow forge round trip.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct FakeClock {
     elapsed: Mutex<Duration>,
     sleeps: Mutex<Vec<Duration>>,
+    tick: Duration,
     base: std::sync::OnceLock<Instant>,
 }
 
@@ -605,6 +653,14 @@ pub(crate) struct FakeClock {
 impl FakeClock {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// A clock that moves on by `tick` after every `now` it answers.
+    pub(crate) fn ticking(tick: Duration) -> Self {
+        Self {
+            tick,
+            ..Self::default()
+        }
     }
 
     /// Every `sleep` asked for, in order.
@@ -626,7 +682,10 @@ impl Clock for FakeClock {
     }
 
     fn now(&self) -> Instant {
-        *self.base.get_or_init(Instant::now) + *lock(&self.elapsed)
+        let mut elapsed = lock(&self.elapsed);
+        let now = *self.base.get_or_init(Instant::now) + *elapsed;
+        *elapsed += self.tick;
+        now
     }
 }
 
@@ -1577,5 +1636,50 @@ mod tests {
         );
         // …and the rival's marker allowed by name is still not a reply.
         assert!(new_reply_comments(&with_markers, "me", |l| l == "björn-öst[bot]").is_empty());
+    }
+
+    /// Short of [`CLAIM_RESERVE`] the budget is spent, strictly: exactly the reserve left
+    /// is not. Without a deadline the pre-claim check reads no clock, and with both bounds
+    /// out only the scan's own is named.
+    #[test]
+    fn a_scan_budget_is_spent_short_of_the_claim_reserve() {
+        let reserve_line = "gitea poll: less than 10s of the call's 45s budget is left; the rest \
+                            of the scan waits for the next poll";
+
+        let clock = FakeClock::new();
+        let diag = CaptureDiag::default();
+        let budget = ScanBudget::start(&clock, &diag, Some(clock.now() + CLAIM_RESERVE));
+        assert!(!budget.spent());
+        assert!(!budget.claim_reserve_short());
+        assert!(diag.lines().is_empty());
+        clock.advance(Duration::from_millis(1));
+        assert!(budget.spent());
+        assert!(budget.claim_reserve_short());
+        assert_eq!(diag.lines(), [reserve_line, reserve_line]);
+
+        let clock = FakeClock::ticking(Duration::from_secs(1));
+        let diag = CaptureDiag::default();
+        let budget = ScanBudget::start(&clock, &diag, None);
+        let before = clock.now();
+        assert!(!budget.claim_reserve_short());
+        assert_eq!(
+            clock.now() - before,
+            Duration::from_secs(1),
+            "no clock read in between"
+        );
+        assert!(diag.lines().is_empty());
+
+        let clock = FakeClock::new();
+        let diag = CaptureDiag::default();
+        let budget = ScanBudget::start(&clock, &diag, Some(clock.now() + CLAIM_RESERVE));
+        clock.advance(POLL_BUDGET);
+        assert!(budget.spent());
+        assert_eq!(
+            diag.lines(),
+            [
+                "gitea poll: the scan ran past its 20s budget; the rest of it waits for the next \
+              poll"
+            ]
+        );
     }
 }

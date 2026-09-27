@@ -3,7 +3,7 @@
 //! [`crate::mr`], behind [`crate::kind`]). Everything here is written once, against the
 //! seam, so both kinds share every rule below.
 //!
-//! Three things the wire forces that the built-in never had to do:
+//! Four things the wire forces that the built-in never had to do:
 //!
 //! - **Every reply fits one line.** afkd caps a line at 64 KiB. A `poll` whose brief would
 //!   overflow it is cut to fit ([`fit_poll`]); a `comments` reply sends only what afkd has
@@ -17,14 +17,18 @@
 //!   its `on_done`/`on_fail` did not land and its reaper releases it on a later beat;
 //!   `finish` answers `{"ok":true,"held":true}` and afkd does exactly that, with
 //!   `release`.
+//! - **Every call answers within 45 seconds.** afkd ends the service on a missed reply,
+//!   so each armed call runs under [`CALL_BUDGET`], and a forge too slow for it reads as
+//!   a forge that is down.
 
 use std::collections::{BTreeMap, HashSet};
+use std::time::Instant;
 
 use serde_json::json;
 
 use crate::claim::is_claim;
 use crate::client::{Gitlab, GitlabClient, User};
-use crate::common::{Clock, Diag};
+use crate::common::{Clock, Diag, CALL_BUDGET};
 use crate::issue::IssueUnits;
 use crate::kind::{ClaimedUnit, Units};
 use crate::mr::MrUnits;
@@ -66,6 +70,9 @@ pub(crate) struct Plugin {
 trait Service {
     /// The optional calls the armed kind answers, as `hello` lists them.
     fn calls(&self) -> &'static [&'static str];
+    /// Set (or, with `None`, clear) the current call's deadline, which the kind's scan
+    /// and every forge request it makes until the next set run under.
+    fn set_call_deadline(&self, deadline: Option<Instant>);
     fn poll(&mut self, clock: &dyn Clock, diag: &dyn Diag) -> Answer;
     fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer;
     fn renew(&self, key: &str, renewal: u64, diag: &dyn Diag) -> Answer;
@@ -143,15 +150,17 @@ impl Plugin {
                     .to_string(),
                 )
             }
-            Request::Poll => on_armed(armed, |a| a.poll(clock, diag)),
-            Request::Release { key } => on_armed(armed, |a| a.release(&key, diag)),
-            Request::Renew { key, renewal } => on_armed(armed, |a| a.renew(&key, renewal, diag)),
-            Request::Comments { key } => on_armed(armed, |a| a.comments(&key, diag)),
+            Request::Poll => on_armed(armed, clock, |a| a.poll(clock, diag)),
+            Request::Release { key } => on_armed(armed, clock, |a| a.release(&key, diag)),
+            Request::Renew { key, renewal } => {
+                on_armed(armed, clock, |a| a.renew(&key, renewal, diag))
+            }
+            Request::Comments { key } => on_armed(armed, clock, |a| a.comments(&key, diag)),
             Request::Finish {
                 key,
                 outcome,
                 facts,
-            } => on_armed(armed, |a| a.finish(&key, outcome, &facts, diag)),
+            } => on_armed(armed, clock, |a| a.finish(&key, outcome, &facts, diag)),
             Request::Unknown => unlisted(diag),
         }
     }
@@ -163,14 +172,21 @@ fn unlisted(diag: &dyn Diag) -> Answer {
     Answer::Reply(json!({"ok": false}).to_string())
 }
 
-/// Run `f` on the armed kind — or end the process, since afkd sends nothing but `hello`
-/// before a `hello` it has seen accepted.
+/// Run `f` on the armed kind under the call's [`CALL_BUDGET`], cleared once the reply is
+/// built so no call inherits another's deadline — or end the process, since afkd sends
+/// nothing but `hello` before a `hello` it has seen accepted.
 fn on_armed(
     armed: &mut Option<Box<dyn Service>>,
+    clock: &dyn Clock,
     f: impl FnOnce(&mut dyn Service) -> Answer,
 ) -> Answer {
     match armed {
-        Some(armed) => f(armed.as_mut()),
+        Some(armed) => {
+            armed.set_call_deadline(Some(clock.now() + CALL_BUDGET));
+            let answer = f(armed.as_mut());
+            armed.set_call_deadline(None);
+            answer
+        }
         None => Answer::Fatal("afkd sent a call before a `hello` this plugin accepted".into()),
     }
 }
@@ -234,6 +250,10 @@ impl<K: Units> Armed<K> {
 impl<K: Units> Service for Armed<K> {
     fn calls(&self) -> &'static [&'static str] {
         K::CALLS
+    }
+
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        self.units.set_call_deadline(deadline);
     }
 
     /// One beat: resolve the identity if it is not yet known, then run the claim race. A
@@ -400,6 +420,20 @@ mod tests {
     use crate::client::{Action, ItemKind, MockClient, Project};
     use crate::common::{CaptureDiag, FakeClock};
     use std::sync::Arc;
+    use std::time::Duration;
+
+    /// A [`Clock`] the test keeps a handle on after the plugin owns it.
+    struct SharedClock(Arc<FakeClock>);
+
+    impl Clock for SharedClock {
+        fn sleep(&self, d: Duration) {
+            self.0.sleep(d);
+        }
+
+        fn now(&self) -> Instant {
+            self.0.now()
+        }
+    }
 
     /// A [`Diag`] the test keeps a handle on after the plugin owns it.
     struct Shared(Arc<CaptureDiag>);
@@ -414,6 +448,7 @@ mod tests {
         plugin: Plugin,
         mock: Arc<MockClient>,
         diag: Arc<CaptureDiag>,
+        clock: Arc<FakeClock>,
     }
 
     /// The token's user: id 7, a non-ASCII bracketed username.
@@ -425,15 +460,21 @@ mod tests {
         fn new() -> Self {
             let mock = Arc::new(MockClient::new(7, ME));
             let diag = Arc::new(CaptureDiag::default());
+            let clock = Arc::new(FakeClock::new());
             let forge = Arc::clone(&mock);
             let connect: Connect =
                 Box::new(move |_| Box::new(Arc::clone(&forge)) as Box<dyn GitlabClient>);
             let plugin = Plugin::with_connect(
                 connect,
-                Box::new(FakeClock::new()),
+                Box::new(SharedClock(Arc::clone(&clock))),
                 Box::new(Shared(Arc::clone(&diag))),
             );
-            Self { plugin, mock, diag }
+            Self {
+                plugin,
+                mock,
+                diag,
+                clock,
+            }
         }
 
         /// The same, armed as the `gitlab` kind over `settings`.
@@ -974,6 +1015,57 @@ mod tests {
         assert_eq!(
             f.diag.lines(),
             ["the brief for acme/sub.group/widgets#7 was cut to fit afkd's 64 KiB plugin line"]
+        );
+    }
+
+    /// Every armed call hands the forge a deadline [`CALL_BUDGET`] from the clock's now
+    /// before it runs, and clears it once the reply is built; `hello` and an unknown call
+    /// make no forge request and hand it none. Each call runs at its own `now`, so a
+    /// deadline inherited from the call before would show.
+    #[test]
+    fn every_armed_call_runs_under_the_call_budget_and_clears_it() {
+        let mut f = Fixture::armed(settings());
+        f.mock.add_issue(
+            7,
+            "Fix the 修复 path — 🚨",
+            "Steps:\n1. run it\n2. ship it",
+            &["afkd::ready"],
+        );
+        assert!(f.mock.call_deadlines().is_empty(), "hello hands none");
+
+        let mut key = serde_json::Value::Null;
+        for call in ["poll", "renew", "comments", "finish", "release"] {
+            f.clock.advance(Duration::from_secs(3));
+            let now = f.clock.now();
+            let reply = match call {
+                "poll" => f.poll(),
+                "renew" => f.call(json!({"call": "renew", "key": key, "renewal": 1})),
+                "comments" => f.call(json!({"call": "comments", "key": key})),
+                "finish" => f.finish(&key, "clean"),
+                _ => f.call(json!({"call": "release", "key": key})),
+            };
+            if call == "poll" {
+                assert_eq!(reply["fire"], true, "{:?}", f.diag.lines());
+                key = reply["unit"]["key"].clone();
+            }
+            let handed = f.mock.call_deadlines();
+            assert_eq!(
+                handed[handed.len() - 2..],
+                [Some(now + CALL_BUDGET), None],
+                "`{call}` runs under its own deadline and clears it"
+            );
+        }
+        assert_eq!(
+            f.mock.call_deadlines().len(),
+            10,
+            "one set and one clear each"
+        );
+
+        f.call(json!({"call": "rewind", "key": "k"}));
+        assert_eq!(
+            f.mock.call_deadlines().len(),
+            10,
+            "an unknown call hands none"
         );
     }
 }

@@ -1,6 +1,6 @@
-//! Drive scaffolding the kind is built from (ADR-0041): the env spellings, the poll's scan
-//! budget, the credentials-env builder, the lifecycle-action executor over the
-//! [`GithubClient`] seam, the **claim** — a `[afkd-claim]` marker comment decided by
+//! Drive scaffolding the kind is built from (ADR-0041): the env spellings, the call budget
+//! and the poll's scan budget, the credentials-env builder, the lifecycle-action executor
+//! over the [`GithubClient`] seam, the **claim** — a `[afkd-claim]` marker comment decided by
 //! [`crate::claim`]'s pure winner rule — and the two seams the rest is written against:
 //! the [`Clock`] the claim settles on and the [`Diag`] sink diagnostics go to.
 //!
@@ -61,6 +61,18 @@ pub(crate) const ENV_PR_BRANCH: &str = "GITHUB_PR_BRANCH";
 /// already under way is always finished.
 pub(crate) const POLL_BUDGET: Duration = Duration::from_secs(20);
 
+/// The longest any one call afkd sends may take, request after request. afkd's reply
+/// deadline is 60 seconds and a missed reply ends the service; the 15 seconds between
+/// the two cover the claim's one-second settle, building the reply and the pipe. Every
+/// request of the call is clipped to what is left of it, and past it none is sent, so a
+/// forge too slow for it answers as a forge that is down.
+pub(crate) const CALL_BUDGET: Duration = Duration::from_secs(45);
+
+/// A scan with less than this left of the call's [`CALL_BUDGET`] posts no claim: a claim
+/// cut off after its marker comment lands leaves a live marker that [`claim_issue`] can no
+/// longer delete, keeping every service off the issue for the marker's lifetime.
+pub(crate) const CLAIM_RESERVE: Duration = Duration::from_secs(10);
+
 /// Lock `m`, recovering the data from a poisoned lock rather than panicking: a panic
 /// elsewhere must not take every later caller down with it.
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -104,34 +116,61 @@ impl Diag for StderrDiag {
     }
 }
 
-/// One `poll`'s scan against [`POLL_BUDGET`], started when the scan starts.
+/// One `poll`'s scan against [`POLL_BUDGET`], started when the scan starts, and against
+/// the [`CLAIM_RESERVE`] of the call's deadline, when the call has one.
 pub(crate) struct ScanBudget<'a> {
     clock: &'a dyn Clock,
     diag: &'a dyn Diag,
     started: Instant,
+    /// The call's deadline, `None` outside an armed call.
+    deadline: Option<Instant>,
 }
 
 impl<'a> ScanBudget<'a> {
-    pub(crate) fn start(clock: &'a dyn Clock, diag: &'a dyn Diag) -> Self {
+    pub(crate) fn start(
+        clock: &'a dyn Clock,
+        diag: &'a dyn Diag,
+        deadline: Option<Instant>,
+    ) -> Self {
         Self {
             clock,
             diag,
             started: clock.now(),
+            deadline,
         }
     }
 
-    /// Whether the scan has run its budget — said on the diagnostic channel when it has,
-    /// since the scan stops there.
+    /// Whether the scan has run its budget, or is short of the claim reserve — said on
+    /// the diagnostic channel when it is, since the scan stops there. One line per check,
+    /// and the scan's own budget is the one named when both are out.
     pub(crate) fn spent(&self) -> bool {
-        let spent = self.clock.now().duration_since(self.started) >= POLL_BUDGET;
-        if spent {
+        let now = self.clock.now();
+        if now.duration_since(self.started) >= POLL_BUDGET {
             self.diag.err(&format_args!(
                 "github poll: the scan ran past its {}s budget; the rest of it waits for the \
                  next poll",
                 POLL_BUDGET.as_secs()
             ));
+            return true;
         }
-        spent
+        self.reserve_short(now)
+    }
+
+    /// Whether less than [`CLAIM_RESERVE`] is left of the call's deadline at `now`, said
+    /// on the diagnostic channel when it is.
+    fn reserve_short(&self, now: Instant) -> bool {
+        let short = self
+            .deadline
+            .is_some_and(|d| d.saturating_duration_since(now) < CLAIM_RESERVE);
+        if short {
+            self.diag.err(&format_args!(
+                "github poll: less than {}s of the call's {}s budget is left; the rest of the \
+                 scan waits for the next poll",
+                CLAIM_RESERVE.as_secs(),
+                CALL_BUDGET.as_secs()
+            ));
+        }
+        short
     }
 }
 
@@ -956,6 +995,36 @@ mod tests {
         assert_eq!(
             split_claim_key(&claim_key_for(&repo, 7, 90210)),
             Some(("acme/widgets", 7, 90210))
+        );
+    }
+
+    /// Short of [`CLAIM_RESERVE`] the budget is spent, strictly: exactly the reserve left
+    /// is not. With both bounds out only the scan's own is named.
+    #[test]
+    fn a_scan_budget_is_spent_short_of_the_claim_reserve() {
+        let reserve_line = "github poll: less than 10s of the call's 45s budget is left; the rest \
+                            of the scan waits for the next poll";
+
+        let clock = FakeClock::new();
+        let diag = CaptureDiag::default();
+        let budget = ScanBudget::start(&clock, &diag, Some(clock.now() + CLAIM_RESERVE));
+        assert!(!budget.spent());
+        assert!(diag.lines().is_empty());
+        clock.advance(Duration::from_millis(1));
+        assert!(budget.spent());
+        assert_eq!(diag.lines(), [reserve_line]);
+
+        let clock = FakeClock::new();
+        let diag = CaptureDiag::default();
+        let budget = ScanBudget::start(&clock, &diag, Some(clock.now() + CLAIM_RESERVE));
+        clock.advance(POLL_BUDGET);
+        assert!(budget.spent());
+        assert_eq!(
+            diag.lines(),
+            [
+                "github poll: the scan ran past its 20s budget; the rest of it waits for the next \
+              poll"
+            ]
         );
     }
 }

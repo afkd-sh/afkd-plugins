@@ -4,6 +4,8 @@
 //! against these two traits, so a kind differs only in its vendor half
 //! ([`crate::issue`], [`crate::pr`]).
 
+use std::time::Instant;
+
 use crate::client::{GithubError, IssueComment};
 use crate::common::{Clock, Diag};
 use crate::wire::{Facts, UnitOutcome, WireUnit};
@@ -26,6 +28,10 @@ pub(crate) trait Units {
     /// The optional calls this kind answers, exactly as `hello` lists them. A call the
     /// kind does not list is refused before it reaches the kind.
     const CALLS: &'static [&'static str];
+
+    /// Set (or, with `None`, clear) the current call's deadline: kept for the poll's
+    /// claim reserve, and handed to the client, which clips every request to it.
+    fn set_call_deadline(&self, deadline: Option<Instant>);
 
     /// Resolve the authenticated user's login (the claim identity): GitHub's assignee
     /// writes and its marker owner both name a login, so the login is the identity.
