@@ -31,7 +31,7 @@ fn forge() -> FakeGithub {
     fake
 }
 
-/// A full `github` block, lowered to JSON as afkd lowers it: repeatable keys as arrays,
+/// A full `github_issue` block, lowered to JSON as afkd lowers it: repeatable keys as arrays,
 /// flags as `true`, blocks as objects — and afkd's own three keys along for the ride.
 fn settings(fake: &FakeGithub) -> Value {
     json!({
@@ -87,7 +87,7 @@ fn hello_arms_and_lists_every_call_it_answers() {
     let fake = forge();
     let mut plugin = Plugin::spawn();
     assert_eq!(
-        plugin.hello("github", settings(&fake)),
+        plugin.hello("github_issue", settings(&fake)),
         json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
     );
     assert!(fake.seen().is_empty(), "hello touches no forge");
@@ -108,10 +108,10 @@ fn hello_refuses_what_it_cannot_arm_with() {
     pr_no_repo["repo"] = json!("");
     for (kind, proto, settings, sentence) in [
         (
-            "github_pr",
+            "github_issues",
             1,
             settings(&fake),
-            "kind `github_pr` is not provided by @afkd/github",
+            "kind `github_issues` is not provided by @afkd/github",
         ),
         (
             "gitlab",
@@ -120,29 +120,29 @@ fn hello_refuses_what_it_cannot_arm_with() {
             "kind `gitlab` is not provided by @afkd/github",
         ),
         (
-            "github",
+            "github_issue",
             1,
             no_repo,
-            "trigger github: setting `repo`: a github trigger needs a `repo` (`owner/name`)",
+            "trigger github_issue: setting `repo`: a github trigger needs a `repo` (`owner/name`)",
         ),
         (
-            "github",
+            "github_issue",
             1,
             claim_cost,
-            "trigger github: setting `comment`: `@{run:cost}` references the run's facts, but no \
+            "trigger github_issue: setting `comment`: `@{run:cost}` references the run's facts, but no \
              run happens at claim time",
         ),
         (
-            "github",
+            "github_issue",
             2,
             settings(&fake),
             "afkd speaks plugin protocol 2, and this plugin speaks 1",
         ),
         (
-            "github_pr_review",
+            "github_pr",
             1,
             pr_no_repo,
-            "trigger github_pr_review: setting `repo`: a github trigger needs a `repo` \
+            "trigger github_pr: setting `repo`: a github trigger needs a `repo` \
              (`owner/name`)",
         ),
     ] {
@@ -781,7 +781,7 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
     plugin.finish();
 }
 
-// --- github_pr_review ---
+// --- github_pr ---
 
 /// The PR's head branch: non-ASCII, and crossing to the run verbatim.
 const BRANCH: &str = "fix/重试-retry-cap";
@@ -799,7 +799,7 @@ fn pr_forge() -> (FakeGithub, u64) {
     (fake, review)
 }
 
-/// A full `github_pr_review` block, lowered to JSON as afkd lowers it — `author_me` a bare
+/// A full `github_pr` block, lowered to JSON as afkd lowers it — `author_me` a bare
 /// flag — and afkd's own three keys along for the ride.
 fn pr_settings(fake: &FakeGithub) -> Value {
     json!({
@@ -834,7 +834,7 @@ fn pr_hello_lists_release_renew_comments() {
     let (fake, _) = pr_forge();
     let mut plugin = Plugin::spawn();
     assert_eq!(
-        plugin.hello("github_pr_review", pr_settings(&fake)),
+        plugin.hello("github_pr", pr_settings(&fake)),
         json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
     );
     assert!(fake.seen().is_empty(), "hello touches no forge");
@@ -852,7 +852,7 @@ fn pr_hello_lists_release_renew_comments() {
 #[test]
 fn pr_a_won_race_hands_over_the_built_ins_unit() {
     let (fake, review) = pr_forge();
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     let reply = plugin.poll();
     assert_eq!(reply["fire"], true, "{}", plugin.stderr());
     let marker = markers(&fake, 7);
@@ -925,7 +925,7 @@ fn pr_a_review_alone_fires_the_round() {
     fake.comment(REPO, 7, HUMAN, REVIEW, 400);
     fake.comment(REPO, 7, ME, "Pushed 3f2a1c: the cap applies now.", 300);
     let review = fake.review(REPO, 7, "álvaro", 60);
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(unit["id"], "7", "{}", plugin.stderr());
     assert_eq!(
@@ -941,7 +941,7 @@ fn pr_a_review_alone_fires_the_round() {
 fn pr_a_lost_race_hands_over_nothing_and_takes_its_marker_back() {
     let (fake, _) = pr_forge();
     let rival = fake.comment(REPO, 7, "autocoder", "[afkd-claim] owner=autocoder", 60);
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert_eq!(
         markers(&fake, 7),
@@ -971,7 +971,7 @@ fn pr_with_no_new_feedback_does_not_fire() {
     let (fake, _) = pr_forge();
     fake.review(REPO, 7, "álvaro", 90);
     fake.comment(REPO, 7, ME, "Pushed 3f2a1c: the cap applies now.", 30);
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert!(
         !wrote(&fake),
@@ -991,7 +991,7 @@ fn pr_whose_only_new_comment_is_a_claim_marker_does_not_fire() {
     fake.comment(REPO, 7, HUMAN, REVIEW, 7_400);
     fake.comment(REPO, 7, ME, "Pushed 3f2a1c: the cap applies now.", 7_300);
     fake.comment(REPO, 7, "autocoder", "[afkd-claim] owner=autocoder", 3_700);
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert!(!wrote(&fake), "a marker is not feedback: {:?}", fake.seen());
     plugin.finish();
@@ -1005,7 +1005,7 @@ fn pr_author_me_filters_foreign_prs() {
     fake.pull(REPO, 8, HUMAN, "fix/y", &[], &[]);
     fake.comment(REPO, 8, "álvaro", "Exponential, please — see §4 🙏", 60);
 
-    let mut mine = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut mine = Plugin::armed_as("github_pr", pr_settings(&fake));
     assert_eq!(mine.poll(), json!({"fire": false}));
     assert!(!wrote(&fake), "{:?}", fake.seen());
     assert!(
@@ -1017,7 +1017,7 @@ fn pr_author_me_filters_foreign_prs() {
 
     let mut settings = pr_settings(&fake);
     settings.as_object_mut().unwrap().remove("author_me");
-    let mut anyone = Plugin::armed_as("github_pr_review", settings);
+    let mut anyone = Plugin::armed_as("github_pr", settings);
     let unit = anyone.poll()["unit"].clone();
     assert_eq!(unit["id"], "8");
     assert_eq!(unit["env"]["GITHUB_PR_BRANCH"], "fix/y");
@@ -1027,7 +1027,7 @@ fn pr_author_me_filters_foreign_prs() {
 #[test]
 fn pr_renew_rewrites_the_marker_in_place() {
     let (fake, _) = pr_forge();
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     let marker = markers(&fake, 7)[0];
     let comment = |fake: &FakeGithub| {
@@ -1068,7 +1068,7 @@ fn pr_renew_rewrites_the_marker_in_place() {
 #[test]
 fn pr_comments_report_what_afkd_has_not_seen() {
     let (fake, _) = pr_forge();
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     let read = |plugin: &mut Plugin| plugin.call(json!({"call": "comments", "key": unit["key"]}));
 
@@ -1113,7 +1113,7 @@ fn pr_comments_report_what_afkd_has_not_seen() {
 #[test]
 fn pr_release_undoes_the_claim_in_full() {
     let (fake, _) = pr_forge();
-    let mut first = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut first = Plugin::armed_as("github_pr", pr_settings(&fake));
     let live = first.poll()["unit"]["key"].clone();
     assert_eq!(
         first.call(json!({"call": "release", "key": live})),
@@ -1132,7 +1132,7 @@ fn pr_release_undoes_the_claim_in_full() {
     assert_eq!(assignees(&fake, 7), [HUMAN, ME]);
     drop(first);
 
-    let mut fresh = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut fresh = Plugin::armed_as("github_pr", pr_settings(&fake));
     let from = fake.seen().len();
     assert_eq!(
         fresh.call(json!({"call": "release", "key": crashed})),
@@ -1159,7 +1159,7 @@ fn pr_release_undoes_the_claim_in_full() {
 #[test]
 fn pr_a_clean_finish_runs_on_done_and_leaves_the_pr_open() {
     let (fake, _) = pr_forge();
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(
         finish(&mut plugin, &unit, "clean", pr_facts("proceed", None)),
@@ -1182,7 +1182,7 @@ fn pr_a_clean_finish_runs_on_done_and_leaves_the_pr_open() {
 #[test]
 fn pr_a_failed_finish_runs_on_fail() {
     let (fake, review) = pr_forge();
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     let reply = finish(
         &mut plugin,
@@ -1216,7 +1216,7 @@ fn pr_a_failed_finish_runs_on_fail() {
 #[test]
 fn pr_an_undelivered_finish_is_held_and_release_recovers_it() {
     let (fake, _) = pr_forge();
-    let mut plugin = Plugin::armed_as("github_pr_review", pr_settings(&fake));
+    let mut plugin = Plugin::armed_as("github_pr", pr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     let key = unit["key"].as_str().unwrap().to_string();
     fake.fail("remove assignees", 500);

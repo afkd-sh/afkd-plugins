@@ -39,10 +39,10 @@ use crate::wire::{
 };
 
 /// The issue kind.
-pub(crate) const ISSUE_KIND: &str = "github";
+pub(crate) const ISSUE_KIND: &str = "github_issue";
 
 /// The pull-request review kind.
-pub(crate) const PR_KIND: &str = "github_pr_review";
+pub(crate) const PR_KIND: &str = "github_pr";
 
 /// What the process does with one request.
 #[derive(Debug, PartialEq)]
@@ -476,7 +476,7 @@ mod tests {
             }
         }
 
-        /// The same, armed as the `github` kind over `settings`.
+        /// The same, armed as the `github_issue` kind over `settings`.
         fn armed(settings: serde_json::Value) -> Self {
             let mut f = Self::new();
             let hello = f.call(
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn hello_lists_exactly_the_calls_the_kind_answers() {
         let mut f = Fixture::new();
-        let reply = f.call(json!({"call": "hello", "proto": 1, "kind": "github",
+        let reply = f.call(json!({"call": "hello", "proto": 1, "kind": "github_issue",
                                   "service": "監視::triage", "roster": ["監視::triage"],
                                   "owner": "陳大文", "settings": settings()}));
         assert_eq!(
@@ -582,10 +582,10 @@ mod tests {
     fn hello_refuses_what_the_kind_cannot_arm_with() {
         for (kind, proto, settings, problem) in [
             (
-                "github_pr",
+                "github_issues",
                 1,
                 settings(),
-                "kind `github_pr` is not provided by @afkd/github",
+                "kind `github_issues` is not provided by @afkd/github",
             ),
             (
                 "gitea",
@@ -594,36 +594,36 @@ mod tests {
                 "kind `gitea` is not provided by @afkd/github",
             ),
             (
-                "github",
+                "github_issue",
                 2,
                 settings(),
                 "afkd speaks plugin protocol 2, and this plugin speaks 1",
             ),
             (
-                "github",
+                "github_issue",
                 1,
                 json!({"repo": "", "token": "PAT"}),
-                "trigger github: setting `repo`: a github trigger needs a `repo` (`owner/name`)",
+                "trigger github_issue: setting `repo`: a github trigger needs a `repo` (`owner/name`)",
             ),
             (
-                "github",
+                "github_issue",
                 1,
                 json!({"repo": REPO, "token": "PAT",
                        "on_claim": {"comment": ["spent @{run:cost}"]}}),
-                "trigger github: setting `comment`: `@{run:cost}` references the run's facts, \
+                "trigger github_issue: setting `comment`: `@{run:cost}` references the run's facts, \
                  but no run happens at claim time",
             ),
             (
-                "github",
+                "github_issue",
                 1,
                 json!({"repo": REPO, "token": "PAT", "on_done": {"label_add": [true]}}),
-                "trigger github: setting `label_add`: `label_add` expects a label name",
+                "trigger github_issue: setting `label_add`: `label_add` expects a label name",
             ),
             (
-                "github_pr_review",
+                "github_pr",
                 1,
                 json!({"repo": "", "token": "PAT", "author_me": true}),
-                "trigger github_pr_review: setting `repo`: a github trigger needs a `repo` \
+                "trigger github_pr: setting `repo`: a github trigger needs a `repo` \
                  (`owner/name`)",
             ),
         ] {

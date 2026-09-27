@@ -5,8 +5,8 @@
 //! replies and nothing else; every diagnostic goes to stderr, which afkd streams into the
 //! service log under `[@afkd/github:err]`.
 //!
-//! Two kinds, each the vendor half of an afkd built-in trigger, ported: `github`
-//! ([`issue`]) and `github_pr_review` ([`pr`]). They keep the built-ins' claim markers,
+//! Two kinds, each the vendor half of an afkd built-in trigger, ported: `github_issue`
+//! ([`issue`]) and `github_pr` ([`pr`]). They keep the built-ins' claim markers,
 //! lifecycle comments, claim-journal keys, session threads, run env and briefs, so a claim
 //! either one left on a live issue or pull request is recognised, renewed and released by
 //! the other. `hello` names the kind, and [`plugin`] dispatches on it.

@@ -1,10 +1,10 @@
 # `@afkd/github`
 
-A **provider** plugin with two trigger kinds. [`github`](#github-issues) turns open issues
-on a GitHub repository into afkd runs, and reflects progress back through each issue's
-assignees, labels and state. [`github_pr_review`](#github_pr_review-pull-request-review)
-re-fires a run on a pull request each time a human leaves a comment or review newer than
-the bot's last word, for an automated review loop. The plugin also ships the `github`
+A **provider** plugin with two trigger kinds. [`github_issue`](#github_issue-issues) turns
+open issues on a GitHub repository into afkd runs, and reflects progress back through each
+issue's assignees, labels and state. [`github_pr`](#github_pr-pull-request-review) re-fires
+a run on a pull request each time a human leaves a comment or review newer than the bot's
+last word, for an automated review loop. The plugin also ships the `github`
 skill an agent uses to answer the issue or pull request: read and post comments, fetch the
 images pasted into it, and open a pull request for the branch it committed.
 
@@ -33,9 +33,7 @@ $ afkd install /path/to/afkd-plugins/@afkd/github
 
 afkd copies the tree and runs `cargo build --release --locked` in it, so the host needs a
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
-the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs). An afkd that
-still has `github` or `github_pr_review` compiled in refuses the install, because a plugin may not shadow a
-built-in kind; use the built-in there, with exactly the same config.
+the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
 Run it on an afkd that understands a `held` finish (see
 [below](#where-it-differs-from-the-built-in)); an older one treats an undelivered
@@ -46,18 +44,18 @@ Run it on an afkd that understands a `held` finish (see
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-# The agent a `github` service runs: the skill is what lets it answer the issue.
+# The agent a `github_issue` service runs: the skill is what lets it answer the issue.
 agent fixer { worker claude { model sonnet; skills @afkd/github/github } }
 ```
 
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
-`GITHUB_TOKEN`, `GITHUB_HOST`, `GITHUB_REPO` and `GITHUB_ISSUE_NUMBER` every `github` run
-carries, and falls back to the bare issue number under `issue/number` in the run's scratch
-directory. A `github_pr_review` run carries `GITHUB_PR_NUMBER` and `GITHUB_PR_BRANCH` (the
+`GITHUB_TOKEN`, `GITHUB_HOST`, `GITHUB_REPO` and `GITHUB_ISSUE_NUMBER` every `github_issue`
+run carries, and falls back to the bare issue number under `issue/number` in the run's
+scratch directory. A `github_pr` run carries `GITHUB_PR_NUMBER` and `GITHUB_PR_BRANCH` (the
 PR's head branch) in place of the issue number, and the bare number under `pr/number`; the
 skill reads and posts on the pull request's conversation the same way.
 
-## `github` (issues)
+## `github_issue` (issues)
 
 Fires for open issues on a single GitHub repository and reflects progress back through the
 issue's assignees, labels, and state. Its token stays with the plugin and the run.
@@ -77,9 +75,9 @@ issue's assignees, labels, and state. Its token stays with the plugin and the ru
 
 There is no `org` key — a GitHub trigger polls a single `repo` (required, non-empty). A
 `repo` that is not `owner/name` claims nothing. `author_me` is **not** a key here; it
-belongs to [`github_pr_review`](#github_pr_review-pull-request-review). GitHub lists pull requests among a repo's
-issues; the plugin passes them over, so a pull request carrying the source label is never
-claimed as an issue. With `source_label` unset every open issue of the repo is up for
+belongs to [`github_pr`](#github_pr-pull-request-review). GitHub lists pull requests among a
+repo's issues; the plugin passes them over, so a pull request carrying the source label is
+never claimed as an issue. With `source_label` unset every open issue of the repo is up for
 grabs; set, only the issues carrying it.
 
 The lifecycle actions only manage the issue's *status* — its assignees, labels, and state.
@@ -120,7 +118,7 @@ the per-issue retries. There is no clarification gate: a run that ends parked ru
 ```conf
 service widgets {
   work_dir "/srv/acme/widgets"
-  trigger github {
+  trigger github_issue {
     host         "github.com"
     repo         "acme/widgets"
     token        "REPLACE_ME"
@@ -140,7 +138,7 @@ service widgets {
 ```conf
 service widgets {
   work_dir "/srv/acme/widgets"
-  trigger github {
+  trigger github_issue {
     host  "ghe.example.com"
     repo  "acme/widgets"
     token "REPLACE_ME"
@@ -162,7 +160,7 @@ working**, as another turn in the same conversation:
 ```conf
 service widgets {
   work_dir "/srv/acme/widgets"
-  trigger github {
+  trigger github_issue {
     repo            "acme/widgets"
     token           "REPLACE_ME"
     poll_interval   4m..6m
@@ -181,14 +179,15 @@ per interval **per running issue**, plus one at the end of each run, and nothing
 while no run is in flight. All of this is afkd's own mid-run watch; the plugin only reads
 the thread for it.
 
-## `github_pr_review` (pull-request review)
+## `github_pr` (pull-request review)
 
 Fires on open pull requests — optionally only the bot's own — and re-fires when a human
 leaves feedback newer than the bot's last word, for an automated review loop.
 
 It takes the **same shared keys, lifecycle blocks, and defaults** (`max_attempts` `1`,
-`poll_interval` `30s`) and the required single `repo` as [`github`](#github-issues) above.
-The one difference is the key it adds in place of `source_label`:
+`poll_interval` `30s`) and the required single `repo` as
+[`github_issue`](#github_issue-issues) above. The one difference is the key it adds in
+place of `source_label`:
 
 | Key         | Value    | Notes                                                       |
 |-------------|----------|-------------------------------------------------------------|
@@ -196,7 +195,7 @@ The one difference is the key it adds in place of `source_label`:
 
 **Cadence.** Polls the forge every `poll_interval` for the repo's open pull requests,
 optionally narrowed to the bot's own via `author_me`. Concurrency, retries, and the `on_*`
-lifecycle actions behave as for `github`.
+lifecycle actions behave as for `github_issue`.
 
 **When a PR fires.** Feedback is read from the PR's conversation **comments** and its
 **reviews**. A PR is eligible when it carries **feedback newer than the bot's last word**:
@@ -209,13 +208,14 @@ PR again on a later poll. A `comment` in `on_done` or `on_fail` is the bot speak
 it answers the round as well. The loop ends when a human merges or closes the PR, which
 drops it from the open set — so there is no `close` to put in `on_done`.
 
-**The claim.** The same `[afkd-claim]` marker as `github` — GitHub treats a pull request as
-an issue, so the marker, the labels and the assignees go on the PR's own conversation —
-kept alive while the run is and taken off the thread when it ends. The plugin adds
-`afkd/claimed` when it wins a PR, but here it is only **status**: the watermark, not the
-label, decides whether a PR is claimed again, so the label stays on the PR between rounds
-and nothing needs to remove it. There is no `on_park` and no clarification gate: a round
-either finishes (`on_done`) or fails (`on_fail`, which a parked round runs too).
+**The claim.** The same `[afkd-claim]` marker as `github_issue` — GitHub treats a pull
+request as an issue, so the marker, the labels and the assignees go on the PR's own
+conversation — kept alive while the run is and taken off the thread when it ends. The
+plugin adds `afkd/claimed` when it wins a PR, but here it is only **status**: the
+watermark, not the label, decides whether a PR is claimed again, so the label stays on the
+PR between rounds and nothing needs to remove it. There is no `on_park` and no
+clarification gate: a round either finishes (`on_done`) or fails (`on_fail`, which a parked
+round runs too).
 
 **The brief.** A run's `task.md` names the PR and carries the new feedback, oldest first,
 each item attributed to its author; a review stands as its id:
@@ -230,13 +230,13 @@ Address review feedback on PR #7.
 **carol:** (review 2291)
 ```
 
-`follow_comments` works as for `github`: afkd asks the plugin for the PR's comments while a
-round runs. The comments the brief was built from are never delivered again.
+`follow_comments` works as for `github_issue`: afkd asks the plugin for the PR's comments
+while a round runs. The comments the brief was built from are never delivered again.
 
 ```conf
 service reviews {
   work_dir "/srv/acme/widgets"
-  trigger github_pr_review {
+  trigger github_pr {
     host            "github.com"
     repo            "acme/widgets"
     token           "REPLACE_ME"
@@ -274,7 +274,7 @@ few things. Each is deliberate, and none changes what a config means.
   the marker — on a later beat, so the issue is retried from the top. This needs an afkd
   that understands `held`; an older one ignores it and treats the finish as delivered, and
   the issue keeps `afkd/claimed` and the bot's assignment until a human clears them. A
-  `github_pr_review` PR is not held by its label, so one whose feedback is still
+  `github_pr` PR is not held by its label, so one whose feedback is still
   unanswered is claimed again by that feedback either way.
 - **The identity is looked up by whichever call needs it first.** A release unassigns the
   bot by its login, and afkd may ask for a release before it ever polls — after a restart,
@@ -296,8 +296,7 @@ few things. Each is deliberate, and none changes what a config means.
   the next poll. And every call the plugin answers comes back within 45 seconds: a forge
   too slow to answer in that time is treated as if it were down.
 - **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
-  issue acme/widgets#7` where the built-in's opens `# Work item from github issue
-  acme/widgets#7` — and a review round's `# Work item from plugin pr acme/widgets#7` where
-  the built-in's opens `# Work item from github pr acme/widgets#7` — and a comment
-  delivered mid-run calls the issue or pull request "this work item" rather than "this
-  issue" or "this pull request".
+  issue acme/widgets#7`, and a review round's `# Work item from plugin pr acme/widgets#7`,
+  where the built-in's named the vendor in place of `plugin` — and a comment delivered
+  mid-run calls the issue or pull request "this work item" rather than "this issue" or
+  "this pull request".

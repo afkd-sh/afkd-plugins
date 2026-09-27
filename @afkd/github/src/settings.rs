@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 
 use crate::lifecycle::{parse_block, LifecycleAction};
 
-/// A validated `github` or `github_pr_review` trigger configuration: one struct covers
+/// A validated `github_issue` or `github_pr` trigger configuration: one struct covers
 /// the union of both kinds' keys.
 ///
 /// `Debug` is **hand-written** so the `token` never reaches a diagnostic.
@@ -89,7 +89,7 @@ impl std::fmt::Display for SettingsError {
 // The built-in's vocabulary, verbatim. afkd reads the manifest, never these: they are
 // what `manifest.rs`'s test holds `afkd-plugin.toml` to, so the two cannot drift apart.
 
-/// The `github` kind's full key set, exactly the built-in's `ALLOWED_ISSUE_KEYS`.
+/// The `github_issue` kind's full key set, exactly the built-in's `ALLOWED_ISSUE_KEYS`.
 #[cfg(test)]
 pub(crate) const ALLOWED_ISSUE_KEYS: &[&str] = &[
     "host",
@@ -104,7 +104,7 @@ pub(crate) const ALLOWED_ISSUE_KEYS: &[&str] = &[
     "on_fail",
 ];
 
-/// The keys a `github` block may write more than once: none — one repo, one token, one
+/// The keys a `github_issue` block may write more than once: none — one repo, one token, one
 /// `on_done`.
 #[cfg(test)]
 pub(crate) const REPEATABLE_ISSUE_KEYS: &[&str] = &[];
@@ -118,7 +118,7 @@ pub(crate) const DURATION_KEYS: &[&str] = &["poll_interval", "follow_comments"];
 #[cfg(test)]
 pub(crate) const REQUIRED_ISSUE_KEYS: &[&str] = &["token"];
 
-/// The `github_pr_review` kind's full key set, exactly the built-in's `ALLOWED_PR_KEYS`:
+/// The `github_pr` kind's full key set, exactly the built-in's `ALLOWED_PR_KEYS`:
 /// the shared keys plus `author_me` (and, notably, **not** `source_label`).
 #[cfg(test)]
 pub(crate) const ALLOWED_PR_KEYS: &[&str] = &[
@@ -134,16 +134,16 @@ pub(crate) const ALLOWED_PR_KEYS: &[&str] = &[
     "on_fail",
 ];
 
-/// The keys a `github_pr_review` block may write more than once: none — the built-in's
+/// The keys a `github_pr` block may write more than once: none — the built-in's
 /// `REPEATABLE_PR_KEYS` reads no key as a sequence.
 #[cfg(test)]
 pub(crate) const REPEATABLE_PR_KEYS: &[&str] = &[];
 
-/// The keys a `github_pr_review` block must carry: the forge `token`, as for `github`.
+/// The keys a `github_pr` block must carry: the forge `token`, as for `github_issue`.
 #[cfg(test)]
 pub(crate) const REQUIRED_PR_KEYS: &[&str] = &["token"];
 
-/// Read the lowered `settings` into a [`GithubConfig`] for the `github` kind, or report
+/// Read the lowered `settings` into a [`GithubConfig`] for the `github_issue` kind, or report
 /// the first setting it cannot use.
 pub(crate) fn issue_config(settings: &Value) -> Result<GithubConfig, SettingsError> {
     let empty = Map::new();
@@ -153,7 +153,7 @@ pub(crate) fn issue_config(settings: &Value) -> Result<GithubConfig, SettingsErr
     Ok(cfg)
 }
 
-/// Read the lowered `settings` into a [`GithubConfig`] for the `github_pr_review` kind,
+/// Read the lowered `settings` into a [`GithubConfig`] for the `github_pr` kind,
 /// or report the first setting it cannot use. `author_me` is a flag: its presence is the
 /// setting, whatever it carries — the built-in's `settings.has`.
 pub(crate) fn pr_review_config(settings: &Value) -> Result<GithubConfig, SettingsError> {
@@ -426,8 +426,8 @@ mod tests {
         );
     }
 
-    /// The PR kind reads the keys it shares with `github` the same way, and not the key
-    /// only `github` declares.
+    /// The PR kind reads the keys it shares with `github_issue` the same way, and not the
+    /// key only `github_issue` declares.
     #[test]
     fn pr_review_config_reads_the_shared_keys() {
         let cfg = pr_review_config(&json!({

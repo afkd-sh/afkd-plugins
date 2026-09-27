@@ -1,4 +1,4 @@
-//! The `github_pr_review` kind's vendor half (ADR-0041), ported from afkd's
+//! The `github_pr` kind's vendor half (ADR-0041), ported from afkd's
 //! `crates/github/src/trigger_pr.rs`.
 //!
 //! It polls a single repository's **open** pull requests through the mockable
@@ -78,7 +78,7 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `github_pr_review` kind's vendor half: the single-repo target, the `author_me`
+/// The `github_pr` kind's vendor half: the single-repo target, the `author_me`
 /// filter, the claim, and the three lifecycle action lists.
 pub(crate) struct PrUnits {
     client: Box<dyn GithubClient>,

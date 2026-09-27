@@ -1,4 +1,4 @@
-//! The `github` issue kind's vendor half (ADR-0041), ported from afkd's
+//! The `github_issue` kind's vendor half (ADR-0041), ported from afkd's
 //! `crates/github/src/trigger_issue.rs`.
 //!
 //! It polls a single repository through the mockable [`GithubClient`] seam for issues that
@@ -75,7 +75,7 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `github` kind's vendor half: the single-repo target, the source-label intake gate,
+/// The `github_issue` kind's vendor half: the single-repo target, the source-label intake gate,
 /// the claim, and the three lifecycle action lists.
 pub(crate) struct IssueUnits {
     client: Box<dyn GithubClient>,
@@ -242,7 +242,7 @@ impl IssueUnits {
     }
 }
 
-/// The `github` kind behind the plugin's seam.
+/// The `github_issue` kind behind the plugin's seam.
 impl Units for IssueUnits {
     type Unit = Unit;
 
