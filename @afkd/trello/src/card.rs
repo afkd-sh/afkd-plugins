@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::board::{BoardClient, BoardError, Card, Checklist, Comment};
 use crate::claim::{
@@ -227,6 +227,9 @@ pub(crate) struct TrelloUnits {
     /// [`release_stale`](Self::release_stale). A `Vec`, not a map: empty in the steady
     /// state, and its insertion order is what bounds it.
     pending: Mutex<Vec<PendingFinish>>,
+    /// The current call's deadline, `None` between calls: the poll's scan reads it for
+    /// its claim reserve.
+    call_deadline: Mutex<Option<Instant>>,
 }
 
 impl TrelloUnits {
@@ -254,7 +257,15 @@ impl TrelloUnits {
             roster: id.roster,
             park_cursor: Mutex::new(0),
             pending: Mutex::new(Vec::new()),
+            call_deadline: Mutex::new(None),
         }
+    }
+
+    /// Set (or, with `None`, clear) the current call's deadline: kept for the poll's
+    /// claim reserve, and handed to the board, which clips every request to it.
+    pub(crate) fn set_call_deadline(&self, deadline: Option<Instant>) {
+        *lock(&self.call_deadline) = deadline;
+        self.board.set_call_deadline(deadline);
     }
 
     /// Resolve the `discuss_with` gate's identities once per poll: afkd's own member id
@@ -367,6 +378,11 @@ impl TrelloUnits {
                 if self.parked_elsewhere(comments) {
                     continue;
                 }
+                // Too little of the call is left to see a claim through: the card waits
+                // for the next beat, with nothing posted on it.
+                if budget.claim_reserve_short() {
+                    return Ok(ParkScan::Spent);
+                }
                 // What is left is ours, unmarked, or orphaned — and the last of those
                 // narrates, on the beat the card is actually taken over.
                 if let Some(line) = self.orphan_takeover(&full, comments) {
@@ -417,13 +433,15 @@ impl TrelloUnits {
     /// not end the poll: the scan resumes at the next candidate.
     ///
     /// The whole scan runs under [`ScanBudget`]: past it, the beat ends idle and the rest
-    /// of the list waits for the next poll. A claim already under way always finishes.
+    /// of the list waits for the next poll. So it does, before a claim is posted, once
+    /// less than [`CLAIM_RESERVE`](crate::common::CLAIM_RESERVE) of the call's budget is
+    /// left. A claim already under way always finishes.
     pub(crate) fn try_claim_next(
         &self,
         diag: &dyn Diag,
         clock: &dyn Clock,
     ) -> Result<Option<Unit>, BoardError> {
-        let budget = ScanBudget::start(clock, diag);
+        let budget = ScanBudget::start(clock, diag, *lock(&self.call_deadline));
         // Parked work first: a card whose question a human has answered is more due than
         // anything queued behind it. Nothing badged falls straight through, one board
         // read the poorer.
@@ -497,6 +515,10 @@ impl TrelloUnits {
                 if !discuss_tail_passes(cs, gate) {
                     continue;
                 }
+            }
+            // The gates' own reads may have spent the reserve: post nothing this late.
+            if budget.claim_reserve_short() {
+                return Ok(None);
             }
             // A parked card whose parker this config no longer runs falls free here too,
             // so the takeover narrates here too — the sweep's line.
@@ -1443,7 +1465,7 @@ mod tests {
     use super::*;
     use crate::board::{Action, MockBoard, SELF_ID};
     use crate::claim::CLAIM_MARKER;
-    use crate::common::{CaptureDiag, FakeClock, TempDir};
+    use crate::common::{CaptureDiag, FakeClock, TempDir, CALL_BUDGET, CLAIM_RESERVE};
     use std::sync::Arc;
 
     fn move_to(list: &str) -> LifecycleAction {
@@ -5945,5 +5967,99 @@ mod tests {
             h.board.calls()
         );
         assert_eq!(h.diag.errs().len(), 1, "{:?}", h.diag.errs());
+    }
+
+    // --- The call's claim reserve ---
+
+    const RESERVE_LINE: &str = "trello poll: less than 10s of the call's 45s budget is left; \
+                                the rest of the scan waits for the next poll";
+
+    /// How many comments the board was asked to post — each one a claim, on a poll.
+    fn claim_posts(board: &MockBoard) -> usize {
+        board
+            .calls()
+            .iter()
+            .filter(|c| **c == "post comment")
+            .count()
+    }
+
+    /// A call with less than the claim reserve left ends the scan before any claim is
+    /// posted, idle and with one line saying why — a claimable card waits for the next
+    /// beat rather than risk a lease the call could not see through.
+    #[test]
+    fn a_scan_with_less_than_the_claim_reserve_left_posts_no_claim() {
+        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        seed_source_card(&h.board, "card1");
+        h.units.set_call_deadline(Some(
+            h.clock.now() + CLAIM_RESERVE - Duration::from_millis(1),
+        ));
+
+        assert!(h.poll().is_none(), "the beat ends idle");
+        assert_eq!(claim_posts(&h.board), 0, "{:?}", h.board.calls());
+        assert!(h.board.comments_on("card1").is_empty());
+        assert_eq!(h.diag.errs(), [RESERVE_LINE]);
+        assert!(h.diag.narrated().is_empty());
+
+        // The same card claims on a beat with the budget intact.
+        h.units.set_call_deadline(Some(h.clock.now() + CALL_BUDGET));
+        assert_eq!(h.poll_claim().as_deref(), Some("card1"));
+    }
+
+    /// The reserve is re-checked right before each claim, not only at the top of each
+    /// candidate: a slow read in between can spend it. Every clock read here costs two
+    /// seconds against a deadline fifteen past the first — the scan starts with 13s left,
+    /// the candidate's check finds 11s, and the check before its claim finds 9s. Both the
+    /// parked sweep (a card read between) and the list scan stop there.
+    #[test]
+    fn a_candidate_short_of_the_claim_reserve_by_its_claim_posts_none() {
+        // The parked sweep: an answered question, which it would otherwise re-claim.
+        let h = Harness {
+            clock: FakeClock::ticking(Duration::from_secs(2)),
+            ..Harness::new(cfg(vec![], vec![], vec![]), "me")
+        };
+        h.board.add_list("Up for Grabs");
+        h.board.add_list("In Progress");
+        h.board
+            .add_card("In Progress", "p0", "Parked — 修复 🚨", "Body");
+        h.board.seed_card_label("p0", AWAITING_LABEL);
+        h.board
+            .seed_comment_by("p0", "ask-p0", PARK_QUESTION, SELF_ID, 200);
+        h.board.seed_comment_by(
+            "p0",
+            "reply-p0",
+            "Yes — ship it,\nbut keep the flag.",
+            "marisa",
+            300,
+        );
+        h.board
+            .add_card("Up for Grabs", "queued", "Next up", "Body");
+        let read0 = h.clock.now();
+        h.units
+            .set_call_deadline(Some(read0 + Duration::from_secs(15)));
+
+        assert!(h.poll().is_none(), "the beat ends idle");
+        assert_eq!(h.board.card_reads(), ["p0"]);
+        assert_eq!(claim_posts(&h.board), 0, "{:?}", h.board.calls());
+        assert!(
+            !h.board.calls().contains(&"resolve list"),
+            "pick_from is not reached: {:?}",
+            h.board.calls()
+        );
+        assert_eq!(h.diag.errs(), [RESERVE_LINE]);
+
+        // The list scan: one plain card, and nothing badged.
+        let h = Harness {
+            clock: FakeClock::ticking(Duration::from_secs(2)),
+            ..Harness::new(cfg(vec![], vec![], vec![]), "me")
+        };
+        seed_source_card(&h.board, "card1");
+        let read0 = h.clock.now();
+        h.units
+            .set_call_deadline(Some(read0 + Duration::from_secs(15)));
+
+        assert!(h.poll().is_none(), "the beat ends idle");
+        assert!(h.board.calls().contains(&"list cards"));
+        assert_eq!(claim_posts(&h.board), 0, "{:?}", h.board.calls());
+        assert_eq!(h.diag.errs(), [RESERVE_LINE]);
     }
 }

@@ -1,5 +1,6 @@
 //! The seams the kind is written against — the [`Clock`] the claim settles on and the
-//! [`Diag`] sink its lines go to — plus the env spellings and the poll's scan budget.
+//! [`Diag`] sink its lines go to — plus the env spellings, the call budget and the poll's
+//! scan budget.
 //!
 //! One thing the built-in has and this does not: afkd's stop. The plugin cannot see it,
 //! so a claim never abandons mid-settle; afkd hands a unit polled during a stop straight
@@ -23,6 +24,18 @@ pub(crate) const ENV_CARD_ID: &str = "TRELLO_CARD_ID";
 /// each claim attempt settles for a second; this keeps the scan well inside it. A claim
 /// already under way is always finished.
 pub(crate) const POLL_BUDGET: Duration = Duration::from_secs(20);
+
+/// The longest any one call afkd sends may take, request after request. afkd's reply
+/// deadline is 60 seconds and a missed reply ends the service; the 15 seconds between
+/// the two cover the claim's one-second settle, building the reply and the pipe. Every
+/// request of the call is clipped to what is left of it, and past it none is sent, so a
+/// board too slow for it answers as a board that is down.
+pub(crate) const CALL_BUDGET: Duration = Duration::from_secs(45);
+
+/// A scan with less than this left of the call's [`CALL_BUDGET`] posts no claim: a claim
+/// cut off after its comment lands leaves a live lease that `drop_claim` can no longer
+/// delete, keeping every service off the card for the lease's lifetime.
+pub(crate) const CLAIM_RESERVE: Duration = Duration::from_secs(10);
 
 /// Lock `m`, recovering the data from a poisoned lock rather than panicking: a panic
 /// elsewhere must not take every later caller down with it.
@@ -77,34 +90,68 @@ impl Diag for StderrDiag {
     }
 }
 
-/// One `poll`'s scan against [`POLL_BUDGET`], started when the scan starts.
+/// One `poll`'s scan against [`POLL_BUDGET`], started when the scan starts, and against
+/// the [`CLAIM_RESERVE`] of the call's deadline, when the call has one.
 pub(crate) struct ScanBudget<'a> {
     clock: &'a dyn Clock,
     diag: &'a dyn Diag,
     started: Instant,
+    /// The call's deadline, `None` outside an armed call.
+    deadline: Option<Instant>,
 }
 
 impl<'a> ScanBudget<'a> {
-    pub(crate) fn start(clock: &'a dyn Clock, diag: &'a dyn Diag) -> Self {
+    pub(crate) fn start(
+        clock: &'a dyn Clock,
+        diag: &'a dyn Diag,
+        deadline: Option<Instant>,
+    ) -> Self {
         Self {
             clock,
             diag,
             started: clock.now(),
+            deadline,
         }
     }
 
-    /// Whether the scan has run its budget — said on the diagnostic channel when it has,
-    /// since the scan stops there.
+    /// Whether the scan has run its budget, or is short of the claim reserve — said on
+    /// the diagnostic channel when it is, since the scan stops there. One line per check,
+    /// and the scan's own budget is the one named when both are out.
     pub(crate) fn spent(&self) -> bool {
-        let spent = self.clock.now().duration_since(self.started) >= POLL_BUDGET;
-        if spent {
+        let now = self.clock.now();
+        if now.duration_since(self.started) >= POLL_BUDGET {
             self.diag.err(&format_args!(
                 "trello poll: the scan ran past its {}s budget; the rest of it waits for the \
                  next poll",
                 POLL_BUDGET.as_secs()
             ));
+            return true;
         }
-        spent
+        self.reserve_short(now)
+    }
+
+    /// Whether less than the claim reserve of the call's budget is left — checked right
+    /// before a claim is posted, since a candidate's own reads sit between the scan's
+    /// check and its claim. Reads no clock when the call has no deadline.
+    pub(crate) fn claim_reserve_short(&self) -> bool {
+        self.deadline.is_some() && self.reserve_short(self.clock.now())
+    }
+
+    /// Whether less than [`CLAIM_RESERVE`] is left of the call's deadline at `now`, said
+    /// on the diagnostic channel when it is.
+    fn reserve_short(&self, now: Instant) -> bool {
+        let short = self
+            .deadline
+            .is_some_and(|d| d.saturating_duration_since(now) < CLAIM_RESERVE);
+        if short {
+            self.diag.err(&format_args!(
+                "trello poll: less than {}s of the call's {}s budget is left; the rest of the \
+                 scan waits for the next poll",
+                CLAIM_RESERVE.as_secs(),
+                CALL_BUDGET.as_secs()
+            ));
+        }
+        short
     }
 }
 
@@ -236,7 +283,7 @@ mod tests {
     fn a_scan_budget_is_spent_at_its_bound_and_says_so() {
         let clock = FakeClock::new();
         let diag = CaptureDiag::default();
-        let budget = ScanBudget::start(&clock, &diag);
+        let budget = ScanBudget::start(&clock, &diag, None);
         clock.advance(POLL_BUDGET - Duration::from_millis(1));
         assert!(!budget.spent());
         assert!(diag.errs().is_empty());
@@ -252,6 +299,51 @@ mod tests {
         assert!(
             diag.narrated().is_empty(),
             "a spent budget is not a success"
+        );
+    }
+
+    /// Short of [`CLAIM_RESERVE`] the budget is spent, strictly: exactly the reserve left
+    /// is not. Without a deadline the pre-claim check reads no clock, and with both bounds
+    /// out only the scan's own is named.
+    #[test]
+    fn a_scan_budget_is_spent_short_of_the_claim_reserve() {
+        let reserve_line = "trello poll: less than 10s of the call's 45s budget is left; the rest \
+                            of the scan waits for the next poll";
+
+        let clock = FakeClock::new();
+        let diag = CaptureDiag::default();
+        let budget = ScanBudget::start(&clock, &diag, Some(clock.now() + CLAIM_RESERVE));
+        assert!(!budget.spent());
+        assert!(!budget.claim_reserve_short());
+        assert!(diag.errs().is_empty());
+        clock.advance(Duration::from_millis(1));
+        assert!(budget.spent());
+        assert!(budget.claim_reserve_short());
+        assert_eq!(diag.errs(), [reserve_line, reserve_line]);
+
+        let clock = FakeClock::ticking(Duration::from_secs(1));
+        let diag = CaptureDiag::default();
+        let budget = ScanBudget::start(&clock, &diag, None);
+        let before = clock.now();
+        assert!(!budget.claim_reserve_short());
+        assert_eq!(
+            clock.now() - before,
+            Duration::from_secs(1),
+            "no clock read in between"
+        );
+        assert!(diag.errs().is_empty());
+
+        let clock = FakeClock::new();
+        let diag = CaptureDiag::default();
+        let budget = ScanBudget::start(&clock, &diag, Some(clock.now() + CLAIM_RESERVE));
+        clock.advance(POLL_BUDGET);
+        assert!(budget.spent());
+        assert_eq!(
+            diag.errs(),
+            [
+                "trello poll: the scan ran past its 20s budget; the rest of it waits for the \
+              next poll"
+            ]
         );
     }
 }

@@ -335,7 +335,9 @@ few things. Each is deliberate, and none changes what a config means.
   service log.
 - **One poll scans for at most 20 seconds.** afkd gives a plugin 60 seconds to answer a
   poll, and each claim attempt waits a second for a rival's marker to show, so a scan that
-  keeps losing races stops after 20 and leaves the rest of the list for the next poll.
+  keeps losing races stops after 20 and leaves the rest of the list for the next poll. And
+  every call the plugin answers comes back within 45 seconds: a board too slow to answer
+  in that time is treated as if it were down.
 - **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
   card Qb7eLy2w` where the built-in's opens `# Work item from trello card Qb7eLy2w`, and a
   comment delivered mid-run calls the card "this work item" rather than "this card".

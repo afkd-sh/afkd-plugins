@@ -1,7 +1,7 @@
 //! The plugin's state across calls, and one handler per call: the thin layer between
 //! afkd's wire ([`crate::wire`]) and the `trello` kind's vendor half ([`crate::card`]).
 //!
-//! Four things the wire forces that the built-in never had to do:
+//! Five things the wire forces that the built-in never had to do:
 //!
 //! - **Who is asking arrives in `hello`.** The built-in read its service, roster and
 //!   claim owner off afkd's config; here `hello` carries them, and a `hello` without them
@@ -15,6 +15,9 @@
 //!   beat, which replays what is owed.
 //! - **The lines go to stderr.** The success narration and the diagnostics alike, which
 //!   afkd files under `[@afkd/trello:err]`.
+//! - **Every call answers within 45 seconds.** afkd ends the service on a missed reply,
+//!   so each armed call runs under [`CALL_BUDGET`], and a board too slow for it reads as
+//!   a board that is down.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -24,7 +27,7 @@ use serde_json::json;
 use crate::board::BoardClient;
 use crate::card::{is_afkd, Identity, TrelloUnits, Unit};
 use crate::client::TrelloClient;
-use crate::common::{Clock, Diag};
+use crate::common::{Clock, Diag, CALL_BUDGET};
 use crate::rfc3339::format_utc;
 use crate::settings::{board_config, BoardConfig};
 use crate::wire::{
@@ -130,11 +133,13 @@ impl Plugin {
                     .to_string(),
                 )
             }
-            Request::Poll => on_armed(armed, |a| a.poll(clock, diag)),
-            Request::Release { key } => on_armed(armed, |a| a.release(&key, diag)),
-            Request::Renew { key, renewal } => on_armed(armed, |a| a.renew(&key, renewal, diag)),
-            Request::Comments { key } => on_armed(armed, |a| a.comments(&key, diag)),
-            Request::Classify { scratch, outcome } => on_armed(armed, |_| {
+            Request::Poll => on_armed(armed, clock, |a| a.poll(clock, diag)),
+            Request::Release { key } => on_armed(armed, clock, |a| a.release(&key, diag)),
+            Request::Renew { key, renewal } => {
+                on_armed(armed, clock, |a| a.renew(&key, renewal, diag))
+            }
+            Request::Comments { key } => on_armed(armed, clock, |a| a.comments(&key, diag)),
+            Request::Classify { scratch, outcome } => on_armed(armed, clock, |_| {
                 let outcome = TrelloUnits::classify(Path::new(&scratch), outcome);
                 Answer::Reply(json!({ "outcome": outcome }).to_string())
             }),
@@ -143,14 +148,14 @@ impl Plugin {
                 n,
                 max,
                 reason,
-            } => on_armed(armed, |a| {
+            } => on_armed(armed, clock, |a| {
                 a.attempt_failed(&key, n, max, reason.as_deref(), diag)
             }),
             Request::Finish {
                 key,
                 outcome,
                 facts,
-            } => on_armed(armed, |a| a.finish(&key, outcome, &facts, diag)),
+            } => on_armed(armed, clock, |a| a.finish(&key, outcome, &facts, diag)),
             Request::Unknown => {
                 diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
                 Answer::Reply(json!({"ok": false}).to_string())
@@ -159,11 +164,23 @@ impl Plugin {
     }
 }
 
-/// Run `f` on the armed service — or end the process, since afkd sends nothing but
-/// `hello` before a `hello` it has seen accepted.
-fn on_armed(armed: &mut Option<Armed>, f: impl FnOnce(&mut Armed) -> Answer) -> Answer {
+/// Run `f` on the armed service under the call's [`CALL_BUDGET`], cleared once the reply
+/// is built so no call inherits another's deadline — or end the process, since afkd
+/// sends nothing but `hello` before a `hello` it has seen accepted.
+fn on_armed(
+    armed: &mut Option<Armed>,
+    clock: &dyn Clock,
+    f: impl FnOnce(&mut Armed) -> Answer,
+) -> Answer {
     match armed {
-        Some(armed) => f(armed),
+        Some(armed) => {
+            armed
+                .units
+                .set_call_deadline(Some(clock.now() + CALL_BUDGET));
+            let answer = f(armed);
+            armed.units.set_call_deadline(None);
+            answer
+        }
         None => Answer::Fatal("afkd sent a call before a `hello` this plugin accepted".into()),
     }
 }
@@ -384,6 +401,20 @@ mod tests {
     use crate::claim::{claim_text, is_claim};
     use crate::common::{CaptureDiag, FakeClock, TempDir};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// A [`Clock`] the test keeps a handle on after the plugin owns it.
+    struct SharedClock(Arc<FakeClock>);
+
+    impl Clock for SharedClock {
+        fn sleep(&self, d: Duration) {
+            self.0.sleep(d);
+        }
+
+        fn now(&self) -> Instant {
+            self.0.now()
+        }
+    }
 
     /// A [`Diag`] the test keeps a handle on after the plugin owns it.
     struct Shared(Arc<CaptureDiag>);
@@ -402,6 +433,7 @@ mod tests {
         plugin: Plugin,
         board: Arc<MockBoard>,
         diag: Arc<CaptureDiag>,
+        clock: Arc<FakeClock>,
     }
 
     const SERVICE: &str = "afkd::develop";
@@ -415,18 +447,20 @@ mod tests {
         fn new() -> Self {
             let board = Arc::new(MockBoard::new());
             let diag = Arc::new(CaptureDiag::default());
+            let clock = Arc::new(FakeClock::new());
             let shared = Arc::clone(&board);
             let connect: Connect =
                 Box::new(move |_| Box::new(Arc::clone(&shared)) as Box<dyn BoardClient>);
             let plugin = Plugin::with_connect(
                 connect,
-                Box::new(FakeClock::new()),
+                Box::new(SharedClock(Arc::clone(&clock))),
                 Box::new(Shared(Arc::clone(&diag))),
             );
             Self {
                 plugin,
                 board,
                 diag,
+                clock,
             }
         }
 
@@ -579,6 +613,69 @@ mod tests {
             ["afkd sent a call this plugin did not list in its `hello` reply"]
         );
         assert_eq!(f.poll()["fire"], true);
+    }
+
+    /// Every armed call hands the board a deadline [`CALL_BUDGET`] from the clock's now
+    /// before it runs, and clears it once the reply is built; `hello` and an unknown call
+    /// make no board request and hand it none. Each call runs at its own `now`, so a
+    /// deadline inherited from the call before would show.
+    #[test]
+    fn every_armed_call_runs_under_the_call_budget_and_clears_it() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        assert!(f.board.call_deadlines().is_empty(), "hello hands none");
+        let scratch = TempDir::new("budget");
+
+        let mut key = serde_json::Value::Null;
+        for call in [
+            "poll",
+            "renew",
+            "comments",
+            "attempt_failed",
+            "classify",
+            "finish",
+            "release",
+        ] {
+            f.clock.advance(Duration::from_secs(3));
+            let now = f.clock.now();
+            let reply = match call {
+                "poll" => f.poll(),
+                "renew" => f.call(json!({"call": "renew", "key": key, "renewal": 1})),
+                "comments" => f.call(json!({"call": "comments", "key": key})),
+                "attempt_failed" => f.call(
+                    json!({"call": "attempt_failed", "key": key, "n": 1, "max": 2,
+                           "reason": "cargo test: 3 failed"}),
+                ),
+                "classify" => f.call(
+                    json!({"call": "classify", "key": key, "scratch": scratch.path(),
+                           "outcome": "clean"}),
+                ),
+                "finish" => f.finish(&key, "clean"),
+                _ => f.call(json!({"call": "release", "key": key})),
+            };
+            if call == "poll" {
+                assert_eq!(reply["fire"], true, "{:?}", f.diag.errs());
+                key = reply["unit"]["key"].clone();
+            }
+            let handed = f.board.call_deadlines();
+            assert_eq!(
+                handed[handed.len() - 2..],
+                [Some(now + CALL_BUDGET), None],
+                "`{call}` runs under its own deadline and clears it"
+            );
+        }
+        assert_eq!(
+            f.board.call_deadlines().len(),
+            14,
+            "one set and one clear each"
+        );
+
+        f.call(json!({"call": "rewind", "key": "k"}));
+        assert_eq!(
+            f.board.call_deadlines().len(),
+            14,
+            "an unknown call hands none"
+        );
     }
 
     /// A board failure on `poll` is the built-in's idle beat, diagnosed; the next beat,

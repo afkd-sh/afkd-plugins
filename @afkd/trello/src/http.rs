@@ -9,6 +9,11 @@
 //! afkd's — idle past [`AGENT_MAX_IDLE`] or alive past [`AGENT_MAX_AGE`], and the pool is
 //! rebuilt rather than kept warm forever.
 //!
+//! One addition afkd's spine has no need of: the current call's deadline. afkd ends the
+//! service when a call misses its reply, so while a call is under way every request's
+//! global timeout is clipped to what is left of [`CALL_BUDGET`], and once it is gone no
+//! request is sent at all.
+//!
 //! Trello authenticates with `?key=…&token=…`, so the credential rides the **URL**, which
 //! is what makes [`transport_reason`]'s URL-free rule load-bearing rather than merely
 //! tidy: the two `ureq::Error` variants that render the request URI would fold a live key
@@ -20,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::common::lock;
+use crate::common::{lock, CALL_BUDGET};
 
 /// How long a board call waits to establish a connection before giving up. A wedged
 /// socket must not park a `poll` past afkd's call deadline, so even the "healthy" budget
@@ -118,6 +123,20 @@ impl BoardRequest {
         }
     }
 
+    /// Clip the request's global timeout to `global`, when the call has a deadline. The
+    /// agent's per-op timeouts still apply underneath.
+    fn clip(self, global: Option<Duration>) -> Self {
+        let Some(d) = global else { return self };
+        match self {
+            BoardRequest::NoBody(r) => {
+                BoardRequest::NoBody(r.config().timeout_global(Some(d)).build())
+            }
+            BoardRequest::WithBody(r) => {
+                BoardRequest::WithBody(r.config().timeout_global(Some(d)).build())
+            }
+        }
+    }
+
     /// Send the request with no body, with the status-to-error translation turned
     /// **off** for this one request — so a 4xx/5xx arrives as an `Ok` response whose
     /// body is still readable.
@@ -171,6 +190,8 @@ pub(crate) struct HttpClient<E> {
     read: Duration,
     /// The current agent generation, built on first use.
     agent: Mutex<Option<Generation>>,
+    /// The current call's deadline, `None` between calls.
+    deadline: Mutex<Option<Instant>>,
     _err: PhantomData<fn() -> E>,
 }
 
@@ -190,6 +211,7 @@ impl<E: HttpError> HttpClient<E> {
             connect,
             read,
             agent: Mutex::new(None),
+            deadline: Mutex::new(None),
             _err: PhantomData,
         }
     }
@@ -198,6 +220,30 @@ impl<E: HttpError> HttpClient<E> {
     #[cfg(test)]
     pub(crate) fn base(&self) -> &str {
         &self.base
+    }
+
+    /// Set (or, with `None`, clear) the current call's deadline, which every request
+    /// sent until the next set is clipped to. Measured on the real monotonic clock, the
+    /// one the plugin stamps it with.
+    pub(crate) fn set_deadline(&self, deadline: Option<Instant>) {
+        *lock(&self.deadline) = deadline;
+    }
+
+    /// The global timeout the next request gets: `None` outside a call, else the request's
+    /// own `connect + read` or what is left of the call, whichever is shorter. A call
+    /// with nothing left sends nothing: that is a transport failure naming the budget.
+    fn request_budget(&self, stage: &'static str) -> Result<Option<Duration>, E> {
+        let Some(deadline) = *lock(&self.deadline) else {
+            return Ok(None);
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(E::transport(
+                stage,
+                format!("the call's {}s budget ran out", CALL_BUDGET.as_secs()),
+            ));
+        }
+        Ok(Some(left.min(self.connect + self.read)))
     }
 
     /// The agent for the next request, rebuilt past either expiry bound and stamped as
@@ -245,6 +291,7 @@ impl<E: HttpError> HttpClient<E> {
 
     /// Execute a built request, mapping ureq's outcome onto an `E` and reading the body.
     pub(crate) fn send(&self, stage: &'static str, req: BoardRequest) -> Result<String, E> {
+        let req = req.clip(self.request_budget(stage)?);
         map_outcome(stage, req.call())
     }
 
@@ -256,6 +303,7 @@ impl<E: HttpError> HttpClient<E> {
         payload: &Value,
     ) -> Result<String, E> {
         let result = req
+            .clip(self.request_budget(stage)?)
             .header("Content-Type", "application/json")
             .send_body(&payload.to_string());
         map_outcome(stage, result)
@@ -278,6 +326,7 @@ impl<E: HttpError> HttpClient<E> {
         // With the status translation off, a 4xx/5xx arrives as `Ok` with its body
         // intact, and every `Err` left is a transport failure, which the predicate must
         // never see because there is no status to judge.
+        let req = req.clip(self.request_budget(stage)?);
         match req.call_reading_any_status() {
             Err(e) => Err(E::transport(stage, transport_reason(&e))),
             Ok(mut resp) => {

@@ -16,7 +16,7 @@
 
 use std::cell::Cell;
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -496,6 +496,10 @@ impl BoardClient for TrelloClient {
 
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError> {
         self.resolve("resolve member", board_id, member)
+    }
+
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        self.http.set_deadline(deadline)
     }
 }
 
@@ -2302,6 +2306,74 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("request #2 must ride the pooled socket — the stub accepts once");
         assert_eq!(second.path(), "/cards/CARD/actions");
+    }
+
+    #[test]
+    fn a_call_deadline_clips_a_request_under_the_default_timeouts() {
+        // The default budgets would let this silent server hold the call for the
+        // stub's whole 10s hold (under a 35s request deadline); the call's deadline,
+        // a second away, is what ends it.
+        let client = TrelloClient::with_base(silent_base(), "k", "t");
+        client.set_call_deadline(Some(Instant::now() + Duration::from_secs(1)));
+        let start = Instant::now();
+        let err = client.card_comments("CARD").unwrap_err();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "should time out near the call's deadline, took {:?}",
+            start.elapsed()
+        );
+        assert!(
+            matches!(
+                err,
+                BoardError::Transport {
+                    stage: "read comments",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_spent_call_deadline_sends_nothing() {
+        // A listener nobody would otherwise dial: if any of the three send paths
+        // opened a connection, it would be waiting in the accept queue.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let client = TrelloClient::with_base(base, "k", "t");
+        client.set_call_deadline(Some(Instant::now()));
+
+        let spent = |stage: &str, err: BoardError| {
+            assert!(
+                matches!(
+                    &err,
+                    BoardError::Transport { stage: s, reason }
+                        if *s == stage && reason == "the call's 45s budget ran out"
+                ),
+                "got {err:?}"
+            );
+        };
+        // `send`, `send_json` and `send_tolerating`, one each.
+        spent("read comments", client.card_comments("CARD").unwrap_err());
+        spent(
+            "post comment",
+            client.post_comment("CARD", "claimed").unwrap_err(),
+        );
+        spent("read card", client.read_card("CARD").unwrap_err());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "no request may reach the board past the call's budget"
+        );
+
+        // A cleared deadline is not sticky: the next call sends as it always did.
+        let stub = Stub::serve(ok_json("[]"));
+        let client = stub.client("k", "t");
+        client.set_call_deadline(Some(Instant::now()));
+        client.set_call_deadline(None);
+        assert!(client.card_comments("CARD").unwrap().is_empty());
+        assert_eq!(stub.captured().path(), "/cards/CARD/actions");
     }
 
     #[test]

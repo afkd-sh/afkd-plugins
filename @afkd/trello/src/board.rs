@@ -11,7 +11,7 @@
 //! read/post/delete comments, move/archive/complete a card — so the Trello REST mapping
 //! stays confined to the real adapter.
 
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use crate::lifecycle::ListPosition;
 use crate::settings::MemberRef;
@@ -292,6 +292,11 @@ pub(crate) trait BoardClient {
     /// A read, safe to call once per poll — which is what the `require_member`
     /// intake gate does.
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError>;
+
+    /// Hand over the current call's deadline, which every request until the next hand-over
+    /// must finish by — set before a call, cleared with `None` after it. A board that
+    /// sends no requests has nothing to bound and ignores it.
+    fn set_call_deadline(&self, _deadline: Option<Instant>) {}
 }
 
 /// Sharing a board behind an [`Arc`](std::sync::Arc) keeps it a `BoardClient`,
@@ -367,6 +372,9 @@ impl<T: BoardClient + ?Sized> BoardClient for std::sync::Arc<T> {
     }
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError> {
         (**self).resolve_member(board_id, member)
+    }
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        (**self).set_call_deadline(deadline)
     }
 }
 
@@ -540,6 +548,9 @@ mod mock {
         /// The card ids `read_card` was asked for, in order — so a test can pin
         /// *which* cards a bounded scan reached, not merely how many.
         card_reads: Mutex<Vec<String>>,
+        /// Every call deadline the board was handed, in order. Recorded only: the mock's
+        /// requests stay instant.
+        call_deadlines: Mutex<Vec<Option<Instant>>>,
     }
 
     impl MockBoard {
@@ -662,6 +673,11 @@ mod mock {
         /// The card ids `read_card` has been asked for, in order.
         pub(crate) fn card_reads(&self) -> Vec<String> {
             lock(&self.card_reads).clone()
+        }
+
+        /// Every call deadline handed to this board, in order.
+        pub(crate) fn call_deadlines(&self) -> Vec<Option<Instant>> {
+            lock(&self.call_deadlines).clone()
         }
 
         /// Make `read_card` answer `Ok(None)` for this card while `board_cards`
@@ -1140,6 +1156,10 @@ mod mock {
                         name: username.clone(),
                     }),
             }
+        }
+
+        fn set_call_deadline(&self, deadline: Option<Instant>) {
+            lock(&self.call_deadlines).push(deadline);
         }
     }
 
@@ -1758,6 +1778,9 @@ mod board_error_tests {
         board.archive_card("c1").unwrap();
         board.add_label("b", "c1", "Problem").unwrap();
         board.remove_label("b", "c1", "Problem").unwrap();
+        let deadline = Instant::now();
+        board.set_call_deadline(Some(deadline));
+        board.set_call_deadline(None);
         board
             .add_member("b", "c1", &MemberRef::Username("marisa".into()))
             .unwrap();
@@ -1768,6 +1791,7 @@ mod board_error_tests {
         // The Arc handle and the inner board are the same state.
         assert_eq!(board.resolve_count(), 1);
         assert_eq!(board.created_at_calls(), 1);
+        assert_eq!(board.call_deadlines(), [Some(deadline), None]);
         assert!(board
             .actions()
             .iter()
