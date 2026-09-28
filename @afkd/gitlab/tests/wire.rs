@@ -115,10 +115,10 @@ fn hello_refuses_what_it_cannot_arm_with() {
             "kind `gitlab_issues` is not provided by @afkd/gitlab",
         ),
         (
-            "gitea",
+            "gitea_issue",
             1,
             settings(&fake),
-            "kind `gitea` is not provided by @afkd/gitlab",
+            "kind `gitea_issue` is not provided by @afkd/gitlab",
         ),
         (
             "gitlab_issue",

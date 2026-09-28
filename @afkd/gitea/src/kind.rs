@@ -1,7 +1,7 @@
 //! The seam both kinds sit behind: what [`crate::plugin`] drives per call, and what it
 //! reads off a claimed unit. The wire's bookkeeping — the live units, the 64 KiB fitting,
 //! the `comments` delta, the undelivered-finish fallback — is written once in
-//! `plugin.rs` against these two traits, so the `gitea` and `gitea_pr_review` kinds
+//! `plugin.rs` against these two traits, so the `gitea_issue` and `gitea_pr` kinds
 //! differ only in their vendor half ([`crate::issue`], [`crate::pr`]).
 
 use std::path::Path;

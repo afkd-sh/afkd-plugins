@@ -6,10 +6,9 @@ source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-gitea"
 
-# The built-in `gitea` and `gitea_pr_review` kinds' vocabularies, key for key, so every
-# config that validates against the built-ins validates against this plugin with no edit.
+# The issue kind: the vocabulary of afkd's retired built-in Gitea issue trigger, key for key.
 [[trigger]]
-kind = "gitea"
+kind = "gitea_issue"
 settings = [
   "base_url",
   "repo",
@@ -52,8 +51,11 @@ path = "on_park"
 settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
 repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
 
+# The pull-request kind: the retired built-in Gitea PR trigger's vocabulary, key for key —
+# the issue kind's keys with `author_me` in place of `source_label` and `discuss_with`, and
+# no `on_park`.
 [[trigger]]
-kind = "gitea_pr_review"
+kind = "gitea_pr"
 settings = [
   "base_url",
   "repo",

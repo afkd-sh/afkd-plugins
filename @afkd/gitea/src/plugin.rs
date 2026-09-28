@@ -35,10 +35,10 @@ use crate::wire::{
 };
 
 /// The issue kind.
-pub(crate) const ISSUE_KIND: &str = "gitea";
+pub(crate) const ISSUE_KIND: &str = "gitea_issue";
 
-/// The pull-request review kind.
-pub(crate) const PR_KIND: &str = "gitea_pr_review";
+/// The pull-request kind.
+pub(crate) const PR_KIND: &str = "gitea_pr";
 
 /// What the process does with one request.
 #[derive(Debug, PartialEq)]
@@ -478,7 +478,7 @@ mod tests {
             }
         }
 
-        /// The same, armed as the `gitea` kind over `settings`.
+        /// The same, armed as the `gitea_issue` kind over `settings`.
         fn armed(settings: serde_json::Value) -> Self {
             Self::armed_as(ISSUE_KIND, settings)
         }
@@ -513,7 +513,7 @@ mod tests {
         json!({"repo": "acme/widgets", "token": "PAT", "source_label": "afkd/ready"})
     }
 
-    /// A `gitea_pr_review` block over the bot's own PRs.
+    /// A `gitea_pr` block over the bot's own PRs.
     fn pr_settings() -> serde_json::Value {
         json!({"repo": "acme/widgets", "token": "PAT", "author_me": true})
     }
@@ -521,8 +521,9 @@ mod tests {
     #[test]
     fn hello_lists_exactly_the_calls_the_kind_answers() {
         let mut f = Fixture::new();
-        let reply =
-            f.call(json!({"call": "hello", "proto": 1, "kind": "gitea", "settings": settings()}));
+        let reply = f.call(
+            json!({"call": "hello", "proto": 1, "kind": "gitea_issue", "settings": settings()}),
+        );
         assert_eq!(
             reply,
             json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments", "classify"]})
@@ -535,7 +536,7 @@ mod tests {
     fn a_pr_hello_lists_release_renew_comments() {
         let mut f = Fixture::new();
         let reply = f.call(
-            json!({"call": "hello", "proto": 1, "kind": "gitea_pr_review", "settings": pr_settings()}),
+            json!({"call": "hello", "proto": 1, "kind": "gitea_pr", "settings": pr_settings()}),
         );
         assert_eq!(
             reply,
@@ -556,30 +557,30 @@ mod tests {
                 "kind `gitlab_issue` is not provided by @afkd/gitea",
             ),
             (
-                "gitea_pr_review",
+                "gitea_pr",
                 1,
                 json!({"repo": "acme/widgets", "org": "acme", "token": "PAT", "author_me": true}),
-                "trigger gitea_pr_review: setting `org`: a gitea trigger takes exactly one of \
+                "trigger gitea_pr: setting `org`: a gitea trigger takes exactly one of \
                  `repo` or `org` (both were set)",
             ),
             (
-                "gitea",
+                "gitea_issue",
                 2,
                 settings(),
                 "afkd speaks plugin protocol 2, and this plugin speaks 1",
             ),
             (
-                "gitea",
+                "gitea_issue",
                 1,
                 json!({"repo": "acme/widgets", "org": "acme", "token": "PAT"}),
-                "trigger gitea: setting `org`: a gitea trigger takes exactly one of `repo` or \
-                 `org` (both were set)",
+                "trigger gitea_issue: setting `org`: a gitea trigger takes exactly one of `repo` \
+                 or `org` (both were set)",
             ),
             (
-                "gitea",
+                "gitea_issue",
                 1,
                 json!({"repo": "acme/widgets", "token": "PAT", "on_claim": {"comment": ["spent @{run:cost}"]}}),
-                "trigger gitea: setting `comment`: `@{run:cost}` references the run's facts, \
+                "trigger gitea_issue: setting `comment`: `@{run:cost}` references the run's facts, \
                  but no run happens at claim time",
             ),
         ] {

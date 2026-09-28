@@ -172,8 +172,8 @@ fn hello_refuses_what_it_cannot_arm_with() {
     }
     for (request, sentence) in [
         (
-            hello("gitea", 1, settings(&b.fake)),
-            "kind `gitea` is not provided by @afkd/trello",
+            hello("gitea_issue", 1, settings(&b.fake)),
+            "kind `gitea_issue` is not provided by @afkd/trello",
         ),
         (
             hello("trello", 1, flag_gate),

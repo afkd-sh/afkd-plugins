@@ -588,10 +588,10 @@ mod tests {
                 "kind `github_issues` is not provided by @afkd/github",
             ),
             (
-                "gitea",
+                "gitea_issue",
                 1,
                 settings(),
-                "kind `gitea` is not provided by @afkd/github",
+                "kind `gitea_issue` is not provided by @afkd/github",
             ),
             (
                 "github_issue",

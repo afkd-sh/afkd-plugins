@@ -6,7 +6,7 @@
 //! service log under `[@afkd/gitea:err]`.
 //!
 //! Two kinds, each the vendor half of one of afkd's built-in Gitea triggers, ported:
-//! `gitea` (issues, [`issue`]) and `gitea_pr_review` (the pull-request review loop,
+//! `gitea_issue` (issues, [`issue`]) and `gitea_pr` (the pull-request review loop,
 //! [`pr`]). Each keeps the built-in's claim markers, lifecycle comments, claim-journal
 //! keys, session threads, run env and brief, so a claim either one left on a live issue
 //! or PR is recognised, renewed and released by the other.

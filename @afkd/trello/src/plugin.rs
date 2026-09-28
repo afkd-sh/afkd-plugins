@@ -555,7 +555,7 @@ mod tests {
         let mut wrong_proto = hello(settings());
         wrong_proto["proto"] = json!(2);
         let mut wrong_kind = hello(settings());
-        wrong_kind["kind"] = json!("gitea");
+        wrong_kind["kind"] = json!("gitea_issue");
         let mut settings_fault = hello(settings());
         settings_fault["settings"]["require_label"] = json!(true);
         let mut claim_cost = hello(settings());
@@ -572,7 +572,10 @@ mod tests {
                 wrong_proto,
                 "afkd speaks plugin protocol 2, and this plugin speaks 1",
             ),
-            (wrong_kind, "kind `gitea` is not provided by @afkd/trello"),
+            (
+                wrong_kind,
+                "kind `gitea_issue` is not provided by @afkd/trello",
+            ),
             (
                 settings_fault,
                 "trigger trello: setting `require_label`: setting `require_label` expects a \

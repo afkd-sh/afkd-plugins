@@ -1,4 +1,4 @@
-//! The `gitea` issue kind's vendor half (ADR-0031 Capability 1), ported from afkd's
+//! The `gitea_issue` kind's vendor half (ADR-0031 Capability 1), ported from afkd's
 //! `crates/gitea/src/trigger_issue.rs`.
 //!
 //! It polls a repository (or an org's repositories) through the mockable
@@ -115,7 +115,7 @@ impl DiscussGate {
     }
 }
 
-/// The `gitea` kind's vendor half: the target, the intake gates, the claim, and the four
+/// The `gitea_issue` kind's vendor half: the target, the intake gates, the claim, and the four
 /// lifecycle action lists.
 pub(crate) struct IssueUnits {
     client: Box<dyn GiteaClient>,
@@ -465,7 +465,7 @@ impl IssueUnits {
     }
 }
 
-/// The `gitea` kind behind the plugin's seam: the inherent methods above, as they are.
+/// The `gitea_issue` kind behind the plugin's seam: the inherent methods above, as they are.
 impl Units for IssueUnits {
     type Unit = Unit;
 

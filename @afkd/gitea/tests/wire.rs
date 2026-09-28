@@ -29,7 +29,7 @@ fn forge() -> FakeGitea {
     fake
 }
 
-/// A full `gitea` block, lowered to JSON as afkd lowers it: repeatable keys as arrays,
+/// A full `gitea_issue` block, lowered to JSON as afkd lowers it: repeatable keys as arrays,
 /// flags as `true`, blocks as objects — and afkd's own three keys along for the ride.
 fn settings(fake: &FakeGitea) -> Value {
     json!({
@@ -77,7 +77,7 @@ fn hello_arms_and_lists_every_call_it_answers() {
     let fake = forge();
     let mut plugin = Plugin::spawn();
     assert_eq!(
-        plugin.hello("gitea", settings(&fake)),
+        plugin.hello("gitea_issue", settings(&fake)),
         json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments", "classify"]})
     );
     plugin.finish();
@@ -103,26 +103,26 @@ fn hello_refuses_what_it_cannot_arm_with() {
             "kind `gitlab_issue` is not provided by @afkd/gitea",
         ),
         (
-            "gitea_pr_review",
+            "gitea_pr",
             1,
             pr_both,
-            "trigger gitea_pr_review: setting `org`: a gitea trigger takes exactly one of \
+            "trigger gitea_pr: setting `org`: a gitea trigger takes exactly one of \
              `repo` or `org` (both were set)",
         ),
         (
-            "gitea",
+            "gitea_issue",
             1,
             both,
             "a gitea trigger takes exactly one of `repo` or `org` (both were set)",
         ),
         (
-            "gitea",
+            "gitea_issue",
             1,
             claim_cost,
             "`@{run:cost}` references the run's facts, but no run happens at claim time",
         ),
         (
-            "gitea",
+            "gitea_issue",
             2,
             settings(&fake),
             "afkd speaks plugin protocol 2, and this plugin speaks 1",
@@ -719,9 +719,9 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
     plugin.finish();
 }
 
-// --- gitea_pr_review ---
+// --- gitea_pr ---
 
-const PR_KIND: &str = "gitea_pr_review";
+const PR_KIND: &str = "gitea_pr";
 const HEAD: &str = "feature/retry-backoff";
 /// A review comment as a human writes one: wide text, an emoji, a fenced block, and a
 /// trailing newline the brief trims.
@@ -740,7 +740,7 @@ fn pr_forge() -> (FakeGitea, u64) {
     (fake, review)
 }
 
-/// A full `gitea_pr_review` block, lowered as afkd lowers it: `author_me` a bare flag,
+/// A full `gitea_pr` block, lowered as afkd lowers it: `author_me` a bare flag,
 /// the lifecycle blocks as objects, and afkd's own keys along for the ride.
 fn pr_settings(fake: &FakeGitea) -> Value {
     json!({

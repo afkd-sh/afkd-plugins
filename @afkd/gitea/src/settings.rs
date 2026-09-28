@@ -1,4 +1,4 @@
-//! Read the `gitea` and `gitea_pr_review` kinds' settings blocks — as afkd lowers them to
+//! Read the `gitea_issue` and `gitea_pr` kinds' settings blocks — as afkd lowers them to
 //! JSON in `hello` — into a typed [`GiteaConfig`], and wire their lifecycle moments to the
 //! action vocabulary.
 //!
@@ -29,7 +29,7 @@ pub(crate) enum DiscussWith {
     Logins(Vec<String>),
 }
 
-/// A validated `gitea` or `gitea_pr_review` trigger configuration. The keys one kind
+/// A validated `gitea_issue` or `gitea_pr` trigger configuration. The keys one kind
 /// does not declare stay at their defaults for the other.
 ///
 /// `Debug` is **hand-written** so the `token` never reaches a diagnostic.
@@ -110,7 +110,7 @@ impl std::fmt::Display for SettingsError {
 // The built-in's vocabulary, verbatim. afkd reads the manifest, never these: they are
 // what `manifest.rs`'s test holds `afkd-plugin.toml` to, so the two cannot drift apart.
 
-/// The `gitea` kind's full key set, exactly the built-in's `ALLOWED_ISSUE_KEYS`.
+/// The `gitea_issue` kind's full key set, exactly the built-in's `ALLOWED_ISSUE_KEYS`.
 #[cfg(test)]
 pub(crate) const ALLOWED_ISSUE_KEYS: &[&str] = &[
     "base_url",
@@ -128,7 +128,7 @@ pub(crate) const ALLOWED_ISSUE_KEYS: &[&str] = &[
     "on_park",
 ];
 
-/// The keys a `gitea` block may write more than once: the one login list.
+/// The keys a `gitea_issue` block may write more than once: the one login list.
 #[cfg(test)]
 pub(crate) const REPEATABLE_ISSUE_KEYS: &[&str] = &["discuss_with"];
 
@@ -141,7 +141,7 @@ pub(crate) const DURATION_KEYS: &[&str] = &["poll_interval", "follow_comments"];
 #[cfg(test)]
 pub(crate) const REQUIRED_ISSUE_KEYS: &[&str] = &["token"];
 
-/// The `gitea_pr_review` kind's full key set, exactly the built-in's `ALLOWED_PR_KEYS`:
+/// The `gitea_pr` kind's full key set, exactly the built-in's `ALLOWED_PR_KEYS`:
 /// the shared keys plus `author_me` (and, notably, **not** `source_label`).
 #[cfg(test)]
 pub(crate) const ALLOWED_PR_KEYS: &[&str] = &[
@@ -158,15 +158,15 @@ pub(crate) const ALLOWED_PR_KEYS: &[&str] = &[
     "on_fail",
 ];
 
-/// The keys a `gitea_pr_review` block may write more than once: none.
+/// The keys a `gitea_pr` block may write more than once: none.
 #[cfg(test)]
 pub(crate) const REPEATABLE_PR_KEYS: &[&str] = &[];
 
-/// The keys a `gitea_pr_review` block must carry: the forge `token`, as for `gitea`.
+/// The keys a `gitea_pr` block must carry: the forge `token`, as for `gitea_issue`.
 #[cfg(test)]
 pub(crate) const REQUIRED_PR_KEYS: &[&str] = &["token"];
 
-/// Read the lowered `settings` into a [`GiteaConfig`] for the `gitea` kind, or report
+/// Read the lowered `settings` into a [`GiteaConfig`] for the `gitea_issue` kind, or report
 /// the first setting it cannot use.
 pub(crate) fn issue_config(settings: &Value) -> Result<GiteaConfig, SettingsError> {
     let empty = Map::new();
@@ -178,7 +178,7 @@ pub(crate) fn issue_config(settings: &Value) -> Result<GiteaConfig, SettingsErro
     Ok(cfg)
 }
 
-/// Read the lowered `settings` into a [`GiteaConfig`] for the `gitea_pr_review` kind, or
+/// Read the lowered `settings` into a [`GiteaConfig`] for the `gitea_pr` kind, or
 /// report the first setting it cannot use. `author_me` is a flag: its presence is the
 /// setting, whatever it carries.
 pub(crate) fn pr_config(settings: &Value) -> Result<GiteaConfig, SettingsError> {
@@ -521,8 +521,8 @@ mod tests {
         }
     }
 
-    /// The PR kind holds the rules it shares with `gitea` in the same sentences, and
-    /// reads none of the keys only `gitea` declares.
+    /// The PR kind holds the rules it shares with `gitea_issue` in the same sentences, and
+    /// reads none of the keys only `gitea_issue` declares.
     #[test]
     fn pr_config_holds_the_shared_rules() {
         let err = pr_config(&json!({"token": "t"})).unwrap_err();

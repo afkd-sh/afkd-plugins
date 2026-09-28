@@ -80,9 +80,9 @@ impl Plugin {
         }
     }
 
-    /// Spawn and greet with `settings` for the `gitea` kind, asserting it arms.
+    /// Spawn and greet with `settings` for the `gitea_issue` kind, asserting it arms.
     pub fn armed(settings: Value) -> Self {
-        Self::armed_as("gitea", settings)
+        Self::armed_as("gitea_issue", settings)
     }
 
     /// Spawn and greet with `settings` for `kind`, asserting it arms.

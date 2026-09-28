@@ -1,4 +1,4 @@
-//! The `gitea_pr_review` kind's vendor half (ADR-0031 Capability 3), ported from afkd's
+//! The `gitea_pr` kind's vendor half (ADR-0031 Capability 3), ported from afkd's
 //! `crates/gitea/src/trigger_pr.rs`.
 //!
 //! It polls a repository's (or an org's repositories') **open** pull requests through
@@ -75,7 +75,7 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `gitea_pr_review` kind's vendor half: the target, the `author_me` filter, the
+/// The `gitea_pr` kind's vendor half: the target, the `author_me` filter, the
 /// claim, and the three lifecycle action lists.
 pub(crate) struct PrUnits {
     client: Box<dyn GiteaClient>,

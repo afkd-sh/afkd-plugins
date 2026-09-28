@@ -150,7 +150,7 @@ passed to `--label` must **already exist** in the repo: Gitea never creates a la
 so an undefined name fails the call (and the helper then leaves the issue unassigned
 rather than half-enqueued). `afkd/ready` is the conventional name for the label afkd
 picks issues up by, but it must match the `source_label` set in the service's
-`trigger gitea { … }` block — if that block names a different label, use that one.
+`trigger gitea_issue { … }` block — if that block names a different label, use that one.
 
 ## Failure handling
 
