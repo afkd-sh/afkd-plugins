@@ -39,10 +39,10 @@ use crate::wire::{
 };
 
 /// The issue kind.
-pub(crate) const ISSUE_KIND: &str = "gitlab";
+pub(crate) const ISSUE_KIND: &str = "gitlab_issue";
 
 /// The merge-request review kind.
-pub(crate) const MR_KIND: &str = "gitlab_mr_review";
+pub(crate) const MR_KIND: &str = "gitlab_mr";
 
 /// What the process does with one request.
 #[derive(Debug, PartialEq)]
@@ -477,7 +477,7 @@ mod tests {
             }
         }
 
-        /// The same, armed as the `gitlab` kind over `settings`.
+        /// The same, armed as the `gitlab_issue` kind over `settings`.
         fn armed(settings: serde_json::Value) -> Self {
             let mut f = Self::new();
             let hello = f.call(
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn hello_lists_exactly_the_calls_the_kind_answers() {
         let mut f = Fixture::new();
-        let reply = f.call(json!({"call": "hello", "proto": 1, "kind": "gitlab",
+        let reply = f.call(json!({"call": "hello", "proto": 1, "kind": "gitlab_issue",
                                   "service": "監視::triage", "roster": ["監視::triage"],
                                   "owner": "陳大文", "settings": settings()}));
         assert_eq!(
@@ -582,10 +582,10 @@ mod tests {
     fn hello_refuses_what_the_kind_cannot_arm_with() {
         for (kind, proto, settings, problem) in [
             (
-                "gitlab_mr",
+                "gitlab_issues",
                 1,
                 settings(),
-                "kind `gitlab_mr` is not provided by @afkd/gitlab",
+                "kind `gitlab_issues` is not provided by @afkd/gitlab",
             ),
             (
                 "gitea",
@@ -594,38 +594,38 @@ mod tests {
                 "kind `gitea` is not provided by @afkd/gitlab",
             ),
             (
-                "gitlab",
+                "gitlab_issue",
                 2,
                 settings(),
                 "afkd speaks plugin protocol 2, and this plugin speaks 1",
             ),
             (
-                "gitlab",
+                "gitlab_issue",
                 1,
                 json!({"project": "", "token": "PAT"}),
-                "trigger gitlab: setting `project`: a gitlab trigger needs a `project` \
+                "trigger gitlab_issue: setting `project`: a gitlab trigger needs a `project` \
                  (numeric id or path-with-namespace)",
             ),
             (
-                "gitlab",
+                "gitlab_issue",
                 1,
                 json!({"project": PROJECT, "token": "PAT",
                        "on_claim": {"comment": ["spent @{run:cost}"]}}),
-                "trigger gitlab: setting `comment`: `@{run:cost}` references the run's facts, \
-                 but no run happens at claim time",
+                "trigger gitlab_issue: setting `comment`: `@{run:cost}` references the run's \
+                 facts, but no run happens at claim time",
             ),
             (
-                "gitlab",
+                "gitlab_issue",
                 1,
                 json!({"project": PROJECT, "token": "PAT", "on_done": {"label_add": [true]}}),
-                "trigger gitlab: setting `label_add`: `label_add` expects a label name",
+                "trigger gitlab_issue: setting `label_add`: `label_add` expects a label name",
             ),
             (
-                "gitlab_mr_review",
+                "gitlab_mr",
                 1,
                 json!({"project": "", "token": "PAT", "author_me": true}),
-                "trigger gitlab_mr_review: setting `project`: a gitlab trigger needs a \
-                 `project` (numeric id or path-with-namespace)",
+                "trigger gitlab_mr: setting `project`: a gitlab trigger needs a `project` \
+                 (numeric id or path-with-namespace)",
             ),
         ] {
             let mut f = Fixture::new();

@@ -6,10 +6,9 @@ source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-gitlab"
 
-# The built-in `gitlab` kind's vocabulary, key for key, so every config that validates
-# against the built-in validates against this plugin with no edit.
+# The issue kind: the vocabulary of afkd's retired built-in GitLab issue trigger, key for key.
 [[trigger]]
-kind = "gitlab"
+kind = "gitlab_issue"
 settings = [
   "base_url",
   "project",
@@ -44,11 +43,11 @@ path = "on_fail"
 settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
 repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
 
-# The built-in `gitlab_mr_review` kind's vocabulary, key for key: the `gitlab` kind's keys
-# with `author_me` in place of `source_label`, and the same three lifecycle blocks (GitLab
-# has no `on_park`).
+# The merge-request kind: the retired built-in GitLab MR trigger's vocabulary, key for key —
+# the issue kind's keys with `author_me` in place of `source_label`, and the same three
+# lifecycle blocks (GitLab has no `on_park`).
 [[trigger]]
-kind = "gitlab_mr_review"
+kind = "gitlab_mr"
 settings = [
   "base_url",
   "project",

@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 
 use crate::lifecycle::{parse_block, LifecycleAction};
 
-/// A validated `gitlab` or `gitlab_mr_review` trigger configuration: one struct covers
+/// A validated `gitlab_issue` or `gitlab_mr` trigger configuration: one struct covers
 /// the union of both kinds' keys.
 ///
 /// `Debug` is **hand-written** so the `token` never reaches a diagnostic.
@@ -90,7 +90,7 @@ impl std::fmt::Display for SettingsError {
 // The built-in's vocabulary, verbatim. afkd reads the manifest, never these: they are
 // what `manifest.rs`'s test holds `afkd-plugin.toml` to, so the two cannot drift apart.
 
-/// The `gitlab` kind's full key set, exactly the built-in's `ALLOWED_ISSUE_KEYS`.
+/// The `gitlab_issue` kind's full key set, exactly the built-in's `ALLOWED_ISSUE_KEYS`.
 #[cfg(test)]
 pub(crate) const ALLOWED_ISSUE_KEYS: &[&str] = &[
     "base_url",
@@ -105,8 +105,8 @@ pub(crate) const ALLOWED_ISSUE_KEYS: &[&str] = &[
     "on_fail",
 ];
 
-/// The keys a `gitlab` block may write more than once: none — one project, one token, one
-/// `on_done`.
+/// The keys a `gitlab_issue` block may write more than once: none — one project, one token,
+/// one `on_done`.
 #[cfg(test)]
 pub(crate) const REPEATABLE_ISSUE_KEYS: &[&str] = &[];
 
@@ -119,7 +119,7 @@ pub(crate) const DURATION_KEYS: &[&str] = &["poll_interval", "follow_comments"];
 #[cfg(test)]
 pub(crate) const REQUIRED_ISSUE_KEYS: &[&str] = &["token"];
 
-/// The `gitlab_mr_review` kind's full key set, exactly the built-in's `ALLOWED_MR_KEYS`:
+/// The `gitlab_mr` kind's full key set, exactly the built-in's `ALLOWED_MR_KEYS`:
 /// the shared keys plus `author_me` (and, notably, **not** `source_label`).
 #[cfg(test)]
 pub(crate) const ALLOWED_MR_KEYS: &[&str] = &[
@@ -135,16 +135,16 @@ pub(crate) const ALLOWED_MR_KEYS: &[&str] = &[
     "on_fail",
 ];
 
-/// The keys a `gitlab_mr_review` block may write more than once: none — the built-in's
+/// The keys a `gitlab_mr` block may write more than once: none — the built-in's
 /// `REPEATABLE_MR_KEYS` reads no key as a sequence.
 #[cfg(test)]
 pub(crate) const REPEATABLE_MR_KEYS: &[&str] = &[];
 
-/// The keys a `gitlab_mr_review` block must carry: the forge `token`, as for `gitlab`.
+/// The keys a `gitlab_mr` block must carry: the forge `token`, as for `gitlab_issue`.
 #[cfg(test)]
 pub(crate) const REQUIRED_MR_KEYS: &[&str] = &["token"];
 
-/// Read the lowered `settings` into a [`GitlabConfig`] for the `gitlab` kind, or report
+/// Read the lowered `settings` into a [`GitlabConfig`] for the `gitlab_issue` kind, or report
 /// the first setting it cannot use.
 pub(crate) fn issue_config(settings: &Value) -> Result<GitlabConfig, SettingsError> {
     let empty = Map::new();
@@ -154,7 +154,7 @@ pub(crate) fn issue_config(settings: &Value) -> Result<GitlabConfig, SettingsErr
     Ok(cfg)
 }
 
-/// Read the lowered `settings` into a [`GitlabConfig`] for the `gitlab_mr_review` kind,
+/// Read the lowered `settings` into a [`GitlabConfig`] for the `gitlab_mr` kind,
 /// or report the first setting it cannot use. `author_me` is a flag: its presence is the
 /// setting, whatever it carries — the built-in's `settings.has`.
 pub(crate) fn mr_review_config(settings: &Value) -> Result<GitlabConfig, SettingsError> {
@@ -419,8 +419,8 @@ mod tests {
         );
     }
 
-    /// The MR kind reads the keys it shares with `gitlab` the same way, and none of the
-    /// key only `gitlab` declares.
+    /// The MR kind reads the keys it shares with `gitlab_issue` the same way, and none of the
+    /// key only `gitlab_issue` declares.
     #[test]
     fn mr_review_config_reads_the_shared_keys() {
         let cfg = mr_review_config(&json!({

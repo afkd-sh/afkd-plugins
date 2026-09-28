@@ -6,9 +6,9 @@
 //! service log under `[@afkd/gitlab:err]`.
 //!
 //! Two kinds, each the vendor half of one of afkd's built-in GitLab triggers, ported: the
-//! `gitlab` kind ([`issue`]) takes open, source-labelled issues, and the
-//! `gitlab_mr_review` kind ([`mr`]) takes the bot's open merge requests that carry
-//! feedback newer than its last word. Both keep the built-in's claim markers, lifecycle
+//! `gitlab_issue` kind ([`issue`]) takes open, source-labelled issues, and the `gitlab_mr`
+//! kind ([`mr`]) takes the bot's open merge requests that carry feedback newer than its last
+//! word. Both keep the built-in's claim markers, lifecycle
 //! comments, claim-journal keys, session threads, run env and brief, so a claim either one
 //! left on a live issue or MR is recognised, renewed and released by the other. `hello`
 //! names the kind, and [`plugin`] dispatches on it.

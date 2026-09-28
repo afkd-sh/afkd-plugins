@@ -97,10 +97,10 @@ fn hello_refuses_what_it_cannot_arm_with() {
     pr_both["org"] = json!("acme");
     for (kind, proto, settings, sentence) in [
         (
-            "gitlab",
+            "gitlab_issue",
             1,
             settings(&fake),
-            "kind `gitlab` is not provided by @afkd/gitea",
+            "kind `gitlab_issue` is not provided by @afkd/gitea",
         ),
         (
             "gitea_pr_review",

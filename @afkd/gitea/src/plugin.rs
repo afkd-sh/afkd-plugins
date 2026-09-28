@@ -550,10 +550,10 @@ mod tests {
     fn hello_refuses_what_the_kind_cannot_arm_with() {
         for (kind, proto, settings, problem) in [
             (
-                "gitlab",
+                "gitlab_issue",
                 1,
                 settings(),
-                "kind `gitlab` is not provided by @afkd/gitea",
+                "kind `gitlab_issue` is not provided by @afkd/gitea",
             ),
             (
                 "gitea_pr_review",

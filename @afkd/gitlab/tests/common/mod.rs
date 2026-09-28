@@ -79,9 +79,9 @@ impl Plugin {
         }
     }
 
-    /// Spawn and greet with `settings` for the `gitlab` kind, asserting it arms.
+    /// Spawn and greet with `settings` for the `gitlab_issue` kind, asserting it arms.
     pub fn armed(settings: Value) -> Self {
-        Self::armed_as("gitlab", settings)
+        Self::armed_as("gitlab_issue", settings)
     }
 
     /// Spawn and greet with `settings` for `kind`, asserting it arms.

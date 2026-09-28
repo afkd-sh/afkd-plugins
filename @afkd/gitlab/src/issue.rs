@@ -1,4 +1,4 @@
-//! The `gitlab` issue kind's vendor half (ADR-0041), ported from afkd's
+//! The `gitlab_issue` kind's vendor half (ADR-0041), ported from afkd's
 //! `crates/gitlab/src/trigger_issue.rs`.
 //!
 //! It polls a single project through the mockable [`GitlabClient`] seam for issues that
@@ -73,7 +73,7 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `gitlab` kind's vendor half: the single-project target, the source-label intake
+/// The `gitlab_issue` kind's vendor half: the single-project target, the source-label intake
 /// gate, the claim, and the three lifecycle action lists.
 pub(crate) struct IssueUnits {
     client: Box<dyn GitlabClient>,
@@ -259,7 +259,7 @@ impl IssueUnits {
     }
 }
 
-/// The `gitlab` kind behind the plugin's seam.
+/// The `gitlab_issue` kind behind the plugin's seam.
 impl Units for IssueUnits {
     type Unit = Unit;
 

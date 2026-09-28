@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn a_hello_with_the_service_roster_and_owner_decodes() {
         let hello: Request = serde_json::from_str(
-            r#"{"call":"hello","proto":1,"kind":"gitlab","service":"監視::triage",
+            r#"{"call":"hello","proto":1,"kind":"gitlab_issue","service":"監視::triage",
                 "roster":["監視::triage","監視::nightly"],"owner":"björn-öst",
                 "settings":{"project":"acme/sub.group/widgets","token":"PAT"}}"#,
         )
@@ -307,7 +307,7 @@ mod tests {
         else {
             panic!("{hello:?}");
         };
-        assert_eq!((proto, kind.as_str()), (1, "gitlab"));
+        assert_eq!((proto, kind.as_str()), (1, "gitlab_issue"));
         assert_eq!(settings["project"], "acme/sub.group/widgets");
     }
 

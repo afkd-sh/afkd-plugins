@@ -42,14 +42,6 @@ pub(crate) fn bin_path() -> PathBuf {
         .expect("no `afkd` on PATH: this gate runs the installed afkd and never builds one")
 }
 
-/// The afkd checkout `AFKD_SRC` names, for the legs that read afkd's own source rather than
-/// run it. afkd lives in a repository of its own, so without one those legs skip loudly.
-pub(crate) fn afkd_src() -> Option<PathBuf> {
-    std::env::var_os("AFKD_SRC")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-}
-
 /// afkd's config directory under a temp `$HOME` (ADR-0075). Every fixture that plants a
 /// file where afkd will look for it goes through these rather than re-deriving the layout,
 /// so the split lives in one place on the test side too.

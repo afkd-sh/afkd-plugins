@@ -1,4 +1,4 @@
-//! The `gitlab_mr_review` kind's vendor half (ADR-0041), ported from afkd's
+//! The `gitlab_mr` kind's vendor half (ADR-0041), ported from afkd's
 //! `crates/gitlab/src/trigger_mr.rs`.
 //!
 //! It polls a single project's **open** merge requests through the mockable
@@ -86,7 +86,7 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `gitlab_mr_review` kind's vendor half: the single-project target, the `author_me`
+/// The `gitlab_mr` kind's vendor half: the single-project target, the `author_me`
 /// filter, the claim, and the three lifecycle action lists.
 pub(crate) struct MrUnits {
     client: Box<dyn GitlabClient>,
@@ -268,7 +268,7 @@ impl MrUnits {
     }
 }
 
-/// The `gitlab_mr_review` kind behind the plugin's seam.
+/// The `gitlab_mr` kind behind the plugin's seam.
 impl Units for MrUnits {
     type Unit = Unit;
 

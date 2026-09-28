@@ -34,7 +34,7 @@ fn forge() -> FakeGitlab {
     fake
 }
 
-/// A full `gitlab` block, lowered to JSON as afkd lowers it: repeatable keys as arrays,
+/// A full `gitlab_issue` block, lowered to JSON as afkd lowers it: repeatable keys as arrays,
 /// flags as `true`, blocks as objects — and afkd's own three keys along for the ride.
 fn settings(fake: &FakeGitlab) -> Value {
     json!({
@@ -90,7 +90,7 @@ fn hello_arms_and_lists_every_call_it_answers() {
     let fake = forge();
     let mut plugin = Plugin::spawn();
     assert_eq!(
-        plugin.hello("gitlab", settings(&fake)),
+        plugin.hello("gitlab_issue", settings(&fake)),
         json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
     );
     assert!(fake.seen().is_empty(), "hello touches no forge");
@@ -109,10 +109,10 @@ fn hello_refuses_what_it_cannot_arm_with() {
     claim_cost["on_claim"] = json!({"comment": ["claimed; budget @{run:cost}"]});
     for (kind, proto, settings, sentence) in [
         (
-            "gitlab_mr",
+            "gitlab_issues",
             1,
             settings(&fake),
-            "kind `gitlab_mr` is not provided by @afkd/gitlab",
+            "kind `gitlab_issues` is not provided by @afkd/gitlab",
         ),
         (
             "gitea",
@@ -121,31 +121,31 @@ fn hello_refuses_what_it_cannot_arm_with() {
             "kind `gitea` is not provided by @afkd/gitlab",
         ),
         (
-            "gitlab",
+            "gitlab_issue",
             1,
             no_project,
-            "trigger gitlab: setting `project`: a gitlab trigger needs a `project` (numeric id \
-             or path-with-namespace)",
+            "trigger gitlab_issue: setting `project`: a gitlab trigger needs a `project` (numeric \
+             id or path-with-namespace)",
         ),
         (
-            "gitlab",
+            "gitlab_issue",
             1,
             claim_cost,
-            "trigger gitlab: setting `comment`: `@{run:cost}` references the run's facts, but no \
-             run happens at claim time",
+            "trigger gitlab_issue: setting `comment`: `@{run:cost}` references the run's facts, \
+             but no run happens at claim time",
         ),
         (
-            "gitlab",
+            "gitlab_issue",
             2,
             settings(&fake),
             "afkd speaks plugin protocol 2, and this plugin speaks 1",
         ),
         (
-            "gitlab_mr_review",
+            "gitlab_mr",
             1,
             json!({"base_url": fake.base_url(), "project": "", "token": TOKEN,
                    "author_me": true}),
-            "trigger gitlab_mr_review: setting `project`: a gitlab trigger needs a `project` \
+            "trigger gitlab_mr: setting `project`: a gitlab trigger needs a `project` \
              (numeric id or path-with-namespace)",
         ),
     ] {
@@ -722,7 +722,7 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
     plugin.finish();
 }
 
-// --- gitlab_mr_review ---
+// --- gitlab_mr ---
 
 /// The MR's source branch: non-ASCII, and crossing to the run verbatim.
 const BRANCH: &str = "feature/重试-backoff";
@@ -741,7 +741,7 @@ fn mr_forge() -> (FakeGitlab, u64) {
     (fake, review)
 }
 
-/// A full `gitlab_mr_review` block, lowered to JSON as afkd lowers it — `author_me` a bare
+/// A full `gitlab_mr` block, lowered to JSON as afkd lowers it — `author_me` a bare
 /// flag — and afkd's own three keys along for the ride.
 fn mr_settings(fake: &FakeGitlab) -> Value {
     json!({
@@ -785,7 +785,7 @@ fn mr_hello_lists_release_renew_comments() {
     let (fake, _) = mr_forge();
     let mut plugin = Plugin::spawn();
     assert_eq!(
-        plugin.hello("gitlab_mr_review", mr_settings(&fake)),
+        plugin.hello("gitlab_mr", mr_settings(&fake)),
         json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
     );
     assert!(fake.seen().is_empty(), "hello touches no forge");
@@ -801,7 +801,7 @@ fn mr_hello_lists_release_renew_comments() {
 #[test]
 fn mr_a_won_race_hands_over_the_built_ins_unit() {
     let (fake, review) = mr_forge();
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     let reply = plugin.poll();
     assert_eq!(reply["fire"], true, "{}", plugin.stderr());
     let marker = mr_markers(&fake, 7);
@@ -863,7 +863,7 @@ fn mr_a_won_race_hands_over_the_built_ins_unit() {
 fn mr_a_lost_race_hands_over_nothing_and_takes_its_marker_back() {
     let (fake, _) = mr_forge();
     let rival = fake.mr_note(PROJECT, 7, "autocoder", "[afkd-claim] owner=autocoder", 60);
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert_eq!(
         mr_markers(&fake, 7),
@@ -887,7 +887,7 @@ fn mr_a_lost_race_hands_over_nothing_and_takes_its_marker_back() {
 fn mr_with_no_new_feedback_does_not_fire() {
     let (fake, _) = mr_forge();
     fake.mr_note(PROJECT, 7, ME, "Pushed 3f2a1c: the cap applies now.", 30);
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert!(
         !wrote(&fake),
@@ -913,7 +913,7 @@ fn mr_whose_only_new_note_is_a_claim_marker_does_not_fire() {
         "[afkd-claim] owner=autocoder",
         3_700,
     );
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert!(!wrote(&fake), "a marker is not feedback: {:?}", fake.seen());
     plugin.finish();
@@ -927,14 +927,14 @@ fn mr_author_me_filters_foreign_mrs() {
     fake.mr(PROJECT, 8, HUMAN, "fix/y", &[]);
     fake.mr_note(PROJECT, 8, "álvaro", "Exponential, please — see §4 🙏", 60);
 
-    let mut mine = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut mine = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     assert_eq!(mine.poll(), json!({"fire": false}));
     assert!(!wrote(&fake), "{:?}", fake.seen());
     mine.finish();
 
     let mut settings = mr_settings(&fake);
     settings.as_object_mut().unwrap().remove("author_me");
-    let mut anyone = Plugin::armed_as("gitlab_mr_review", settings);
+    let mut anyone = Plugin::armed_as("gitlab_mr", settings);
     let unit = anyone.poll()["unit"].clone();
     assert_eq!(unit["id"], "8");
     assert_eq!(unit["env"]["GITLAB_MR_BRANCH"], "fix/y");
@@ -944,7 +944,7 @@ fn mr_author_me_filters_foreign_mrs() {
 #[test]
 fn mr_renew_rewrites_the_marker_in_place() {
     let (fake, _) = mr_forge();
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     let marker = mr_markers(&fake, 7)[0];
     let note = |fake: &FakeGitlab| {
@@ -985,7 +985,7 @@ fn mr_renew_rewrites_the_marker_in_place() {
 #[test]
 fn mr_comments_report_what_afkd_has_not_seen() {
     let (fake, _) = mr_forge();
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     let read = |plugin: &mut Plugin| plugin.call(json!({"call": "comments", "key": unit["key"]}));
 
@@ -1030,7 +1030,7 @@ fn mr_comments_report_what_afkd_has_not_seen() {
 #[test]
 fn mr_release_undoes_the_claim_in_full() {
     let (fake, _) = mr_forge();
-    let mut first = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut first = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     let live = first.poll()["unit"]["key"].clone();
     assert_eq!(
         first.call(json!({"call": "release", "key": live})),
@@ -1046,7 +1046,7 @@ fn mr_release_undoes_the_claim_in_full() {
     assert_eq!(fake.mr_state(PROJECT, 7).assignees, [HUMAN, ME]);
     drop(first);
 
-    let mut fresh = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut fresh = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     let from = fake.seen().len();
     assert_eq!(
         fresh.call(json!({"call": "release", "key": crashed})),
@@ -1071,7 +1071,7 @@ fn mr_release_undoes_the_claim_in_full() {
 #[test]
 fn mr_a_clean_finish_runs_on_done_and_drops_the_marker() {
     let (fake, _) = mr_forge();
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(
         finish(&mut plugin, &unit, "clean", mr_facts("proceed", None)),
@@ -1094,7 +1094,7 @@ fn mr_a_clean_finish_runs_on_done_and_drops_the_marker() {
 #[test]
 fn mr_a_failed_finish_runs_on_fail() {
     let (fake, review) = mr_forge();
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     let reply = finish(
         &mut plugin,
@@ -1127,7 +1127,7 @@ fn mr_a_failed_finish_runs_on_fail() {
 #[test]
 fn mr_an_undelivered_finish_is_held_and_release_recovers_it() {
     let (fake, _) = mr_forge();
-    let mut plugin = Plugin::armed_as("gitlab_mr_review", mr_settings(&fake));
+    let mut plugin = Plugin::armed_as("gitlab_mr", mr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     let key = unit["key"].as_str().unwrap().to_string();
     fake.fail("set assignees", 500);
