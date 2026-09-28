@@ -117,8 +117,8 @@ of the same action run in the order written. Every block below reads the same ei
 see [why](#where-it-differs-from-the-built-in).
 
 **Mind the spelling.** The label actions are written verb-last, `label_add` and
-`label_remove`; `trello` writes the same two verb-first, `add_label` and `remove_label`.
-Neither spelling is accepted by the other kind.
+`label_remove`; `trello_card` writes the same two verb-first, `add_label` and
+`remove_label`. Neither spelling is accepted by the other kind.
 
 **Cadence.** Polls the forge every `poll_interval` for open issues **assigned to the bot**
 (or carrying `source_label`, if set) across a single `repo` or every repo of an `org`; a

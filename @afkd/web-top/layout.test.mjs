@@ -1454,7 +1454,7 @@ test("no value is clipped at any width", () => {
   const { board, at } = liveBoard();
   const adversarial = moved(renamed(board, "ops::nightly", "ops::監視サービス"), "ops::監視サービス", {
     description: "掃除します 🧹 between passes, and keeps the scratch tree small enough to walk",
-    triggerDetail: "trello · board https://trello.com/b/Vt2SxD9n/foodlab",
+    triggerDetail: "trello_card · board https://trello.com/b/Vt2SxD9n/foodlab",
     triggerFields: [
       ["board", "https://trello.com/b/Vt2SxD9n/foodlab"],
       ["pick_from", "Up for Grabs"],
@@ -1521,7 +1521,7 @@ test("the Trigger section names the kind, then its structured keys", () => {
   // lowercase-data exemption says a structured trigger value is echoed from the config, so
   // `trim_url_tail`'s `…/b/…` shortening is deliberately not transcribed here.
   const trello = moved(board, "ops::nightly", {
-    triggerDetail: "trello · board foodlab · pick_from Up for Grabs",
+    triggerDetail: "trello_card · board foodlab · pick_from Up for Grabs",
     triggerFields: [
       ["board", "https://trello.com/b/Vt2SxD9n/foodlab"],
       ["pick_from", "Up for Grabs"],
@@ -1529,7 +1529,7 @@ test("the Trigger section names the kind, then its structured keys", () => {
     ],
   });
   const structured = layout(trello, infoAt("ops::nightly", 100, 30, at));
-  assert.equal(valueOf(structured, "Kind"), "trello");
+  assert.equal(valueOf(structured, "Kind"), "trello_card");
   assert.ok(sameText(valueOf(structured, "Board"), "https://trello.com/b/Vt2SxD9n/foodlab"), "scheme and host kept");
   assert.equal(valueOf(structured, "Pick from"), "Up for Grabs", "`pick_from` → `Pick from`, value verbatim");
   assert.equal(valueOf(structured, "Require member"), "false", "…only the first character is cased");

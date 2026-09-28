@@ -1,10 +1,10 @@
 # `@afkd/trello`
 
-A **provider** plugin with one trigger kind, [`trello`](#trello-cards): it fires when a card
-lands in a watched list of a Trello board, and moves the card across the board as work
-starts, finishes, or fails. It also ships the `trello` skill an agent works the card
-through: read and post comments, fetch and attach files, tick checklist items, move and
-label the card, and ask a question that parks the card until a human replies.
+A **provider** plugin with one trigger kind, [`trello_card`](#trello_card-cards): it fires
+when a card lands in a watched list of a Trello board, and moves the card across the board
+as work starts, finishes, or fails. It also ships the `trello` skill an agent works the
+card through: read and post comments, fetch and attach files, tick checklist items, move
+and label the card, and ask a question that parks the card until a human replies.
 
 It is afkd's built-in Trello trigger, moved out of afkd: the same keys, the same claim,
 watermark, attempt and park comments on the card, the same claim-journal keys and session
@@ -30,9 +30,7 @@ $ afkd install /path/to/afkd-plugins/@afkd/trello
 
 afkd copies the tree and runs `cargo build --release --locked` in it, so the host needs a
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
-the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs). An afkd that
-still has `trello` compiled in refuses the install, because a plugin may not shadow a
-built-in kind; use the built-in there, with exactly the same config.
+the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
 Run it on **afkd 0.2.145 or newer**. The plugin needs the service, roster and claim owner
 afkd names in `hello`, and refuses a `hello` without them; and it answers an undelivered
@@ -45,15 +43,15 @@ never retries.
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-# The agent a `trello` service runs: the skill is what lets it work the card.
+# The agent a `trello_card` service runs: the skill is what lets it work the card.
 agent builder { worker claude { model sonnet; skills @afkd/trello/trello } }
 ```
 
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
-`TRELLO_API_KEY`, `TRELLO_TOKEN`, `TRELLO_BOARD_ID` and `TRELLO_CARD_ID` every `trello` run
-carries.
+`TRELLO_API_KEY`, `TRELLO_TOKEN`, `TRELLO_BOARD_ID` and `TRELLO_CARD_ID` every
+`trello_card` run carries.
 
-## `trello` (cards)
+## `trello_card` (cards)
 
 Fires when a card lands in a watched list, and moves cards across the board as work starts,
 finishes, or fails. Its secrets stay with the plugin and the run.
@@ -132,7 +130,7 @@ it is not the claim lock.
 ```conf
 service implement {
   work_dir "/srv/acme/widgets"
-  trigger trello {
+  trigger trello_card {
     board          "https://trello.com/b/REPLACE_ME/board"
     api_key        "REPLACE_ME"
     token          "REPLACE_ME"
@@ -172,7 +170,7 @@ next poll.
 ```conf
 service groom {
   work_dir "/srv/acme/widgets"
-  trigger trello {
+  trigger trello_card {
     board        "https://trello.com/b/REPLACE_ME/board"
     api_key      "REPLACE_ME"
     token        "REPLACE_ME"
@@ -226,7 +224,7 @@ agent builder { worker claude { model sonnet; skills @afkd/trello/trello } }
 
 service widgets {
   work_dir "/srv/acme/widgets"
-  trigger trello {
+  trigger trello_card {
     board     "https://trello.com/b/REPLACE_ME/board"
     api_key   "REPLACE_ME"
     token     "REPLACE_ME"
@@ -257,7 +255,7 @@ not.
 ```conf
 service widgets {
   work_dir "/srv/acme/widgets"
-  trigger trello {
+  trigger trello_card {
     board     "https://trello.com/b/REPLACE_ME/board"
     api_key   "REPLACE_ME"
     token     "REPLACE_ME"
@@ -282,7 +280,7 @@ to the agent **that is already working**, as another turn in the same conversati
 ```conf
 service widgets {
   work_dir "/srv/acme/widgets"
-  trigger trello {
+  trigger trello_card {
     board           "https://trello.com/b/REPLACE_ME/board"
     api_key         "REPLACE_ME"
     token           "REPLACE_ME"

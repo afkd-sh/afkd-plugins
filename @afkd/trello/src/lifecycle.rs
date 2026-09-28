@@ -247,7 +247,7 @@ mod tests {
         assert!(ACTION_ORDER.iter().all(|k| LIFECYCLE_KEYS.contains(k)));
     }
 
-    /// Every trello block the operator reference, the gallery and the live service
+    /// Every `trello_card` block the operator reference, the gallery and the live service
     /// configs are written in, lowered exactly as afkd lowers it, runs in the order it
     /// is written in.
     #[test]

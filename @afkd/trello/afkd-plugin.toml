@@ -6,14 +6,13 @@ source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-trello"
 
-# The built-in `trello` kind's vocabulary, key for key, so every config that validates
-# against the built-in validates against this plugin with no edit.
+# The vocabulary of afkd's retired built-in Trello trigger, key for key.
 #
 # Every lifecycle key is repeatable: an `on_*` body is a sequence of actions. A `move_to`
 # block's `at` is repeatable too, because the built-in reads the first one and ignores a
 # second rather than refusing it; the plugin does the same.
 [[trigger]]
-kind = "trello"
+kind = "trello_card"
 settings = [
   "board",
   "base_url",

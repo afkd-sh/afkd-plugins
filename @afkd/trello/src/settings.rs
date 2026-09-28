@@ -1,5 +1,5 @@
-//! Read the `trello` kind's settings block — as afkd lowers it to JSON in `hello` — into
-//! a typed [`BoardConfig`], and wire its lifecycle moments to the action vocabulary.
+//! Read the `trello_card` kind's settings block — as afkd lowers it to JSON in `hello` —
+//! into a typed [`BoardConfig`], and wire its lifecycle moments to the action vocabulary.
 //!
 //! afkd has already held the block to the manifest before this plugin is spawned: every
 //! key is one the kind's manifest table declares, `board`/`api_key`/`token` are present,
@@ -47,7 +47,7 @@ pub(crate) enum DiscussWith {
     Members(Vec<MemberRef>),
 }
 
-/// A validated `trello` trigger configuration.
+/// A validated `trello_card` trigger configuration.
 ///
 /// `Debug` is **hand-written** so the credential fields never reach a diagnostic.
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -145,7 +145,8 @@ impl std::fmt::Display for SettingsError {
 // The built-in's vocabulary, verbatim. afkd reads the manifest, never these: they are
 // what `manifest.rs`'s test holds `afkd-plugin.toml` to, so the two cannot drift apart.
 
-/// The `trello` kind's full key set, exactly the built-in's `ALLOWED_KEYS`, in its order.
+/// The `trello_card` kind's full key set, exactly the built-in's `ALLOWED_KEYS`, in its
+/// order.
 #[cfg(test)]
 pub(crate) const ALLOWED_KEYS: &[&str] = &[
     "board",
@@ -167,8 +168,8 @@ pub(crate) const ALLOWED_KEYS: &[&str] = &[
     "on_park",
 ];
 
-/// The keys a `trello` block may write more than once: the two filter lists it reads as
-/// sequences.
+/// The keys a `trello_card` block may write more than once: the two filter lists it reads
+/// as sequences.
 #[cfg(test)]
 pub(crate) const REPEATABLE_KEYS: &[&str] = &["without_label", "discuss_with"];
 

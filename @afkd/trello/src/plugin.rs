@@ -1,5 +1,6 @@
 //! The plugin's state across calls, and one handler per call: the thin layer between
-//! afkd's wire ([`crate::wire`]) and the `trello` kind's vendor half ([`crate::card`]).
+//! afkd's wire ([`crate::wire`]) and the `trello_card` kind's vendor half
+//! ([`crate::card`]).
 //!
 //! Five things the wire forces that the built-in never had to do:
 //!
@@ -35,7 +36,7 @@ use crate::wire::{
 };
 
 /// The one kind this plugin provides.
-pub(crate) const TRELLO_KIND: &str = "trello";
+pub(crate) const TRELLO_KIND: &str = "trello_card";
 
 /// The optional calls the kind answers, exactly as `hello` lists them: every one afkd
 /// has, since the built-in used the whole spine.
@@ -464,7 +465,7 @@ mod tests {
             }
         }
 
-        /// The same, armed as the `trello` kind over `settings`, as `afkd::develop`.
+        /// The same, armed as the `trello_card` kind over `settings`, as `afkd::develop`.
         fn armed(settings: serde_json::Value) -> Self {
             let mut f = Self::new();
             let hello = f.call(hello(settings));
@@ -578,18 +579,18 @@ mod tests {
             ),
             (
                 settings_fault,
-                "trigger trello: setting `require_label`: setting `require_label` expects a \
-                 single value",
+                "trigger trello_card: setting `require_label`: setting `require_label` \
+                 expects a single value",
             ),
             (
                 claim_cost,
-                "trigger trello: setting `comment`: `@{run:cost}` references the run's facts, \
-                 but no run happens at claim time",
+                "trigger trello_card: setting `comment`: `@{run:cost}` references the run's \
+                 facts, but no run happens at claim time",
             ),
             (
                 min_range,
-                "trigger trello: setting `min_age`: setting `min_age` is not a duration (try \
-                 `30s`, `5m`, `1h`): `2m..3m`",
+                "trigger trello_card: setting `min_age`: setting `min_age` is not a duration \
+                 (try `30s`, `5m`, `1h`): `2m..3m`",
             ),
         ] {
             let mut f = Fixture::new();

@@ -111,7 +111,7 @@ impl Plugin {
     /// the daemon's roster (both services this board runs) and the claim owner beside
     /// them.
     pub fn hello_as(&mut self, service: &str, settings: Value) -> Value {
-        self.call(json!({"call": "hello", "proto": 1, "kind": "trello",
+        self.call(json!({"call": "hello", "proto": 1, "kind": "trello_card",
                          "service": service, "roster": [DEVELOP, DISCUSS],
                          "owner": OWNER, "settings": settings}))
     }

@@ -5,7 +5,7 @@
 //! replies and nothing else; every diagnostic and every success line goes to stderr, which
 //! afkd streams into the service log under `[@afkd/trello:err]`.
 //!
-//! The `trello` kind ([`card`]) is the vendor half of afkd's built-in Trello trigger,
+//! The `trello_card` kind ([`card`]) is the vendor half of afkd's built-in Trello trigger,
 //! ported. It keeps the built-in's claim, watermark, attempt and park comments, its
 //! claim-journal keys, session threads, run env and brief, so a claim either one left on a
 //! live card is recognised, renewed and released by the other, and a card parked by one is

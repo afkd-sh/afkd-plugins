@@ -166,7 +166,7 @@ fn hello_refuses_what_it_cannot_arm_with() {
     };
     let mut flag_gate = settings(&b.fake);
     flag_gate["require_label"] = json!(true);
-    let mut anonymous = hello("trello", 1, settings(&b.fake));
+    let mut anonymous = hello("trello_card", 1, settings(&b.fake));
     for field in ["service", "roster", "owner"] {
         anonymous.as_object_mut().unwrap().remove(field);
     }
@@ -176,9 +176,13 @@ fn hello_refuses_what_it_cannot_arm_with() {
             "kind `gitea_issue` is not provided by @afkd/trello",
         ),
         (
-            hello("trello", 1, flag_gate),
-            "trigger trello: setting `require_label`: setting `require_label` expects a single \
-             value",
+            hello("trello", 1, settings(&b.fake)),
+            "kind `trello` is not provided by @afkd/trello",
+        ),
+        (
+            hello("trello_card", 1, flag_gate),
+            "trigger trello_card: setting `require_label`: setting `require_label` expects a \
+             single value",
         ),
         (
             anonymous,
@@ -186,7 +190,7 @@ fn hello_refuses_what_it_cannot_arm_with() {
              carries `service`, `roster` and `owner`",
         ),
         (
-            hello("trello", 2, settings(&b.fake)),
+            hello("trello_card", 2, settings(&b.fake)),
             "afkd speaks plugin protocol 2, and this plugin speaks 1",
         ),
     ] {

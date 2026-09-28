@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn a_hello_decodes_with_and_without_the_identity() {
         let hello: Request = serde_json::from_str(
-            r#"{"call":"hello","proto":1,"kind":"trello","service":"afkd::develop",
+            r#"{"call":"hello","proto":1,"kind":"trello_card","service":"afkd::develop",
                 "roster":["afkd::develop","afkd::discuss"],"owner":"afkd-4242",
                 "settings":{"board":"https://trello.com/b/BID/x"}}"#,
         )
@@ -341,9 +341,10 @@ mod tests {
         assert_eq!(roster, ["afkd::develop", "afkd::discuss"]);
         assert_eq!(owner, "afkd-4242");
 
-        let bare: Request =
-            serde_json::from_str(r#"{"call":"hello","proto":1,"kind":"trello","settings":{}}"#)
-                .unwrap();
+        let bare: Request = serde_json::from_str(
+            r#"{"call":"hello","proto":1,"kind":"trello_card","settings":{}}"#,
+        )
+        .unwrap();
         assert!(matches!(
             bare,
             Request::Hello { service, roster, owner, .. }

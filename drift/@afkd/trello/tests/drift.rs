@@ -1,30 +1,20 @@
-//! The gate that holds the **shipped `@afkd/trello` plugin** — the `trello` trigger kind,
-//! built from source at install time — to a real afkd: the `afkd` first on `PATH`, the
+//! The gate that holds the **shipped `@afkd/trello` plugin** — the `trello_card` trigger
+//! kind, built from source at install time — to a real afkd: the `afkd` first on `PATH`, the
 //! installed one and never a build, since a plugin is checked against the afkd it will meet
-//! ([`bin_path`]). The leg that reads afkd's own source as well wants an afkd checkout named
-//! by `AFKD_SRC` ([`afkd_src`]), and skips loudly without one.
+//! ([`bin_path`]).
 //!
-//! afkd still has the kind built in, and a plugin may never shadow a built-in, so today
-//! `afkd install` refuses this plugin. That refusal shapes the gate:
+//! A plugin may never shadow a built-in, so an afkd that had this kind built in would refuse
+//! the install. That shapes the gate:
 //!
 //! - The **install** leg installs the tree the release tarball holds. While the built-in is
 //!   there it expects exactly that refusal, says it is skipping, and passes; once afkd drops
 //!   the built-in it builds, places and runs the plugin through one card.
 //! - The **live-today** leg runs the same card *now*, by installing a copy whose manifest
-//!   renames the kind (`trello_probe`) and whose `exec` is a wrapper that renames `hello`'s
+//!   renames the kind (`trello_card_probe`) and whose `exec` is a wrapper that renames `hello`'s
 //!   kind back — so the unmodified plugin binary meets afkd's real spine (journal, cadence,
 //!   watch, framing) before the rip-out, not after.
-//! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries:
-//!   against the built-in's vocabulary today, against the manifest's once the install goes
-//!   live.
-//! - The **transcription** leg holds the manifest's vocabulary, table for table, to the
-//!   built-in's in afkd's source and to the plugin's own ported copies.
-//!
-//! Two of the built-in's tables are not where a first reading looks. Trello's lifecycle
-//! vocabulary is the private `LIFECYCLE_KEYS` in `crates/trello/src/settings.rs`, not the
-//! forge one in `crates/forge/src/lifecycle.rs`; and its info-view keys are the trello arm of
-//! `builtin_trigger_keys` in `crates/app/src/headless.rs`, since `trigger_keys` now only
-//! dispatches between a plugin's `info_keys` and that table.
+//! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
+//!   against whatever vocabulary the afkd on PATH has for the kind.
 //!
 //! The Trello is the plugin's own loopback fake ([`fake`]), so no leg touches a network, and
 //! every wait is bounded and every spawn held in a [`Daemon`]: a claim that never lands must
@@ -117,7 +107,7 @@ fn install(home: &Path, root: &Path) -> Install {
     if out.status.success() {
         return Install::Placed;
     }
-    let refused = report.contains("declares trigger kind `trello`, which is built in");
+    let refused = report.contains("declares trigger kind `trello_card`, which is built in");
     assert!(
         out.status.code() == Some(1) && refused,
         "`afkd install {}` failed, and not because the kind is built in ({:?}):\n{report}",
@@ -140,7 +130,7 @@ const PROBE_EXEC: &str = r#"#!/bin/sh
 here=$(dirname "$0")
 {
   IFS= read -r hello
-  printf '%s\n' "$hello" | sed -e 's/"kind":"trello_probe"/"kind":"trello"/'
+  printf '%s\n' "$hello" | sed -e 's/"kind":"trello_card_probe"/"kind":"trello_card"/'
   cat
 } | "$here/target/release/afkd-trello"
 "#;
@@ -152,7 +142,7 @@ fn probe_manifest(staged: &Path) {
     let manifest = staged.join("afkd-plugin.toml");
     let text = std::fs::read_to_string(&manifest).expect("the staged manifest");
     let rewrites = [
-        (r#"kind = "trello""#, r#"kind = "trello_probe""#),
+        (r#"kind = "trello_card""#, r#"kind = "trello_card_probe""#),
         (
             r#"exec = "target/release/afkd-trello""#,
             r#"exec = "probe-exec""#,
@@ -313,6 +303,11 @@ fn claimed(fake: &FakeTrello, card: &str) -> bool {
         .any(|c| c.author == me && c.text.starts_with("[afkd-claim]"))
 }
 
+/// Read `path` whole, naming it when it is missing.
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
 /// Drive one card through the plugin, installed in `home` and serving `kind`, on a real
 /// daemon: it is **claimed** (the claim comment, and `on_claim` moved it), **run** (its run
 /// dir is named for the card, and its task carries the card and its thread whole) and
@@ -385,7 +380,7 @@ fn install_leg_is_refused_while_the_kind_is_built_in_and_runs_once_it_is_not() {
     let staged = stage(stage_dir.path());
     match install(home.path(), &staged) {
         Install::BuiltIn(report) => eprintln!(
-            "skipping: the afkd on PATH still has `trello` built in, so it refuses {NAME} \
+            "skipping: the afkd on PATH has {NAME}'s kind built in, so it refuses it \
              ({report}); this leg goes live once afkd drops the built-in"
         ),
         Install::Placed => {
@@ -397,7 +392,7 @@ fn install_leg_is_refused_while_the_kind_is_built_in_and_runs_once_it_is_not() {
                 .permissions()
                 .mode();
             assert!(mode & 0o111 != 0, "{} is executable", exec.display());
-            drive_one_card(home.path(), "trello");
+            drive_one_card(home.path(), "trello_card");
         }
     }
 }
@@ -411,7 +406,7 @@ fn the_plugin_binary_runs_on_the_real_spine_under_a_probe_kind() {
     if let Install::BuiltIn(report) = install(home.path(), &staged) {
         panic!("the probe kind is never built in, yet afkd refused it:\n{report}");
     }
-    drive_one_card(home.path(), "trello_probe");
+    drive_one_card(home.path(), "trello_card_probe");
 }
 
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence
@@ -449,7 +444,8 @@ fn every_readme_conf_fence_validates() {
     let stage_dir = TempDir::new().expect("tempdir");
     match install(home.path(), &stage(stage_dir.path())) {
         Install::BuiltIn(_) => eprintln!(
-            "the afkd on PATH has `trello` built in: the fences validate against its vocabulary"
+            "the afkd on PATH has {NAME}'s kind built in: the fences validate against its \
+             vocabulary"
         ),
         Install::Placed => eprintln!("{NAME} installed: the fences validate against its manifest"),
     }
@@ -466,345 +462,6 @@ fn every_readme_conf_fence_validates() {
             Some(0),
             "fence {} (README line {line}) validates:\n{fence}\n{report}",
             n + 1
-        );
-    }
-}
-
-// --- the transcription -----------------------------------------------------------------
-
-/// The quoted strings of the `const <name>: &[&str] = &[…]` declared in `source` (read
-/// from `file`), in order. A missing declaration panics naming both, so a rename reddens
-/// rather than comparing against nothing.
-fn str_list(source: &str, file: &str, name: &str) -> Vec<String> {
-    let head = format!("const {name}: &[&str] = &[");
-    let mut found = source.match_indices(&head);
-    let (at, _) = found
-        .next()
-        .unwrap_or_else(|| panic!("{file} declares no `{head}…]`"));
-    assert!(found.next().is_none(), "{file} declares `{name}` once");
-    let body = &source[at + head.len()..];
-    let body = &body[..body.find(']').expect("the list closes")];
-    quoted(body)
-}
-
-/// The value of the `const <name>: &str = "…";` declared in `source` (read from `file`).
-fn str_value(source: &str, file: &str, name: &str) -> String {
-    let head = format!("const {name}: &str = ");
-    let at = source
-        .find(&head)
-        .unwrap_or_else(|| panic!("{file} declares no `{head}…`"));
-    let rest = &source[at + head.len()..];
-    quoted(&rest[..rest.find(';').expect("the const ends")])
-        .pop()
-        .unwrap_or_else(|| panic!("{file}'s `{name}` is a string literal"))
-}
-
-/// Every `"…"` in `text`, in order. The tables hold plain key names, so no escape occurs.
-fn quoted(text: &str) -> Vec<String> {
-    text.split('"')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_string)
-        .collect()
-}
-
-/// The keys afkd's settings demand: every `require_present("…")` in its code, comments
-/// aside.
-fn required_keys(source: &str, file: &str) -> Vec<String> {
-    let mut keys: Vec<String> = source
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .flat_map(|line| {
-            line.match_indices("require_present(\"")
-                .map(move |(at, head)| {
-                    let rest = &line[at + head.len()..];
-                    rest[..rest.find('"').expect("the key closes")].to_string()
-                })
-        })
-        .collect();
-    keys.dedup();
-    assert!(!keys.is_empty(), "{file} requires no key");
-    keys
-}
-
-/// The body of the top-level fn whose signature starts with `signature` in `source` (read
-/// from `file`): from the signature to the first line that is a bare `}`. The signature must
-/// occur exactly once, so a rename or a second definition reddens rather than reading the
-/// wrong code.
-fn fn_body<'a>(source: &'a str, file: &str, signature: &str) -> &'a str {
-    let head = format!("{signature}(");
-    let mut found = source.match_indices(&head);
-    let (at, _) = found
-        .next()
-        .unwrap_or_else(|| panic!("{file} defines no `{signature}(…)`"));
-    assert!(found.next().is_none(), "{file} defines `{signature}` once");
-    let rest = &source[at..];
-    let end = rest
-        .match_indices("\n}\n")
-        .next()
-        .unwrap_or_else(|| panic!("{file}'s `{signature}` closes on a bare `}}` line"))
-        .0;
-    &rest[..end + 2]
-}
-
-/// The keys the code in `body` reads off a settings block: every `scalar("…")` and
-/// `opt_scalar("…")`, in order.
-fn scalar_keys(body: &str) -> Vec<String> {
-    body.match_indices("scalar(\"")
-        .map(|(at, head)| {
-            let rest = &body[at + head.len()..];
-            rest[..rest.find('"').expect("the key closes")].to_string()
-        })
-        .collect()
-}
-
-/// The `SCREAMING_CASE` names `body` mentions, sorted and deduplicated — the tables a fn
-/// reads.
-fn consts_named(body: &str) -> Vec<String> {
-    sorted(
-        body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .filter(|word| {
-                word.len() > 1
-                    && word.starts_with(|c: char| c.is_ascii_uppercase())
-                    && !word.contains(|c: char| c.is_ascii_lowercase())
-            })
-            .map(str::to_string),
-    )
-}
-
-/// The trello arm of afkd's `builtin_trigger_keys` in `headless` (read from `file`): its
-/// `("key", is_list)` pairs, in order. The arm's anchor also opens the display-name dispatch
-/// elsewhere in the file, so it is looked for inside that fn only, and must occur once there.
-fn trello_info_arm(headless: &str, file: &str) -> Vec<(String, bool)> {
-    let body = fn_body(headless, file, "fn builtin_trigger_keys");
-    let anchor = "afkd_trello::TRIGGER_KIND {";
-    let mut found = body.match_indices(anchor);
-    let (at, _) = found
-        .next()
-        .unwrap_or_else(|| panic!("{file}'s builtin_trigger_keys has no `{anchor}` arm"));
-    assert!(
-        found.next().is_none(),
-        "{file}'s builtin_trigger_keys has one trello arm"
-    );
-    let arm = &body[at + anchor.len()..];
-    let arm = &arm[..arm.find(']').expect("the arm's table closes")];
-    let pairs: Vec<(String, bool)> = arm
-        .split('(')
-        .skip(1)
-        .map(|pair| {
-            let pair = &pair[..pair
-                .find(')')
-                .unwrap_or_else(|| panic!("{file}'s trello arm: `({pair}` closes"))];
-            match quoted(pair).as_slice() {
-                [key] if pair.ends_with(", false") => (key.clone(), false),
-                [key] if pair.ends_with(", true") => (key.clone(), true),
-                _ => panic!("{file}'s trello arm holds `({pair})`, not a (\"key\", bool) pair"),
-            }
-        })
-        .collect();
-    assert!(!pairs.is_empty(), "{file}'s trello arm names no key");
-    pairs
-}
-
-/// A manifest array of strings, read off `table[key]`.
-fn strings(table: &toml::Table, key: &str, whose: &str) -> Vec<String> {
-    table
-        .get(key)
-        .and_then(toml::Value::as_array)
-        .unwrap_or_else(|| panic!("{whose} declares `{key}` as an array"))
-        .iter()
-        .map(|v| {
-            v.as_str()
-                .unwrap_or_else(|| panic!("{whose}'s `{key}` holds strings"))
-                .to_string()
-        })
-        .collect()
-}
-
-/// `keys`, sorted and deduplicated.
-fn sorted(keys: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut keys: Vec<String> = keys.into_iter().collect();
-    keys.sort_unstable();
-    keys.dedup();
-    keys
-}
-
-/// Read `path` whole, naming it when it is missing.
-fn read(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-#[test]
-fn the_manifest_transcribes_the_in_tree_tables() {
-    let Some(src) = afkd_src() else {
-        eprintln!("skipping: AFKD_SRC names no afkd checkout, and the in-tree tables are afkd's");
-        return;
-    };
-    let afkd_settings = "crates/trello/src/settings.rs";
-    let afkd_lib = "crates/trello/src/lib.rs";
-    let afkd_headless = "crates/app/src/headless.rs";
-    let (settings, lib, headless) = (
-        read(&src.join(afkd_settings)),
-        read(&src.join(afkd_lib)),
-        read(&src.join(afkd_headless)),
-    );
-    let ported_settings = "@afkd/trello/src/settings.rs";
-    let ported_lifecycle = "@afkd/trello/src/lifecycle.rs";
-    let ported_plugin = "@afkd/trello/src/plugin.rs";
-    let ported = read(&plugin_root().join("src/settings.rs"));
-    let ported_actions = read(&plugin_root().join("src/lifecycle.rs"));
-    let ported_kind = read(&plugin_root().join("src/plugin.rs"));
-
-    let manifest: toml::Table = toml::from_str(&read(&plugin_root().join("afkd-plugin.toml")))
-        .expect("the manifest parses");
-    let triggers = manifest
-        .get("trigger")
-        .and_then(toml::Value::as_array)
-        .expect("the manifest declares triggers");
-    assert_eq!(triggers.len(), 1, "the manifest declares the one kind");
-    let trigger = triggers[0].as_table().expect("a trigger is a table");
-
-    let kind = str_value(&lib, afkd_lib, "TRIGGER_KIND");
-    assert_eq!(
-        kind,
-        str_value(&ported_kind, ported_plugin, "TRELLO_KIND"),
-        "the plugin's TRELLO_KIND is afkd's TRIGGER_KIND"
-    );
-    assert_eq!(
-        trigger.get("kind").and_then(toml::Value::as_str),
-        Some(kind.as_str()),
-        "the manifest's kind is afkd's TRIGGER_KIND"
-    );
-    let whose = format!("the manifest's `{kind}`");
-    assert_eq!(
-        trigger.get("display_name").and_then(toml::Value::as_str),
-        Some(str_value(&lib, afkd_lib, "TRIGGER_DISPLAY_NAME").as_str()),
-        "{whose} display_name is afkd's TRIGGER_DISPLAY_NAME"
-    );
-
-    let allowed = str_list(&settings, afkd_settings, "ALLOWED_KEYS");
-    let repeatable = str_list(&settings, afkd_settings, "REPEATABLE_KEYS");
-    // (manifest key, afkd's table, what afkd calls it, the plugin's ported const)
-    let tables = [
-        ("settings", allowed.clone(), "ALLOWED_KEYS", "ALLOWED_KEYS"),
-        (
-            "repeatable",
-            repeatable.clone(),
-            "REPEATABLE_KEYS",
-            "REPEATABLE_KEYS",
-        ),
-        (
-            "required",
-            required_keys(&settings, afkd_settings),
-            "require_present keys",
-            "REQUIRED_KEYS",
-        ),
-        (
-            "durations",
-            str_list(&settings, afkd_settings, "DURATION_KEYS"),
-            "DURATION_KEYS",
-            "DURATION_KEYS",
-        ),
-    ];
-    for (key, in_tree, afkd_name, name) in tables {
-        let declared = strings(trigger, key, &whose);
-        assert_eq!(declared, in_tree, "{whose} `{key}` is afkd's {afkd_name}");
-        assert_eq!(
-            declared,
-            str_list(&ported, ported_settings, name),
-            "{whose} `{key}` is the plugin's {name}"
-        );
-    }
-
-    let actions = str_list(&settings, afkd_settings, "LIFECYCLE_KEYS");
-    assert_eq!(
-        actions,
-        str_list(&ported_actions, ported_lifecycle, "LIFECYCLE_KEYS"),
-        "the plugin's LIFECYCLE_KEYS is afkd's"
-    );
-    assert!(
-        settings.contains("const LIFECYCLE_REPEATABLE_KEYS: &[&str] = LIFECYCLE_KEYS;"),
-        "{afkd_settings}'s lifecycle keys are all repeatable, as the blocks declare"
-    );
-    assert!(
-        actions.iter().any(|a| a == "move_to"),
-        "afkd's LIFECYCLE_KEYS has `move_to`, whose block the manifest declares"
-    );
-    let move_to = scalar_keys(fn_body(&settings, afkd_settings, "fn parse_move_to"));
-    assert_eq!(
-        move_to,
-        ["at"],
-        "{afkd_settings}'s parse_move_to reads `at`"
-    );
-
-    let blocks = trigger
-        .get("block")
-        .and_then(toml::Value::as_array)
-        .unwrap_or_else(|| panic!("{whose} declares its blocks"));
-    let paths: Vec<&str> = blocks
-        .iter()
-        .map(|b| {
-            b.get("path")
-                .and_then(toml::Value::as_str)
-                .expect("a block path")
-        })
-        .collect();
-    let moments: Vec<&String> = allowed.iter().filter(|k| k.starts_with("on_")).collect();
-    let expected: Vec<String> = moments
-        .iter()
-        .flat_map(|moment| [moment.to_string(), format!("{moment}.move_to")])
-        .collect();
-    assert_eq!(
-        paths, expected,
-        "{whose} blocks are each on_* key of ALLOWED_KEYS and its move_to"
-    );
-    let mut block_settings = Vec::new();
-    for block in blocks {
-        let block = block.as_table().expect("a block is a table");
-        let path = block["path"].as_str().unwrap_or("?");
-        let at = format!("{whose} block `{path}`");
-        let (in_tree, name) = if path.ends_with(".move_to") {
-            (&move_to, "what parse_move_to reads")
-        } else {
-            (&actions, "LIFECYCLE_KEYS")
-        };
-        for key in ["settings", "repeatable"] {
-            assert_eq!(&strings(block, key, &at), in_tree, "{at} `{key}` is {name}");
-        }
-        if !path.contains('.') {
-            block_settings.extend(strings(block, "settings", &at));
-        }
-    }
-
-    let union = fn_body(&settings, afkd_settings, "pub fn settings_keys");
-    assert!(
-        union.contains("ALLOWED_KEYS.iter().chain(LIFECYCLE_KEYS)")
-            && consts_named(union) == ["ALLOWED_KEYS", "LIFECYCLE_KEYS"],
-        "{afkd_settings}'s settings_keys is the union of ALLOWED_KEYS and LIFECYCLE_KEYS, \
-         and of no other table:\n{union}"
-    );
-    assert_eq!(
-        sorted(
-            strings(trigger, "settings", &whose)
-                .into_iter()
-                .chain(block_settings)
-        ),
-        sorted(allowed.iter().chain(&actions).cloned()),
-        "{whose} settings and on_* blocks together are afkd's settings_keys()"
-    );
-
-    let arm = trello_info_arm(&headless, afkd_headless);
-    let info_keys = strings(trigger, "info_keys", &whose);
-    let arm_keys: Vec<&str> = arm.iter().map(|(key, _)| key.as_str()).collect();
-    assert_eq!(
-        info_keys, arm_keys,
-        "{whose} info_keys is the trello arm of afkd's builtin_trigger_keys"
-    );
-    for (key, is_list) in &arm {
-        assert_eq!(
-            repeatable.contains(key),
-            *is_list,
-            "{whose} info key `{key}` reads as a list iff it is repeatable, as afkd's arm has it"
         );
     }
 }

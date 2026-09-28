@@ -2,7 +2,7 @@
 #
 # afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose `@afkd/trello`
 # entry is to name this repository's `releases/download/trello/afkd-trello.tar.gz` (the entry
-# lands with the card that removes the built-in `trello` kind from afkd). afkd cannot
+# lands with the card that removes afkd's built-in Trello trigger). afkd cannot
 # install a subdirectory of a monorepo — its git leg requires the manifest at the clone root,
 # and its tarball leg steps through exactly one wrapper directory — so the installable
 # artifact is this per-plugin tarball, whose single top-level directory is the plugin itself.

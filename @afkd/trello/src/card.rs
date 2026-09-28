@@ -1,4 +1,4 @@
-//! The `trello` kind's **vendor half**: the Trello-specific side of afkd's unit spine,
+//! The `trello_card` kind's **vendor half**: the Trello-specific side of afkd's unit spine,
 //! ported from the built-in `TrelloCardUnits` (afkd's `crates/trello/src/trigger.rs`)
 //! and re-seated on the plugin wire.
 //!
@@ -190,7 +190,7 @@ pub(crate) struct Identity {
     pub(crate) roster: Vec<String>,
 }
 
-/// The `trello` kind's vendor half: the board seam, the intake gates, the comment-lock
+/// The `trello_card` kind's vendor half: the board seam, the intake gates, the comment-lock
 /// claim, the brief, and the four lifecycle action lists.
 pub(crate) struct TrelloUnits {
     board: Box<dyn BoardClient>,
@@ -4552,7 +4552,7 @@ mod tests {
     const PARK_QUESTION: &str = "I can't build this confidently — the card reads two ways:\n\n\
          1. `pick_from` names the **list** a card is claimed from, or\n\
          2. it names the label 名前 the card must carry\n\n\
-         ```conf\ntrigger trello { pick_from \"Up for Grabs\" }\n```\n\n\
+         ```conf\ntrigger trello_card { pick_from \"Up for Grabs\" }\n```\n\n\
          which did you mean? 🙏   ";
 
     /// The human's answer, posted after afkd's last word — the comment that re-arms a

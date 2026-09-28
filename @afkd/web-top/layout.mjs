@@ -2389,8 +2389,8 @@ function queueValue(svc) {
 }
 
 /// `infoview::trigger_kind` — the bare kind off the flat detail's leading segment
-/// (`"trello · board …"` → `"trello"`), which the app always builds as `<kind>` + ` · <key>
-/// <value>` pairs, so the two projections name one kind by construction.
+/// (`"trello_card · board …"` → `"trello_card"`), which the app always builds as `<kind>` +
+/// ` · <key> <value>` pairs, so the two projections name one kind by construction.
 function triggerKind(svc) {
   return svc.triggerDetail.split(" · ")[0] ?? svc.triggerDetail;
 }

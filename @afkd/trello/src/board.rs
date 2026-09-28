@@ -1,4 +1,4 @@
-//! The mockable card-board seam the `trello` kind drives, plus an in-memory mock board
+//! The mockable card-board seam the `trello_card` kind drives, plus an in-memory mock board
 //! (`MockBoard`, test-only) for offline tests.
 //!
 //! The kind does network I/O, but its *logic* — the comment-based claim lock, the
