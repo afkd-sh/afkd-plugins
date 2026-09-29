@@ -188,7 +188,7 @@ function pointAt(session, rows, at) {
 
 // --- the verbs -------------------------------------------------------------------------
 
-/// `Badge::can_start` / `can_stop` / `can_fire` — the gates `command_for_card` applies, and the
+/// `Badge::can_start` / `can_stop` / `can_run` — the gates `command_for_card` applies, and the
 /// same predicates `layout.mjs`'s footer weights its hints by. Restated here rather than
 /// imported because the two files read them for different reasons and neither owns the other.
 function canStart(badge) {
@@ -197,7 +197,7 @@ function canStart(badge) {
 function canStop(badge) {
   return ["Starting", "Idle", "Queued", "Checking", "Busy"].includes(badge);
 }
-function canFire(badge) {
+function canRun(badge) {
   return badge === "Idle";
 }
 
@@ -216,14 +216,14 @@ function eligible(verb, svc) {
       return canStart(svc.badge) && !svc.poisoned;
     case "stop":
       return canStop(svc.badge);
-    case "fire":
-      return canFire(svc.badge);
+    case "run":
+      return canRun(svc.badge);
     case "restart":
       // A live service restarts through the stop edge; a stopped or crashed one re-arms, with
       // the same poison gate `start` carries. A `Stopping` card is a gated no-op: its thread is
       // already joining and the supervisor drops the restart.
       return canStop(svc.badge) || (["Stopped", "Crashed"].includes(svc.badge) && !svc.poisoned);
-    case "force":
+    case "abandon":
       return svc.badge === "Stopping";
     default:
       return false;
@@ -248,10 +248,10 @@ function targetsOf(board, row) {
 /// `start`/`stop`/`restart` fold an optimistic edge and the row visibly flips, so three of
 /// these are `None`; here the board deliberately folds no edge at all (the row moves when the
 /// daemon's event lands), so that premise is gone for exactly those three and their keypress
-/// would otherwise produce no feedback whatever. `force` and `reload` are absent for reasons
+/// would otherwise produce no feedback whatever. `abandon` and `reload` are absent for reasons
 /// that **do** transplant: the modal was the acknowledgement, and the daemon's own
 /// `meta.reloaded.message` owns the reload line.
-const ACK = { fire: "Fired", restart: "Restarting", start: "Starting", stop: "Stopping" };
+const ACK = { run: "Run sent to", restart: "Restarting", start: "Starting", stop: "Stopping" };
 
 /// `ack_flash` — the press-time acknowledgement for a **dispatched**, post-gate batch. A gated
 /// no-op and a verb refused during the drain both dispatch nothing and so acknowledge nothing,
@@ -270,13 +270,13 @@ function command(verb, service) {
 
 /// `shell::fanout_confirm_modal`'s gate: 0 eligible targets is a silent no-op, exactly 1 acts
 /// directly, and >1 raises the confirm modal — a multi-service op must say what it is about to
-/// do and wait for a `y`. `force` is always gated, even at one target: it abandons a wedged
+/// do and wait for a `y`. `abandon` is always gated, even at one target: it abandons a wedged
 /// thread, and the modal is the one place that is stated before the key.
 function verbFor(session, board, verb, row, now) {
   const targets = targetsOf(board, row).filter((svc) => eligible(verb, svc));
   if (targets.length === 0) return { session, commands: [] };
   const skipped = targetsOf(board, row).length - targets.length;
-  if (verb === "force" || targets.length > 1) {
+  if (verb === "abandon" || targets.length > 1) {
     return {
       session: { ...session, confirm: { verb, targets: targets.map((s) => s.name), skipped } },
       commands: [],
@@ -844,9 +844,9 @@ export function press(session, board, chord, options) {
         handled: true,
       };
     case "overview.service_start":
-    case "overview.service_fire":
+    case "overview.service_run":
     case "overview.service_restart": {
-      const verb = { service_start: "start", service_fire: "fire", service_restart: "restart" }[
+      const verb = { service_start: "start", service_run: "run", service_restart: "restart" }[
         id.slice("overview.".length)
       ];
       const out = verbFor(session, board, verb, row, now);
@@ -857,7 +857,7 @@ export function press(session, board, chord, options) {
       // `Stopping` is the force gate, not a plain stop — the first press already sent the
       // `Stop`. A mixed group captures only its `Stopping` members.
       const wedged = targetsOf(board, row).some((svc) => svc.badge === "Stopping");
-      const out = verbFor(session, board, wedged ? "force" : "stop", row, now);
+      const out = verbFor(session, board, wedged ? "abandon" : "stop", row, now);
       return { ...out, handled: true };
     }
     case "overview.show_output":

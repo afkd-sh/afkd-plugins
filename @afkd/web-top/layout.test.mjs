@@ -193,7 +193,7 @@ test("the drain is its own screen", () => {
   const lines = screenText(rows).split("\n");
   assert.match(lines[0], /^afkd 0\.2\.123 · ■ Quitting \d+s/, "the drain owns the header, dot and all");
   const footer = lines.slice(-3).join("\n");
-  for (const gone of ["s start", "x stop", "t trigger", "r restart", "Ctrl+R reload"]) {
+  for (const gone of ["s start", "x stop", "t run now", "r restart", "Ctrl+R reload"]) {
     assert.ok(!footer.includes(gone), `${gone} is refused while draining, so it is not advertised`);
   }
   assert.ok(footer.includes("? help"), "the keys that still work are still there");
@@ -578,7 +578,7 @@ test("the footer advertises no unpressable key", () => {
   const footer = footerOf(rows, 3).join("\n");
   // A bound key the selection cannot take **holds its slot**: the first row is `janitor`,
   // which is `Stopped`, so `s start` is live and `x stop`/`t trigger` are there but gated.
-  for (const cell of ["s start", "x stop", "t trigger", "r restart", "o output", "? help", "q quit"]) {
+  for (const cell of ["s start", "x stop", "t run now", "r restart", "o output", "? help", "q quit"]) {
     assert.ok(footer.includes(cell), `the footer carries ${cell}`);
   }
   // …while an **unbound** action renders nothing at all. The drain is the reachable case: it
@@ -588,7 +588,7 @@ test("the footer advertises no unpressable key", () => {
     layout(drained.board, { cols: 120, rows: 30, now: drained.at + 1000, version: "0.2.123" }),
     3,
   ).join("\n");
-  for (const cell of ["s start", "x stop", "t trigger", "r restart", "+ widen", "- narrow", "Ctrl+R reload"]) {
+  for (const cell of ["s start", "x stop", "t run now", "r restart", "+ widen", "- narrow", "Ctrl+R reload"]) {
     assert.ok(!quitFooter.includes(cell), `${cell} is unbound while draining, so it is absent — not dim`);
   }
 });
@@ -615,7 +615,7 @@ test("a gated hint is dim and a live one is not", () => {
   };
   // The cursor is on `janitor`, which is `Stopped`: `s` can act on it; `x` and `t` are bound
   // and cannot. That is the whole gated/unbound distinction in one row.
-  for (const [label, dim] of [["start", false], ["stop", true], ["trigger", true]]) {
+  for (const [label, dim] of [["start", false], ["stop", true], ["run now", true]]) {
     const cells = hint(label);
     assert.ok(cells !== undefined, `the footer carries ${label}`);
     assert.equal(cells.label.dim, dim, `${label} is ${dim ? "gated, so dim" : "live, so lit"} against a Stopped row`);
@@ -741,7 +741,7 @@ test("the cursor on a service row mid-board", () => {
   // `archivist` is `Idle`, so the footer's four operator cells read off *its* badge: stop,
   // trigger and restart are live, start is not.
   const footer = footerOf(rows, 3).join("\n");
-  for (const cell of ["s start", "x stop", "t trigger", "r restart"]) {
+  for (const cell of ["s start", "x stop", "t run now", "r restart"]) {
     assert.ok(footer.includes(cell), `the footer carries ${cell}`);
   }
 });
@@ -788,7 +788,7 @@ test("the cursor on a queue lane", () => {
   // card, and `h`/`l` there are the lane's own width keys.
   const footer = footerOf(rows, 3).join("\n");
   for (const cell of ["h narrow", "l widen"]) assert.ok(footer.includes(cell), `the footer carries ${cell}`);
-  for (const gone of ["s start", "t trigger", "r restart"]) {
+  for (const gone of ["s start", "t run now", "r restart"]) {
     assert.ok(!footer.includes(gone), `${gone} needs a card, so a lane row does not advertise it`);
   }
 });
@@ -859,7 +859,7 @@ function wedgedBoard() {
 test("the force modal states what force does before it asks", () => {
   const { board, at } = wedgedBoard();
   assert.equal(board.services["janitor"].badge, "Stopping", "the capture's own wedged service");
-  const confirm = { verb: "force", targets: ["janitor"], skipped: 0 };
+  const confirm = { verb: "abandon", targets: ["janitor"], skipped: 0 };
   const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", confirm });
   assertGrid(rows, 100, 30);
   assertGolden("force-100x30.txt", rows);
@@ -969,7 +969,7 @@ const LIST_HELP_GROUPED = [
   "v            Flat view (no group headers)",
   "s            Start service",
   "x            Stop service",
-  "t            Trigger an idle service",
+  "t            Run now",
   "r            Restart service",
   "+            Widen the service's queue lane",
   "-            Narrow the service's queue lane",
@@ -987,7 +987,7 @@ const LIST_HELP_GROUPED = [
   "🪦           Orphan (removed from config)",
   "🕸️           Stale (new config; restart to adopt)",
   "🔷           Executing now (init/run/cleanup)",
-  "🔸           Failed fires or crashed (clears on restart)",
+  "🔸           Failed runs or crashed (clears on restart)",
 ];
 const LIST_HELP_FLAT = LIST_HELP_GROUPED.filter((line) => !/Collapse group|Expand group|collapse all groups/u.test(line)).map(
   (line) =>
@@ -1075,7 +1075,7 @@ test("a popup recedes the frame behind it and changes nothing else", () => {
   const { board, at } = liveBoard();
   const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 3 };
   const plain = layout(board, options);
-  const withPopup = layout(board, { ...options, confirm: { verb: "force", targets: ["janitor"], skipped: 0 } });
+  const withPopup = layout(board, { ...options, confirm: { verb: "abandon", targets: ["janitor"], skipped: 0 } });
   assertGrid(withPopup, 100, 30);
   // The rows above and below the box are the backdrop whole, so they are the clean comparison.
   const boxed = withPopup.map((row) => row.some((c) => c.fg === "recede" && c.text.startsWith("│")));
@@ -1113,7 +1113,7 @@ test("every popup owns exactly one gutter row and two gutter columns at each end
   ];
   for (const name of names) {
     const moved = renamed(board, "ops::nightly", name);
-    const confirm = { verb: "fire", targets: [name], skipped: 0 };
+    const confirm = { verb: "run", targets: [name], skipped: 0 };
     const rows = layout(moved, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", confirm });
     assertGrid(rows, 100, 30);
     const corner = (glyph) => rows.findIndex((row) => row.some((c) => c.fg === "recede" && c.text === glyph));
@@ -1212,7 +1212,7 @@ test("the key glyphs are canonical on every surface, not only the footer", () =>
   // wrong as in the footer.
   const { board, at } = wedgedBoard();
   const screens = [
-    layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", confirm: { verb: "force", targets: ["janitor"], skipped: 0 } }),
+    layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", confirm: { verb: "abandon", targets: ["janitor"], skipped: 0 } }),
     layout(board, { cols: 160, rows: 44, now: at + 1000, version: "0.2.123", help: true }),
   ];
   for (const rows of screens) {
@@ -1255,12 +1255,12 @@ test("a flash owns the footer for four seconds and reverts byte for byte", () =>
   const { board, at } = liveBoard();
   const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 7 };
   const before = layout(board, options);
-  const flashed = layout(board, { ...options, flash: "Fired ops::nightly" });
+  const flashed = layout(board, { ...options, flash: "Run sent to ops::nightly" });
   assertGrid(flashed, 100, 30);
   // The flash **is** the footer, at precedence 2: one line, replacing the contextual legend
   // rather than sitting under it.
   const footer = footerOf(flashed, 1)[0];
-  assert.ok(footer.startsWith("Fired ops::nightly"), "the flash is the footer's own line");
+  assert.ok(footer.startsWith("Run sent to ops::nightly"), "the flash is the footer's own line");
   assert.ok(!screenText(flashed).includes("? help"), "…and the contextual hints are not beside it");
   // A footer of one row leaves the body two rows taller, which is why expiry has to revert
   // exactly rather than approximately.
@@ -1270,11 +1270,11 @@ test("a flash owns the footer for four seconds and reverts byte for byte", () =>
     "with no flash the screen is the one it was before, byte for byte",
   );
   // Precedence 1 beats it: while typing, the prompt owns the footer.
-  const typing = layout(board, { ...options, flash: "Fired ops::nightly", typing: "night" });
+  const typing = layout(board, { ...options, flash: "Run sent to ops::nightly", typing: "night" });
   assertGrid(typing, 100, 30);
   const prompt = footerOf(typing, 1)[0];
   assert.ok(prompt.startsWith("/ filter: night_"), "the prompt, with its own key glyph and its caret");
-  assert.ok(!prompt.includes("Fired"), "…and the flash is not on screen at all");
+  assert.ok(!prompt.includes("Run sent to"), "…and the flash is not on screen at all");
   // An overlong message is cut to the row by **measured width**, not by UTF-16 unit: a daemon's
   // refusal is its own sentence and can carry a wide grapheme at the edge.
   const long = `監視サービス ${"x".repeat(200)}`;
@@ -1692,7 +1692,7 @@ test("the overlays still outrank the info page", () => {
   assertGrid(help, 160, 44);
   assert.ok(popupLines(help).includes("i/Esc  Back to list"), "the `?` overlay is up over the page, with the page's own keys");
   const confirm = layout(board, infoAt("ops::nightly", 100, 30, at, {
-    confirm: { verb: "force", targets: ["ops::sleeper"], skipped: 0 },
+    confirm: { verb: "abandon", targets: ["ops::sleeper"], skipped: 0 },
   }));
   assertGrid(confirm, 100, 30);
   assert.ok(screenText(confirm).includes("Force"), "and so is the confirm modal");

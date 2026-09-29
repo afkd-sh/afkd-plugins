@@ -175,7 +175,7 @@ function wheelRows(event) {
 ///
 /// The ack the press wrote is already in the session — `dispatch_commands` computes it before
 /// the writes for the same reason — so a refusal **overwrites** it rather than appending to it:
-/// a command that failed must not leave `Fired web` on screen. The session is re-read at reply
+/// a command that failed must not leave `Run sent to web` on screen. The session is re-read at reply
 /// time because frames have landed in between, and the board is not this function's to freeze.
 function send(command, streamId, { read, write, post, now, repaint }) {
   post(bodyOf(streamId, command)).then((reply) => {

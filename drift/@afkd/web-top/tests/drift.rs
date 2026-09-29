@@ -1371,24 +1371,24 @@ fn a_fire_from_one_tab_arrives_on_every_stream() {
     );
     let (status, body) = post_command(
         port,
-        &serde_json::json!({"stream": "0123456789abcdef", "command": "fire", "service": "never"}),
+        &serde_json::json!({"stream": "0123456789abcdef", "command": "run", "service": "never"}),
     );
     assert_eq!(status, 404, "a stream id that names no attach: {body}");
     let (status, body) = post_command(
         port,
-        &serde_json::json!({"stream": id_one, "command": "fire"}),
+        &serde_json::json!({"stream": id_one, "command": "run"}),
     );
     assert_eq!(status, 400, "a service verb with no service: {body}");
 
     // …and the one that must.
     let (status, body) = post_command(
         port,
-        &serde_json::json!({"stream": id_one, "command": "fire", "service": BUSY}),
+        &serde_json::json!({"stream": id_one, "command": "run", "service": BUSY}),
     );
     assert_eq!(status, 200, "POST /command: {body}");
 
     for (label, sse) in [("the posting tab", &mut one), ("the other tab", &mut two)] {
-        let started = sse.frame_matching(BUDGET, |f| f["event"] == "fire_started");
+        let started = sse.frame_matching(BUDGET, |f| f["event"] == "run_started");
         assert_eq!(
             started["service"], BUSY,
             "{label} sees the fire, wide glyphs and namespace intact: {started:#}"
@@ -1753,11 +1753,11 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
     driver.frame(BUDGET);
     let (status, body) = post_command(
         port,
-        &serde_json::json!({"stream": driver_id, "command": "fire", "service": BUSY}),
+        &serde_json::json!({"stream": driver_id, "command": "run", "service": BUSY}),
     );
     assert_eq!(status, 200, "POST /command: {body}");
-    driver.frame_matching(BUDGET, |f| f["event"] == "fire_ok");
-    let corpus = runs_root(dir.path()).join("ops__監視");
+    driver.frame_matching(BUDGET, |f| f["event"] == "run_ok");
+    let corpus = runs_root(dir.path()).join("ops.監視");
     assert!(
         corpus.is_dir(),
         "the fire left a run corpus at {}",
@@ -1770,7 +1770,7 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
     late.handshake();
     let (status, body) = post_command(
         port,
-        &serde_json::json!({"stream": driver_id, "command": "fire", "service": BUSY}),
+        &serde_json::json!({"stream": driver_id, "command": "run", "service": BUSY}),
     );
     assert_eq!(status, 200, "the racing second fire: {body}");
 
@@ -1793,7 +1793,7 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
     );
 
     // The tree: a replayed `opened` for the first fire's own node, naming the service
-    // verbatim — wide glyphs and namespace intact through the `::` → `__` dir encoding.
+    // verbatim — wide glyphs and namespace intact through the `::` → `.` dir encoding.
     let opened: Vec<&serde_json::Value> = frames
         .iter()
         .filter(|f| f["type"] == "backfill" && f["event"]["op"] == "opened")
@@ -2013,10 +2013,10 @@ fn a_runs_dir_that_appears_after_the_daemon_started_is_served() {
     driver.frame(BUDGET);
     let (status, body) = post_command(
         port,
-        &serde_json::json!({"stream": driver_id, "command": "fire", "service": BUSY}),
+        &serde_json::json!({"stream": driver_id, "command": "run", "service": BUSY}),
     );
     assert_eq!(status, 200, "POST /command: {body}");
-    driver.frame_matching(BUDGET, |f| f["event"] == "fire_ok");
+    driver.frame_matching(BUDGET, |f| f["event"] == "run_ok");
 
     // …then put it where the setting points, **after** the relay started.
     std::fs::create_dir_all(&late).expect("mk the late base");
@@ -3912,11 +3912,11 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
 
     let (status, body) = post_command(
         port,
-        &serde_json::json!({"stream": id, "command": "fire", "service": BUSY}),
+        &serde_json::json!({"stream": id, "command": "run", "service": BUSY}),
     );
     assert_eq!(status, 200, "POST /command fire: {body}");
     assert!(
-        sse.collect_frames(BUDGET, &mut frames, |f| f["event"] == "fire_failed"
+        sse.collect_frames(BUDGET, &mut frames, |f| f["event"] == "run_failed"
             && f["service"] == BUSY),
         "the fire never failed on the stream; it carried {frames:?}"
     );
@@ -3936,7 +3936,7 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
             })
     });
     // The fire's own trailing frames, plus the daemon's once-a-second host reading: the
-    // reporter emits `fire_failed` before the root node's closing `trace` necessarily lands,
+    // reporter emits `run_failed` before the root node's closing `trace` necessarily lands,
     // and a capture cut at the failure would leave the plugin's tree showing a running root
     // against the terminal's closed one. Taken *after* the terminal settled, so the capture
     // is never the older of the two.

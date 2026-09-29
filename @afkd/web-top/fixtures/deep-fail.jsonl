@@ -2,7 +2,7 @@
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1606975488,"mem_total":32964694016,"rx_bps":3184,"tx_bps":1975}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1602998272,"mem_total":32964694016,"rx_bps":7622,"tx_bps":41463}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1600315392,"mem_total":32964694016,"rx_bps":2702,"tx_bps":1979}
-{"type":"event","event":"fire_started","service":"tree::retried"}
+{"type":"event","event":"run_started","service":"tree::retried"}
 {"type":"trace","service":"tree::retried","event":{"op":"opened","node":{"id":1,"kind":"workflow","label":"retried_pass","detail":""},"at":{"year":2026,"month":9,"day":19,"hour":4,"minute":32,"second":30,"millis":455}}}
 {"type":"event","event":"step_entered","service":"tree::retried","breadcrumb":"run_workflow retried_pass"}
 {"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [wf] run_workflow retried_pass: start"}
@@ -46,8 +46,8 @@
 {"type":"trace","service":"tree::retried","event":{"op":"closed","id":8,"status":"skipped","elapsed_ms":1}}
 {"type":"log","service":"tree::retried","stream":"stderr","line":"[tree::retried] [wf] run_workflow retried_pass: failed at if"}
 {"type":"trace","service":"tree::retried","event":{"op":"closed","id":1,"status":"failed","elapsed_ms":17,"cost":0.0462,"turns":4,"tokens":1840}}
-{"type":"event","event":"fire_failed","service":"tree::retried","reason":"command failed: exit 3","elapsed_ms":18}
-{"type":"event","event":"service_next_fire","service":"tree::retried","next_ms":3599999}
+{"type":"event","event":"run_failed","service":"tree::retried","reason":"command failed: exit 3","elapsed_ms":18}
+{"type":"event","event":"service_next_run","service":"tree::retried","next_ms":3599999}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1596338176,"mem_total":32964694016,"rx_bps":2801,"tx_bps":2154}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1594134528,"mem_total":32964694016,"rx_bps":2154,"tx_bps":1964}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1590763520,"mem_total":32964694016,"rx_bps":2560,"tx_bps":1964}

@@ -30,7 +30,7 @@ import { BASE, STEP, assertGolden, assertGrid, paneBody, readCapture, screenText
 const HERE = import.meta.dirname;
 
 /// The one service every fixture in this suite was recorded for — namespaced and wide-glyph,
-/// so the `::` to `__` run-dir encoding and a CJK name are on the path of every read here.
+/// so the `::` to `.` run-dir encoding and a CJK name are on the path of every read here.
 const SERVICE = "ops::監視";
 
 /// The recorded run this suite's log assertions are about — the newest dir of both corpora,
@@ -232,7 +232,7 @@ test("the relay's sanitizer and the page's agree byte for byte", { skip: SKIP_PY
   // The inputs are the run's own raw `run.log` bytes, stamp prefix stripped: SGR, an OSC
   // residue, an embedded carriage return, tabs, a bidi override, CJK, an emoji and a
   // zero-width space, plus the daemon's own narration lines around them.
-  const raw = readFileSync(join(HERE, "fixtures", "runs", "ops__監視", NEWEST_RUN, "run.log"), "utf8")
+  const raw = readFileSync(join(HERE, "fixtures", "runs", "ops.監視", NEWEST_RUN, "run.log"), "utf8")
     .split("\n")
     .filter((line) => line !== "")
     .map((line) => line.slice(20));

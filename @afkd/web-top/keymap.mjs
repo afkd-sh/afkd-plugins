@@ -47,7 +47,7 @@ export const DEFAULT_KEYS = [
   // overview
   { scope: "overview", action: "service_start", binding: "s" },
   { scope: "overview", action: "service_stop", binding: "x" },
-  { scope: "overview", action: "service_fire", binding: "t" },
+  { scope: "overview", action: "service_run", binding: "t" },
   { scope: "overview", action: "service_restart", binding: "r" },
   { scope: "overview", action: "service_peek", binding: "enter space" },
   { scope: "overview", action: "show_output", binding: "o" },
@@ -102,7 +102,7 @@ export const DEFAULT_KEYS = [
   { scope: "confirm", action: "cancel", binding: "n esc" },
 ];
 
-/// One row's dotted id — `overview.service_fire` — the spelling every caller here and in
+/// One row's dotted id — `overview.service_run` — the spelling every caller here and in
 /// `layout.mjs` names an action by.
 export function idOf(row) {
   return `${row.scope}.${row.action}`;
@@ -212,7 +212,7 @@ export function resolve(scopes, chord) {
 export const REFUSED_WHILE_QUITTING = [
   "overview.service_start",
   "overview.service_stop",
-  "overview.service_fire",
+  "overview.service_run",
   "overview.service_restart",
   "overview.queue_widen",
   "overview.queue_narrow",
@@ -233,7 +233,7 @@ export const DESCRIPTIONS = {
   "global.help": "Close help",
   "overview.service_start": "Start service",
   "overview.service_stop": "Stop service",
-  "overview.service_fire": "Trigger an idle service",
+  "overview.service_run": "Run now",
   "overview.service_restart": "Restart service",
   "overview.service_peek": "Toggle group / peek service activity",
   "overview.show_output": "Output",
@@ -289,7 +289,7 @@ export const HANDLED = new Set([
   "global.help",
   "overview.service_start",
   "overview.service_stop",
-  "overview.service_fire",
+  "overview.service_run",
   "overview.service_restart",
   "overview.service_peek",
   "overview.show_output",

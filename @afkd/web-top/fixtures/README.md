@@ -7,6 +7,14 @@ cannot quietly make an assertion vacuous, and a frame shape this fold has never 
 seen — or a run-dir layout the daemon has never actually written — cannot sneak into the
 suite as a guess.
 
+Two edits were made to them since, each following a rename in afkd that changed no shape.
+afkd 0.2.171 renamed four event tags, so `fire_started`, `fire_ok`, `fire_failed` and
+`service_next_fire` were rewritten in place to `run_started`, `run_ok`, `run_failed` and
+`service_next_run` — the exact quoted tag, never a bare `fire`, so no service name or log line
+moved. And afkd 0.2.173 joins a namespaced name's run-dir segments with `.` rather than `__`, so
+the one service dir in each `runs*/` tree was moved from `ops__監視` to `ops.監視`, its contents
+untouched.
+
 They ride into every operator's plugin directory on `afkd install`, so they stay small —
 about 100 KB for all of them.
 
@@ -26,9 +34,9 @@ $ HOME=/tmp/afkd-fixture PATH=/tmp/afkd-fixture/bin:$PATH \
 
 A ~200-line python recorder opens a second connection to `<state dir>/sock`, sends
 `{"afkd":"hello","proto":1}`, and appends every line it reads. Commands are sent on the
-same wire as `{"type":"command","command":"fire","service":"…"}` frames. Each file ends
-with the recorder still attached while the daemon takes its `SIGINT`, so the drain's
-`meta.quitting` is really in the recording rather than assumed.
+same wire as `{"type":"command","command":"fire","service":"…"}` frames (a tag afkd spells
+`run` from 0.2.170 on). Each file ends with the recorder still attached while the daemon takes
+its `SIGINT`, so the drain's `meta.quitting` is really in the recording rather than assumed.
 
 A stub `claude` on `PATH` prints one success envelope with `num_turns`, `total_cost_usd`
 and a `usage` block, so `agent_finished` carries confirmed turns, cost and tokens.
@@ -50,9 +58,9 @@ adversarial line set; one that exits non-zero; one nested workflow
 | File | What was driven |
 |---|---|
 | `snapshot.jsonl` | Attach only, onto a board already holding `armed`, `busy`, `queued`, `stopped` and `crashed` services, two groups, a filled lane and services with distinct activity ages. The recorder attaches **after** the setup, so the whole board arrives in one `meta.snapshot`. |
-| `fire.jsonl` | One workflow service's whole fire — `fire_started` → `step_entered` → `agent_finished` → `fire_ok` — with its logs and trace interleaved as the daemon emitted them, then the lane filled and the same service asked to fire again, which is the `service_queued` edge. |
+| `fire.jsonl` | One workflow service's whole fire — `run_started` → `step_entered` → `agent_finished` → `run_ok` — with its logs and trace interleaved as the daemon emitted them, then the lane filled and the same service asked to fire again, which is the `service_queued` edge. |
 | `trace-burst.jsonl` | A nested workflow, so the tree has depth (root → `in_parallel` → two leaves), sibling ordering, a `guard`, and a `times` loop that **relabels** its node twice. |
-| `noise.jsonl` | The supervisor vocabulary and the adversarial log set: a fire that prints SGR, an OSC residue, an embedded `\r`, tabs, `U+202E`, CJK, an emoji and a zero-width space; a fire that fails; a stop/start round trip (`service_stopping` → `service_paused{true}` → `service_paused{false}` → `service_armed`); a re-arm whose `init` faults again (`service_crashed`, twice, which is the daemon's repeat alarm); and a **mid-fire** stop, whose `service_stopping` and settling `service_paused{true}` bracket the drained fire's own `fire_ok`. |
+| `noise.jsonl` | The supervisor vocabulary and the adversarial log set: a fire that prints SGR, an OSC residue, an embedded `\r`, tabs, `U+202E`, CJK, an emoji and a zero-width space; a fire that fails; a stop/start round trip (`service_stopping` → `service_paused{true}` → `service_paused{false}` → `service_armed`); a re-arm whose `init` faults again (`service_crashed`, twice, which is the daemon's repeat alarm); and a **mid-fire** stop, whose `service_stopping` and settling `service_paused{true}` bracket the drained fire's own `run_ok`. |
 | `deep-fail.jsonl` | A nested workflow that **fails below its root**, which none of the five above do: a `guard` whose predicate came back false, closing `skipped` over an `else` body whose `run_cmd` failed; an agent (`mender`) that closed `ok` over a tool call the transcript marked `is_error`; and an agent (`scribe`) whose two tool calls both passed. Those are the tree pane's three non-obvious rules — the worst-hidden-status rollup, the recovered `↻` marker, and the per-kind `agent` collapse default with its failing-subtree escape hatch — and a golden that never sees them pins nothing. |
 | `loud-fail.jsonl` | One service whose `run_cmd` prints eight lines and **exits 3**, so a `cmd` leaf closes `failed` with its own output attributed to it. That pairing exists nowhere else in the corpus: `noise.jsonl`'s failing fire and `deep-fail.jsonl`'s failing leaves all close with **zero** node-tagged ring lines, which renders `with_bodies`' auto-expand arm — a failed leaf showing its output unasked — true and invisible. Its stderr line also lands *third* in the ring though the shell printed it last, which is the real interleaving of two pipes and the reason the body is asserted in ring order. |
 | `backfill.jsonl` | One fire with the recorder attached **mid-fire**, so its `meta.snapshot` carries the service `busy` and the live frames are the second half of a run whose first half is already on disk. Recorded beside the two run corpora below, in the fourth session. |
@@ -116,7 +124,7 @@ socket, no provider trigger. None of the earlier files was re-recorded, so no ex
 moved.
 
 Its config is one service, `ops::監視` — namespaced and wide-glyph on purpose, so the `::` to
-`__` run-dir encoding and a CJK path segment are on the path of every read — over one workflow:
+`.` run-dir encoding and a CJK path segment are on the path of every read — over one workflow:
 an `in_parallel` of a loud command and a quiet one, then an `if run_cmd "true" { … }`, then a
 third command. The loud one prints the adversarial line set a quarter of a second apart (SGR,
 an OSC residue, an embedded `\r`, tabs, `U+202E`, CJK, an emoji, a zero-width space); the

@@ -366,8 +366,8 @@ function canStop(badge) {
   return ["Starting", "Idle", "Queued", "Checking", "Busy"].includes(badge);
 }
 
-/// `Badge::can_fire` — only an armed, waiting one fires.
-function canFire(badge) {
+/// `Badge::can_run` — only an armed, waiting one runs.
+function canRun(badge) {
   return badge === "Idle";
 }
 
@@ -1792,7 +1792,7 @@ function groupControlHints(keys, members) {
       ? keys.hintGated("overview.service_stop", "force-stop", true)
       : keys.hintGated("overview.service_stop", "stop", some((m) => canStop(m.badge))),
   );
-  push(keys.hintGated("overview.service_fire", "trigger", some((m) => canFire(m.badge))));
+  push(keys.hintGated("overview.service_run", "run now", some((m) => canRun(m.badge))));
   push(
     keys.hintGated(
       "overview.service_restart",
@@ -1864,7 +1864,7 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
     // A poisoned `Crashed` card has neither a live `s` nor a live `r`; rather than leave the
     // operator guessing at two muted slots, an inert note states why and what lifts the gate.
     if (svc.poisoned) hints.push(note("✕", POISON_RECOVERY));
-    push(hints, keys.hintGated("overview.service_fire", "trigger", canFire(svc.badge)));
+    push(hints, keys.hintGated("overview.service_run", "run now", canRun(svc.badge)));
     push(
       hints,
       keys.hintGated("overview.service_restart", "restart", !svc.poisoned && svc.badge !== "Stopping"),
@@ -2141,8 +2141,8 @@ function confirmHints(keys, acceptLabel) {
 /// The title word and the hint's verb for each confirmable verb — the Sentence-case one for
 /// the title (§8), the lower-case one for the key legend.
 const CONFIRM_WORDS = {
-  force: { title: "Force-stop", accept: "force" },
-  fire: { title: "Fire", accept: "fire" },
+  abandon: { title: "Force-stop", accept: "force" },
+  run: { title: "Run", accept: "run" },
   start: { title: "Start", accept: "start" },
   stop: { title: "Stop", accept: "stop" },
   restart: { title: "Restart", accept: "restart" },
@@ -2158,14 +2158,14 @@ const CONFIRM_NAME_CAP = 10;
 /// is their only prompt — the accepted divergence `docs/tui-style.md` §8 records.
 function confirmModal(board, confirm, quitting) {
   const keys = keysOf(quitting);
-  const words = CONFIRM_WORDS[confirm.verb] ?? CONFIRM_WORDS.force;
+  const words = CONFIRM_WORDS[confirm.verb] ?? CONFIRM_WORDS.abandon;
   const count = confirm.targets.length;
   const noun = count === 1 ? "service" : "services";
   const icon = (name) => {
     const svc = board.services[name];
     return svc === undefined ? name : `${cardIcon(svc)} ${name}`;
   };
-  if (confirm.verb === "force") {
+  if (confirm.verb === "abandon") {
     // Two honesty lines before the `y`, because the "do not oversell it" bar wants both the
     // reach and the limitation stated: what force ends, and what it leaves behind.
     return {
@@ -2206,7 +2206,7 @@ const HELP_SIGILS = [
   ["🪦", "Orphan (removed from config)"],
   ["🕸️", "Stale (new config; restart to adopt)"],
   ["🔷", "Executing now (init/run/cleanup)"],
-  ["🔸", "Failed fires or crashed (clears on restart)"],
+  ["🔸", "Failed runs or crashed (clears on restart)"],
 ];
 
 /// `help::help_lines`. `base` is `"list"`, `"info"`, `"tree"` or `"log"`; `grouped` names the
@@ -2230,7 +2230,7 @@ function helpLines(base, grouped, keys) {
     push(keys.hint("overview.view", grouped ? "Flat view (no group headers)" : "Grouped view"));
     push(keys.hint("overview.service_start", "Start service"));
     push(keys.hint("overview.service_stop", "Stop service"));
-    push(keys.hint("overview.service_fire", "Trigger an idle service"));
+    push(keys.hint("overview.service_run", "Run now"));
     push(keys.hint("overview.service_restart", "Restart service"));
     push(keys.hint("overview.queue_widen", "Widen the service's queue lane"));
     push(keys.hint("overview.queue_narrow", "Narrow the service's queue lane"));

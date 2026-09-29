@@ -190,12 +190,12 @@ test("a second snapshot replaces the board rather than merging into it", () => {
 test("a fire's lifecycle moves the service through busy and back, tallies and all", () => {
   const frames = readFixture("fire");
   const snapshot = frames.find((f) => f.type === "meta" && f.meta === "snapshot");
-  const subject = frames.find((f) => f.type === "event" && f.event === "fire_started").service;
+  const subject = frames.find((f) => f.type === "event" && f.event === "run_started").service;
 
   const mine = (f) => f.type === "event" && f.service === subject;
-  const starts = frames.filter((f) => mine(f) && f.event === "fire_started");
-  const oks = frames.filter((f) => mine(f) && f.event === "fire_ok");
-  const fails = frames.filter((f) => mine(f) && f.event === "fire_failed");
+  const starts = frames.filter((f) => mine(f) && f.event === "run_started");
+  const oks = frames.filter((f) => mine(f) && f.event === "run_ok");
+  const fails = frames.filter((f) => mine(f) && f.event === "run_failed");
   const steps = frames.filter((f) => mine(f) && f.event === "step_entered");
   const agents = frames.filter((f) => mine(f) && f.event === "agent_finished");
   const queued = frames.filter((f) => mine(f) && f.event === "service_queued");
@@ -235,7 +235,7 @@ test("a fire's lifecycle moves the service through busy and back, tallies and al
   assert.equal(final.runs, entry.runs_total + oks.length + fails.length);
   assert.equal(final.failures, entry.run_failures_total + fails.length);
   // Both wall-time totals grow by the fixture's own `elapsed_ms`; the ok-only one by the
-  // `fire_ok` verdicts alone.
+  // `run_ok` verdicts alone.
   assert.equal(
     final.runTimeTotalMs,
     entry.run_time_total_ms + [...oks, ...fails].reduce((sum, f) => sum + f.elapsed_ms, 0),
@@ -259,10 +259,10 @@ test("a fire's lifecycle moves the service through busy and back, tallies and al
 
 test("a completion with no fire in flight counts the run and none of its time", () => {
   // `complete_fire`'s guard asymmetry: the counts bump outside the `in_flight` guard, the
-  // two wall-time totals fold inside it. The frame is a recorded `fire_ok`, replayed
+  // two wall-time totals fold inside it. The frame is a recorded `run_ok`, replayed
   // against a board seeded from a snapshot in which the service is parked, not firing.
   const snapshot = readFixture("snapshot").find((f) => f.type === "meta" && f.meta === "snapshot");
-  const ok = readFixture("fire").find((f) => f.type === "event" && f.event === "fire_ok");
+  const ok = readFixture("fire").find((f) => f.type === "event" && f.event === "run_ok");
   const entry = snapshot.services.find((s) => s.name === ok.service);
   assert.ok(entry, `the snapshot names ${ok.service}`);
   assert.ok(entry.busy_ms === 0, "…and it is not firing there");
@@ -489,7 +489,7 @@ test("an invented type, an invented event tag and an extra field all fold to a n
 
   const hologram = { ...copy(frames.find((f) => f.type === "event")), type: "hologram" };
   const teleported = { ...copy(frames.find((f) => f.type === "event")), event: "service_teleported" };
-  const decorated = { ...copy(frames.find((f) => f.type === "event" && f.event === "fire_ok")), quarks: { up: 3 } };
+  const decorated = { ...copy(frames.find((f) => f.type === "event" && f.event === "run_ok")), quarks: { up: 3 } };
 
   let current = board;
   for (const [frame, label, counter] of [
@@ -504,7 +504,7 @@ test("an invented type, an invented event tag and an extra field all fold to a n
   // An extra field on a **known** frame is not a no-op — the frame still folds — but the
   // unknown key must contribute nothing, so folding it twice lands exactly where folding
   // the clean recording twice does.
-  const clean = copy(frames.find((f) => f.type === "event" && f.event === "fire_ok"));
+  const clean = copy(frames.find((f) => f.type === "event" && f.event === "run_ok"));
   assert.deepEqual(
     sansFrames(fold(current, decorated, end)),
     sansFrames(fold(current, clean, end)),
@@ -687,7 +687,7 @@ test("a log line moves the activity anchor only while a fire is in flight", () =
 
 test("a mid-fire stop reads stopping until its paused settles it", () => {
   // The drain edge, from the capture's own `stop` on a service that was firing: a
-  // `service_stopping`, the fire's own `fire_ok` (which must NOT lift it back to idle), and
+  // `service_stopping`, the fire's own `run_ok` (which must NOT lift it back to idle), and
   // the settling `service_paused {paused:true}`.
   const frames = readFixture("noise");
   const snapshot = frames.find((f) => f.type === "meta" && f.meta === "snapshot");
@@ -701,7 +701,7 @@ test("a mid-fire stop reads stopping until its paused settles it", () => {
   assert.equal(boards[upTo].services[subject].badge, "Stopping", "…and the drain edge shows at once");
 
   // Its own completion lands while draining and leaves it draining.
-  const okAt = frames.findIndex((f, i) => i > upTo && f.type === "event" && f.event === "fire_ok" && f.service === subject);
+  const okAt = frames.findIndex((f, i) => i > upTo && f.type === "event" && f.event === "run_ok" && f.service === subject);
   assert.ok(okAt > upTo, "the drained fire finished after the stop");
   assert.equal(boards[okAt].services[subject].badge, "Stopping", "a completion never lifts a draining service");
   assert.equal(boards[okAt].services[subject].inFlightSince, null, "…though the fire clock does clear");

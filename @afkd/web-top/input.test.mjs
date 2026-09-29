@@ -326,7 +326,7 @@ test("a verb posts {stream, command, service} and a global verb posts no service
   grid.element.dispatch("keydown", keydown("t"));
   // All three fields: the relay keys a command to **this** subscriber's own attach and 404s a
   // body whose `stream` names none, and that 404 would read as a daemon refusal.
-  assert.deepEqual(grid.posted, [{ stream: "9f1c", command: "fire", service: armed.name }]);
+  assert.deepEqual(grid.posted, [{ stream: "9f1c", command: "run", service: armed.name }]);
   assert.deepEqual(Object.keys(grid.posted[0]), ["stream", "command", "service"]);
   // A global verb carries no `service` key at all, rather than an empty one: the relay composes
   // the frame from the verb, and a field it did not ask for would be smuggled onto the wire.
@@ -376,7 +376,7 @@ test("a relay refusal replaces the ack rather than appending to it", async () =>
   grid.element.dispatch("keydown", keydown("t"));
   // The ack is written **before** the await, so for an instant the footer says the fire
   // happened — which is the honest thing to say while the request is in flight.
-  assert.equal(flashOf(grid.session, BASE), `Fired ${armed.name}`);
+  assert.equal(flashOf(grid.session, BASE), `Run sent to ${armed.name}`);
   await Promise.all(grid.inflight);
   assert.equal(
     flashOf(grid.session, BASE),

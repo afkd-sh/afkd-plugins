@@ -16,7 +16,7 @@
 {"type":"event","event":"service_paused","service":"spare","paused":true}
 {"type":"event","event":"service_paused","service":"flaky","paused":true}
 {"type":"event","event":"service_paused","service":"archivist","paused":true}
-{"type":"event","event":"service_next_fire","service":"ops::nightly","next_ms":3599999}
+{"type":"event","event":"service_next_run","service":"ops::nightly","next_ms":3599999}
 {"type":"event","event":"service_paused","service":"ops::nightly","paused":true}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1577205760,"mem_total":32964694016,"rx_bps":3739,"tx_bps":3965}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1577205760,"mem_total":32964694016,"rx_bps":2997,"tx_bps":13048}
@@ -25,7 +25,7 @@
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1577205760,"mem_total":32964694016,"rx_bps":780,"tx_bps":1027}
 {"type":"log","service":"ops::db::vacuum","stream":"stderr","line":"[ops::db::vacuum] [OK] run_cmd: echo vacuuming; sleep 12 (exit 0, 12.01s)"}
 {"type":"trace","service":"ops::db::vacuum","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":12012,"out":{"out":"lines","n":1}}}
-{"type":"event","event":"fire_ok","service":"ops::db::vacuum","elapsed_ms":12013}
-{"type":"event","event":"service_next_fire","service":"ops::db::vacuum","next_ms":3599999}
+{"type":"event","event":"run_ok","service":"ops::db::vacuum","elapsed_ms":12013}
+{"type":"event","event":"service_next_run","service":"ops::db::vacuum","next_ms":3599999}
 {"type":"event","event":"service_paused","service":"ops::db::vacuum","paused":true}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1577205760,"mem_total":32964694016,"rx_bps":1446,"tx_bps":1500}

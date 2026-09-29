@@ -27,7 +27,7 @@ Queue      Slots                     │  y stop  n cancel      │         Para
                                                                                                     
 s start    r restart    o output      g/G first/last  / find    Ctrl+R reload                       
 x stop     + widen      i info        v flat                    ? help                              
-t trigger  - narrow     Enter peek    b busy ○                  q quit                              
+t run now  - narrow     Enter peek    b busy ○                  q quit                              
 
 ── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
 nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn

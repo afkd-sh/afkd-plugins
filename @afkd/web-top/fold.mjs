@@ -333,7 +333,7 @@ function foldEvent(board, frame, now) {
           return svc;
         }),
       );
-    case "fire_started":
+    case "run_started":
       return folded(
         withService(board, name, (svc) => {
           enter(svc, "Busy", now);
@@ -349,7 +349,7 @@ function foldEvent(board, frame, now) {
           return svc;
         }),
       );
-    case "fire_ok":
+    case "run_ok":
       return folded(
         withService(board, name, (svc) => {
           svc.runs += 1;
@@ -360,7 +360,7 @@ function foldEvent(board, frame, now) {
           return svc;
         }),
       );
-    case "fire_failed":
+    case "run_failed":
       return folded(
         withService(board, name, (svc) => {
           // A **transient** fire fault (ADR-0030): it does not change service state. The
@@ -422,7 +422,7 @@ function foldEvent(board, frame, now) {
           return svc;
         }),
       );
-    case "service_next_fire":
+    case "service_next_run":
       return folded(
         withService(board, name, (svc) => {
           // A direct field stamp, never a transition: re-anchoring a countdown is not a

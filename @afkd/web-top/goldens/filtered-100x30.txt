@@ -26,7 +26,7 @@ Queue      Slots                                                        Parallel
                                                                                                     
                                                                                                     
 /ops (esc)                                                                                          
-s start  t trigger  + widen     Enter/h collapse  v flat          b busy ○    Ctrl+R reload  q quit 
+s start  t run now  + widen     Enter/h collapse  v flat          b busy ○    Ctrl+R reload  q quit 
 x stop   r restart  - narrow    H/L fold all      g/G first/last  / find      ? help                
 
 ── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted

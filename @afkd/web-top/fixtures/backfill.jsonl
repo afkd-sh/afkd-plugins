@@ -31,8 +31,8 @@
 {"type":"trace","service":"ops::監視","event":{"op":"closed","id":21,"status":"ok","elapsed_ms":1020,"out":{"out":"lines","n":3}}}
 {"type":"log","service":"ops::監視","stream":"stderr","line":"[ops::監視] [wf] run_workflow record_pass: finished (3.84s)"}
 {"type":"trace","service":"ops::監視","event":{"op":"closed","id":15,"status":"ok","elapsed_ms":3844}}
-{"type":"event","event":"fire_ok","service":"ops::監視","elapsed_ms":3844}
-{"type":"event","event":"service_next_fire","service":"ops::監視","next_ms":3599999}
+{"type":"event","event":"run_ok","service":"ops::監視","elapsed_ms":3844}
+{"type":"event","event":"service_next_run","service":"ops::監視","next_ms":3599999}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679745024,"mem_total":32964685824,"rx_bps":874,"tx_bps":925}
 {"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":1679745024,"mem_total":32964685824,"rx_bps":731,"tx_bps":133}
 {"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":1679745024,"mem_total":32964685824,"rx_bps":2842,"tx_bps":1880}

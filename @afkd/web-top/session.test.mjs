@@ -363,7 +363,7 @@ test("the footer's gated hints track the selected row's own badge", () => {
       const want = {
         start: some((m) => ["Stopped", "Crashed"].includes(m.badge) && !m.poisoned),
         [wedged ? "force-stop" : "stop"]: wedged || some((m) => canStop(m.badge)),
-        trigger: some((m) => m.badge === "Idle"),
+        "run now": some((m) => m.badge === "Idle"),
         restart: some((m) => !m.poisoned && m.badge !== "Stopping"),
       };
       for (const [label, live] of Object.entries(want)) {
@@ -412,26 +412,26 @@ function inSubtree(group, path) {
 // --- AC3: a verb is posted, and the board does not move ------------------------------------
 
 test("t on an armed service fires, and the row moves only when the daemon's event lands", () => {
-  // `fire.jsonl` folded to just before its first `fire_started`, so the service really is armed
+  // `fire.jsonl` folded to just before its first `run_started`, so the service really is armed
   // and the frame that moves it is the very next one in the capture.
   const file = "fire.jsonl";
   const { board, at } = foldCapture(file, {
-    until: (f) => f.type === "event" && f.event === "fire_started",
+    until: (f) => f.type === "event" && f.event === "run_started",
   });
   const name = "ops::nightly";
   assert.equal(board.services[name].badge, "Idle", "the capture's target is armed before the fire");
 
   const session = { ...newSession(), cursor: { kind: "service", key: name }, cursorRow: 2 };
   const out = press(session, board, key("t"), { now: at, bodyHeight: 20 });
-  assert.deepEqual(out.commands, [{ command: "fire", service: name }], "exactly one fire, on this row");
+  assert.deepEqual(out.commands, [{ command: "run", service: name }], "exactly one fire, on this row");
   assert.equal(out.handled, true);
   // The board did **not** move: no optimistic edge, no badge touched. That is AC3's premise.
   assert.equal(board.services[name].badge, "Idle", "the press folded nothing");
   // …and the ack is what tells the operator anything happened, since the row did not.
-  assert.equal(flashOf(out.session, at), `Fired ${name}`);
+  assert.equal(flashOf(out.session, at), `Run sent to ${name}`);
 
   // Now fold the daemon's answering frame, and the row moves.
-  const started = { type: "event", event: "fire_started", service: name };
+  const started = { type: "event", event: "run_started", service: name };
   const moved = fold(board, started, at + STEP);
   assert.equal(moved.services[name].badge, "Busy", "the event is what moves it");
 
@@ -439,7 +439,7 @@ test("t on an armed service fires, and the row moves only when the daemon's even
   // the refusal, and a second sentence saying so would be noise.
   const unarmed = Object.values(board.services).find((s) => s.badge !== "Idle");
   assert.notEqual(unarmed, undefined, "the capture holds a non-armed service to try it on");
-  assert.equal(unarmed.badge, "Crashed", "…its crashed one, which `can_fire` refuses");
+  assert.equal(unarmed.badge, "Crashed", "…its crashed one, which `can_run` refuses");
   const gated = press(
     { ...newSession(), cursor: { kind: "service", key: unarmed.name }, cursorRow: 0 },
     board,
@@ -469,7 +469,7 @@ test("x on a wedged service raises the force modal and sends nothing", () => {
   assert.deepEqual(cursorOn(onJanitor, board), { kind: "service", key: "janitor" });
   const raised = press(onJanitor, board, key("x"), { now: at, bodyHeight: 20 });
   assert.deepEqual(raised.commands, [], "the modal sends nothing");
-  assert.deepEqual(raised.session.confirm, { verb: "force", targets: ["janitor"], skipped: 0 });
+  assert.deepEqual(raised.session.confirm, { verb: "abandon", targets: ["janitor"], skipped: 0 });
   assert.equal(flashOf(raised.session, at), null, "the modal is the acknowledgement");
 
   // `n` and `Esc` both cancel, and both send nothing.
@@ -484,7 +484,7 @@ test("x on a wedged service raises the force modal and sends nothing", () => {
   // flashes nothing: the modal already acknowledged it.
   const confirmed = press(raised.session, board, key("y"), { now: at, bodyHeight: 20 });
   assert.equal(confirmed.commands.length, 1, "one force, not two");
-  assert.deepEqual(confirmed.commands, [{ command: "force", service: "janitor" }]);
+  assert.deepEqual(confirmed.commands, [{ command: "abandon", service: "janitor" }]);
   assert.equal(confirmed.session.confirm, null, "…and the modal closes");
   assert.equal(flashOf(confirmed.session, at), null, "force posts no ack of its own");
 
@@ -704,7 +704,7 @@ test("a press acknowledges the verbs nothing else on screen will", () => {
   const on = (name, row) => ({ ...newSession(), cursor: { kind: "service", key: name }, cursorRow: row });
 
   assert.equal(flashOf(press(on(armed.name, 0), board, key("t"), { now: at, bodyHeight: 20 }).session, at),
-    `Fired ${armed.name}`);
+    `Run sent to ${armed.name}`);
   assert.equal(flashOf(press(on(armed.name, 0), board, key("x"), { now: at, bodyHeight: 20 }).session, at),
     `Stopping ${armed.name}`);
   assert.equal(flashOf(press(on(armed.name, 0), board, key("r"), { now: at, bodyHeight: 20 }).session, at),
@@ -750,12 +750,12 @@ test("the daemon's own two messages become the flash, and control_no_op does not
   // `meta.control_no_op` is deliberately **not** a flash: it exists to revert a pending
   // optimistic edge, and this page folds none. Asserted explicitly so the ignore has a guard
   // rather than being an omission nobody can see.
-  const noop = { type: "meta", meta: "control_no_op", service: "nightly", command: "fire" };
+  const noop = { type: "meta", meta: "control_no_op", service: "nightly", command: "run" };
   const before = newSession();
   assert.deepEqual(noteFrame(before, noop, BASE), before, "control_no_op leaves the session alone");
   // …as does every frame that is board state, which `fold.mjs` owns.
   for (const frame of [
-    { type: "event", event: "fire_started", service: "nightly" },
+    { type: "event", event: "run_started", service: "nightly" },
     { type: "log", service: "nightly", line: "hello" },
     { type: "meta", meta: "host_load", cpu_pct: 3 },
     { type: "meta", meta: "reloaded" },

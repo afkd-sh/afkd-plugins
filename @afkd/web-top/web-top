@@ -67,7 +67,7 @@ STREAM_DRAIN_S = 1.0
 
 # The verbs `POST /command` composes a frame for, split by what each one carries
 # (`crates/app/src/proto.rs`, `enum Command`). Nothing outside these reaches the socket.
-SERVICE_VERBS = ("start", "stop", "restart", "fire", "force")
+SERVICE_VERBS = ("start", "stop", "restart", "run", "abandon")
 GLOBAL_VERBS = ("reload", "status", "doctor", "validate")
 OPTIONAL_SERVICE_VERBS = ("runs",)
 VOCABULARY = SERVICE_VERBS + GLOBAL_VERBS + OPTIONAL_SERVICE_VERBS
@@ -195,8 +195,8 @@ TAIL_CAP_BYTES = 1 << 20
 # backfilled client folds the runs a client that stayed connected still retains.
 TRACE_TREE_CAPACITY = 2000
 
-# The kinds that are a lifecycle **scope wrapper** rather than work. `is_fire_node`
-# (`crates/app/src/backfill.rs`): a dir holding only these recorded no fire.
+# The kinds that are a lifecycle **scope wrapper** rather than work. `is_run_node`
+# (`crates/app/src/backfill.rs`): a dir holding only these recorded no run.
 WRAPPER_KINDS = ("sandbox", "worktree")
 
 # The node kinds and terminal statuses the wire spells, and what an unrecognised one
@@ -229,7 +229,7 @@ def name_segment(name):
     and hand-rolling the rule would be a second spelling of a fold afkd itself does not
     special-case anywhere else.
     """
-    return name.lower().replace("::", "__")
+    return name.lower().replace("::", ".")
 
 
 def runs_readable(base):
@@ -313,16 +313,16 @@ def recent_run_dirs(service_runs):
     return [path for _, _, path in dirs]
 
 
-def read_fire_run(path):
-    """One run dir's trace read **once**, or `None` when it recorded no real fire.
+def read_run_trace(path):
+    """One run dir's trace read **once**, or `None` when it recorded no real run.
 
-    `backfill.rs`'s `read_fire_run`, returning the events already mapped to their wire
+    `backfill.rs`'s `read_run_trace`, returning the events already mapped to their wire
     shape: the window's bookkeeping then reads the very events it will emit, so the ids it
     stops on and the nodes it counts cannot be a second opinion about the same file.
 
-    A fire is an `opened` whose kind is neither wrapper kind (`is_fire_node`): an empty
+    A run is an `opened` whose kind is neither wrapper kind (`is_run_node`): an empty
     `init`/`cleanup` under `in_sandbox` persists a run dir whose trace is a lone
-    `sandbox` open/close, and that is not a fire.
+    `sandbox` open/close, and that is not a run.
     """
     if not is_real_run_dir(path):
         return None
@@ -336,7 +336,7 @@ def read_fire_run(path):
     min_id = None
     max_id = 0
     nodes = 0
-    fire = False
+    ran = False
     for line in body.split("\n"):
         event = trace_line_to_wire(line)
         if event is None:
@@ -348,8 +348,8 @@ def read_fire_run(path):
         min_id = node["id"] if min_id is None else min(min_id, node["id"])
         max_id = max(max_id, node["id"])
         nodes += 1
-        fire = fire or node["kind"] not in WRAPPER_KINDS
-    if not fire:
+        ran = ran or node["kind"] not in WRAPPER_KINDS
+    if not ran:
         return None
     return {"events": events, "min_id": min_id, "max_id": max_id, "nodes": nodes}
 
@@ -382,7 +382,7 @@ def tree_backfill_window(service_runs):
     oldest_min = None
     nodes = 0
     for path in reversed(recent_run_dirs(service_runs)):
-        run = read_fire_run(path)
+        run = read_run_trace(path)
         if run is None:
             continue
         if oldest_min is not None and run["max_id"] >= oldest_min:

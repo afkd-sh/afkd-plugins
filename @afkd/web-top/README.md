@@ -13,7 +13,7 @@ See [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks.
 ## It is not authenticated. Read this first.
 
 The relay puts an **unauthenticated** control channel on a TCP port: anyone who can reach
-that port can start, stop, restart and fire every service the daemon runs, with the
+that port can start, stop, restart and run every service the daemon runs, with the
 daemon's own privileges. There is no password, no token and no session.
 
 That is why `listen` defaults to `127.0.0.1`, where the trust boundary is the machine. The
@@ -76,7 +76,7 @@ sentence when it fails.
 | `GET /paint.mjs` | the **painter** — those cells as DOM text, and nothing else |
 | `GET /dashboard.css` | the palette, the grid's type and the embedded cell face |
 | `GET /stream` | this subscriber's own attach, as an event stream |
-| `POST /command` | `{"stream":"<id>","command":"fire","service":"nightly"}` → one `command` frame |
+| `POST /command` | `{"stream":"<id>","command":"run","service":"nightly"}` → one `command` frame |
 
 The program takes one argument form of its own, for asking what a tab opening *now* would be
 served out of the run corpus:
@@ -98,7 +98,7 @@ and the program itself are each a `404`.
 event: stream    data: {"id":"9f1c…","log_lines":2000}   ← this subscriber's handle, and its ring bound
 event: welcome   data: {"afkd":"welcome","proto":1,"daemon":"0.2.95","auth":"none"}
 data: {"type":"meta","meta":"snapshot",…}  ← from here on, one verbatim wire frame per line
-data: {"type":"event","event":"fire_started","service":"nightly"}
+data: {"type":"event","event":"run_started","service":"nightly"}
 : keepalive                                ← every 15 s of quiet
 ```
 
@@ -233,8 +233,8 @@ does. `input.mjs` is the browser half, and the only file here that touches an ev
 | `h`/`←`, `l`/`→` | fold and unfold a group — from a member too, which moves the cursor onto its header; grouped view only |
 | `H` / `L` | fold every group, or open them all; grouped view only |
 | `/`, `Esc` | type a needle (the rows narrow as you type), and clear it |
-| `s` `x` `t` `r` | start, stop, trigger and restart the selected service — or, on a group header, every eligible member behind a confirm |
-| `x` on a wedged service | the force-stop gate: `y` sends one `force`, `n` and `Esc` send nothing |
+| `s` `x` `t` `r` | start, stop, run now and restart the selected service — or, on a group header, every eligible member behind a confirm |
+| `x` on a wedged service | the force-stop gate: `y` sends one `abandon`, `n` and `Esc` send nothing |
 | `o` | open the selected **service**'s run view — the tree and the log; `o` or `Esc` closes it |
 | `i` | open the selected **service**'s info page; `i` or `Esc` closes it |
 | the wheel, on an open info page | scroll it — see below |
@@ -253,8 +253,8 @@ reload. Everything else is `preventDefault`ed only when the page actually acted 
 **The board never moves optimistically.** A verb is posted to `POST /command` on this tab's
 own attach and the row changes when the daemon's answering event arrives — which is what
 `afkd top` does for a fire, and what this page does for all six. So a press that changes
-nothing on screen is acknowledged in the footer instead (`Fired nightly`, `Starting 3
-services`), on the terminal's own four-second flash timer; `force` is not, because the modal
+nothing on screen is acknowledged in the footer instead (`Run sent to nightly`, `Starting 3
+services`), on the terminal's own four-second flash timer; `abandon` is not, because the modal
 already asked, and `Ctrl+R` is not, because the daemon's own reload summary owns that line.
 
 **Every tab is its own.** Each browser gets its own attach, so each gets its own cursor,
