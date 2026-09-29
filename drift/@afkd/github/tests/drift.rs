@@ -1,20 +1,14 @@
-//! The gate that holds the **shipped `@afkd/github` plugin** — the `github_issue` and
-//! `github_pr` trigger kinds, built from source at install time — to a real afkd: the `afkd`
-//! first on `PATH`, the installed one and never a build, since a plugin is checked against
-//! the afkd it will meet ([`bin_path`]).
+//! The gate that holds the **shipped `@afkd/github` plugin** — a manifest v2 provider whose
+//! kinds are `service(github)` and `service(github.pr)`, built from source at install time —
+//! to a real afkd: the `afkd` first on `PATH`, the installed one and never a build, since a
+//! plugin is checked against the afkd it will meet ([`bin_path`]).
 //!
-//! A plugin may never shadow a built-in, so an afkd that had one of these kinds built in
-//! would refuse the install. That shapes the gate:
-//!
-//! - The **install** leg installs the tree the release tarball holds. While the built-in is
-//!   there it expects exactly that refusal, says it is skipping, and passes; once afkd drops
-//!   the built-in it builds, places and runs the plugin through one issue.
-//! - The **live-today** leg runs the same issue *now*, by installing a copy whose manifest
-//!   renames both kinds (`github_issue_probe`, `github_pr_probe`) and whose `exec` is a
-//!   wrapper that renames `hello`'s kind back — so the unmodified plugin binary meets
-//!   afkd's real spine (journal, cadence, watch, framing) before the rip-out, not after.
+//! - The **install** leg installs the tree the release tarball holds and runs one issue
+//!   through it on a real daemon, its hooks' actions crossing as `call`s.
+//! - The **both kinds** leg `afkd validate`s one file with a service of each kind, whose
+//!   hooks call every action the plugin provides and read its value `me`.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
-//!   against whatever vocabulary the afkd on PATH has for the kinds.
+//!   each a whole `package main` file, against the installed plugin.
 //!
 //! The GitHub is the plugin's own loopback fake ([`fake`]), reached through a loopback `host`
 //! the client resolves to the GHES `…/api/v3` base, so no leg touches a network; and every
@@ -88,86 +82,22 @@ fn stage(dst: &Path) -> PathBuf {
     staged
 }
 
-/// What `afkd install` made of a staged tree.
-enum Install {
-    /// Built and placed under the plugins root.
-    Placed,
-    /// Refused because afkd still provides a kind the manifest declares; the report.
-    BuiltIn(String),
-}
-
-/// `afkd install <root>` into `home`. A refusal is recognised by its exact sentence, and
-/// anything else that is not a success fails the leg with the full report.
-fn install(home: &Path, root: &Path) -> Install {
+/// `afkd install <root>` into `home`, failing the leg with the full report unless the
+/// plugin is placed.
+fn install(home: &Path, root: &Path) {
     let out = run_subcommand_args(home, &["install", &root.display().to_string()]);
-    let report = format!(
-        "{}{}",
+    assert!(
+        out.status.success(),
+        "`afkd install {}` failed ({:?}):\n{}{}",
+        root.display(),
+        out.status.code(),
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    if out.status.success() {
-        return Install::Placed;
-    }
-    let refused = ["github_issue", "github_pr"].iter().any(|kind| {
-        report.contains(&format!(
-            "declares trigger kind `{kind}`, which is built in"
-        ))
-    });
     assert!(
-        out.status.code() == Some(1) && refused,
-        "`afkd install {}` failed, and not because a kind is built in ({:?}):\n{report}",
-        root.display(),
-        out.status.code()
+        plugins_root(home).join(NAME).is_dir(),
+        "the install placed {NAME}"
     );
-    assert!(
-        !plugins_root(home).join(NAME).exists(),
-        "a refused install placed nothing:\n{report}"
-    );
-    Install::BuiltIn(report.trim().to_string())
-}
-
-/// The wrapper the probe manifest's `exec` names. afkd greets the plugin with a `hello`
-/// naming the kind it asks for, which here is a probe kind; the wrapper renames that one
-/// line back to the kind the binary serves, then passes every later line through untouched.
-/// Each rule matches the whole quoted `"kind":"…"`, so neither can match inside the other.
-const PROBE_EXEC: &str = r#"#!/bin/sh
-# afkd's hello names a probe kind; the plugin binary knows only the real ones. Rename the
-# kind on that first line, then hand the binary the rest of the stream as it arrives.
-here=$(dirname "$0")
-{
-  IFS= read -r hello
-  printf '%s\n' "$hello" | sed -e 's/"kind":"github_pr_probe"/"kind":"github_pr"/' \
-                               -e 's/"kind":"github_issue_probe"/"kind":"github_issue"/'
-  cat
-} | "$here/target/release/afkd-github"
-"#;
-
-/// Turn a staged copy into the probe: both kinds renamed so afkd has no built-in to refuse
-/// it over, and `exec` pointed at [`PROBE_EXEC`]. Each rewrite must hit exactly one line, so
-/// a reshaped manifest reddens here rather than probing nothing.
-fn probe_manifest(staged: &Path) {
-    let manifest = staged.join("afkd-plugin.toml");
-    let text = std::fs::read_to_string(&manifest).expect("the staged manifest");
-    let rewrites = [
-        (r#"kind = "github_issue""#, r#"kind = "github_issue_probe""#),
-        (r#"kind = "github_pr""#, r#"kind = "github_pr_probe""#),
-        (
-            r#"exec = "target/release/afkd-github""#,
-            r#"exec = "probe-exec""#,
-        ),
-    ];
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    for (from, to) in rewrites {
-        let hits: Vec<&mut String> = lines.iter_mut().filter(|line| *line == from).collect();
-        assert_eq!(hits.len(), 1, "the manifest has exactly one `{from}` line");
-        for line in hits {
-            *line = to.to_string();
-        }
-    }
-    std::fs::write(&manifest, lines.join("\n") + "\n").expect("write the probe manifest");
-    let exec = staged.join("probe-exec");
-    std::fs::write(&exec, PROBE_EXEC).expect("write the probe exec");
-    std::fs::set_permissions(&exec, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
 // --- the scenario ------------------------------------------------------------------
@@ -189,30 +119,36 @@ const BODY: &str = "Retries pile up after a 502.\n\n> \"backoff\" — nobody\n\n
 /// rather than timing a success: the service polls every second.
 const BUDGET: Duration = Duration::from_secs(30);
 
-/// The service that drives [`ISSUE`] through a trigger of `kind`, `home` its work dir. The
-/// run step holds until the test creates `release` — bounded, so a test that never does
-/// cannot wedge it — which is what lets the test see the claim and the run mid-flight.
-fn service(home: &Path, kind: &str, host: &str) -> String {
+/// The service that drives [`ISSUE`], `home` its work dir: a v2 file importing the plugin,
+/// whose hooks call its actions and whose `on_done` comment afkd interpolates — a run fact
+/// and the plugin's value `me` both. The run holds until the test creates `release` —
+/// bounded, so a test that never does cannot wedge it — which is what lets the test see the
+/// claim and the run mid-flight.
+fn service(home: &Path, host: &str) -> String {
     format!(
-        r#"service widgets {{
-  work_dir "{home}"
-  trigger {kind} {{
-    host          "{host}"
-    repo          "{REPO}"
-    token         "{TOKEN}"
-    source_label  "afkd/ready"
-    poll_interval 1s
-    max_attempts  1
-    on_claim {{ label_add "afkd/working" }}
-    on_done {{
-      label_remove "afkd/working"
-      comment "done in @{{run:duration}}"
-      close
-    }}
+        r#"package main
+
+import "@afkd/github"
+
+widgets :: service(github) {{
+  host          "{host}"
+  repo          "{REPO}"
+  token         "{TOKEN}"
+  source_label  "afkd/ready"
+  poll_interval 1s
+  max_attempts  1
+
+  on_claim {{ github.assign_me() }}
+  on_done {{
+    github.label_remove("afkd/claimed")
+    github.comment("done in #{{run.duration}} by #{{github.me}}")
+    github.close()
   }}
-  run {{
-    run_cmd """i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done"""
-    run_cmd "cat $AFKD_SCRATCH_DIR/task.md"
+
+  work_dir "{home}"
+  on_run {{
+    $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    $ cat $AFKD_SCRATCH_DIR/task.md
   }}
 }}
 "#,
@@ -227,9 +163,14 @@ fn write_config(home: &Path, config: &str) {
     std::fs::write(&conf, config).expect("write the config");
 }
 
-/// `afkd validate` over `home`'s main config: the exit code and the report.
+/// The credential a config reads from the daemon's environment (`env.GITHUB_TOKEN`), as
+/// the README's lead example does.
+const CONFIG_ENV: &[(&str, &str)] = &[("GITHUB_TOKEN", TOKEN)];
+
+/// `afkd validate` over `home`'s config, with [`CONFIG_ENV`] set: the exit code and the
+/// report.
 fn validate(home: &Path) -> (Option<i32>, String) {
-    let out = run_subcommand_args(home, &["validate"]);
+    let out = run_subcommand_env(home, &["validate"], CONFIG_ENV);
     (
         out.status.code(),
         format!(
@@ -252,96 +193,108 @@ fn run_dirs(home: &Path) -> Vec<String> {
     names
 }
 
-/// Everything a failed wait needs to say: the issue as the fake holds it, its comments, the
-/// run dirs and the daemon's own log.
-fn dump(home: &Path, fake: &FakeGithub) -> String {
+/// Everything a failed wait needs to say: the issue as the fake holds it, its thread, the
+/// run dirs, the daemon's own log, and its stderr so far — where the plugin's own
+/// complaints land.
+fn dump(home: &Path, fake: &FakeGithub, daemon: &StreamingDaemon) -> String {
     let comments: Vec<String> = fake
         .comments(REPO, ISSUE)
         .iter()
         .map(|c| format!("  {}: {:?}", c.author, c.body))
         .collect();
     format!(
-        "issue: {:?}\ncomments:\n{}\nrun dirs: {:?}\ndaemon.log:\n{}",
+        "issue: {:?}\ncomments:\n{}\nrun dirs: {:?}\ndaemon.log:\n{}\ndaemon stderr:\n{}",
         fake.issue_state(REPO, ISSUE),
         comments.join("\n"),
         run_dirs(home),
-        std::fs::read_to_string(daemon_log(home)).unwrap_or_default()
+        std::fs::read_to_string(daemon_log(home)).unwrap_or_default(),
+        daemon.stderr_so_far()
     )
 }
 
 /// Poll `ready` to [`BUDGET`], failing with `what` and the [`dump`] when it never holds.
-fn wait_for(home: &Path, fake: &FakeGithub, what: &str, ready: impl Fn() -> bool) {
+fn wait_for(
+    home: &Path,
+    fake: &FakeGithub,
+    daemon: &StreamingDaemon,
+    what: &str,
+    ready: impl Fn() -> bool,
+) {
     let deadline = Instant::now() + BUDGET;
     while !ready() {
         assert!(
             Instant::now() < deadline,
             "{what} within {BUDGET:?}\n{}",
-            dump(home, fake)
+            dump(home, fake, daemon)
         );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
-/// Whether `fake`'s comments on [`ISSUE`] hold a claim marker.
+/// Whether `fake`'s thread on [`ISSUE`] holds a claim marker.
 fn marked(fake: &FakeGithub) -> bool {
     fake.comments(REPO, ISSUE)
         .iter()
         .any(|c| c.author == ME && c.body.starts_with("[afkd-claim]"))
 }
 
-/// Drive one issue through the plugin, installed in `home` and serving `kind`, on a real
-/// daemon: it is **claimed** (the marker, the plugin's own `afkd/claimed`, and
-/// `on_claim`'s label), **run** (its run dir is named for the issue, and its task carries the
-/// issue whole) and **finished** (`on_done` applied, the marker deleted), and the daemon
-/// then drains clean.
-fn drive_one_issue(home: &Path, kind: &str) {
+/// Read `path` whole, naming it when it is missing.
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Drive one issue through the plugin, installed in `home`, on a real daemon: it is
+/// **claimed** (the marker and `afkd/claimed`, and `on_claim`'s call assigned the token's
+/// own user), **run** (its run dir is named for the issue, and its task carries the issue
+/// whole) and **finished** (the marker deleted, and `on_done`'s calls took the gate off,
+/// commented and closed it), and the daemon then drains clean.
+fn drive_one_issue(home: &Path) {
     let fake = FakeGithub::start(ME);
     fake.issue(REPO, ISSUE, TITLE, BODY, &["afkd/ready"], &[]);
-    write_config(home, &service(home, kind, fake.host()));
+    write_config(home, &service(home, fake.host()));
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
 
     let daemon = spawn_headless_streaming(home, &[]);
 
-    wait_for(home, &fake, "the issue is claimed", || {
-        let labels = fake.issue_state(REPO, ISSUE).labels;
-        marked(&fake)
-            && ["afkd/claimed", "afkd/working"]
-                .iter()
-                .all(|want| labels.iter().any(|l| l == want))
+    wait_for(home, &fake, &daemon, "the issue is claimed", || {
+        let issue = fake.issue_state(REPO, ISSUE);
+        marked(&fake) && issue.labels.iter().any(|l| l == "afkd/claimed") && issue.assignees == [ME]
     });
-    let run_suffix = format!("-issue-{ISSUE}-1");
-    wait_for(home, &fake, "the issue's run starts", || {
+    // The run dir is made before the spine lays the unit's files into it, so the wait is
+    // for a written brief, not the bare dir.
+    let run_suffix = format!("-unit-{ISSUE}-1");
+    let brief = || {
         run_dirs(home)
-            .iter()
-            .any(|name| name.ends_with(&run_suffix))
+            .into_iter()
+            .find(|name| name.ends_with(&run_suffix))
+            .map(|run| runs_root(home).join("widgets").join(run).join("task.md"))
+            .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
+    };
+    wait_for(home, &fake, &daemon, "the issue's run starts", || {
+        brief().is_some()
     });
-    let run = run_dirs(home)
-        .into_iter()
-        .find(|name| name.ends_with(&run_suffix))
-        .expect("waited for");
-    let task = std::fs::read_to_string(runs_root(home).join("widgets").join(&run).join("task.md"))
-        .unwrap_or_else(|e| panic!("the run {run} has a task.md: {e}"));
-    for part in [TITLE, "\"backoff\" — nobody", "retry: 0"] {
+    let task = read(&brief().expect("waited for"));
+    for part in [TITLE, "> \"backoff\" — nobody", "```\nretry: 0\n```"] {
         assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
     }
 
     std::fs::write(home.join("release"), "").expect("release the run");
-    wait_for(home, &fake, "the issue is finished", || {
+    wait_for(home, &fake, &daemon, "the issue is finished", || {
         fake.issue_state(REPO, ISSUE).state == "closed" && !marked(&fake)
     });
     let issue = fake.issue_state(REPO, ISSUE);
     assert!(
-        !issue.labels.iter().any(|l| l == "afkd/working"),
-        "on_done took afkd/working off: {issue:?}"
+        !issue.labels.iter().any(|l| l == "afkd/claimed"),
+        "on_done took afkd/claimed off: {issue:?}"
     );
-    let comments = fake.comments(REPO, ISSUE);
     assert!(
-        comments
-            .iter()
-            .any(|c| c.author == ME && c.body.starts_with("done in ") && !c.body.contains("@{")),
-        "on_done's comment landed with its run reference filled in:\n{}",
-        dump(home, &fake)
+        fake.comments(REPO, ISSUE).iter().any(|c| c.author == ME
+            && c.body.starts_with("done in ")
+            && c.body.ends_with(&format!(" by {ME}"))
+            && !c.body.contains("#{")),
+        "on_done's comment landed with its run fact and `github.me` filled in:\n{}",
+        dump(home, &fake, &daemon)
     );
 
     daemon.signal(libc::SIGINT);
@@ -357,39 +310,98 @@ fn drive_one_issue(home: &Path, kind: &str) {
 // --- the legs ----------------------------------------------------------------------
 
 #[test]
-fn install_leg_is_refused_while_the_kind_is_built_in_and_runs_once_it_is_not() {
+fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     let staged = stage(stage_dir.path());
-    match install(home.path(), &staged) {
-        Install::BuiltIn(report) => eprintln!(
-            "skipping: the afkd on PATH has a kind of {NAME}'s built in, so it refuses it \
-             ({report}); this leg goes live once afkd drops the built-in"
-        ),
-        Install::Placed => {
-            let exec = plugins_root(home.path())
-                .join(NAME)
-                .join("target/release/afkd-github");
-            let mode = std::fs::metadata(&exec)
-                .unwrap_or_else(|e| panic!("the install built {}: {e}", exec.display()))
-                .permissions()
-                .mode();
-            assert!(mode & 0o111 != 0, "{} is executable", exec.display());
-            drive_one_issue(home.path(), "github_issue");
-        }
-    }
+    install(home.path(), &staged);
+    let exec = plugins_root(home.path())
+        .join(NAME)
+        .join("target/release/afkd-github");
+    let mode = std::fs::metadata(&exec)
+        .unwrap_or_else(|e| panic!("the install built {}: {e}", exec.display()))
+        .permissions()
+        .mode();
+    assert!(mode & 0o111 != 0, "{} is executable", exec.display());
+    drive_one_issue(home.path());
 }
 
+/// A service of each kind, whose hooks between them call every action the plugin provides
+/// and read its value `me`, in the argument shapes the manifest types: wide and scoped label
+/// names, and a multi-line comment.
+const BOTH_KINDS: &str = r##"package main
+
+import "@afkd/github"
+
+issues :: service(github) {
+  host            "ghe.example.com"
+  repo            "acme/widgets"
+  token           "REPLACE_ME"
+  source_label    "afkd/ready"
+  follow_comments 30s to 90s
+  max_attempts    2
+  poll_interval   1m to 3m
+
+  on_claim {
+    github.assign_me()
+    github.label_add("afkd/working ⚙")
+  }
+  on_done {
+    github.label_remove("afkd/working ⚙")
+    github.comment("done by #{github.me} in #{run.duration}:\n\n- cost #{run.cost}\n- 完了 ✅")
+    github.close()
+  }
+  on_fail {
+    github.label_remove("afkd/working ⚙")
+    github.unassign()
+  }
+
+  work_dir "/srv/acme/widgets"
+  on_run {
+    $ cat $AFKD_SCRATCH_DIR/task.md
+  }
+}
+
+reviews :: service(github.pr) {
+  repo          "acme/widgets"
+  token         "REPLACE_ME"
+  author_me     true
+  poll_interval 2m
+
+  on_claim { github.assign_me() }
+  on_done { github.comment("round answered by #{github.me}") }
+  on_fail { github.unassign() }
+
+  work_dir "/srv/acme/widgets"
+  on_run {
+    $ cat $AFKD_SCRATCH_DIR/task.md
+  }
+}
+"##;
+
+/// Both kinds validate as v2 services against the installed plugin: every setting either
+/// writes is one its kind declares, of its type, every action its hooks call is one the
+/// plugin provides, with the parameters it declares, and `github.me` is a value it has.
 #[test]
-fn the_plugin_binary_runs_on_the_real_spine_under_probe_kinds() {
+fn every_kind_validates_as_a_v2_service() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
-    let staged = stage(stage_dir.path());
-    probe_manifest(&staged);
-    if let Install::BuiltIn(report) = install(home.path(), &staged) {
-        panic!("the probe kinds are never built in, yet afkd refused them:\n{report}");
+    install(home.path(), &stage(stage_dir.path()));
+    for action in [
+        "assign_me(",
+        "unassign(",
+        "label_add(",
+        "label_remove(",
+        "close(",
+        "comment(",
+        "github.me",
+    ] {
+        assert!(BOTH_KINDS.contains(action), "the file uses {action}");
     }
-    drive_one_issue(home.path(), "github_issue_probe");
+    write_config(home.path(), BOTH_KINDS);
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "both kinds validate:\n{report}");
+    assert!(!report.contains("warning:"), "cleanly:\n{report}");
 }
 
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence
@@ -425,13 +437,7 @@ fn every_readme_conf_fence_validates() {
 
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
-    match install(home.path(), &stage(stage_dir.path())) {
-        Install::BuiltIn(_) => eprintln!(
-            "the afkd on PATH has {NAME}'s kinds built in: the fences validate against its \
-             vocabulary"
-        ),
-        Install::Placed => eprintln!("{NAME} installed: the fences validate against its manifest"),
-    }
+    install(home.path(), &stage(stage_dir.path()));
     for (n, (line, fence)) in fences.iter().enumerate() {
         assert!(
             !fence.trim().is_empty(),

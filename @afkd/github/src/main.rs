@@ -5,11 +5,13 @@
 //! replies and nothing else; every diagnostic goes to stderr, which afkd streams into the
 //! service log under `[@afkd/github:err]`.
 //!
-//! Two kinds, each the vendor half of an afkd built-in trigger, ported: `github_issue`
-//! ([`issue`]) and `github_pr` ([`pr`]). They keep the built-ins' claim markers,
-//! lifecycle comments, claim-journal keys, session threads, run env and briefs, so a claim
-//! either one left on a live issue or pull request is recognised, renewed and released by
-//! the other. `hello` names the kind, and [`plugin`] dispatches on it.
+//! Two kinds, each the vendor half of an afkd built-in trigger, ported: the issue kind
+//! ([`issue`]), `service(github)` in a config, and the pull-request review kind ([`pr`]),
+//! `service(github.pr)`. They keep the built-ins' claim markers, claim-journal keys,
+//! session threads, run env and briefs, so a claim either one left on a live issue or pull
+//! request is recognised, renewed and released by the other. `hello` names the kind, and
+//! [`plugin`] dispatches on it. The hooks are afkd's: each action one calls arrives as a
+//! `call` ([`lifecycle`]).
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -27,7 +29,6 @@ mod manifest;
 mod plugin;
 mod pr;
 mod rfc3339;
-mod run_ref;
 mod settings;
 mod wire;
 

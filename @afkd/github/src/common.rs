@@ -1,8 +1,8 @@
 //! Drive scaffolding the kind is built from (ADR-0041): the env spellings, the call budget
-//! and the poll's scan budget, the credentials-env builder, the lifecycle-action executor
-//! over the [`GithubClient`] seam, the **claim** — a `[afkd-claim]` marker comment decided by
-//! [`crate::claim`]'s pure winner rule — and the two seams the rest is written against:
-//! the [`Clock`] the claim settles on and the [`Diag`] sink diagnostics go to.
+//! and the poll's scan budget, the credentials-env builder, the one-action executor behind
+//! `call` over the [`GithubClient`] seam, the **claim** — a `[afkd-claim]` marker comment
+//! decided by [`crate::claim`]'s pure winner rule — and the two seams the rest is written
+//! against: the [`Clock`] the claim settles on and the [`Diag`] sink diagnostics go to.
 //!
 //! Ported from afkd's `crates/github/src/common.rs`. The claim is a marker, not an
 //! assignee. GitHub's assignee write is additive, so it cannot double-claim the way a
@@ -12,7 +12,7 @@
 //! a rival afkd. The marker is written into the issue's append-only comment log, settled,
 //! re-read, and won iff a pure function of that shared list names us. The assignee and the
 //! `afkd/claimed` label are **visible status**, written after the claim is decided; the
-//! label is also the re-pick gate, so the plugin — not a user's `on_claim` list — adds it.
+//! label is also the re-pick gate, so the plugin — not a user's `on_claim` hook — adds it.
 //!
 //! GitHub assignment is **additive** (dedicated `add`/`remove` endpoints, not a replace),
 //! so `assign_me` adds the bot and `unassign` removes only the bot — neither verb can evict
@@ -34,12 +34,10 @@ use crate::claim::{
 };
 use crate::client::{GithubClient, GithubError, IssueComment, Repo};
 use crate::lifecycle::LifecycleAction;
-use crate::run_ref;
 use crate::settings::GithubConfig;
-use crate::wire::Facts;
 
-/// The in-progress label the claim adds (and `on_fail` removes by name). A fixed internal
-/// name, like the `[afkd-claim]` marker.
+/// The in-progress label the claim adds (and a hook's `label_remove` removes by name). A
+/// fixed internal name, like the `[afkd-claim]` marker.
 pub(crate) const CLAIMED_LABEL: &str = "afkd/claimed";
 
 /// Env var carrying the personal access token to the run.
@@ -197,25 +195,10 @@ pub(crate) fn claim_key_for(repo: &Repo, number: u64, marker_id: u64) -> String 
     claim_key(&repo.full_name(), number, marker_id)
 }
 
-/// Run a lifecycle moment's actions in order, stopping at the first failure, which is
-/// returned for the caller to log. `facts` are what the finishing run did (the pre-run
-/// `on_claim` passes [`Facts::none`]); a `comment` interpolates its `@{run:…}` references
-/// against them.
-pub(crate) fn apply_actions(
-    client: &dyn GithubClient,
-    repo: &Repo,
-    index: u64,
-    actions: &[LifecycleAction],
-    me: &str,
-    facts: &Facts,
-) -> Result<(), GithubError> {
-    for action in actions {
-        do_action(client, repo, index, action, me, facts)?;
-    }
-    Ok(())
-}
-
-/// Carry out one lifecycle action against an issue.
+/// Carry out one lifecycle action against an issue — what one `call` does.
+///
+/// A `Comment` posts its text as afkd sent it: any `#{…}` in it is afkd's, already
+/// interpolated.
 ///
 /// `LabelRemove` removes the single named label via the dedicated `…/labels/{name}` path
 /// (**never** the all-clearing bare `…/labels` path); GitHub needs no name→id lookup.
@@ -226,7 +209,6 @@ pub(crate) fn do_action(
     index: u64,
     action: &LifecycleAction,
     me: &str,
-    facts: &Facts,
 ) -> Result<(), GithubError> {
     match action {
         LifecycleAction::AssignMe => client.add_assignees(repo, index, &[me.to_string()]),
@@ -234,11 +216,7 @@ pub(crate) fn do_action(
         LifecycleAction::LabelAdd(name) => client.add_label(repo, index, name),
         LifecycleAction::LabelRemove(name) => client.remove_label(repo, index, name),
         LifecycleAction::Close => client.set_state(repo, index, "closed"),
-        // Interpolate `@{run:…}` against the finishing run's facts (ADR-0064). The
-        // settings reader has already proven every reference legal for this moment.
-        LifecycleAction::Comment(text) => client
-            .post_comment(repo, index, &run_ref::substitute(text, facts))
-            .map(|_| ()),
+        LifecycleAction::Comment(text) => client.post_comment(repo, index, text).map(|_| ()),
     }
 }
 
@@ -800,15 +778,7 @@ mod tests {
     fn do_action_assign_me_adds_only_the_bot() {
         let c = MockClient::new("me");
         c.add_issue_assigned(7, "T", "B", &[], &["陳大文"]);
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::AssignMe,
-            "me",
-            &Facts::none(),
-        )
-        .unwrap();
+        do_action(&c, &repo(), 7, &LifecycleAction::AssignMe, "me").unwrap();
         assert_eq!(
             c.actions(),
             [Action::AddAssignees {
@@ -832,7 +802,6 @@ mod tests {
             7,
             &LifecycleAction::LabelRemove("afkd/claimed".into()),
             "me",
-            &Facts::none(),
         )
         .unwrap();
         // The recorded action names the label, never the all-clearing bare path.
@@ -847,15 +816,7 @@ mod tests {
     fn do_action_unassign_removes_only_the_bot() {
         let c = MockClient::new("me");
         c.add_issue_assigned(7, "T", "B", &[], &["me", "human"]);
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::Unassign,
-            "me",
-            &Facts::none(),
-        )
-        .unwrap();
+        do_action(&c, &repo(), 7, &LifecycleAction::Unassign, "me").unwrap();
         // Only the bot is removed; a human co-assignee is left untouched.
         assert_eq!(c.assignees_of(7), vec!["human".to_string()]);
     }
@@ -864,15 +825,7 @@ mod tests {
     fn do_action_close_sets_state_closed() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &[]);
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::Close,
-            "me",
-            &Facts::none(),
-        )
-        .unwrap();
+        do_action(&c, &repo(), 7, &LifecycleAction::Close, "me").unwrap();
         assert!(c
             .actions()
             .iter()
@@ -889,7 +842,6 @@ mod tests {
             7,
             &LifecycleAction::Comment("handled by afkd".into()),
             "me",
-            &Facts::none(),
         )
         .unwrap();
         assert!(c
@@ -898,67 +850,19 @@ mod tests {
             .any(|a| matches!(a, Action::Comment { body, .. } if body == "handled by afkd")));
     }
 
+    /// The text is posted byte for byte: multi-line markdown, CJK, and a literal
+    /// `#{run.x}` or `@{run:cost}` — afkd interpolates a hook's comment before it sends
+    /// the `call`, so whatever reaches here is the text.
     #[test]
-    fn apply_actions_stops_at_the_first_failure() {
-        // A lifecycle moment's actions run in order; the first failure aborts the rest and
-        // is returned, so a half-applied moment is surfaced (not silently finished). Here
-        // the label add fails, so the following Close never runs.
-        let c = MockClient::new("me");
-        c.add_issue(7, "T", "B", &["afkd/ready"]);
-        c.fail("add label");
-        let err = apply_actions(
-            &c,
-            &repo(),
-            7,
-            &[
-                LifecycleAction::LabelAdd("afkd/claimed".into()),
-                LifecycleAction::Close,
-            ],
-            "me",
-            &Facts::none(),
-        )
-        .expect_err("the failing label add aborts the moment");
-        assert_eq!(err.stage(), "add label");
-        assert!(
-            !c.actions()
-                .iter()
-                .any(|a| matches!(a, Action::State { .. })),
-            "actions after the first failure are not applied"
-        );
-    }
-
-    #[test]
-    fn do_action_comment_substitutes_run_facts() {
-        // A `@{run:…}` comment posts the rendered facts at run end (ADR-0064), the fire's
-        // own run directory name among them.
+    fn do_action_comment_posts_the_text_byte_for_byte() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &[]);
-        let facts = Facts {
-            duration_ms: 5_000,
-            cost: 1.5,
-            turns: Some(3),
-            run_name: Some("260722-141802-issue-7-1".into()),
-        };
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::Comment(
-                "done in @{run:duration} — @{run:cost}, @{run:turns} turns — \
-                 log: .afkd/runs/afkd::selfdev/@{run:name}/run.log"
-                    .into(),
-            ),
-            "me",
-            &facts,
-        )
-        .unwrap();
+        let text = "## 完了 ✅\n\n- took 3m 12s\n- literal: #{run.x} @{run:cost}\n\n```\nok\n```";
+        do_action(&c, &repo(), 7, &LifecycleAction::Comment(text.into()), "me").unwrap();
         assert!(
-            c.actions().iter().any(|a| matches!(
-                a,
-                Action::Comment { body, .. }
-                    if body == "done in 5.00s — $1.50, 3 turns — \
-                                log: .afkd/runs/afkd::selfdev/260722-141802-issue-7-1/run.log"
-            )),
+            c.actions()
+                .iter()
+                .any(|a| matches!(a, Action::Comment { body, .. } if body == text)),
             "{:?}",
             c.actions()
         );

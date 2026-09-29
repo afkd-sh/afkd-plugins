@@ -1,24 +1,21 @@
 //! Read a kind's settings block — as afkd lowers it to JSON in `hello` — into a typed
-//! [`GithubConfig`], and wire its lifecycle moments to the action vocabulary. The two
-//! kinds share one config struct where their keys overlap, as the built-in's do.
+//! [`GithubConfig`]. The two kinds share one config struct where their keys overlap, as the
+//! built-in's do.
 //!
-//! afkd has already held the block to the manifest before this plugin is spawned: every
-//! key is one the kind's manifest table declares, `token` is present, no key is written
-//! twice, and only the `on_*` keys carry a block. What is left here is the part a manifest
-//! cannot say — a non-empty `repo`, a label action naming one label, a `comment` carrying
-//! text, and `@{run:…}` legality per moment — in the built-in trigger's own sentences. The
-//! cadence and the attempt bound (`poll_interval`, `max_attempts`, `follow_comments`) are
-//! afkd's and are not read here.
+//! afkd has already typed the block against the manifest before this plugin is spawned:
+//! every key is one the kind declares, `token` is present, and each value is of its
+//! declared type. What is left here is the part a manifest cannot say — a non-empty
+//! `repo` — in the built-in trigger's own sentences. The cadence and the attempt bound
+//! (`poll_interval`, `max_attempts`, `follow_comments`) are afkd's and are not read here,
+//! and the hooks never arrive here at all: afkd runs them, and each action they call is
+//! one `call` ([`crate::lifecycle`]).
 //!
-//! The lowering (afkd's `pluginworker::settings_json`): a value is a string, several are
-//! an array of strings, a bare flag is `true`, a block is an object (a value beside it
-//! rides as `@value`), and a repeatable key is always an array.
+//! The lowering (afkd's `pluginworker::settings_json`): a value is a string — a `bool` its
+//! word `true` or `false`, a duration its largest whole unit.
 
 use serde_json::{Map, Value};
 
-use crate::lifecycle::{parse_block, LifecycleAction};
-
-/// A validated `github_issue` or `github_pr` trigger configuration: one struct covers
+/// A validated `issue` or `pr` trigger configuration: one struct covers
 /// the union of both kinds' keys.
 ///
 /// `Debug` is **hand-written** so the `token` never reaches a diagnostic.
@@ -33,14 +30,8 @@ pub(crate) struct GithubConfig {
     pub(crate) token: String,
     /// The eligibility source label (issue kind only; empty when not given).
     pub(crate) source_label: String,
-    /// Restrict the PR kind to the bot's own PRs (the `author_me` flag; PR kind only).
+    /// Restrict the PR kind to the bot's own PRs (the `author_me` setting; PR kind only).
     pub(crate) author_me: bool,
-    /// Actions performed when work on a unit begins.
-    pub(crate) on_claim: Vec<LifecycleAction>,
-    /// Actions performed when a unit's work finishes successfully.
-    pub(crate) on_done: Vec<LifecycleAction>,
-    /// Actions performed when a unit's work fails (or parks: GitHub has no `on_park`).
-    pub(crate) on_fail: Vec<LifecycleAction>,
 }
 
 /// Redact `token` so a `{:?}` of a [`GithubConfig`] can never spill it; presence is shown
@@ -54,9 +45,6 @@ impl std::fmt::Debug for GithubConfig {
             .field("token", &redact(&self.token))
             .field("source_label", &self.source_label)
             .field("author_me", &self.author_me)
-            .field("on_claim", &self.on_claim)
-            .field("on_done", &self.on_done)
-            .field("on_fail", &self.on_fail)
             .finish()
     }
 }
@@ -86,64 +74,55 @@ impl std::fmt::Display for SettingsError {
     }
 }
 
-// The built-in's vocabulary, verbatim. afkd reads the manifest, never these: they are
-// what `manifest.rs`'s test holds `afkd-plugin.toml` to, so the two cannot drift apart.
-
-/// The `github_issue` kind's full key set, exactly the built-in's `ALLOWED_ISSUE_KEYS`.
+/// One setting as the manifest declares it: its name, its `type`, and its other keys
+/// with their values as the manifest spells them (`("default", "\"30s\"")`).
 #[cfg(test)]
-pub(crate) const ALLOWED_ISSUE_KEYS: &[&str] = &[
-    "host",
-    "repo",
-    "token",
-    "source_label",
-    "follow_comments",
-    "max_attempts",
-    "poll_interval",
-    "on_claim",
-    "on_done",
-    "on_fail",
+pub(crate) type Declared = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+/// The `issue` kind's settings as the manifest declares them, in its order: each name, its
+/// `type`, and its other keys spelled as the manifest spells their values. afkd reads the
+/// manifest, never this: it is what `manifest.rs`'s test holds `afkd-plugin.toml` to, so
+/// the two cannot drift apart.
+///
+/// The last three are afkd's own claim keys, declared exactly as afkd declares them for
+/// every claiming kind; afkd's declaration is the one that applies.
+#[cfg(test)]
+pub(crate) const ISSUE_SETTINGS: &[Declared] = &[
+    ("host", "string", &[]),
+    ("repo", "string", &[]),
+    ("token", "string", &[("required", "true")]),
+    ("source_label", "string", &[]),
+    ("follow_comments", "duration", &[("jitter", "true")]),
+    ("max_attempts", "int", &[("default", "1")]),
+    (
+        "poll_interval",
+        "duration",
+        &[("jitter", "true"), ("default", "\"30s\"")],
+    ),
 ];
 
-/// The keys a `github_issue` block may write more than once: none — one repo, one token, one
-/// `on_done`.
+/// The `pr` kind's settings, as [`ISSUE_SETTINGS`] lists the issue kind's: the shared keys
+/// with `author_me` in place of `source_label`.
 #[cfg(test)]
-pub(crate) const REPEATABLE_ISSUE_KEYS: &[&str] = &[];
-
-/// The keys afkd reads as a duration, compared by value across a reload.
-#[cfg(test)]
-pub(crate) const DURATION_KEYS: &[&str] = &["poll_interval", "follow_comments"];
-
-/// The keys the block must carry. The built-in requires the forge `token` (it flows
-/// config → child env with no process-env fallback).
-#[cfg(test)]
-pub(crate) const REQUIRED_ISSUE_KEYS: &[&str] = &["token"];
-
-/// The `github_pr` kind's full key set, exactly the built-in's `ALLOWED_PR_KEYS`:
-/// the shared keys plus `author_me` (and, notably, **not** `source_label`).
-#[cfg(test)]
-pub(crate) const ALLOWED_PR_KEYS: &[&str] = &[
-    "host",
-    "repo",
-    "token",
-    "author_me",
-    "follow_comments",
-    "max_attempts",
-    "poll_interval",
-    "on_claim",
-    "on_done",
-    "on_fail",
+pub(crate) const PR_SETTINGS: &[Declared] = &[
+    ("host", "string", &[]),
+    ("repo", "string", &[]),
+    ("token", "string", &[("required", "true")]),
+    ("author_me", "bool", &[("default", "false")]),
+    ("follow_comments", "duration", &[("jitter", "true")]),
+    ("max_attempts", "int", &[("default", "1")]),
+    (
+        "poll_interval",
+        "duration",
+        &[("jitter", "true"), ("default", "\"30s\"")],
+    ),
 ];
 
-/// The keys a `github_pr` block may write more than once: none — the built-in's
-/// `REPEATABLE_PR_KEYS` reads no key as a sequence.
-#[cfg(test)]
-pub(crate) const REPEATABLE_PR_KEYS: &[&str] = &[];
-
-/// The keys a `github_pr` block must carry: the forge `token`, as for `github_issue`.
-#[cfg(test)]
-pub(crate) const REQUIRED_PR_KEYS: &[&str] = &["token"];
-
-/// Read the lowered `settings` into a [`GithubConfig`] for the `github_issue` kind, or report
+/// Read the lowered `settings` into a [`GithubConfig`] for the `issue` kind, or report
 /// the first setting it cannot use.
 pub(crate) fn issue_config(settings: &Value) -> Result<GithubConfig, SettingsError> {
     let empty = Map::new();
@@ -153,19 +132,18 @@ pub(crate) fn issue_config(settings: &Value) -> Result<GithubConfig, SettingsErr
     Ok(cfg)
 }
 
-/// Read the lowered `settings` into a [`GithubConfig`] for the `github_pr` kind,
-/// or report the first setting it cannot use. `author_me` is a flag: its presence is the
-/// setting, whatever it carries — the built-in's `settings.has`.
+/// Read the lowered `settings` into a [`GithubConfig`] for the `pr` kind, or report the
+/// first setting it cannot use. `author_me` is a `bool`, which afkd lowers to its word:
+/// `"true"` turns it on, and `"false"` or its absence leaves it off.
 pub(crate) fn pr_review_config(settings: &Value) -> Result<GithubConfig, SettingsError> {
     let empty = Map::new();
     let settings = settings.as_object().unwrap_or(&empty);
     let mut cfg = shared_config(settings)?;
-    cfg.author_me = settings.contains_key("author_me");
+    cfg.author_me = opt_scalar(settings, "author_me") == "true";
     Ok(cfg)
 }
 
-/// The keys both kinds carry: the single `repo` target, the forge coordinates, and the
-/// three lifecycle moments.
+/// The keys both kinds carry: the single `repo` target and the forge coordinates.
 fn shared_config(settings: &Map<String, Value>) -> Result<GithubConfig, SettingsError> {
     let repo = opt_scalar(settings, "repo");
     require_repo(&repo)?;
@@ -173,18 +151,13 @@ fn shared_config(settings: &Map<String, Value>) -> Result<GithubConfig, Settings
         host: opt_scalar(settings, "host"),
         repo,
         token: opt_scalar(settings, "token"),
-        // `on_claim` runs before any fire, so a `@{run:…}` reference is illegal there;
-        // the terminal moments receive the attempt's real facts.
-        on_claim: parse_block(settings.get("on_claim"), false)?,
-        on_done: parse_block(settings.get("on_done"), true)?,
-        on_fail: parse_block(settings.get("on_fail"), true)?,
         ..GithubConfig::default()
     })
 }
 
 /// A lowered entry's **value** — the entry itself, or the `@value` beside a block — as
 /// the built-in reads a value regardless of any block written with it.
-pub(crate) fn inline(entry: &Value) -> Option<&Value> {
+fn inline(entry: &Value) -> Option<&Value> {
     match entry {
         Value::Object(block) => block.get("@value"),
         value => Some(value),
@@ -244,7 +217,6 @@ mod tests {
         assert_eq!(cfg.repo, "acme/widgets");
         assert_eq!(cfg.token, "PAT");
         assert_eq!(cfg.source_label, "afkd/ready");
-        assert!(cfg.on_claim.is_empty() && cfg.on_done.is_empty() && cfg.on_fail.is_empty());
 
         // The optional keys default to empty: an empty host is the cloud.
         let cfg = issue_config(&json!({"repo": "acme/widgets", "token": "PAT"})).expect("valid");
@@ -291,86 +263,6 @@ mod tests {
         }
     }
 
-    /// Each moment reaches the parser under its own `run_refs_allowed`, into its own
-    /// field: `on_claim` before any fire, the terminal pair after one.
-    #[test]
-    fn lifecycle_blocks_wire_each_moment_to_its_run_ref_rule() {
-        let terminal = "done in @{run:duration} — log @{run:name}";
-        let cfg = issue_config(&block(json!({
-            "on_claim": {"assign_me": [true], "label_add": ["afkd/working"]},
-            "on_fail": {"label_remove": ["afkd/working"], "unassign": [true]},
-            "on_done": {"close": [true], "comment": [terminal]},
-        })))
-        .expect("valid");
-        assert_eq!(
-            cfg.on_claim,
-            vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelAdd("afkd/working".into()),
-            ]
-        );
-        assert_eq!(
-            cfg.on_fail,
-            vec![
-                LifecycleAction::LabelRemove("afkd/working".into()),
-                LifecycleAction::Unassign,
-            ]
-        );
-        // `close` was written first, but the canonical order says something before it
-        // closes the issue.
-        assert_eq!(
-            cfg.on_done,
-            vec![
-                LifecycleAction::Comment(terminal.into()),
-                LifecycleAction::Close,
-            ]
-        );
-
-        // The very same comment is a hard fault at claim time, on either kind.
-        for config in [issue_config, pr_review_config] {
-            let err = config(&block(json!({"on_claim": {"comment": [terminal]}}))).unwrap_err();
-            assert_eq!(err.key, "comment");
-            assert_eq!(
-                err.problem,
-                "`@{run:duration}` references the run's facts, but no run happens at claim time"
-            );
-        }
-    }
-
-    /// Two of one verb run in the order they were written, a slashed and a non-ASCII label
-    /// name cross byte for byte, and a multi-line comment keeps its lines.
-    #[test]
-    fn on_done_performs_two_label_adds_in_source_order() {
-        let cfg = issue_config(&block(json!({
-            "on_done": {
-                "label_add": ["shipped", "reviewed/✅"],
-                "comment": ["## 完了\n\nlanded in @{run:duration}", "see the run log"],
-                "close": [true],
-            },
-        })))
-        .expect("a repeated lifecycle action is legal");
-        assert_eq!(
-            cfg.on_done,
-            vec![
-                LifecycleAction::LabelAdd("shipped".into()),
-                LifecycleAction::LabelAdd("reviewed/✅".into()),
-                LifecycleAction::Comment("## 完了\n\nlanded in @{run:duration}".into()),
-                LifecycleAction::Comment("see the run log".into()),
-                LifecycleAction::Close,
-            ]
-        );
-    }
-
-    /// A malformed action value faults on its own key, in the built-in's sentence.
-    #[test]
-    fn a_valueless_label_action_faults() {
-        let err = issue_config(&block(json!({"on_fail": {"label_remove": [true]}}))).unwrap_err();
-        assert_eq!(
-            (err.key.as_str(), err.problem.as_str()),
-            ("label_remove", "`label_remove` expects a label name")
-        );
-    }
-
     /// A value beside a block rides as `@value`; the built-in reads the value whatever
     /// block was written with it, and so does this.
     #[test]
@@ -396,48 +288,51 @@ mod tests {
         assert!(shown.contains("<set>"), "presence should show: {shown}");
         assert!(format!("{:?}", GithubConfig::default()).contains("<unset>"));
 
-        let cfg = pr_review_config(&block(json!({"author_me": true}))).expect("valid");
+        let cfg = pr_review_config(&block(json!({"author_me": "true"}))).expect("valid");
         assert!(format!("{cfg:?}").contains("author_me: true"), "{cfg:?}");
     }
 
-    /// `author_me` is a flag: absent reads false, and any lowering of a present key —
-    /// the bare flag, a repeated one, a value beside a block — reads true.
+    /// `author_me` is a typed `bool`, which afkd lowers to its word: `"true"` is on, and
+    /// `"false"` — the manifest's default — or an absent key is off. Presence alone no
+    /// longer turns it on, and the issue kind never reads it.
     #[test]
-    fn review_config_reads_author_me_flag() {
-        assert!(!pr_review_config(&block(json!({}))).unwrap().author_me);
-        for flag in [
-            json!(true),
-            json!([true]),
-            json!({"@value": true}),
-            json!("yes"),
-        ] {
-            assert!(
-                pr_review_config(&block(json!({ "author_me": flag.clone() })))
-                    .unwrap()
-                    .author_me,
-                "{flag}"
-            );
-        }
-        // The issue kind never reads it.
+    fn author_me_reads_the_lowered_bool() {
+        let author_me = |extra: Value| pr_review_config(&block(extra)).unwrap().author_me;
+        assert!(author_me(json!({"author_me": "true"})));
+        assert!(author_me(json!({"author_me": {"@value": "true"}})));
+        assert!(!author_me(json!({"author_me": "false"})));
+        assert!(!author_me(json!({})));
         assert!(
-            !issue_config(&block(json!({"author_me": true})))
+            !issue_config(&block(json!({"author_me": "true"})))
                 .unwrap()
                 .author_me
         );
     }
 
-    /// The PR kind reads the keys it shares with `github_issue` the same way, and not the
-    /// key only `github_issue` declares.
+    /// The hooks are afkd's and never cross in `settings`; a proto 1-shaped leftover that
+    /// did — an `on_claim` block, a bare `on_done`, a `@{run:…}` comment — is ignored, not
+    /// a fault, on either kind.
+    #[test]
+    fn hook_keys_in_settings_are_ignored() {
+        let hooks = json!({
+            "on_claim": {"assign_me": [true], "comment": ["claimed at @{run:cost}"]},
+            "on_done": true,
+            "on_fail": [{"label_remove": [true]}],
+        });
+        for config in [issue_config, pr_review_config] {
+            assert_eq!(config(&block(hooks.clone())), config(&block(json!({}))));
+        }
+    }
+
+    /// The PR kind reads the keys it shares with the issue kind the same way, and not the
+    /// key only the issue kind declares.
     #[test]
     fn pr_review_config_reads_the_shared_keys() {
         let cfg = pr_review_config(&json!({
             "host": "ghe.example.com",
             "repo": "acme/widgets",
             "token": "PAT",
-            "author_me": true,
-            "on_claim": {"assign_me": [true], "label_add": ["afkd/reviewing"]},
-            "on_done": {"comment": ["round done in @{run:duration} 🚀"]},
-            "on_fail": {"label_remove": ["afkd/reviewing"], "unassign": [true]},
+            "author_me": "true",
             // afkd's own keys ride along unread.
             "max_attempts": "2",
             "poll_interval": "1m",
@@ -452,25 +347,5 @@ mod tests {
         assert_eq!(cfg.token, "PAT");
         assert!(cfg.author_me);
         assert_eq!(cfg.source_label, "");
-        assert_eq!(
-            cfg.on_claim,
-            vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelAdd("afkd/reviewing".into()),
-            ]
-        );
-        assert_eq!(
-            cfg.on_done,
-            vec![LifecycleAction::Comment(
-                "round done in @{run:duration} 🚀".into()
-            )]
-        );
-        assert_eq!(
-            cfg.on_fail,
-            vec![
-                LifecycleAction::LabelRemove("afkd/reviewing".into()),
-                LifecycleAction::Unassign,
-            ]
-        );
     }
 }

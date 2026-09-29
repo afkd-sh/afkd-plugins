@@ -1,6 +1,6 @@
 //! The seam a kind sits behind: what [`crate::plugin`] drives per call, and what it reads
 //! off a claimed unit. The wire's bookkeeping — the identity, the live units, the 64 KiB
-//! fitting, the `comments` delta, the `held` answer — is written once in `plugin.rs`
+//! fitting, the `comments` delta, the finished units — is written once in `plugin.rs`
 //! against these two traits, so a kind differs only in its vendor half
 //! ([`crate::issue`], [`crate::pr`]).
 
@@ -8,7 +8,8 @@ use std::time::Instant;
 
 use crate::client::{GithubError, IssueComment};
 use crate::common::{Clock, Diag};
-use crate::wire::{Facts, UnitOutcome, WireUnit};
+use crate::lifecycle::LifecycleAction;
+use crate::wire::WireUnit;
 
 /// A claimed unit, as the plugin's bookkeeping reads it.
 pub(crate) trait ClaimedUnit {
@@ -61,12 +62,10 @@ pub(crate) trait Units {
     /// Every comment on the unit's thread, for afkd's mid-run watch.
     fn comments(&self, unit: &Self::Unit) -> Result<Vec<IssueComment>, GithubError>;
 
-    /// The terminal lifecycle. Returns whether the moment reached the remote.
-    fn finish(
-        &self,
-        unit: &Self::Unit,
-        outcome: UnitOutcome,
-        facts: &Facts,
-        diag: &dyn Diag,
-    ) -> bool;
+    /// The plugin-owned end of a unit's run, whatever its outcome: the claim marker's
+    /// release. Best-effort — a marker left behind ages out — so it cannot go undelivered.
+    fn finish(&self, unit: &Self::Unit, diag: &dyn Diag);
+
+    /// Do one action a hook called on the unit, as the identity it was claimed as.
+    fn act(&self, unit: &Self::Unit, action: &LifecycleAction) -> Result<(), GithubError>;
 }

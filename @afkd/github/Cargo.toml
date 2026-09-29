@@ -1,6 +1,6 @@
 [package]
 name = "afkd-github"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 publish = false
 description = "The @afkd/github trigger plugin: GitHub issues as afkd units, over the plugin wire"

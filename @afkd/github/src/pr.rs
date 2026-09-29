@@ -1,5 +1,5 @@
-//! The `github_pr` kind's vendor half (ADR-0041), ported from afkd's
-//! `crates/github/src/trigger_pr.rs`.
+//! The `pr` kind's vendor half (ADR-0041) — `service(github.pr)` in a config — ported from
+//! afkd's `crates/github/src/trigger_pr.rs`.
 //!
 //! It polls a single repository's **open** pull requests through the mockable
 //! [`GithubClient`] seam — only the bot's own with `author_me` — and treats a PR as
@@ -10,8 +10,8 @@
 //! It claims one with the same `[afkd-claim]` marker claim as the issue kind (a PR is an
 //! issue to GitHub), writes the `afkd/claimed` label as **status** only — the watermark,
 //! not the label, is the re-pick gate — and loops across polls until a human merges or
-//! closes the PR, which drops it out of the `state=open` set. There is **no `on_done
-//! close`**, no park and no clarification gate.
+//! closes the PR, which drops it out of the `state=open` set. Nothing closes the PR, and
+//! there is no park and no clarification gate.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
 //! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use crate::client::{GithubClient, GithubError, IssueComment, Repo};
 use crate::common::{
-    apply_actions, claim_issue, claim_key_for, creds_env, delete_marker, lock, release_claim,
+    claim_issue, claim_key_for, creds_env, delete_marker, do_action, lock, release_claim,
     release_stale, renew_marker, unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL,
     ENV_PR_BRANCH, ENV_PR_NUMBER, ENV_REPO,
 };
@@ -33,7 +33,7 @@ use crate::feedback::{self, FeedbackItem};
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::LifecycleAction;
 use crate::settings::GithubConfig;
-use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
+use crate::wire::{WireFile, WireUnit};
 use crate::{NUMBER_FILE, PR_DIR, TASK_FILE};
 
 /// One PR taken on as a unit of work.
@@ -78,7 +78,7 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `github_pr` kind's vendor half: the single-repo target, the `author_me`
+/// The `pr` kind's vendor half: the single-repo target, the `author_me`
 /// filter, the claim, and the three lifecycle action lists.
 pub(crate) struct PrUnits {
     client: Box<dyn GithubClient>,
@@ -87,9 +87,6 @@ pub(crate) struct PrUnits {
     repo: Option<Repo>,
     /// Restrict to the bot's own PRs (the `author_me` flag).
     author_me: bool,
-    on_claim: Vec<LifecycleAction>,
-    on_done: Vec<LifecycleAction>,
-    on_fail: Vec<LifecycleAction>,
     /// The token and host every unit's `env` carries.
     creds: BTreeMap<String, String>,
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
@@ -103,9 +100,6 @@ impl PrUnits {
             client,
             repo: Repo::parse(&cfg.repo),
             author_me: cfg.author_me,
-            on_claim: cfg.on_claim.clone(),
-            on_done: cfg.on_done.clone(),
-            on_fail: cfg.on_fail.clone(),
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
         }
@@ -166,17 +160,6 @@ impl Units for PrUnits {
                     // not this kind's re-pick gate (the watermark is), so a refused write
                     // is diagnosed and the claim kept.
                     if let Err(e) = self.client.add_label(repo, pr.number, CLAIMED_LABEL) {
-                        diag.err(&e);
-                    }
-                    // `on_claim` runs before any fire, so neutral facts.
-                    if let Err(e) = apply_actions(
-                        &*self.client,
-                        repo,
-                        pr.number,
-                        &self.on_claim,
-                        me,
-                        &Facts::none(),
-                    ) {
                         diag.err(&e);
                     }
                     return Ok(Some(Unit {
@@ -263,36 +246,23 @@ impl Units for PrUnits {
         self.client.list_issue_comments(&unit.repo, unit.number)
     }
 
-    /// The terminal lifecycle: `on_done` for a clean run, `on_fail` otherwise. There is
-    /// no `on_done close` here — a human's merge ends the loop by dropping the PR from
-    /// the `state=open` set — and no park, so a `park` verdict (which afkd never sends
-    /// this kind, since it answers no `classify`) runs `on_fail` as the built-in does.
-    ///
-    /// Returns whether the moment reached the remote.
-    fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag) -> bool {
-        let actions = match outcome {
-            UnitOutcome::Clean => &self.on_done,
-            UnitOutcome::Park | UnitOutcome::Failed => &self.on_fail,
-        };
-        let delivered = match apply_actions(
+    /// The plugin-owned end of a round, whatever its outcome: the claim marker's release,
+    /// so a finished round leaves no marker to out-order the next claim. Best-effort: a
+    /// leaked marker ages out after `CLAIM_LIFETIME`. afkd runs the `on_done`/`on_fail` hook
+    /// after this, each action it calls one `call` ([`act`](Self::act)).
+    fn finish(&self, unit: &Unit, diag: &dyn Diag) {
+        delete_marker(&*self.client, &unit.repo, unit.claim_id, diag);
+    }
+
+    /// Do one action a hook called on the unit's pull request, as the login it was claimed as.
+    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GithubError> {
+        do_action(
             &*self.client,
             &unit.repo,
             unit.number,
-            actions,
+            action,
             &unit.claimed_as,
-            facts,
-        ) {
-            Ok(()) => true,
-            Err(e) => {
-                diag.err(&e);
-                false
-            }
-        };
-        // The claim is over however it ended, so its marker goes — a finished round must
-        // leave no marker to out-order the next claim. Best-effort: a leaked marker ages
-        // out after `CLAIM_LIFETIME`.
-        delete_marker(&*self.client, &unit.repo, unit.claim_id, diag);
-        delivered
+        )
     }
 }
 
@@ -301,9 +271,10 @@ mod tests {
     //! No network: every test drives the in-memory `MockClient` and a fake clock.
     //!
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief,
-    //! the env, the terminal lifecycle. The drive around it (attempt counting, the claim
-    //! journal, the run-name mint, the cadence, the framing of `task.md`) is afkd's, on
-    //! the far side of the wire; the wire itself is `tests/wire.rs`.
+    //! the env, the end of a round and the hooks' actions. The drive around it (attempt
+    //! counting, the claim journal, the run-name mint, the cadence, the framing of
+    //! `task.md`) is afkd's, on the far side of the wire; the wire itself is
+    //! `tests/wire.rs`.
 
     use super::*;
     use crate::claim::{claim_renewal_text, claim_text, is_claim, split_claim_key, CLAIM_MARKER};
@@ -319,11 +290,6 @@ mod tests {
             repo: repo.into(),
             token: "PAT".into(),
             author_me: true,
-            on_claim: vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelAdd("afkd/reviewing".into()),
-            ],
-            on_fail: vec![LifecycleAction::Unassign],
             ..GithubConfig::default()
         }
     }
@@ -361,9 +327,15 @@ mod tests {
             }
         }
 
-        /// The `finish` call for `unit`, ended `outcome` with `facts`.
-        fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts) -> bool {
-            self.units.finish(unit, outcome, facts, &self.diag)
+        /// The `finish` call for `unit`.
+        fn finish(&self, unit: &Unit) {
+            self.units.finish(unit, &self.diag);
+        }
+
+        /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
+        /// (`on_claim`) or a `finish` (the post-run hooks).
+        fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GithubError> {
+            self.units.act(unit, &action)
         }
     }
 
@@ -439,12 +411,17 @@ mod tests {
         assert_eq!(unit.head_branch, "feature/x");
         assert_eq!(unit.before_comments, [1]);
         assert_eq!(unit.claimed_as, "me");
-        // The claim labelled (the kind's status) and assigned us (on_claim).
+        // The claim labelled the PR — the kind's status — and ran no hook action.
         assert!(h.client.has_label(7, CLAIMED_LABEL));
-        assert!(h.client.has_label(7, "afkd/reviewing"));
-        assert_eq!(h.client.assignees_of(7), ["me"]);
+        assert!(h.client.assignees_of(7).is_empty());
         assert!(!h.client.has_label(8, CLAIMED_LABEL));
         assert!(h.diag.lines().is_empty(), "{:?}", h.diag.lines());
+        // `on_claim`'s calls, which afkd sends after the `poll`, act as the claim identity.
+        h.act(&unit, LifecycleAction::AssignMe).unwrap();
+        h.act(&unit, LifecycleAction::LabelAdd("afkd/reviewing".into()))
+            .unwrap();
+        assert!(h.client.has_label(7, "afkd/reviewing"));
+        assert_eq!(h.client.assignees_of(7), ["me"]);
     }
 
     #[test]
@@ -656,7 +633,7 @@ mod tests {
         // Wind the round down as a finished run does (releasing the marker), leaving the
         // human's word still newer than the bot's — so the PR is claimable again, the
         // status label notwithstanding.
-        assert!(h.finish(&first, UnitOutcome::Clean, &Facts::none()));
+        h.finish(&first);
         let second = h.poll().expect("re-claimed");
 
         let (key_a, key_b) = (first.key(), second.key());
@@ -675,29 +652,11 @@ mod tests {
         }
     }
 
+    /// A status label the forge refused is diagnosed, and the claim kept: the watermark,
+    /// not the label, is this kind's gate.
     #[test]
-    fn an_on_claim_failure_is_logged_but_the_claim_proceeds() {
-        // `on_claim` runs after a won claim; a failure there is logged and swallowed —
-        // the unit is still taken on. Use an `on_claim` the claim itself does not
-        // perform (`close`) and fail that stage.
-        let mut closing = cfg("acme/widgets");
-        closing.on_claim = vec![LifecycleAction::Close];
-        let h = Harness::new(closing);
-        h.client.add_pull(7, "me", "feature/x");
-        h.client.add_comment(7, 1, "human", 100);
-        h.client.fail("set state");
-
-        let unit = h.poll().expect("claimed anyway");
-        assert_eq!(unit.number, 7);
-        assert_eq!(
-            h.diag.lines(),
-            ["github set state: no response (mock failure)"]
-        );
-
-        // The status label is diagnosed the same way, and the claim kept.
-        let mut plain = cfg("acme/widgets");
-        plain.on_claim.clear();
-        let h = Harness::new(plain);
+    fn a_status_label_failure_is_logged_but_the_claim_proceeds() {
+        let h = Harness::new(cfg("acme/widgets"));
         h.client.add_pull(7, "me", "feature/x");
         h.client.add_comment(7, 1, "human", 100);
         h.client.fail("add label");
@@ -707,7 +666,6 @@ mod tests {
             ["github add label: no response (mock failure)"]
         );
     }
-
     /// A forge error mid-poll is the kind's `Err`, which the plugin answers as an idle
     /// beat after diagnosing it with its stage; the next poll starts afresh.
     #[test]
@@ -793,7 +751,7 @@ mod tests {
         );
     }
 
-    // --- The wire unit + terminal lifecycle ---
+    // --- The wire unit + the end of a round ---
 
     /// The whole wire unit: the number as `id`, the claim-journal key, the stable
     /// thread, the claim-time comments as `seen`, the claim identity as `self`, the PR
@@ -852,16 +810,16 @@ mod tests {
 
     #[test]
     fn a_clean_finish_emits_no_close() {
-        // A human's merge ends the loop, so a clean round records no state change and
-        // takes its marker off the thread. `on_done` is empty here, and `on_fail`'s
-        // `unassign` does not run: the bot stays on the PR it is iterating.
+        // A human's merge ends the loop, so a round's end records no state change and
+        // takes its marker off the thread — and runs no hook action: the bot stays on the
+        // PR it is iterating unless afkd's `on_done` calls `unassign`.
         let h = Harness::new(cfg("acme/widgets"));
         h.client.add_pull(7, "me", "feature/x");
         h.client.add_assignees(&repo(), 7, &["me".into()]).unwrap();
         h.client
             .add_comment_body(7, 9, "me", &claim_text("me"), 100);
         let before = h.client.actions().len();
-        assert!(h.finish(&unit(9, Vec::new()), UnitOutcome::Clean, &Facts::none()));
+        h.finish(&unit(9, Vec::new()));
         assert_eq!(
             h.client.actions()[before..],
             [Action::DeleteComment { id: 9 }]
@@ -870,62 +828,72 @@ mod tests {
         assert!(claim_markers_on(&h, 7).is_empty());
     }
 
-    /// `on_fail` runs for a failed round — and for a `park`, which the built-in folds
-    /// into the same moment since the kind has no park of its own. Only the bot's own
-    /// assignee row goes.
+    /// The `unassign` a PR's `on_fail` typically calls arrives as a `call` after the
+    /// finish, and takes only the bot's own assignee row.
     #[test]
-    fn a_failed_or_parked_finish_runs_on_fail() {
-        for outcome in [UnitOutcome::Failed, UnitOutcome::Park] {
-            let h = Harness::new(cfg("acme/widgets"));
-            h.client.add_pull(7, "me", "feature/x");
-            h.client
-                .add_assignees(&repo(), 7, &["alice".into(), "me".into()])
-                .unwrap();
-            assert!(h.finish(&unit(9, Vec::new()), outcome, &Facts::none()));
-            assert_eq!(h.client.assignees_of(7), ["alice"], "{outcome:?}");
-        }
+    fn an_on_fail_unassign_takes_only_the_bot() {
+        let h = Harness::new(cfg("acme/widgets"));
+        h.client.add_pull(7, "me", "feature/x");
+        h.client
+            .add_assignees(&repo(), 7, &["alice".into(), "me".into()])
+            .unwrap();
+        let unit = unit(9, Vec::new());
+        h.finish(&unit);
+        assert_eq!(
+            h.client.assignees_of(7),
+            ["alice", "me"],
+            "the finish unassigns no one"
+        );
+        h.act(&unit, LifecycleAction::Unassign).unwrap();
+        assert_eq!(h.client.assignees_of(7), ["alice"]);
     }
-
-    /// A finished round leaves no marker, whichever way it ended: the release runs after
-    /// the terminal `on_done`/`on_fail` dispatch alike.
+    /// A finished round leaves no marker: the release is the finish's one write.
     #[test]
     fn a_finished_pr_leaves_no_claim_marker() {
-        for outcome in [UnitOutcome::Clean, UnitOutcome::Failed, UnitOutcome::Park] {
-            let h = Harness::new(cfg("acme/widgets"));
-            h.client.add_pull(7, "me", "feature/x");
-            h.client.add_comment(7, 1, "human", 100);
+        let h = Harness::new(cfg("acme/widgets"));
+        h.client.add_pull(7, "me", "feature/x");
+        h.client.add_comment(7, 1, "human", 100);
 
-            let unit = h.poll().expect("claimed");
-            assert_eq!(claim_markers_on(&h, 7).len(), 1, "the claim is held");
+        let unit = h.poll().expect("claimed");
+        assert_eq!(claim_markers_on(&h, 7).len(), 1, "the claim is held");
 
-            assert!(h.finish(&unit, outcome, &Facts::none()));
-            assert!(
-                claim_markers_on(&h, 7).is_empty(),
-                "a round ending {outcome:?} released its marker: {:?}",
-                claim_markers_on(&h, 7)
-            );
-        }
+        h.finish(&unit);
+        assert!(
+            claim_markers_on(&h, 7).is_empty(),
+            "the round released its marker: {:?}",
+            claim_markers_on(&h, 7)
+        );
     }
-
+    /// A hook's action the forge refused is that `call`'s error, for afkd to fail the hook
+    /// with; a marker release it refused is diagnosed, and the finish still ends.
     #[test]
-    fn a_terminal_lifecycle_failure_is_logged() {
-        // A faulting run drives the `on_fail` lifecycle; a transport error there is
-        // diagnosed and the moment reports it did not land, so the plugin can hold it —
-        // and the marker still goes.
+    fn a_refused_action_is_the_calls_error_and_a_refused_release_is_logged() {
         let h = Harness::new(cfg("acme/widgets"));
         h.client.add_pull(7, "me", "feature/x");
         h.client
             .add_comment_body(7, 9, "me", &claim_text("me"), 100);
         // GitHub's unassign is the dedicated `remove assignees` endpoint.
         h.client.fail("remove assignees");
-        assert!(!h.finish(&unit(9, Vec::new()), UnitOutcome::Failed, &Facts::none()));
+        let err = h
+            .act(&unit(9, Vec::new()), LifecycleAction::Unassign)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "github remove assignees: no response (mock failure)"
+        );
+
+        h.client.fail("delete comment");
+        h.finish(&unit(9, Vec::new()));
         assert_eq!(
             h.diag.lines(),
-            ["github remove assignees: no response (mock failure)"]
+            ["github delete comment: no response (mock failure)"]
         );
-        assert!(claim_markers_on(&h, 7).is_empty());
+        assert_eq!(
+            claim_markers_on(&h, 7).len(),
+            1,
+            "the marker ages out instead"
+        );
     }
-
     /// The renewal over the real `renew_marker`: the claim marker is edited **in place**
     /// — same id, a body that still reads as a claim — and the forge's last-touched stamp
     /// moves with it, which is the whole liveness signal.
