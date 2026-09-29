@@ -1,14 +1,14 @@
-//! The `gitea_issue` kind's vendor half (ADR-0031 Capability 1), ported from afkd's
-//! `crates/gitea/src/trigger_issue.rs`.
+//! The `issue` kind's vendor half (ADR-0031 Capability 1) — `service(gitea)` in a config —
+//! ported from afkd's `crates/gitea/src/trigger_issue.rs`.
 //!
 //! It polls a repository (or an org's repositories) through the mockable
 //! [`GiteaClient`] seam for issues that are **open** and either **assigned to the bot**
 //! (assigning the bot's own user *is* the queue), carrying the optional **source label**,
 //! or carrying `afkd/awaiting-reply` (parked work due for re-arm); claims one with a
 //! `[afkd-claim]` marker comment (post → settle → re-read → decide, then the
-//! `afkd/claimed` status label and `on_claim`); and reflects the run's end back through
-//! Gitea's native assignee/label/state primitives. Its logic is unit-tested with **no
-//! network** against [`MockClient`](crate::client::MockClient) and a fake clock.
+//! `afkd/claimed` status label); and does each action afkd's hooks call through Gitea's
+//! native assignee/label/state primitives. Its logic is unit-tested with **no network**
+//! against [`MockClient`](crate::client::MockClient) and a fake clock.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
 //! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
@@ -28,8 +28,8 @@ use std::time::Instant;
 use crate::claim::is_claim;
 use crate::client::{GiteaClient, GiteaError, Issue, IssueComment, Repo};
 use crate::common::{
-    apply_actions, claim_issue, claim_key_for, claim_label_fault, comment_watermark, creds_env,
-    delete_marker, ensure_issue_labels, lock, new_reply_comments, park_issue, release_claim,
+    claim_issue, claim_key_for, claim_label_fault, comment_watermark, creds_env, delete_marker,
+    do_action, ensure_issue_labels, lock, new_reply_comments, park_issue, release_claim,
     release_stale, renew_marker, unit_key, ClaimFault, Claimed, Clock, Diag, ScanBudget, Target,
     AWAITING_LABEL, CLAIMED_LABEL, ENV_ISSUE_NUMBER, ENV_REPO,
 };
@@ -115,16 +115,11 @@ impl DiscussGate {
     }
 }
 
-/// The `gitea_issue` kind's vendor half: the target, the intake gates, the claim, and the four
-/// lifecycle action lists.
+/// The `issue` kind's vendor half: the target, the intake gates, the claim, and the park.
 pub(crate) struct IssueUnits {
     client: Box<dyn GiteaClient>,
     target: Target,
     source_label: String,
-    on_claim: Vec<LifecycleAction>,
-    on_done: Vec<LifecycleAction>,
-    on_fail: Vec<LifecycleAction>,
-    on_park: Vec<LifecycleAction>,
     discuss_with: Option<DiscussWith>,
     /// The token and base URL every unit's `env` carries.
     creds: BTreeMap<String, String>,
@@ -141,10 +136,6 @@ impl IssueUnits {
             client,
             target: Target::new(cfg),
             source_label: cfg.source_label.clone(),
-            on_claim: cfg.on_claim.clone(),
-            on_done: cfg.on_done.clone(),
-            on_fail: cfg.on_fail.clone(),
-            on_park: cfg.on_park.clone(),
             discuss_with: cfg.discuss_with.clone(),
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
@@ -177,24 +168,6 @@ impl IssueUnits {
     /// Whether `issue` is claimable: open and not already `afkd/claimed`.
     fn eligible(&self, issue: &Issue) -> bool {
         issue.state == "open" && !issue.has_label(CLAIMED_LABEL)
-    }
-
-    /// Apply a lifecycle moment's actions, diagnosing the first failure. Returns whether
-    /// the moment fully applied — the terminal moments' half of the delivery verdict.
-    fn apply(
-        &self,
-        repo: &Repo,
-        index: u64,
-        actions: &[LifecycleAction],
-        me: &str,
-        facts: &Facts,
-        diag: &dyn Diag,
-    ) -> bool {
-        if let Err(e) = apply_actions(&*self.client, repo, index, actions, me, facts) {
-            diag.err(&e);
-            return false;
-        }
-        true
     }
 
     /// Find the first eligible issue across the polled repos and claim it — the claim
@@ -277,23 +250,13 @@ impl IssueUnits {
                         // Re-claim of a parked issue: drop the awaiting-reply marker so
                         // the gate is clean for the next round.
                         if parked {
-                            self.apply(
-                                &repo,
-                                issue.number,
-                                &[LifecycleAction::LabelRemove(AWAITING_LABEL.to_string())],
-                                me,
-                                &Facts::none(),
-                                diag,
-                            );
+                            let unpark = LifecycleAction::LabelRemove(AWAITING_LABEL.to_string());
+                            if let Err(e) =
+                                do_action(&*self.client, &repo, issue.number, &unpark, me)
+                            {
+                                diag.err(&e);
+                            }
                         }
-                        self.apply(
-                            &repo,
-                            issue.number,
-                            &self.on_claim,
-                            me,
-                            &Facts::none(),
-                            diag,
-                        );
                         return Ok(Some(Unit {
                             repo,
                             number: issue.number,
@@ -320,7 +283,7 @@ impl IssueUnits {
     }
 
     /// Release this unit's claim now — the recovery the built-in's reaper performs for a
-    /// terminal lifecycle that did not land.
+    /// park that did not land.
     pub(crate) fn release(&self, unit: &Unit, diag: &dyn Diag) {
         release_claim(&*self.client, &unit.repo, unit.number, unit.claim_id, diag);
     }
@@ -353,13 +316,14 @@ impl IssueUnits {
         verdict
     }
 
-    /// The terminal lifecycle: `on_done` (clean), `on_fail` (exhausted), or the **park**
-    /// — then the claim marker's release and, on the `discuss_with` path, the backstop
-    /// that keeps afkd the last speaker.
+    /// The plugin-owned end of a run: the **park**'s label swap when the run parked, then
+    /// the claim marker's release and, on the `discuss_with` path, the backstop that keeps
+    /// afkd the last speaker. afkd runs the `on_done`/`on_fail`/`on_park` hook after this,
+    /// so a comment one of them posts lands after the backstop.
     ///
-    /// Returns whether the moment reached the remote. The park needs **both** halves: a
-    /// park whose label swap failed leaves `afkd/claimed` standing, so the issue is
-    /// neither parked nor re-pickable.
+    /// Returns whether the park reached the remote — always `true` for the other two
+    /// outcomes. A park whose label swap failed leaves `afkd/claimed` standing, so the
+    /// issue is neither parked nor re-pickable.
     pub(crate) fn finish(
         &self,
         unit: &Unit,
@@ -367,26 +331,16 @@ impl IssueUnits {
         facts: &Facts,
         diag: &dyn Diag,
     ) -> bool {
-        let me = unit.claimed_as.as_str();
         let delivered = match outcome {
-            UnitOutcome::Clean => {
-                self.apply(&unit.repo, unit.number, &self.on_done, me, facts, diag)
-            }
-            UnitOutcome::Failed => {
-                self.apply(&unit.repo, unit.number, &self.on_fail, me, facts, diag)
-            }
+            UnitOutcome::Clean | UnitOutcome::Failed => true,
             UnitOutcome::Park => {
-                // Both evaluated into locals first: the extras run whether or not the park
-                // landed, so the verdict's `&&` never short-circuits the second half.
-                let parked = match park_issue(&*self.client, &unit.repo, unit.number, me) {
+                match park_issue(&*self.client, &unit.repo, unit.number, &unit.claimed_as) {
                     Ok(()) => true,
                     Err(e) => {
                         diag.err(&e);
                         false
                     }
-                };
-                let extras = self.apply(&unit.repo, unit.number, &self.on_park, me, facts, diag);
-                parked && extras
+                }
             }
         };
         // The claim is over however it ended, so its marker goes — unconditionally, and
@@ -394,8 +348,8 @@ impl IssueUnits {
         if let Err(e) = self.client.delete_comment(&unit.repo, unit.claim_id) {
             diag.err(&e);
         }
-        // Last: a lifecycle `comment` counts as afkd speaking, so it suppresses the
-        // backstop.
+        // Last: a comment the agent posted during the run counts as afkd speaking, so it
+        // suppresses the backstop.
         if self.discuss_with.is_some() {
             self.post_backstop_if_silent(unit, outcome, facts, diag);
         }
@@ -436,6 +390,17 @@ impl IssueUnits {
         }
     }
 
+    /// Do one action a hook called on the unit's issue, as the login it was claimed as.
+    pub(crate) fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GiteaError> {
+        do_action(
+            &*self.client,
+            &unit.repo,
+            unit.number,
+            action,
+            &unit.claimed_as,
+        )
+    }
+
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim-time comment ids as
     /// `seen` and the claim identity as `self`. The brief is unframed — afkd frames
@@ -465,7 +430,7 @@ impl IssueUnits {
     }
 }
 
-/// The `gitea_issue` kind behind the plugin's seam: the inherent methods above, as they are.
+/// The `issue` kind behind the plugin's seam: the inherent methods above, as they are.
 impl Units for IssueUnits {
     type Unit = Unit;
 
@@ -517,6 +482,10 @@ impl Units for IssueUnits {
 
     fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag) -> bool {
         IssueUnits::finish(self, unit, outcome, facts, diag)
+    }
+
+    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GiteaError> {
+        IssueUnits::act(self, unit, action)
     }
 }
 
@@ -585,12 +554,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn cfg(
-        repo: &str,
-        on_claim: Vec<LifecycleAction>,
-        on_done: Vec<LifecycleAction>,
-        on_fail: Vec<LifecycleAction>,
-    ) -> GiteaConfig {
+    fn cfg(repo: &str) -> GiteaConfig {
         GiteaConfig {
             base_url: "https://gitea.example.com".into(),
             repo: repo.into(),
@@ -598,10 +562,6 @@ mod tests {
             token: "PAT".into(),
             source_label: "afkd/ready".into(),
             author_me: false,
-            on_claim,
-            on_done,
-            on_fail,
-            on_park: Vec::new(),
             discuss_with: None,
         }
     }
@@ -646,6 +606,12 @@ mod tests {
             self.units.finish(unit, outcome, facts, &self.diag)
         }
 
+        /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
+        /// (`on_claim`) or a `finish` (the post-run hooks).
+        fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GiteaError> {
+            self.units.act(unit, &action)
+        }
+
         /// Define the two afkd-managed labels in the repo, as a repository afkd has
         /// already claimed in once has them — for the tests that finish a unit
         /// **without** polling.
@@ -667,7 +633,6 @@ mod tests {
         Facts {
             signal: "fault".into(),
             reason: Some(reason.into()),
-            ..Facts::none()
         }
     }
 
@@ -717,7 +682,7 @@ mod tests {
 
     #[test]
     fn only_open_source_labelled_unclaimed_issues_are_eligible() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         // Eligible.
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         // Already claimed → never re-picked.
@@ -735,7 +700,7 @@ mod tests {
         // The seamless signal: a human assigns the bot's own user (no label), and
         // the issue is up for grabs. Here #1 carries no `afkd/ready` but is
         // assigned to `me`.
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue_assigned(1, "Fix", "do it", &[], &["me"]);
 
         let unit = h
@@ -751,7 +716,7 @@ mod tests {
         // open issue, so `candidates` must still filter. With no `source_label`,
         // only assignment (or the awaiting marker) makes an issue eligible — a bare
         // open issue is left alone.
-        let mut c = cfg("acme/widgets", vec![], vec![], vec![]);
+        let mut c = cfg("acme/widgets");
         c.source_label = String::new();
         let h = Harness::new(c, "me");
         // Neither assigned nor labelled → ignored.
@@ -767,54 +732,48 @@ mod tests {
         assert_eq!(unit.number, 2);
     }
 
+    /// A claim does only the plugin-owned writes — the marker and the `afkd/claimed`
+    /// gate — and no hook action: afkd runs `on_claim` after the `poll`, and its
+    /// `assign_me` arrives as a `call` that assigns the claim identity.
     #[test]
-    fn claim_runs_on_claim_assign_and_label() {
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![
-                    LifecycleAction::AssignMe,
-                    LifecycleAction::LabelAdd("afkd/claimed".into()),
-                ],
-                vec![],
-                vec![],
-            ),
-            "me",
-        );
+    fn a_claim_does_only_the_plugin_owned_writes_and_on_claim_acts_after() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        h.defines_the_afkd_labels();
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
 
-        h.poll().expect("no fatal claim verdict").expect("claimed");
-        // `on_claim` assigned us and added the claimed label (recorded actions).
-        assert!(h
-            .client
-            .actions()
-            .iter()
-            .any(|a| matches!(a, Action::Assign { assignees, .. } if assignees == &vec!["me".to_string()])));
-        assert!(h
-            .client
-            .actions()
-            .iter()
-            .any(|a| matches!(a, Action::Label { name, .. } if name == "afkd/claimed")));
+        let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
+        let claimed = h.client.actions();
+        assert!(
+            claimed.iter().all(|a| match a {
+                Action::Comment { body, .. } => is_claim(body),
+                Action::Label { name, .. } => name == CLAIMED_LABEL,
+                _ => false,
+            }),
+            "the claim ran no hook action: {claimed:?}"
+        );
+        assert!(h.client.assignees_of(1).is_empty());
+
+        h.act(&unit, LifecycleAction::AssignMe).unwrap();
+        assert_eq!(
+            h.client.actions()[claimed.len()..],
+            [Action::Assign {
+                index: 1,
+                assignees: vec!["me".to_string()],
+            }]
+        );
     }
 
     /// AC5 — the claim never removes a human's assignee. An issue a human already
-    /// assigned to themselves, claimed with `on_claim { assign_me }`, ends up
-    /// carrying **both** of them: the old replace-set write evicted `alice`.
+    /// assigned to themselves, claimed with an `on_claim` that calls `assign_me`, ends
+    /// up carrying **both** of them: the old replace-set write evicted `alice`.
     #[test]
     fn claiming_an_issue_a_human_is_assigned_to_keeps_them_assigned() {
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![LifecycleAction::AssignMe],
-                vec![],
-                vec![],
-            ),
-            "me",
-        );
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client
             .add_issue_assigned(1, "Fix", "do it", &["afkd/ready"], &["alice"]);
 
-        h.poll().expect("no fatal claim verdict").expect("claimed");
+        let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
+        h.act(&unit, LifecycleAction::AssignMe).unwrap();
 
         assert_eq!(
             h.client.assignees_of(1),
@@ -822,12 +781,12 @@ mod tests {
         );
     }
 
-    /// The claim's status half is the kind's own: a won claim adds
-    /// `afkd/claimed` (the re-pick gate) even when no `on_claim` block spells it —
-    /// the gate cannot be disarmed by a config that names a different label.
+    /// The claim's status half is the kind's own: a won claim adds `afkd/claimed` (the
+    /// re-pick gate) with no hook calling for it — the gate cannot be disarmed by a
+    /// config whose `on_claim` names a different label, or none.
     #[test]
-    fn a_won_claim_labels_the_issue_even_with_an_empty_on_claim() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+    fn a_won_claim_labels_the_issue_with_no_hook() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
 
         h.poll().expect("no fatal claim verdict").expect("claimed");
@@ -860,7 +819,7 @@ mod tests {
     /// **once**, and the second poll finds nothing.
     #[test]
     fn an_undefined_claim_label_is_created_and_the_issue_claimed_once() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.register_label("afkd/inprogress", false);
         h.client.register_label(AWAITING_LABEL, false);
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
@@ -895,29 +854,23 @@ mod tests {
         );
     }
 
-    /// AC2 — the exclusive trap sprung by the user's own config: their
-    /// `on_claim { label_add "afkd/inprogress" }` names an **exclusive** label in
-    /// the `afkd` scope, which strips every other exclusive label in that scope off
-    /// the issue. The gate afkd created is not exclusive, so it survives — while the
-    /// exclusive `afkd/triage` sitting beside it does not, which is what makes this
-    /// assertion mean something.
+    /// AC2 — the exclusive trap sprung by the user's own config: their `on_claim`
+    /// calls `gitea.label_add("afkd/inprogress")`, an **exclusive** label in the `afkd`
+    /// scope, which strips every other exclusive label in that scope off the issue. The
+    /// gate afkd created is not exclusive, so it survives — while the exclusive
+    /// `afkd/triage` sitting beside it does not, which is what makes this assertion mean
+    /// something.
     #[test]
     fn the_claim_label_survives_an_exclusive_on_claim_label() {
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![LifecycleAction::LabelAdd("afkd/inprogress".into())],
-                vec![],
-                vec![],
-            ),
-            "me",
-        );
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.register_label("afkd/inprogress", true);
         h.client.register_label("afkd/triage", true);
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         h.client.add_label(&repo(), 1, "afkd/triage").unwrap();
 
-        h.poll().expect("no fatal claim verdict").expect("claimed");
+        let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
+        h.act(&unit, LifecycleAction::LabelAdd("afkd/inprogress".into()))
+            .unwrap();
 
         assert!(h.client.has_label(1, "afkd/inprogress"), "on_claim ran");
         assert!(
@@ -937,7 +890,7 @@ mod tests {
     /// posted, nothing is labelled, and no run starts.
     #[test]
     fn an_exclusive_claim_label_is_refused_and_starts_no_run() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.register_label(CLAIMED_LABEL, true);
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
 
@@ -963,7 +916,7 @@ mod tests {
     fn a_definite_label_failure_is_fatal_but_a_transient_one_is_not() {
         // (a) definite: the forge answered, and the answer will not change on the
         // next beat.
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         h.client.refuse("create label", 403);
 
@@ -981,7 +934,7 @@ mod tests {
         );
 
         // (b) transient: a blip on the same call keeps the service alive, reported.
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         h.client.fail("create label");
 
@@ -1003,7 +956,7 @@ mod tests {
     /// a whole claim lifetime.
     #[test]
     fn a_definite_claim_label_refusal_crashes_and_releases_the_marker() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.defines_the_afkd_labels();
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         h.client.refuse("add label", 403);
@@ -1021,43 +974,22 @@ mod tests {
         );
     }
 
-    /// AC5 — a user's `label_add` for a name Gitea would drop is an **error**, not a
-    /// success, and per `apply_actions` it abandons the rest of that moment: the
-    /// `assign_me` behind it never runs, and the failure is reported. The claim
-    /// itself stands (a lifecycle failure never rolls it back), gate and all.
+    /// AC5 — a hook's `label_add` for a name Gitea would drop is an **error**, not a
+    /// success, naming the label: the `call` answers `ok:false`, so afkd fails the hook
+    /// there and runs nothing behind it. The claim itself stands, gate and all.
     #[test]
-    fn a_label_add_gitea_would_drop_is_an_error_and_abandons_the_moment() {
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![
-                    LifecycleAction::LabelAdd("afkd/working".into()),
-                    LifecycleAction::AssignMe,
-                ],
-                vec![],
-                vec![],
-            ),
-            "me",
-        );
+    fn a_label_add_gitea_would_drop_is_an_error_and_the_claim_stands() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
         // `afkd/working` is what the docs' own example spells — and this repository
         // never created it.
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
 
-        let unit = h
-            .poll()
-            .expect("no fatal claim verdict")
-            .expect("a user's lifecycle failure does not undo the claim");
-        assert_eq!(unit.number, 1);
+        let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
+        let err = h
+            .act(&unit, LifecycleAction::LabelAdd("afkd/working".into()))
+            .expect_err("a dropped label add is a failed action");
+        assert!(err.to_string().contains("afkd/working"), "{err}");
         assert!(!h.client.has_label(1, "afkd/working"), "nothing landed");
-        assert!(
-            h.client.assignees_of(1).is_empty(),
-            "the action after the failing one was abandoned"
-        );
-        assert!(
-            h.diag.lines().iter().any(|e| e.contains("afkd/working")),
-            "the drop was surfaced by name: {:?}",
-            h.diag.lines()
-        );
         assert!(
             h.client.has_label(1, CLAIMED_LABEL),
             "the gate still landed"
@@ -1070,7 +1002,7 @@ mod tests {
     /// absent, the claim is not dropped, and the failure names the label.
     #[test]
     fn a_park_that_cannot_label_is_surfaced() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         // The claim gate is defined; the awaiting label deliberately is not (a human
         // deleted it after the claim, say).
         h.client.register_label(CLAIMED_LABEL, false);
@@ -1096,7 +1028,7 @@ mod tests {
 
     #[test]
     fn lost_claim_race_releases_the_marker_and_skips() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         // A rival's marker lands between our post and our re-read, one second ahead
         // of ours in the order and well inside the claim lifetime.
@@ -1121,7 +1053,7 @@ mod tests {
 
     #[test]
     fn a_renewed_rival_marker_loses_us_the_claim_with_no_label() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         // The incident's issue: open, source-labelled, and with **no**
         // `afkd/claimed` — a human took it off — so it is fully eligible.
         h.client
@@ -1189,7 +1121,7 @@ mod tests {
     /// `updated_at` moves with it, which is the whole liveness signal.
     #[test]
     fn renewing_a_claim_edits_the_marker_in_place() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         h.client
             .add_comment_body(1, 7, "me", &crate::claim::claim_text("me"), 100);
@@ -1225,7 +1157,7 @@ mod tests {
     /// returns normally, the marker is untouched, and afkd's run carries on.
     #[test]
     fn a_failing_renewal_raises_one_diagnostic_and_nothing_else() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         let claim = crate::claim::claim_text("me");
         h.client.add_comment_body(1, 7, "me", &claim, 100);
@@ -1253,7 +1185,7 @@ mod tests {
     /// the first is left with neither our marker nor the claimed label.
     #[test]
     fn a_lost_claim_moves_on_to_the_next_candidate() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         h.client.add_issue(2, "Other", "do that", &["afkd/ready"]);
         // Armed for the next comment read, which is issue #1's claim re-read.
@@ -1285,7 +1217,7 @@ mod tests {
     /// session resumes per issue rather than restarting on every claim.
     #[test]
     fn the_journal_key_carries_the_claim_but_the_thread_does_not() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(7, "Fix", "do it", &["afkd/ready"]);
 
         let first = h.poll().expect("no fatal claim verdict").expect("claimed");
@@ -1329,10 +1261,7 @@ mod tests {
     /// marker nobody is acting on.
     #[test]
     fn a_finished_unit_leaves_no_claim_marker() {
-        let h = Harness::new(
-            cfg("acme/widgets", vec![], vec![LifecycleAction::Close], vec![]),
-            "me",
-        );
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
 
         let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
@@ -1348,7 +1277,7 @@ mod tests {
 
     #[test]
     fn org_wide_lists_repos_and_claims_the_eligible_issue() {
-        let mut config = cfg("", vec![], vec![], vec![]);
+        let mut config = cfg("");
         config.org = "acme".into();
         let h = Harness::new(config, "me");
         h.client.set_org_repos(
@@ -1372,17 +1301,73 @@ mod tests {
         assert_eq!(unit.repo.name, "widgets");
     }
 
-    // --- Lifecycle on terminal outcomes (the `finish` call) ---
+    // --- The end of a run (the `finish` call) and the post-run hooks' `call`s ---
 
+    /// A clean or failed finish does only the plugin-owned write — the marker's
+    /// release — and no hook action: nothing closes, unlabels or unassigns the issue
+    /// until afkd's `on_done`/`on_fail` calls for it.
     #[test]
-    fn clean_run_applies_on_done_close() {
-        let h = Harness::new(
-            cfg("acme/widgets", vec![], vec![LifecycleAction::Close], vec![]),
-            "me",
-        );
-        h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
-        h.finish(&unit(1), UnitOutcome::Clean, &Facts::none());
+    fn a_clean_or_failed_finish_runs_no_hook_action() {
+        for (outcome, facts) in [
+            (UnitOutcome::Clean, Facts::none()),
+            (UnitOutcome::Failed, fault("cargo test: 3 failed")),
+        ] {
+            let h = Harness::new(cfg("acme/widgets"), "me");
+            h.client.add_issue_assigned(
+                1,
+                "Fix",
+                "do it",
+                &["afkd/ready", "afkd/claimed"],
+                &["me"],
+            );
+            assert!(h.finish(&unit(1), outcome, &facts), "{outcome:?}");
+            assert_eq!(
+                h.client.actions(),
+                [Action::DeleteComment { id: 1 }],
+                "{outcome:?}"
+            );
+        }
+    }
 
+    /// Each action a post-run hook calls does its one forge operation on the finished
+    /// unit's issue, as its claim identity: `close` closes it, `label_remove` removes by
+    /// **id** (never the all-clearing path), `unassign` drops afkd's own row alone, and
+    /// a comment posts its text byte for byte.
+    #[test]
+    fn a_post_run_hooks_actions_act_on_the_units_issue() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        h.defines_the_afkd_labels();
+        h.client.add_issue_assigned(
+            1,
+            "Fix",
+            "do it",
+            &["afkd/ready", "afkd/claimed"],
+            &["alice", "me"],
+        );
+        let unit = unit(1);
+        h.finish(&unit, UnitOutcome::Failed, &fault("boom"));
+        let text = "## 失敗 ❌\n\nran out of attempts: #{run.x}";
+        for action in [
+            LifecycleAction::LabelRemove(CLAIMED_LABEL.into()),
+            LifecycleAction::Unassign,
+            LifecycleAction::Comment(text.into()),
+            LifecycleAction::Close,
+        ] {
+            h.act(&unit, action).unwrap();
+        }
+
+        assert!(!h.client.has_label(1, CLAIMED_LABEL));
+        assert!(h
+            .client
+            .actions()
+            .iter()
+            .any(|a| matches!(a, Action::Unlabel { .. })));
+        assert_eq!(h.client.assignees_of(1), ["alice"]);
+        assert!(h
+            .client
+            .actions()
+            .iter()
+            .any(|a| matches!(a, Action::Comment { index: 1, body } if body == text)));
         assert!(h
             .client
             .actions()
@@ -1390,107 +1375,38 @@ mod tests {
             .any(|a| matches!(a, Action::State { state, .. } if state == "closed")));
     }
 
-    #[test]
-    fn failed_run_applies_on_fail_label_remove_by_id_and_unassign() {
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![],
-                vec![],
-                vec![
-                    LifecycleAction::LabelRemove("afkd/claimed".into()),
-                    LifecycleAction::Unassign,
-                ],
-            ),
-            "me",
-        );
-        h.client
-            .add_issue_assigned(1, "Fix", "do it", &["afkd/ready", "afkd/claimed"], &["me"]);
-        h.finish(&unit(1), UnitOutcome::Failed, &fault("boom"));
-
-        // on_fail removed the claimed label BY ID (not the all-clearing path) and
-        // released afkd's own assignment (here the only one, so the set empties).
-        assert!(h
-            .client
-            .actions()
-            .iter()
-            .any(|a| matches!(a, Action::Unlabel { .. })));
-        assert!(h
-            .client
-            .actions()
-            .iter()
-            .any(|a| matches!(a, Action::Assign { assignees, .. } if assignees.is_empty())));
-        assert!(!h.client.has_label(1, "afkd/claimed"));
-    }
-
     // --- The clarification gate (the `park` marker → park → re-arm on reply) ---
 
+    /// The delivery verdict (ADR-0059) for the one outcome the plugin still owes a
+    /// write: the park's label swap, which the re-arm gate reads. A park whose swap
+    /// landed is delivered; one whose swap failed is not, and leaves `afkd/claimed`
+    /// standing, so the issue is neither parked nor re-picked — and the plugin's fallback
+    /// releases it. Either way the finish runs no `on_park` action: that hook is afkd's.
     #[test]
-    fn on_park_extras_run_after_the_park() {
-        let mut config = cfg("acme/widgets", vec![], vec![], vec![]);
-        config.on_park = vec![LifecycleAction::LabelAdd("needs-triage".into())];
-        let h = Harness::new(config, "me");
-        h.defines_the_afkd_labels();
-        // The user's own extra is a label the repository defines — an undefined one
-        // is an error now, which is `a_label_add_gitea_would_drop_is_an_error`.
-        h.client.register_label("needs-triage", false);
-        h.client
-            .add_issue(1, "Fix", "do it", &["afkd/ready", "afkd/claimed"]);
-        h.finish(&unit(1), UnitOutcome::Park, &Facts::none());
-
-        // The plugin-managed awaiting label AND the user's extra both landed.
-        assert!(h.client.has_label(1, "afkd/awaiting-reply"));
-        assert!(h.client.has_label(1, "needs-triage"));
-    }
-
-    #[test]
-    fn a_park_delivers_only_when_both_halves_land() {
-        // The delivery verdict (ADR-0059) for the one terminal arm with real
-        // composition. A park is two writes — the plugin-managed label swap that the
-        // re-arm gate reads, and the user's `on_park` extras — and the claim is
-        // finished only if BOTH reached the forge: a park whose label swap failed
-        // leaves `afkd/claimed` standing, so the issue is neither parked nor re-picked.
-        //
-        // The two halves also have to be *evaluated* independently. A naive
-        // `park_issue(…).is_ok() && self.apply(…)` short-circuits, silently dropping
-        // the user's extras whenever the park failed; the third leg pins that they run
-        // anyway.
+    fn a_park_delivers_only_when_its_label_swap_lands() {
         let park_harness = || {
-            let mut config = cfg("acme/widgets", vec![], vec![], vec![]);
-            config.on_park = vec![LifecycleAction::Comment(
-                "parked — 看起来 the token expiry needs a human call 🙏\n\n\
-                 which of the two backoffs should it take?"
-                    .into(),
-            )];
-            let h = Harness::new(config, "me");
+            let h = Harness::new(cfg("acme/widgets"), "me");
             h.defines_the_afkd_labels();
             h.client
                 .add_issue(1, "Fix", "do it", &["afkd/ready", "afkd/claimed"]);
             h
         };
         let park = |h: &Harness| h.finish(&unit(1), UnitOutcome::Park, &Facts::none());
-        let commented = |h: &Harness| {
-            h.client
-                .list_issue_comments(&repo(), 1)
-                .expect("read the thread")
-                .iter()
-                .any(|c| c.body.contains("which of the two backoffs"))
-        };
 
-        // Both halves land ⇒ delivered.
         let clean = park_harness();
         assert!(park(&clean), "a whole park is delivered");
         assert!(clean.client.has_label(1, AWAITING_LABEL));
-        assert!(commented(&clean));
+        assert!(!clean.client.has_label(1, CLAIMED_LABEL));
+        assert!(
+            !clean
+                .client
+                .actions()
+                .iter()
+                .any(|a| matches!(a, Action::Comment { .. } | Action::State { .. })),
+            "the park ran no hook action: {:?}",
+            clean.client.actions()
+        );
 
-        // The extras cannot post ⇒ undelivered, even though the park itself landed.
-        let no_extras = park_harness();
-        no_extras.client.fail("post comment");
-        assert!(!park(&no_extras), "a half-applied park is not delivered");
-        assert!(no_extras.client.has_label(1, AWAITING_LABEL));
-
-        // The park's own first call fails ⇒ undelivered, `afkd/claimed` still
-        // standing — AND the extras still ran, which is the short-circuit trap.
         let no_park = park_harness();
         no_park.client.fail("add label");
         assert!(!park(&no_park), "an unparked issue is not delivered");
@@ -1499,26 +1415,11 @@ mod tests {
             no_park.client.has_label(1, CLAIMED_LABEL),
             "the failed swap left the re-pick guard on the issue",
         );
-        assert!(
-            commented(&no_park),
-            "the extras must not be short-circuited away by the failed park",
-        );
     }
 
     #[test]
     fn a_parked_issue_is_reclaimed_only_after_a_human_replies() {
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![
-                    LifecycleAction::AssignMe,
-                    LifecycleAction::LabelAdd("afkd/claimed".into()),
-                ],
-                vec![],
-                vec![],
-            ),
-            "me",
-        );
+        let h = Harness::new(cfg("acme/widgets"), "me");
         // A parked issue: source + awaiting labels; the bot's question is the last word.
         h.client
             .add_issue(1, "Fix", "do it", &["afkd/ready", "afkd/awaiting-reply"]);
@@ -1555,15 +1456,7 @@ mod tests {
     /// not a re-derivation of it.
     #[test]
     fn an_unparked_issues_brief_carries_the_replies_and_their_authors() {
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![LifecycleAction::LabelAdd("afkd/claimed".into())],
-                vec![],
-                vec![],
-            ),
-            "me",
-        );
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(
             1,
             "Retry storm on token expiry",
@@ -1608,15 +1501,7 @@ mod tests {
     /// byte-identical to the pre-attribution title/body shape — no empty heading.
     #[test]
     fn a_first_claims_brief_gains_no_comments_section() {
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![LifecycleAction::LabelAdd("afkd/claimed".into())],
-                vec![],
-                vec![],
-            ),
-            "me",
-        );
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client
             .add_issue(1, "Fix the flag", "It is spelled wrong.", &["afkd/ready"]);
         // A human comment exists, but a non-parked issue never reads them.
@@ -1634,15 +1519,7 @@ mod tests {
         // by a human) is still discovered via `afkd/awaiting-reply` and re-claimed
         // once a human replies. Before the fix it was invisible to the poll (the
         // trigger only listed source-labelled issues) and re-arm never fired.
-        let h = Harness::new(
-            cfg(
-                "acme/widgets",
-                vec![LifecycleAction::LabelAdd("afkd/claimed".into())],
-                vec![],
-                vec![],
-            ),
-            "me",
-        );
+        let h = Harness::new(cfg("acme/widgets"), "me");
         // ONLY the awaiting label — no `afkd/ready`.
         h.client
             .add_issue(1, "Fix", "do it", &["afkd/awaiting-reply"]);
@@ -1663,12 +1540,11 @@ mod tests {
 
     // --- The `discuss_with` tail gate (the grooming loop) ---
 
-    /// The base config with the tail gate set, and the claim's own label add as
-    /// `on_claim` so a claim is visible in the recorded actions.
+    /// The base config with the tail gate set.
     fn discuss_cfg(dw: DiscussWith) -> GiteaConfig {
         GiteaConfig {
             discuss_with: Some(dw),
-            ..cfg("acme/widgets", vec![], vec![], vec![])
+            ..cfg("acme/widgets")
         }
     }
 
@@ -1741,7 +1617,7 @@ mod tests {
 
         // The contrast that names the bug: the same fixture with the gate unset is
         // claimed on the spot, no last-speaker test at all.
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         seed(&h);
         assert!(
             h.poll().expect("no fatal claim verdict").is_some(),
@@ -1869,7 +1745,7 @@ mod tests {
         // The default path's forge traffic is pinned: with the gate unset, the
         // **candidate scan** reads no comments at all — the one read a claimed
         // candidate costs is the claim's own re-read, which every claim pays.
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client
             .add_issue_assigned(1, "Fix the flag", "It is spelled wrong.", &[], &["me"]);
         h.client.add_comment_body(1, 10, "alice", REPLY, 100);
@@ -1883,7 +1759,7 @@ mod tests {
 
         // Not a vacuous counter: the awaiting-reply re-arm path reads the tail
         // *before* claiming, so it costs a second one.
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(
             2,
             "Fix the flag",
@@ -2024,21 +1900,45 @@ mod tests {
 
     #[test]
     fn a_speaking_turn_posts_no_backstop() {
-        // The diff really keys on a NEW self-authored comment: a lifecycle `comment`
-        // is afkd speaking, so the backstop stands down and the turn posts once.
-        let config = GiteaConfig {
-            on_done: vec![LifecycleAction::Comment("Fixed in @{run:duration}.".into())],
-            ..discuss_cfg(DiscussWith::Anyone)
-        };
-        let h = Harness::new(config, "me");
+        // The diff really keys on a NEW self-authored comment: the agent answering
+        // through the skill during the run is afkd speaking, so the backstop stands
+        // down and the turn posts once.
+        let h = Harness::new(discuss_cfg(DiscussWith::Anyone), "me");
+        h.client
+            .add_issue_assigned(1, "Retry storm", "It retries forever.", &[], &["me"]);
+        h.client.add_comment_body(1, 10, "álvaro", REPLY, 100);
+
+        let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
+        h.client
+            .post_comment(&repo(), 1, "Exponential it is — capped at 30s.")
+            .unwrap();
+        h.finish(&unit, UnitOutcome::Clean, &Facts::none());
+
+        assert_eq!(
+            comments_posted(&h, 1),
+            vec!["Exponential it is — capped at 30s."]
+        );
+    }
+
+    /// afkd runs `on_done` after `finish`, so a comment the hook calls for lands after
+    /// the backstop rather than standing it down: the silent turn still ends with afkd's
+    /// word, and the hook's text follows it verbatim.
+    #[test]
+    fn a_post_run_hooks_comment_lands_after_the_backstop() {
+        let h = Harness::new(discuss_cfg(DiscussWith::Anyone), "me");
         h.client
             .add_issue_assigned(1, "Retry storm", "It retries forever.", &[], &["me"]);
         h.client.add_comment_body(1, 10, "álvaro", REPLY, 100);
 
         let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
         h.finish(&unit, UnitOutcome::Clean, &Facts::none());
+        h.act(&unit, LifecycleAction::Comment("Fixed in 3m 12s.".into()))
+            .unwrap();
 
-        assert_eq!(comments_posted(&h, 1), vec!["Fixed in 0ms."]);
+        assert_eq!(
+            comments_posted(&h, 1),
+            vec!["reviewed, nothing to add", "Fixed in 3m 12s."]
+        );
     }
 
     #[test]
@@ -2079,7 +1979,7 @@ mod tests {
 
     #[test]
     fn the_wire_unit_carries_the_built_ins_key_thread_env_and_layout() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         let mut unit = unit(4);
         unit.claim_id = 1_000_001;
         unit.before_comments = vec![41, 42];
@@ -2127,36 +2027,16 @@ mod tests {
     fn an_unparseable_repo_claims_nothing() {
         // A `repo` with no `owner/name` shape and no `org` degrades to an empty org
         // target: a poll resolves no repos and claims nothing (rather than panicking).
-        let h = Harness::new(cfg("not-a-repo", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("not-a-repo"), "me");
         h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
         assert!(h.poll().expect("no fatal claim verdict").is_none());
-    }
-
-    #[test]
-    fn an_on_claim_failure_is_logged_but_the_issue_is_still_taken_on() {
-        // `on_claim` runs after a won claim; a failure there is logged and swallowed,
-        // and the unit is still returned (the claim is not rolled back). Use a
-        // `close` on_claim the claim itself does not perform and fail that stage.
-        let h = Harness::new(
-            cfg("acme/widgets", vec![LifecycleAction::Close], vec![], vec![]),
-            "me",
-        );
-        h.client.add_issue(1, "Fix", "do it", &["afkd/ready"]);
-        h.client.fail("set state");
-
-        let unit = h
-            .poll()
-            .expect("no fatal claim verdict")
-            .expect("claimed anyway");
-        assert_eq!(unit.number, 1);
-        assert!(!h.diag.lines().is_empty());
     }
 
     #[test]
     fn a_bodyless_issue_briefs_with_just_the_title() {
         // An issue whose body is blank writes the title alone as the brief (no
         // trailing blank line + empty body).
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         let bare = Unit {
             body: "   ".into(),
             title: "Just a title".into(),
@@ -2198,7 +2078,7 @@ mod tests {
     /// first the budget turns away — and nothing after it is posted to either.
     #[test]
     fn the_poll_budget_ends_the_scan_and_says_so() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.set_clock(T);
         for n in 1..=25 {
             h.client.add_issue(
@@ -2246,7 +2126,7 @@ mod tests {
     /// beat rather than risk a marker the call could not see through.
     #[test]
     fn a_scan_with_less_than_the_claim_reserve_left_posts_no_claim() {
-        let h = Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg("acme/widgets"), "me");
         h.client.add_issue(
             7,
             "Fix the 修复 path — 🚨",
@@ -2282,7 +2162,7 @@ mod tests {
     fn a_candidate_short_of_the_claim_reserve_after_ensuring_labels_posts_none() {
         let h = Harness {
             clock: FakeClock::ticking(Duration::from_secs(2)),
-            ..Harness::new(cfg("acme/widgets", vec![], vec![], vec![]), "me")
+            ..Harness::new(cfg("acme/widgets"), "me")
         };
         h.client.add_issue(
             7,

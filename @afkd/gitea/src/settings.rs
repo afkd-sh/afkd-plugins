@@ -1,23 +1,19 @@
-//! Read the `gitea_issue` and `gitea_pr` kinds' settings blocks — as afkd lowers them to
-//! JSON in `hello` — into a typed [`GiteaConfig`], and wire their lifecycle moments to the
-//! action vocabulary.
+//! Read the `issue` and `pr` kinds' settings blocks — as afkd lowers them to JSON in
+//! `hello` — into a typed [`GiteaConfig`].
 //!
-//! afkd has already held the block to the manifest before this plugin is spawned: every
-//! key is one the kind's manifest table declares, `token` is present, only `discuss_with`
-//! is written twice, and only the `on_*` keys carry a block. What is left here is the
-//! part a manifest cannot say — exactly one of `repo`/`org`, a label action naming one
-//! label, a `comment` carrying text, a `discuss_with` naming someone, and `@{run:…}`
-//! legality per moment — in the built-in trigger's own sentences. The cadence and the
-//! attempt bound (`poll_interval`, `max_attempts`, `follow_comments`) are afkd's and are
-//! not read here.
+//! afkd has already typed the block against the manifest before this plugin is spawned:
+//! every key is one the kind declares, `token` is present, and each value is of its
+//! declared type. What is left here is the part a manifest cannot say — exactly one of
+//! `repo`/`org`, and a `discuss_with` naming someone — in the built-in trigger's own
+//! sentences. The cadence and the attempt bound (`poll_interval`, `max_attempts`,
+//! `follow_comments`) are afkd's and are not read here, and the hooks never arrive here at
+//! all: afkd runs them, and each action they call is one `call` ([`crate::lifecycle`]).
 //!
-//! The lowering (afkd's `pluginworker::settings_json`): a value is a string, several are
-//! an array of strings, a bare flag is `true`, a block is an object (a value beside it
-//! rides as `@value`), and a repeatable key is always an array.
+//! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a `bool` its
+//! word `true` or `false`, a duration its largest whole unit), and a `list[…]` its items —
+//! an array of them, possibly nested one deep, or the one item alone.
 
 use serde_json::{Map, Value};
-
-use crate::lifecycle::{parse_block, LifecycleAction};
 
 /// Whose comment counts as a reply on the `discuss_with` tail gate: plain Gitea logins
 /// (a comment author *is* a login), or anyone but the bot.
@@ -29,7 +25,7 @@ pub(crate) enum DiscussWith {
     Logins(Vec<String>),
 }
 
-/// A validated `gitea_issue` or `gitea_pr` trigger configuration. The keys one kind
+/// A validated `issue` or `pr` trigger configuration. The keys one kind
 /// does not declare stay at their defaults for the other.
 ///
 /// `Debug` is **hand-written** so the `token` never reaches a diagnostic.
@@ -45,17 +41,8 @@ pub(crate) struct GiteaConfig {
     pub(crate) token: String,
     /// The eligibility source label (empty when not given).
     pub(crate) source_label: String,
-    /// Restrict the PR kind to the bot's own PRs (the `author_me` flag).
+    /// Restrict the PR kind to the bot's own PRs (the `author_me` setting).
     pub(crate) author_me: bool,
-    /// Actions performed when work on an issue begins.
-    pub(crate) on_claim: Vec<LifecycleAction>,
-    /// Actions performed when an issue's work finishes successfully.
-    pub(crate) on_done: Vec<LifecycleAction>,
-    /// Actions performed when an issue's work fails.
-    pub(crate) on_fail: Vec<LifecycleAction>,
-    /// Actions performed when an issue **parks** awaiting human input. The trigger manages
-    /// the `afkd/awaiting-reply` label itself; these are optional extras.
-    pub(crate) on_park: Vec<LifecycleAction>,
     /// The comment-tail claim gate. `None` is the unset key — the claim path reads no
     /// comments outside the awaiting-reply re-arm.
     pub(crate) discuss_with: Option<DiscussWith>,
@@ -73,10 +60,6 @@ impl std::fmt::Debug for GiteaConfig {
             .field("token", &redact(&self.token))
             .field("source_label", &self.source_label)
             .field("author_me", &self.author_me)
-            .field("on_claim", &self.on_claim)
-            .field("on_done", &self.on_done)
-            .field("on_fail", &self.on_fail)
-            .field("on_park", &self.on_park)
             .field("discuss_with", &self.discuss_with)
             .finish()
     }
@@ -107,90 +90,81 @@ impl std::fmt::Display for SettingsError {
     }
 }
 
-// The built-in's vocabulary, verbatim. afkd reads the manifest, never these: they are
-// what `manifest.rs`'s test holds `afkd-plugin.toml` to, so the two cannot drift apart.
-
-/// The `gitea_issue` kind's full key set, exactly the built-in's `ALLOWED_ISSUE_KEYS`.
+/// One setting as the manifest declares it: its name, its `type`, and its other keys
+/// with their values as the manifest spells them (`("default", "\"30s\"")`).
 #[cfg(test)]
-pub(crate) const ALLOWED_ISSUE_KEYS: &[&str] = &[
-    "base_url",
-    "repo",
-    "org",
-    "token",
-    "source_label",
-    "discuss_with",
-    "follow_comments",
-    "max_attempts",
-    "poll_interval",
-    "on_claim",
-    "on_done",
-    "on_fail",
-    "on_park",
+pub(crate) type Declared = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+/// The `issue` kind's settings as the manifest declares them, in its order: each name, its
+/// `type`, and its other keys spelled as the manifest spells their values. afkd reads the
+/// manifest, never this: it is what `manifest.rs`'s test holds `afkd-plugin.toml` to, so
+/// the two cannot drift apart.
+///
+/// The last three are afkd's own claim keys, declared exactly as afkd declares them for
+/// every claiming kind; afkd's declaration is the one that applies.
+#[cfg(test)]
+pub(crate) const ISSUE_SETTINGS: &[Declared] = &[
+    ("base_url", "string", &[]),
+    ("repo", "string", &[]),
+    ("org", "string", &[]),
+    ("token", "string", &[("required", "true")]),
+    ("source_label", "string", &[]),
+    ("discuss_with", "list[string]", &[]),
+    ("follow_comments", "duration", &[("jitter", "true")]),
+    ("max_attempts", "int", &[("default", "1")]),
+    (
+        "poll_interval",
+        "duration",
+        &[("jitter", "true"), ("default", "\"30s\"")],
+    ),
 ];
 
-/// The keys a `gitea_issue` block may write more than once: the one login list.
+/// The `pr` kind's settings, as [`ISSUE_SETTINGS`] lists the issue kind's: the shared keys
+/// with `author_me` in place of `source_label` and `discuss_with`.
 #[cfg(test)]
-pub(crate) const REPEATABLE_ISSUE_KEYS: &[&str] = &["discuss_with"];
-
-/// The keys afkd reads as a duration, compared by value across a reload.
-#[cfg(test)]
-pub(crate) const DURATION_KEYS: &[&str] = &["poll_interval", "follow_comments"];
-
-/// The keys the block must carry. The built-in requires the forge `token` (it flows
-/// config → child env with no process-env fallback).
-#[cfg(test)]
-pub(crate) const REQUIRED_ISSUE_KEYS: &[&str] = &["token"];
-
-/// The `gitea_pr` kind's full key set, exactly the built-in's `ALLOWED_PR_KEYS`:
-/// the shared keys plus `author_me` (and, notably, **not** `source_label`).
-#[cfg(test)]
-pub(crate) const ALLOWED_PR_KEYS: &[&str] = &[
-    "base_url",
-    "repo",
-    "org",
-    "token",
-    "author_me",
-    "follow_comments",
-    "max_attempts",
-    "poll_interval",
-    "on_claim",
-    "on_done",
-    "on_fail",
+pub(crate) const PR_SETTINGS: &[Declared] = &[
+    ("base_url", "string", &[]),
+    ("repo", "string", &[]),
+    ("org", "string", &[]),
+    ("token", "string", &[("required", "true")]),
+    ("author_me", "bool", &[("default", "false")]),
+    ("follow_comments", "duration", &[("jitter", "true")]),
+    ("max_attempts", "int", &[("default", "1")]),
+    (
+        "poll_interval",
+        "duration",
+        &[("jitter", "true"), ("default", "\"30s\"")],
+    ),
 ];
 
-/// The keys a `gitea_pr` block may write more than once: none.
-#[cfg(test)]
-pub(crate) const REPEATABLE_PR_KEYS: &[&str] = &[];
-
-/// The keys a `gitea_pr` block must carry: the forge `token`, as for `gitea_issue`.
-#[cfg(test)]
-pub(crate) const REQUIRED_PR_KEYS: &[&str] = &["token"];
-
-/// Read the lowered `settings` into a [`GiteaConfig`] for the `gitea_issue` kind, or report
-/// the first setting it cannot use.
+/// Read the lowered `settings` into a [`GiteaConfig`] for the `issue` kind, or report the
+/// first setting it cannot use.
 pub(crate) fn issue_config(settings: &Value) -> Result<GiteaConfig, SettingsError> {
     let empty = Map::new();
     let settings = settings.as_object().unwrap_or(&empty);
     let mut cfg = shared_config(settings)?;
     cfg.source_label = opt_scalar(settings, "source_label");
-    cfg.on_park = parse_block(settings.get("on_park"), true)?;
     cfg.discuss_with = parse_discuss_with(settings)?;
     Ok(cfg)
 }
 
-/// Read the lowered `settings` into a [`GiteaConfig`] for the `gitea_pr` kind, or
-/// report the first setting it cannot use. `author_me` is a flag: its presence is the
-/// setting, whatever it carries.
+/// Read the lowered `settings` into a [`GiteaConfig`] for the `pr` kind, or report the
+/// first setting it cannot use. `author_me` is a `bool`, which afkd lowers to its word:
+/// `"true"` turns it on, and `"false"` or its absence leaves it off.
 pub(crate) fn pr_config(settings: &Value) -> Result<GiteaConfig, SettingsError> {
     let empty = Map::new();
     let settings = settings.as_object().unwrap_or(&empty);
     let mut cfg = shared_config(settings)?;
-    cfg.author_me = settings.contains_key("author_me");
+    cfg.author_me = opt_scalar(settings, "author_me") == "true";
     Ok(cfg)
 }
 
-/// The keys both kinds carry: the target (exactly one of `repo`/`org`), the forge
-/// coordinates, and the three lifecycle moments they share.
+/// The keys both kinds carry: the target (exactly one of `repo`/`org`) and the forge
+/// coordinates.
 fn shared_config(settings: &Map<String, Value>) -> Result<GiteaConfig, SettingsError> {
     let repo = opt_scalar(settings, "repo");
     let org = opt_scalar(settings, "org");
@@ -200,18 +174,13 @@ fn shared_config(settings: &Map<String, Value>) -> Result<GiteaConfig, SettingsE
         repo,
         org,
         token: opt_scalar(settings, "token"),
-        // `on_claim` runs before any fire, so a `@{run:…}` reference is illegal there;
-        // the post-run moments receive the attempt's real facts.
-        on_claim: parse_block(settings.get("on_claim"), false)?,
-        on_done: parse_block(settings.get("on_done"), true)?,
-        on_fail: parse_block(settings.get("on_fail"), true)?,
         ..GiteaConfig::default()
     })
 }
 
 /// A lowered entry's **value** — the entry itself, or the `@value` beside a block — as
 /// the built-in reads a value regardless of any block written with it.
-pub(crate) fn inline(entry: &Value) -> Option<&Value> {
+fn inline(entry: &Value) -> Option<&Value> {
     match entry {
         Value::Object(block) => block.get("@value"),
         value => Some(value),
@@ -316,7 +285,24 @@ mod tests {
         assert_eq!(cfg.token, "PAT");
         assert_eq!(cfg.source_label, "afkd/ready");
         assert_eq!(cfg.discuss_with, None);
-        assert!(cfg.on_claim.is_empty() && cfg.on_park.is_empty());
+    }
+
+    /// The hooks are afkd's and never cross in `settings`; a proto 1-shaped leftover that
+    /// did — an `on_claim` block, a bare `on_done`, a `@{run:…}` comment — is ignored, not
+    /// a fault, on either kind.
+    #[test]
+    fn hook_keys_in_settings_are_ignored() {
+        let hooks = json!({
+            "on_claim": {"assign_me": [true], "comment": ["claimed at @{run:cost}"]},
+            "on_done": true,
+            "on_fail": [{"label_remove": ["afkd/claimed"]}],
+            "on_park": {"label_add": [true]},
+        });
+        assert_eq!(
+            issue_config(&block(hooks.clone())),
+            issue_config(&block(json!({})))
+        );
+        assert_eq!(pr_config(&block(hooks)), pr_config(&block(json!({}))));
     }
 
     #[test]
@@ -390,103 +376,6 @@ mod tests {
         assert!(issue_config(&json!({"repo": true, "token": "t"})).is_err());
     }
 
-    /// Each moment reaches the parser under its own `run_refs_allowed`, into its own
-    /// field: `on_claim` before any fire, the three post-run moments after one.
-    #[test]
-    fn lifecycle_blocks_wire_each_moment_to_its_run_ref_rule() {
-        let terminal = "done in @{run:duration} — log @{run:name}";
-        let cfg = issue_config(&block(json!({
-            "on_claim": {"assign_me": [true], "label_add": ["afkd/claimed"]},
-            "on_fail": {"label_remove": ["afkd/claimed"], "unassign": [true]},
-            "on_done": {"close": [true], "comment": [terminal]},
-            "on_park": {"comment": [terminal]},
-        })))
-        .expect("valid");
-        assert_eq!(
-            cfg.on_claim,
-            vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelAdd("afkd/claimed".into()),
-            ]
-        );
-        assert_eq!(
-            cfg.on_fail,
-            vec![
-                LifecycleAction::LabelRemove("afkd/claimed".into()),
-                LifecycleAction::Unassign,
-            ]
-        );
-        // `close` was written first, but the canonical order says something before it
-        // closes the issue.
-        assert_eq!(
-            cfg.on_done,
-            vec![
-                LifecycleAction::Comment(terminal.into()),
-                LifecycleAction::Close,
-            ]
-        );
-        assert_eq!(cfg.on_park, vec![LifecycleAction::Comment(terminal.into())]);
-
-        let err = issue_config(&block(json!({"on_claim": {"comment": [terminal]}}))).unwrap_err();
-        assert_eq!(err.key, "comment");
-        assert!(
-            err.problem.contains("no run happens at claim time"),
-            "{}",
-            err.problem
-        );
-    }
-
-    #[test]
-    fn a_run_reference_in_a_terminal_comment_parses() {
-        let cfg = issue_config(&block(json!({
-            "on_done": {"comment": ["done in @{run:duration} — @{run:cost}"]},
-        })))
-        .expect("valid");
-        assert_eq!(
-            cfg.on_done,
-            vec![LifecycleAction::Comment(
-                "done in @{run:duration} — @{run:cost}".into()
-            )]
-        );
-    }
-
-    #[test]
-    fn on_park_parses_for_issues() {
-        let cfg = issue_config(&block(json!({
-            "on_park": {"label_add": ["afkd/awaiting-reply"], "unassign": [true]},
-        })))
-        .expect("valid");
-        assert_eq!(
-            cfg.on_park,
-            vec![
-                LifecycleAction::LabelAdd("afkd/awaiting-reply".into()),
-                LifecycleAction::Unassign,
-            ]
-        );
-    }
-
-    #[test]
-    fn on_done_performs_two_label_adds_in_source_order() {
-        let cfg = issue_config(&block(json!({
-            "on_done": {
-                "label_add": ["shipped", "reviewed ✅"],
-                "comment": ["landed in @{run:duration}", "see the run log"],
-                "close": [true],
-            },
-        })))
-        .expect("a repeated lifecycle action is legal");
-        assert_eq!(
-            cfg.on_done,
-            vec![
-                LifecycleAction::LabelAdd("shipped".into()),
-                LifecycleAction::LabelAdd("reviewed ✅".into()),
-                LifecycleAction::Comment("landed in @{run:duration}".into()),
-                LifecycleAction::Comment("see the run log".into()),
-                LifecycleAction::Close,
-            ]
-        );
-    }
-
     /// A value beside a block rides as `@value`; the built-in reads the value whatever
     /// block was written with it, and so does this.
     #[test]
@@ -501,28 +390,20 @@ mod tests {
         assert_eq!(cfg.discuss_with, Some(DiscussWith::Anyone));
     }
 
-    /// `author_me` is a flag: absent reads false, and any lowering of a present key —
-    /// the bare flag, a repeated one, a value beside a block — reads true.
+    /// `author_me` is a typed `bool`, which afkd lowers to its word: `"true"` is on, and
+    /// `"false"` — the manifest's default — or an absent key is off. Presence alone no
+    /// longer turns it on.
     #[test]
-    fn pr_config_reads_author_me_as_presence() {
-        assert!(!pr_config(&block(json!({}))).unwrap().author_me);
-        for flag in [
-            json!(true),
-            json!([true]),
-            json!({"@value": true}),
-            json!("yes"),
-        ] {
-            assert!(
-                pr_config(&block(json!({ "author_me": flag.clone() })))
-                    .unwrap()
-                    .author_me,
-                "{flag}"
-            );
-        }
+    fn author_me_reads_the_lowered_bool() {
+        let author_me = |extra: Value| pr_config(&block(extra)).unwrap().author_me;
+        assert!(author_me(json!({"author_me": "true"})));
+        assert!(author_me(json!({"author_me": {"@value": "true"}})));
+        assert!(!author_me(json!({"author_me": "false"})));
+        assert!(!author_me(json!({})));
     }
 
-    /// The PR kind holds the rules it shares with `gitea_issue` in the same sentences, and
-    /// reads none of the keys only `gitea_issue` declares.
+    /// The PR kind holds the rules it shares with the issue kind in the same sentences,
+    /// and reads none of the keys only the issue kind declares.
     #[test]
     fn pr_config_holds_the_shared_rules() {
         let err = pr_config(&json!({"token": "t"})).unwrap_err();
@@ -542,58 +423,23 @@ mod tests {
                 "a gitea trigger takes exactly one of `repo` or `org` (both were set)"
             )
         );
-        let err = pr_config(&block(
-            json!({"on_claim": {"comment": ["spent @{run:cost}"]}}),
-        ))
-        .unwrap_err();
-        assert_eq!(err.key, "comment");
-        assert!(
-            err.problem.contains("no run happens at claim time"),
-            "{}",
-            err.problem
-        );
 
         let cfg = pr_config(&json!({
             "base_url": "https://gitea.example.com",
             "org": "acme",
             "token": "PAT",
-            "on_claim": {"assign_me": [true], "label_add": ["afkd/working"]},
-            "on_done": {"comment": ["round done in @{run:duration} 🚀"]},
-            "on_fail": {"label_remove": ["afkd/working"], "unassign": [true]},
             // Not the PR kind's keys: afkd's manifest check refuses them before a
             // `hello`, and were one to reach here it is not read.
             "source_label": "afkd/ready",
             "discuss_with": ["anyone"],
-            "on_park": {"close": [true]},
         }))
         .expect("valid");
         assert_eq!(
             (cfg.base_url.as_str(), cfg.org.as_str(), cfg.repo.as_str()),
             ("https://gitea.example.com", "acme", "")
         );
-        assert_eq!(
-            cfg.on_claim,
-            vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelAdd("afkd/working".into()),
-            ]
-        );
-        assert_eq!(
-            cfg.on_done,
-            vec![LifecycleAction::Comment(
-                "round done in @{run:duration} 🚀".into()
-            )]
-        );
-        assert_eq!(
-            cfg.on_fail,
-            vec![
-                LifecycleAction::LabelRemove("afkd/working".into()),
-                LifecycleAction::Unassign,
-            ]
-        );
         assert_eq!(cfg.source_label, "");
         assert_eq!(cfg.discuss_with, None);
-        assert!(cfg.on_park.is_empty());
         assert!(!cfg.author_me);
     }
 

@@ -1,92 +1,172 @@
 name = "@afkd/gitea"
-version = "0.1.0"
-proto = 1
+version = "0.2.0"
+proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-gitea"
 
-# The issue kind: the vocabulary of afkd's retired built-in Gitea issue trigger, key for key.
-[[trigger]]
-kind = "gitea_issue"
-settings = [
-  "base_url",
-  "repo",
-  "org",
-  "token",
-  "source_label",
-  "discuss_with",
-  "follow_comments",
-  "max_attempts",
-  "poll_interval",
-  "on_claim",
-  "on_done",
-  "on_fail",
-  "on_park",
-]
-required = ["token"]
-repeatable = ["discuss_with"]
-durations = ["poll_interval", "follow_comments"]
-run_kind = "issue"
-display_name = "Gitea issues"
-info_keys = []
+# The issue kind, `service(gitea)` in a config: a repository's (or an org's) issues, claimed
+# one per run.
+[[kind]]
+name = "issue"
+role = "trigger"
+main = true
+claims = true
 
-[[trigger.block]]
-path = "on_claim"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "base_url"
+  type = "string"
 
-[[trigger.block]]
-path = "on_done"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "repo"
+  type = "string"
 
-[[trigger.block]]
-path = "on_fail"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "org"
+  type = "string"
 
-[[trigger.block]]
-path = "on_park"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "token"
+  type = "string"
+  required = true
 
-# The pull-request kind: the retired built-in Gitea PR trigger's vocabulary, key for key —
-# the issue kind's keys with `author_me` in place of `source_label` and `discuss_with`, and
-# no `on_park`.
-[[trigger]]
-kind = "gitea_pr"
-settings = [
-  "base_url",
-  "repo",
-  "org",
-  "token",
-  "author_me",
-  "follow_comments",
-  "max_attempts",
-  "poll_interval",
-  "on_claim",
-  "on_done",
-  "on_fail",
-]
-required = ["token"]
-repeatable = []
-durations = ["poll_interval", "follow_comments"]
-run_kind = "pr"
-display_name = "Gitea PRs"
-info_keys = []
+  [[kind.setting]]
+  name = "source_label"
+  type = "string"
 
-[[trigger.block]]
-path = "on_claim"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "discuss_with"
+  type = "list[string]"
 
-[[trigger.block]]
-path = "on_done"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  # These three afkd reads itself, as it declares them for every claiming kind.
+  [[kind.setting]]
+  name = "follow_comments"
+  type = "duration"
+  jitter = true
 
-[[trigger.block]]
-path = "on_fail"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "max_attempts"
+  type = "int"
+  default = 1
+
+  [[kind.setting]]
+  name = "poll_interval"
+  type = "duration"
+  jitter = true
+  default = "30s"
+
+  # afkd runs the hooks; each action one of them calls is one `call` to this plugin.
+  [[kind.hook]]
+  name = "on_claim"
+  when = "pre"
+
+  [[kind.hook]]
+  name = "on_done"
+  when = "post"
+
+  [[kind.hook]]
+  name = "on_fail"
+  when = "post"
+
+  [[kind.hook]]
+  name = "on_park"
+  when = "post"
+
+# The pull-request kind, `service(gitea.pr)` in a config: the review loop over a
+# repository's (or an org's) pull requests. It has `author_me` in place of `source_label`
+# and `discuss_with`, and never parks.
+[[kind]]
+name = "pr"
+role = "trigger"
+claims = true
+
+  [[kind.setting]]
+  name = "base_url"
+  type = "string"
+
+  [[kind.setting]]
+  name = "repo"
+  type = "string"
+
+  [[kind.setting]]
+  name = "org"
+  type = "string"
+
+  [[kind.setting]]
+  name = "token"
+  type = "string"
+  required = true
+
+  [[kind.setting]]
+  name = "author_me"
+  type = "bool"
+  default = false
+
+  # These three afkd reads itself, as it declares them for every claiming kind.
+  [[kind.setting]]
+  name = "follow_comments"
+  type = "duration"
+  jitter = true
+
+  [[kind.setting]]
+  name = "max_attempts"
+  type = "int"
+  default = 1
+
+  [[kind.setting]]
+  name = "poll_interval"
+  type = "duration"
+  jitter = true
+  default = "30s"
+
+  [[kind.hook]]
+  name = "on_claim"
+  when = "pre"
+
+  [[kind.hook]]
+  name = "on_done"
+  when = "post"
+
+  [[kind.hook]]
+  name = "on_fail"
+  when = "post"
+
+# The actions a hook calls, each on the claimed issue or pull request.
+[[action]]
+name = "assign_me"
+
+[[action]]
+name = "unassign"
+
+[[action]]
+name = "label_add"
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+[[action]]
+name = "label_remove"
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+[[action]]
+name = "close"
+
+[[action]]
+name = "comment"
+
+  [[action.param]]
+  name = "text"
+  type = "string"
+  required = true
+
+# `gitea.me`: the login the token authenticates as, for a hook's comment or label.
+[[value]]
+name = "me"
+type = "string"

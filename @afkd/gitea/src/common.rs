@@ -1,9 +1,9 @@
 //! Drive scaffolding both kinds are built from (ADR-0031): the target, the call budget and
-//! the poll's scan budget, the env spellings, the
-//! credentials-env builder, the lifecycle-action executor over the [`GiteaClient`] seam,
-//! the **claim** — a `[afkd-claim]` marker comment decided by [`crate::claim`]'s pure
-//! winner rule — and the three seams the rest is written against: the [`Clock`] the
-//! claim settles on, the [`Diag`] sink diagnostics go to, and the [`ClaimFault`] verdict.
+//! the poll's scan budget, the env spellings, the credentials-env builder, the one-action
+//! executor behind `call` over the [`GiteaClient`] seam, the **claim** — a `[afkd-claim]`
+//! marker comment decided by [`crate::claim`]'s pure winner rule — and the three seams the
+//! rest is written against: the [`Clock`] the claim settles on, the [`Diag`] sink
+//! diagnostics go to, and the [`ClaimFault`] verdict.
 //!
 //! Ported from afkd's `crates/gitea/src/common.rs`. The claim is a marker, not an
 //! assignee: Gitea's assignee write is a *replace set*, so an assign-and-re-read claim
@@ -11,7 +11,7 @@
 //! written into the issue's append-only comment log, settled, re-read, and won iff a pure
 //! function of that shared list names us. The assignee and the `afkd/claimed` label are
 //! **visible status**, written after the claim is decided; the label is also the re-pick
-//! gate, so the plugin — not a user's `on_claim` list — adds it.
+//! gate, so the plugin — not a user's `on_claim` hook — adds it.
 //!
 //! One thing the built-in has and this does not: afkd's stop. The plugin cannot see it,
 //! so a claim never abandons mid-settle; afkd hands a unit polled during a stop straight
@@ -29,12 +29,10 @@ use crate::claim::{
 use crate::client::{GiteaClient, GiteaError, IssueComment, Label, Repo};
 use crate::feedback::FeedbackItem;
 use crate::lifecycle::LifecycleAction;
-use crate::run_ref;
 use crate::settings::GiteaConfig;
-use crate::wire::Facts;
 
-/// The in-progress label the claim adds (and `on_fail` removes by id). A fixed internal
-/// name, like the `[afkd-claim]` marker. It is also the **re-pick gate** the kind's
+/// The in-progress label the claim adds (and a hook's `label_remove` removes by id). A
+/// fixed internal name, like the `[afkd-claim]` marker. It is also the **re-pick gate** the kind's
 /// `eligible` reads, so the plugin creates it in a repository that does not define it
 /// ([`ensure_labels`]) — Gitea would otherwise drop the write and re-claim the unit on
 /// every poll, forever.
@@ -42,7 +40,7 @@ pub(crate) const CLAIMED_LABEL: &str = "afkd/claimed";
 
 /// The label added when a run **parks** an issue awaiting human input, and removed again
 /// on the next claim. Managed by the plugin itself so the awaiting state stays
-/// authoritative regardless of any user `on_park` actions.
+/// authoritative regardless of what a user's `on_park` hook does.
 pub(crate) const AWAITING_LABEL: &str = "afkd/awaiting-reply";
 
 /// The colour every afkd-managed label is created with (`CreateLabelOption` requires a
@@ -374,27 +372,10 @@ pub(crate) fn claim_label_fault(
     }
 }
 
-/// Run a lifecycle moment's actions in order, stopping at the first failure, which is
-/// returned for the caller to log. `facts` are what the finishing run did (the pre-run
-/// `on_claim` passes [`Facts::none`]); a `comment` interpolates its `@{run:…}`
-/// references against them.
-pub(crate) fn apply_actions(
-    client: &dyn GiteaClient,
-    repo: &Repo,
-    index: u64,
-    actions: &[LifecycleAction],
-    me: &str,
-    facts: &Facts,
-) -> Result<(), GiteaError> {
-    for action in actions {
-        do_action(client, repo, index, action, me, facts)?;
-    }
-    Ok(())
-}
-
-/// Carry out one lifecycle action against an issue.
+/// Carry out one lifecycle action against an issue — what one `call` does.
 ///
-/// `LabelRemove` resolves the name to its id and removes by id (**never** the
+/// A `Comment` posts its text as afkd sent it: any `#{…}` in it is afkd's, already
+/// interpolated. `LabelRemove` resolves the name to its id and removes by id (**never** the
 /// all-clearing bare `…/labels` path); a name that resolves to no id is a no-op.
 /// `LabelAdd` is **not** forgiving of an undefined name: Gitea drops it under a success
 /// status and the client turns that into an error.
@@ -404,7 +385,6 @@ pub(crate) fn do_action(
     index: u64,
     action: &LifecycleAction,
     me: &str,
-    facts: &Facts,
 ) -> Result<(), GiteaError> {
     match action {
         // Both assignee verbs are self-scoped: Gitea has only a replace-set `PATCH`, so
@@ -417,9 +397,7 @@ pub(crate) fn do_action(
             None => Ok(()),
         },
         LifecycleAction::Close => client.set_state(repo, index, "closed"),
-        LifecycleAction::Comment(text) => client
-            .post_comment(repo, index, &run_ref::substitute(text, facts))
-            .map(|_| ()),
+        LifecycleAction::Comment(text) => client.post_comment(repo, index, text).map(|_| ()),
     }
 }
 
@@ -970,7 +948,8 @@ mod tests {
 
     /// AC5 — releasing never clears an assignee it did not set. The reaper's release
     /// removes the status label and the crashed run's marker; a human's assignment
-    /// (and afkd's own, which only `on_fail`/park take back) is left byte-identical.
+    /// (and afkd's own, which only a hook's `unassign` or the park takes back) is left
+    /// byte-identical.
     #[test]
     fn release_claim_drops_the_label_and_marker_but_no_assignee() {
         let c = MockClient::new("me");
@@ -1031,15 +1010,7 @@ mod tests {
         let c = MockClient::new("me");
         c.add_issue_assigned(7, "T", "B", &[], &["alice"]);
 
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::AssignMe,
-            "me",
-            &Facts::none(),
-        )
-        .unwrap();
+        do_action(&c, &repo(), 7, &LifecycleAction::AssignMe, "me").unwrap();
         assert_eq!(
             c.assignees_of(7),
             vec!["alice".to_string(), "me".to_string()],
@@ -1047,29 +1018,13 @@ mod tests {
         );
 
         // Assigning again is a no-op, not a duplicate row.
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::AssignMe,
-            "me",
-            &Facts::none(),
-        )
-        .unwrap();
+        do_action(&c, &repo(), 7, &LifecycleAction::AssignMe, "me").unwrap();
         assert_eq!(
             c.assignees_of(7),
             vec!["alice".to_string(), "me".to_string()]
         );
 
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::Unassign,
-            "me",
-            &Facts::none(),
-        )
-        .unwrap();
+        do_action(&c, &repo(), 7, &LifecycleAction::Unassign, "me").unwrap();
         assert_eq!(
             c.assignees_of(7),
             vec!["alice".to_string()],
@@ -1087,7 +1042,6 @@ mod tests {
             7,
             &LifecycleAction::LabelRemove("afkd/claimed".into()),
             "me",
-            &Facts::none(),
         )
         .unwrap();
         // The recorded action names the label id, never the all-clearing bare path.
@@ -1111,7 +1065,6 @@ mod tests {
             7,
             &LifecycleAction::LabelRemove("afkd/absent".into()),
             "me",
-            &Facts::none(),
         )
         .unwrap();
         assert!(
@@ -1126,15 +1079,7 @@ mod tests {
     fn do_action_close_sets_state_closed() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &[]);
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::Close,
-            "me",
-            &Facts::none(),
-        )
-        .unwrap();
+        do_action(&c, &repo(), 7, &LifecycleAction::Close, "me").unwrap();
         assert!(c
             .actions()
             .iter()
@@ -1151,7 +1096,6 @@ mod tests {
             7,
             &LifecycleAction::Comment("handled by afkd".into()),
             "me",
-            &Facts::none(),
         )
         .unwrap();
         assert!(c.actions().iter().any(
@@ -1159,39 +1103,19 @@ mod tests {
         ));
     }
 
+    /// The text is posted byte for byte: multi-line markdown, CJK, and a literal
+    /// `#{run.x}` or `@{run:cost}` — afkd interpolates a hook's comment before it sends
+    /// the `call`, so whatever reaches here is the text.
     #[test]
-    fn do_action_comment_substitutes_run_facts() {
-        // The primary run-end proof (ADR-0064): a `@{run:…}` comment posts the rendered
-        // facts — `format_duration` output, `$<2dp>`, the bare turn count, and the
-        // finishing fire's run directory name.
+    fn do_action_comment_posts_the_text_byte_for_byte() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &[]);
-        let facts = Facts {
-            duration_ms: 5_000,
-            cost: 1.5,
-            turns: Some(3),
-            run_name: Some("260722-141802-issue-7-1".into()),
-            ..Facts::none()
-        };
-        do_action(
-            &c,
-            &repo(),
-            7,
-            &LifecycleAction::Comment(
-                "done in @{run:duration} — @{run:cost}, @{run:turns} turns — \
-                 log: .afkd/runs/afkd::selfdev/@{run:name}/run.log"
-                    .into(),
-            ),
-            "me",
-            &facts,
-        )
-        .unwrap();
+        let text = "## 完了 ✅\n\n- took 3m 12s\n- literal: #{run.x} @{run:cost}\n\n```\nok\n```";
+        do_action(&c, &repo(), 7, &LifecycleAction::Comment(text.into()), "me").unwrap();
         assert!(
             c.actions().iter().any(|a| matches!(
                 a,
-                crate::client::Action::Comment { body, .. }
-                    if body == "done in 5.00s — $1.50, 3 turns — \
-                                log: .afkd/runs/afkd::selfdev/260722-141802-issue-7-1/run.log"
+                crate::client::Action::Comment { body, .. } if body == text
             )),
             "{:?}",
             c.actions()
@@ -1199,41 +1123,29 @@ mod tests {
     }
 
     /// AC5 — a `label_add` naming a label the repository does not define is an
-    /// error, not a quiet no-op: Gitea drops the name and answers success, the client
-    /// reads the resulting list and refuses, and `apply_actions` abandons the rest of
-    /// the moment. The `close` behind it never runs, so a half-applied moment is
-    /// surfaced rather than finished.
+    /// error, not a quiet no-op: Gitea drops the name and answers success, and the
+    /// client reads the resulting list and refuses — so the `call` answers `ok:false`
+    /// and afkd fails the hook, rather than the label silently never landing.
     #[test]
-    fn a_label_add_the_forge_did_not_apply_aborts_the_moment() {
+    fn a_label_add_the_forge_did_not_apply_is_an_error() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &["afkd/ready"]);
         // `afkd/working` is never defined in this repo — the shape the docs' own
         // example config walks a user straight into.
-        let err = apply_actions(
+        let err = do_action(
             &c,
             &repo(),
             7,
-            &[
-                LifecycleAction::LabelAdd("afkd/working".into()),
-                LifecycleAction::Close,
-            ],
+            &LifecycleAction::LabelAdd("afkd/working".into()),
             "me",
-            &Facts::none(),
         )
-        .expect_err("a dropped label add is a failed moment");
+        .expect_err("a dropped label add is a failed action");
         assert_eq!(err.stage(), "add label");
         assert!(
             err.to_string().contains("afkd/working"),
             "the error names the label: {err}"
         );
         assert!(!c.has_label(7, "afkd/working"));
-        assert!(
-            !c.actions()
-                .iter()
-                .any(|a| matches!(a, Action::State { .. })),
-            "the close after the failed add never ran: {:?}",
-            c.actions()
-        );
     }
 
     /// The ensure defines what is missing and leaves what is there: both managed
@@ -1367,36 +1279,6 @@ mod tests {
                 "a blip must never take the service down"
             );
         }
-    }
-
-    #[test]
-    fn apply_actions_stops_at_the_first_failure() {
-        // A lifecycle moment's actions run in order; the first failure aborts the
-        // rest and is returned, so a half-applied moment is surfaced (not silently
-        // finished). Here the label add fails, so the following Close never runs.
-        let c = MockClient::new("me");
-        c.add_issue(7, "T", "B", &["afkd/ready"]);
-        c.fail("add label");
-        let err = apply_actions(
-            &c,
-            &repo(),
-            7,
-            &[
-                LifecycleAction::LabelAdd("afkd/claimed".into()),
-                LifecycleAction::Close,
-            ],
-            "me",
-            &Facts::none(),
-        )
-        .expect_err("the failing label add aborts the moment");
-        assert_eq!(err.stage(), "add label");
-        // The Close after the failed action never ran (no state change recorded).
-        assert!(
-            !c.actions()
-                .iter()
-                .any(|a| matches!(a, crate::client::Action::State { .. })),
-            "actions after the first failure are not applied"
-        );
     }
 
     #[test]

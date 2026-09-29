@@ -1,14 +1,15 @@
 //! The seam both kinds sit behind: what [`crate::plugin`] drives per call, and what it
-//! reads off a claimed unit. The wire's bookkeeping — the live units, the 64 KiB fitting,
-//! the `comments` delta, the undelivered-finish fallback — is written once in
-//! `plugin.rs` against these two traits, so the `gitea_issue` and `gitea_pr` kinds
-//! differ only in their vendor half ([`crate::issue`], [`crate::pr`]).
+//! reads off a claimed unit. The wire's bookkeeping — the live and finished units, the
+//! 64 KiB fitting, the `comments` delta, the undelivered-park fallback — is written once
+//! in `plugin.rs` against these two traits, so the `issue` and `pr` kinds differ only in
+//! their vendor half ([`crate::issue`], [`crate::pr`]).
 
 use std::path::Path;
 use std::time::Instant;
 
 use crate::client::{GiteaError, IssueComment};
 use crate::common::{ClaimFault, Clock, Diag};
+use crate::lifecycle::LifecycleAction;
 use crate::wire::{Facts, UnitOutcome, WireUnit};
 
 /// A claimed unit, as the plugin's bookkeeping reads it.
@@ -65,7 +66,8 @@ pub(crate) trait Units {
         verdict
     }
 
-    /// The terminal lifecycle. Returns whether the moment reached the remote.
+    /// The plugin-owned end of a unit's run: the claim marker's release, and whatever
+    /// else the kind itself owes the outcome. Returns whether that reached the remote.
     fn finish(
         &self,
         unit: &Self::Unit,
@@ -73,4 +75,7 @@ pub(crate) trait Units {
         facts: &Facts,
         diag: &dyn Diag,
     ) -> bool;
+
+    /// Do one action a hook called on the unit, as the login it was claimed as.
+    fn act(&self, unit: &Self::Unit, action: &LifecycleAction) -> Result<(), GiteaError>;
 }

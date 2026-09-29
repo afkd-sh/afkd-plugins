@@ -80,9 +80,9 @@ impl Plugin {
         }
     }
 
-    /// Spawn and greet with `settings` for the `gitea_issue` kind, asserting it arms.
+    /// Spawn and greet with `settings` for the `issue` kind, asserting it arms.
     pub fn armed(settings: Value) -> Self {
-        Self::armed_as("gitea_issue", settings)
+        Self::armed_as("issue", settings)
     }
 
     /// Spawn and greet with `settings` for `kind`, asserting it arms.
@@ -94,7 +94,16 @@ impl Plugin {
     }
 
     pub fn hello(&mut self, kind: &str, settings: Value) -> Value {
-        self.call(json!({"call": "hello", "proto": 1, "kind": kind, "settings": settings}))
+        self.call(
+            json!({"call": "hello", "proto": 2, "kind": kind, "service": "afkd::develop",
+                         "settings": settings}),
+        )
+    }
+
+    /// Call one action on the unit `key` names, as afkd sends each action a hook calls:
+    /// its arguments bound by parameter name, `key` `null` for a bare run.
+    pub fn act(&mut self, action: &str, args: Value, key: &Value) -> Value {
+        self.call(json!({"call": "call", "action": action, "args": args, "key": key}))
     }
 
     /// Write one request and read its reply line: under afkd's cap, newline-terminated,

@@ -5,11 +5,12 @@
 //! replies and nothing else; every diagnostic goes to stderr, which afkd streams into the
 //! service log under `[@afkd/gitea:err]`.
 //!
-//! Two kinds, each the vendor half of one of afkd's built-in Gitea triggers, ported:
-//! `gitea_issue` (issues, [`issue`]) and `gitea_pr` (the pull-request review loop,
-//! [`pr`]). Each keeps the built-in's claim markers, lifecycle comments, claim-journal
-//! keys, session threads, run env and brief, so a claim either one left on a live issue
-//! or PR is recognised, renewed and released by the other.
+//! Two kinds, each the vendor half of one of afkd's built-in Gitea triggers, ported: the
+//! issue kind ([`issue`]), `service(gitea)` in a config, and the pull-request review loop
+//! ([`pr`]), `service(gitea.pr)`. Each keeps the built-in's claim markers, claim-journal
+//! keys, session threads, run env and brief, so a claim either one left on a live issue or
+//! PR is recognised, renewed and released by the other. The hooks are afkd's: each action
+//! one calls arrives as a `call` ([`lifecycle`]).
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -27,7 +28,6 @@ mod manifest;
 mod plugin;
 mod pr;
 mod rfc3339;
-mod run_ref;
 mod settings;
 mod wire;
 

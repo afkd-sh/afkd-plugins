@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// The plugin protocol version this plugin speaks.
-pub(crate) const PROTO: u32 = 1;
+pub(crate) const PROTO: u32 = 2;
 
 /// The longest reply line afkd reads, **before** its newline: afkd caps a line at 64 KiB
 /// including the `\n`, and a line of exactly 64 KiB not ending in one is over the cap.
@@ -46,6 +46,16 @@ pub(crate) enum Request {
         scratch: String,
         outcome: UnitOutcome,
     },
+    /// One action a hook of afkd's calls, by its own name, its arguments bound by
+    /// parameter name, on the unit `key` names — `null` for a bare run. Answered by every
+    /// proto 2 plugin, so it is never listed.
+    Call {
+        action: String,
+        #[serde(default)]
+        args: serde_json::Map<String, serde_json::Value>,
+        #[serde(default)]
+        key: Option<String>,
+    },
     /// A call this plugin does not know — `attempt_failed`, which neither kind lists, or
     /// one from a later afkd.
     #[serde(other)]
@@ -61,9 +71,11 @@ impl Request {
             Request::Renew { .. } => Some("renew"),
             Request::Comments { .. } => Some("comments"),
             Request::Classify { .. } => Some("classify"),
-            Request::Hello { .. } | Request::Poll | Request::Finish { .. } | Request::Unknown => {
-                None
-            }
+            Request::Hello { .. }
+            | Request::Poll
+            | Request::Finish { .. }
+            | Request::Call { .. }
+            | Request::Unknown => None,
         }
     }
 }
@@ -72,16 +84,17 @@ impl Request {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum UnitOutcome {
-    /// An attempt completed cleanly (`on_done`).
+    /// An attempt completed cleanly.
     Clean,
-    /// An attempt asked for human input (the park, then `on_park`).
+    /// An attempt asked for human input (the park).
     Park,
-    /// Every attempt faulted (`on_fail`).
+    /// Every attempt faulted.
     Failed,
 }
 
-/// The `finish` envelope's `facts`: what the run did. Only the fields a lifecycle comment
-/// or the backstop reads are decoded; the rest (`tokens`) is ignored.
+/// The `finish` envelope's `facts`: what the run did. Only the fields the backstop reads
+/// are decoded; the rest (`duration_ms`, `cost`, `turns`, `tokens`, `run_name`) is
+/// ignored — a comment that names them is afkd's to interpolate.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub(crate) struct Facts {
     /// The run's terminal control-flow word: `proceed`, `break` or `fault`.
@@ -89,29 +102,15 @@ pub(crate) struct Facts {
     /// A fault's own sentence; `null` otherwise.
     #[serde(default)]
     pub(crate) reason: Option<String>,
-    /// The fire's wall-clock span in milliseconds.
-    pub(crate) duration_ms: u64,
-    /// The run's summed agent cost in USD.
-    pub(crate) cost: f64,
-    /// The agent turns, when every envelope confirmed a count.
-    #[serde(default)]
-    pub(crate) turns: Option<u32>,
-    /// The run directory afkd minted, when it got that far.
-    #[serde(default)]
-    pub(crate) run_name: Option<String>,
 }
 
 impl Facts {
-    /// The neutral facts of a moment with no run behind it (`on_claim`, the re-claim's
-    /// awaiting-label drop) — afkd's `RunFacts::none`.
+    /// The facts of a run that proceeded — afkd's `RunFacts::none`.
+    #[cfg(test)]
     pub(crate) fn none() -> Self {
         Self {
             signal: "proceed".to_string(),
             reason: None,
-            duration_ms: 0,
-            cost: 0.0,
-            turns: None,
-            run_name: None,
         }
     }
 
@@ -268,7 +267,7 @@ mod tests {
             r#"{"call":"finish","id":"7","key":"acme/widgets#7#9","outcome":"park",
                 "facts":{"signal":"fault","reason":"parked: awaiting a human reply",
                          "duration_ms":168000,"cost":0.4217,"turns":null,"tokens":null,
-                         "run_name":"260925-100400-issue-7-1"},"later":1}"#,
+                         "run_name":"260925-100400-unit-7-1"},"later":1}"#,
         )
         .unwrap();
         let Request::Finish {
@@ -281,7 +280,15 @@ mod tests {
         };
         assert_eq!(key, "acme/widgets#7#9");
         assert_eq!(outcome, UnitOutcome::Park);
+        assert_eq!(
+            facts,
+            Facts {
+                signal: "fault".into(),
+                reason: Some("parked: awaiting a human reply".into()),
+            }
+        );
         assert_eq!(facts.fault(), Some("parked: awaiting a human reply"));
+        assert_eq!(Facts::none().fault(), None);
         assert!(matches!(
             serde_json::from_str(r#"{"call":"poll"}"#).unwrap(),
             Request::Poll
@@ -293,6 +300,52 @@ mod tests {
             .unwrap(),
             Request::Unknown
         ));
+    }
+
+    /// A `call` decodes with its arguments as afkd bound them, a bare run's `null` key
+    /// reads as none, and an action with no parameters may leave `args` out. It is
+    /// answered by every proto 2 plugin, so it is never one `hello` lists.
+    #[test]
+    fn a_call_decodes_with_its_args_and_key() {
+        let call: Request = serde_json::from_str(
+            r#"{"call":"call","action":"label_add","args":{"label":"afkd/reviewed ✅"},
+                "key":"acme/widgets#7#1000001","later":1}"#,
+        )
+        .unwrap();
+        assert_eq!(call.optional_call(), None);
+        let Request::Call { action, args, key } = call else {
+            panic!("{call:?}");
+        };
+        assert_eq!(action, "label_add");
+        assert_eq!(args["label"], "afkd/reviewed ✅");
+        assert_eq!(key.as_deref(), Some("acme/widgets#7#1000001"));
+
+        let bare: Request =
+            serde_json::from_str(r#"{"call":"call","action":"close","key":null}"#).unwrap();
+        assert!(matches!(
+            bare,
+            Request::Call { action, args, key: None } if action == "close" && args.is_empty()
+        ));
+    }
+
+    /// The `hello` afkd writes decodes with its protocol, kind and settings.
+    #[test]
+    fn a_hello_decodes() {
+        let hello: Request = serde_json::from_str(
+            r#"{"call":"hello","proto":2,"kind":"issue","service":"afkd::develop",
+                "settings":{"repo":"acme/widgets","token":"PAT"}}"#,
+        )
+        .unwrap();
+        let Request::Hello {
+            proto,
+            kind,
+            settings,
+        } = hello
+        else {
+            panic!("{hello:?}");
+        };
+        assert_eq!((proto, kind.as_str()), (2, "issue"));
+        assert_eq!(settings["repo"], "acme/widgets");
     }
 
     #[test]

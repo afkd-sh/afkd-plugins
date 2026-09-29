@@ -21,7 +21,7 @@ const TITLE: &str = "修复 the retry storm 🚨";
 const BODY: &str = "The client retries forever once the token expires.\n\n\
                     ```rust\nlet backoff = Duration::ZERO;\n```\n\n— reported by 陳大文";
 
-/// A repo with issue #7 up for grabs, and the label `on_claim` adds defined.
+/// A repo with issue #7 up for grabs, and the label [`on_claim`] adds defined.
 fn forge() -> FakeGitea {
     let fake = FakeGitea::start(ME);
     fake.define_label(REPO, "afkd/working", false);
@@ -29,8 +29,8 @@ fn forge() -> FakeGitea {
     fake
 }
 
-/// A full `gitea_issue` block, lowered to JSON as afkd lowers it: repeatable keys as arrays,
-/// flags as `true`, blocks as objects — and afkd's own three keys along for the ride.
+/// A full `issue` block, lowered to JSON as afkd lowers it: every value a string — and
+/// afkd's own three keys along for the ride. The hooks never cross here; afkd runs them.
 fn settings(fake: &FakeGitea) -> Value {
     json!({
         "base_url": fake.base_url(),
@@ -39,19 +39,29 @@ fn settings(fake: &FakeGitea) -> Value {
         "source_label": "afkd/ready",
         "poll_interval": "30s",
         "max_attempts": "1",
-        "on_claim": {"assign_me": [true], "label_add": ["afkd/working"]},
-        "on_done": {"label_remove": ["afkd/working"], "close": [true]},
-        "on_fail": {"label_remove": ["afkd/working"], "unassign": [true]},
-        "on_park": {"comment": [
-            "Parked after @{run:duration} for @{run:cost} — log: .afkd/runs/@{run:name}/run.log"
-        ]},
     })
 }
 
 /// The `finish` envelope's facts, as afkd writes them.
 fn facts(signal: &str, reason: Option<&str>) -> Value {
     json!({"signal": signal, "reason": reason, "duration_ms": 168000, "cost": 0.4217,
-           "turns": null, "tokens": null, "run_name": "260925-095800-issue-7-1"})
+           "turns": null, "tokens": null, "run_name": "260925-095800-unit-7-1"})
+}
+
+/// The `on_claim` afkd runs after a `poll` hands `unit` over, for a config whose hook is
+/// `gitea.assign_me()` then `gitea.label_add("afkd/working")`: one `call` per action.
+fn on_claim(plugin: &mut Plugin, unit: &Value) {
+    for (action, args) in [
+        ("assign_me", json!({})),
+        ("label_add", json!({"label": "afkd/working"})),
+    ] {
+        assert_eq!(
+            plugin.act(action, args, &unit["key"]),
+            json!({"ok": true}),
+            "{action}: {}",
+            plugin.stderr()
+        );
+    }
 }
 
 fn finish(plugin: &mut Plugin, unit: &Value, outcome: &str, facts: Value) -> Value {
@@ -72,14 +82,23 @@ fn markers(fake: &FakeGitea, number: u64) -> Vec<u64> {
 
 // --- hello ---
 
+/// The accepted `hello` lists the calls the kind answers and supplies `me`, the token's
+/// login read off the forge — the one request `hello` makes.
 #[test]
-fn hello_arms_and_lists_every_call_it_answers() {
+fn hello_arms_lists_every_call_it_answers_and_supplies_me() {
     let fake = forge();
     let mut plugin = Plugin::spawn();
     assert_eq!(
-        plugin.hello("gitea_issue", settings(&fake)),
-        json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments", "classify"]})
+        plugin.hello("issue", settings(&fake)),
+        json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments", "classify"],
+               "values": {"me": ME}})
     );
+    let seen: Vec<(String, String)> = fake
+        .seen()
+        .into_iter()
+        .map(|r| (r.method, r.path))
+        .collect();
+    assert_eq!(seen, [("GET".to_string(), "/api/v1/user".to_string())]);
     plugin.finish();
 }
 
@@ -91,47 +110,45 @@ fn hello_refuses_what_it_cannot_arm_with() {
     let fake = forge();
     let mut both = settings(&fake);
     both["org"] = json!("acme");
-    let mut claim_cost = settings(&fake);
-    claim_cost["on_claim"] = json!({"comment": ["claimed; budget @{run:cost}"]});
     let mut pr_both = pr_settings(&fake);
     pr_both["org"] = json!("acme");
     for (kind, proto, settings, sentence) in [
         (
             "gitlab_issue",
-            1,
+            2,
             settings(&fake),
             "kind `gitlab_issue` is not provided by @afkd/gitea",
-        ),
-        (
-            "gitea_pr",
-            1,
-            pr_both,
-            "trigger gitea_pr: setting `org`: a gitea trigger takes exactly one of \
-             `repo` or `org` (both were set)",
-        ),
-        (
-            "gitea_issue",
-            1,
-            both,
-            "a gitea trigger takes exactly one of `repo` or `org` (both were set)",
-        ),
-        (
-            "gitea_issue",
-            1,
-            claim_cost,
-            "`@{run:cost}` references the run's facts, but no run happens at claim time",
         ),
         (
             "gitea_issue",
             2,
             settings(&fake),
-            "afkd speaks plugin protocol 2, and this plugin speaks 1",
+            "kind `gitea_issue` is not provided by @afkd/gitea",
+        ),
+        (
+            "pr",
+            2,
+            pr_both,
+            "trigger pr: setting `org`: a gitea trigger takes exactly one of `repo` or \
+             `org` (both were set)",
+        ),
+        (
+            "issue",
+            2,
+            both,
+            "a gitea trigger takes exactly one of `repo` or `org` (both were set)",
+        ),
+        (
+            "issue",
+            1,
+            settings(&fake),
+            "afkd speaks plugin protocol 1, and this plugin speaks 2",
         ),
     ] {
         let mut plugin = Plugin::spawn();
         let reply = plugin
             .call(json!({"call": "hello", "proto": proto, "kind": kind, "settings": settings}));
-        assert_eq!(reply, json!({"ok": false, "proto": 1}), "{kind} {proto}");
+        assert_eq!(reply, json!({"ok": false, "proto": 2}), "{kind} {proto}");
         let stderr = plugin.stderr_soon(sentence);
         assert!(stderr.contains(sentence), "{stderr}");
         assert!(stderr.starts_with("afkd-gitea: "), "{stderr}");
@@ -145,7 +162,8 @@ fn hello_refuses_what_it_cannot_arm_with() {
 /// The won race hands over exactly the unit the built-in would have run: its journal key
 /// and session thread, the claim-time comment ids, its identity, the four env names the
 /// skill reads, and the scratch layout with the brief unframed. The forge then holds the
-/// claim as the built-in leaves it.
+/// claim — the marker and the gate, and nothing a hook does — until `on_claim`'s calls
+/// land.
 #[test]
 fn a_won_race_hands_over_the_built_ins_unit() {
     let fake = forge();
@@ -178,6 +196,10 @@ fn a_won_race_hands_over_the_built_ins_unit() {
     let comments = fake.comments(REPO, 7);
     assert_eq!(comments[0].body, "[afkd-claim] owner=björn-öst[bot]");
     assert_eq!(comments[0].author, ME);
+    let issue = fake.issue_state(REPO, 7);
+    assert_eq!(issue.labels, ["afkd/ready", "afkd/claimed"]);
+    assert!(issue.assignees.is_empty(), "the claim assigns no one");
+    on_claim(&mut plugin, &reply["unit"]);
     let issue = fake.issue_state(REPO, 7);
     assert_eq!(issue.labels, ["afkd/ready", "afkd/claimed", "afkd/working"]);
     assert_eq!(issue.assignees, [ME]);
@@ -436,29 +458,46 @@ fn classify_reads_the_park_marker_and_echoes_afkd_otherwise() {
 
 // --- finish, per outcome ---
 
+/// A clean finish only drops the marker; the issue closes when `on_done`'s calls, which
+/// afkd sends after the `finish`, land.
 #[test]
-fn a_clean_finish_runs_on_done_and_drops_the_marker() {
+fn a_clean_finish_drops_the_marker_and_on_done_closes_after() {
     let fake = forge();
     let mut plugin = Plugin::armed(settings(&fake));
     let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
     assert_eq!(
         finish(&mut plugin, &unit, "clean", facts("proceed", None)),
         json!({"ok": true})
     );
     let issue = fake.issue_state(REPO, 7);
+    assert_eq!(issue.state, "open", "the finish closes nothing");
+    assert!(markers(&fake, 7).is_empty());
+
+    for (action, args) in [
+        ("label_remove", json!({"label": "afkd/working"})),
+        ("close", json!({})),
+    ] {
+        assert_eq!(
+            plugin.act(action, args, &unit["key"]),
+            json!({"ok": true}),
+            "{action}"
+        );
+    }
+    let issue = fake.issue_state(REPO, 7);
     assert_eq!(issue.state, "closed");
     assert!(!issue.labels.contains(&"afkd/working".to_string()));
-    assert!(markers(&fake, 7).is_empty());
     plugin.finish();
 }
 
 #[test]
-fn a_failed_finish_runs_on_fail_and_keeps_a_human_assignee() {
+fn a_failed_finish_then_on_fail_keeps_a_human_assignee() {
     let fake = FakeGitea::start(ME);
     fake.define_label(REPO, "afkd/working", false);
     fake.issue(REPO, 7, TITLE, BODY, &["afkd/ready"], &["alice"]);
     let mut plugin = Plugin::armed(settings(&fake));
     let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
     assert_eq!(fake.issue_state(REPO, 7).assignees, ["alice", ME]);
     let reply = finish(
         &mut plugin,
@@ -467,6 +506,12 @@ fn a_failed_finish_runs_on_fail_and_keeps_a_human_assignee() {
         facts("fault", Some("cargo test: 3 failed")),
     );
     assert_eq!(reply, json!({"ok": true}));
+    for (action, args) in [
+        ("label_remove", json!({"label": "afkd/working"})),
+        ("unassign", json!({})),
+    ] {
+        assert_eq!(plugin.act(action, args, &unit["key"]), json!({"ok": true}));
+    }
     let issue = fake.issue_state(REPO, 7);
     assert_eq!(issue.assignees, ["alice"], "only afkd let go");
     assert_eq!(issue.state, "open");
@@ -475,14 +520,15 @@ fn a_failed_finish_runs_on_fail_and_keeps_a_human_assignee() {
     plugin.finish();
 }
 
-/// A park swaps the claim for the awaiting label, lets go of the issue without closing
-/// it, and runs `on_park` with the run's facts substituted: 168000 ms is `2m48s`, 0.4217
-/// is `$0.42`, and the run name is afkd's.
+/// A park swaps the claim for the awaiting label and lets go of the issue without
+/// closing it; `on_park`'s comment, which afkd interpolated before sending, is posted as
+/// it came.
 #[test]
-fn a_park_finish_parks_and_substitutes_the_run_facts() {
+fn a_park_finish_parks_and_on_park_comments_verbatim() {
     let fake = forge();
     let mut plugin = Plugin::armed(settings(&fake));
     let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
     let reply = finish(
         &mut plugin,
         &unit,
@@ -495,11 +541,14 @@ fn a_park_finish_parks_and_substitutes_the_run_facts() {
     assert!(!issue.labels.contains(&"afkd/claimed".to_string()));
     assert!(issue.assignees.is_empty());
     assert_eq!(issue.state, "open");
-    let said: Vec<String> = fake.comments(REPO, 7).into_iter().map(|c| c.body).collect();
+    let parked = "Parked after 2m 48s — log: .afkd/runs/260925-095800-unit-7-1/run.log\n\n\
+                  看起来 the token expiry needs a human call 🙏";
     assert_eq!(
-        said,
-        ["Parked after 2m48s for $0.42 — log: .afkd/runs/260925-095800-issue-7-1/run.log"]
+        plugin.act("comment", json!({"text": parked}), &unit["key"]),
+        json!({"ok": true})
     );
+    let said: Vec<String> = fake.comments(REPO, 7).into_iter().map(|c| c.body).collect();
+    assert_eq!(said, [parked]);
 
     // A human answers, and the parked issue re-arms with the answer in its brief.
     fake.advance(600);
@@ -525,22 +574,24 @@ fn a_park_finish_parks_and_substitutes_the_run_facts() {
     plugin.finish();
 }
 
-/// A terminal lifecycle that does not land — `on_done` adds a label the repo never
-/// defined, which Gitea drops under a 200 — still answers `ok`, since afkd would crash the
-/// service otherwise. The claim is released at once so the next poll retries the issue;
-/// the second time the same issue fails that way, it is left claimed for a human.
+/// A park that does not land — the forge refuses the awaiting label — still answers
+/// `ok`, since afkd would crash the service otherwise. The claim is released at once so
+/// the next poll retries the issue; the second time the same issue fails that way, it is
+/// left claimed for a human.
 #[test]
-fn an_undelivered_finish_releases_once_then_leaves_it() {
+fn an_undelivered_park_releases_once_then_leaves_it() {
     let fake = forge();
-    let mut settings = settings(&fake);
-    settings["on_done"] = json!({"label_add": ["undefined"]});
-    let mut plugin = Plugin::armed(settings);
+    let mut plugin = Plugin::armed(settings(&fake));
+    let park = |plugin: &mut Plugin| {
+        let unit = plugin.poll()["unit"].clone();
+        fake.fail("add label", 500);
+        let reply = finish(plugin, &unit, "park", facts("proceed", None));
+        fake.heal("add label");
+        assert_eq!(reply, json!({"ok": true}));
+        unit
+    };
 
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(
-        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
-        json!({"ok": true})
-    );
+    let unit = park(&mut plugin);
     assert!(!fake
         .issue_state(REPO, 7)
         .labels
@@ -549,24 +600,22 @@ fn an_undelivered_finish_releases_once_then_leaves_it() {
     let stderr = plugin.stderr_soon("releasing the claim");
     assert!(
         stderr.contains(&format!(
-            "afkd-gitea: could not deliver the terminal lifecycle for {key}; releasing the \
-             claim so the next poll retries it"
+            "afkd-gitea: could not deliver the park for {key}; releasing the claim so the \
+             next poll retries it"
         )),
         "{stderr}"
     );
 
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(
-        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
-        json!({"ok": true})
-    );
+    park(&mut plugin);
     assert!(fake
         .issue_state(REPO, 7)
         .labels
         .contains(&"afkd/claimed".to_string()));
     let stderr = plugin.stderr_soon("failed twice");
     assert!(
-        stderr.contains("the terminal lifecycle for acme/widgets#7 failed twice; leaving the claim in place for a human"),
+        stderr.contains(
+            "the park for acme/widgets#7 failed twice; leaving the claim in place for a human"
+        ),
         "{stderr}"
     );
     assert_eq!(plugin.poll(), json!({"fire": false}));
@@ -581,7 +630,6 @@ fn a_silent_discuss_turn_posts_one_backstop() {
     fake.comment(REPO, 7, "álvaro", "Exponential, please — see §4 🙏", 120);
     let mut settings = settings(&fake);
     settings["discuss_with"] = json!(["anyone"]);
-    settings["on_done"] = json!({"label_remove": ["afkd/working"]});
     let mut plugin = Plugin::armed(settings);
     let unit = plugin.poll()["unit"].clone();
     finish(&mut plugin, &unit, "clean", facts("proceed", None));
@@ -719,9 +767,95 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
     plugin.finish();
 }
 
-// --- gitea_pr ---
+// --- the hooks' actions over `call` ---
 
-const PR_KIND: &str = "gitea_pr";
+/// Every action a hook can call crosses the real wire as one `call` and lands on the
+/// forge, on the claimed issue: through a live unit, then — after `finish` — a post-run
+/// call still reaches it, until afkd releases the key and a call is refused by name.
+#[test]
+fn every_action_over_call_lands_on_the_forge() {
+    let fake = forge();
+    fake.define_label(REPO, "afkd/reviewed ✅", false);
+    fake.issue(REPO, 7, TITLE, BODY, &["afkd/ready"], &["alice"]);
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    let key = &unit["key"];
+    let markdown = "## 完了 ✅\n\n- took 3m 12s\n- literal: #{run.x}\n\n```\nok\n```";
+
+    assert_eq!(plugin.act("assign_me", json!({}), key), json!({"ok": true}));
+    assert_eq!(fake.issue_state(REPO, 7).assignees, ["alice", ME]);
+    assert_eq!(
+        plugin.act("label_add", json!({"label": "afkd/reviewed ✅"}), key),
+        json!({"ok": true})
+    );
+    assert_eq!(
+        plugin.act("label_remove", json!({"label": "afkd/ready"}), key),
+        json!({"ok": true})
+    );
+    assert_eq!(
+        fake.issue_state(REPO, 7).labels,
+        ["afkd/claimed", "afkd/reviewed ✅"]
+    );
+    assert_eq!(
+        plugin.act("comment", json!({"text": markdown}), key),
+        json!({"ok": true})
+    );
+    let said: Vec<(String, String)> = fake
+        .comments(REPO, 7)
+        .into_iter()
+        .filter(|c| !c.body.starts_with("[afkd-claim]"))
+        .map(|c| (c.author, c.body))
+        .collect();
+    assert_eq!(said, [(ME.to_string(), markdown.to_string())]);
+    assert_eq!(plugin.act("unassign", json!({}), key), json!({"ok": true}));
+    assert_eq!(fake.issue_state(REPO, 7).assignees, ["alice"]);
+
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    assert_eq!(fake.issue_state(REPO, 7).state, "open");
+    assert_eq!(plugin.act("close", json!({}), key), json!({"ok": true}));
+    assert_eq!(fake.issue_state(REPO, 7).state, "closed");
+
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": key})),
+        json!({"released": true})
+    );
+    let refused = format!(
+        "comment for {}, which this plugin holds no claim on",
+        key.as_str().unwrap()
+    );
+    assert_eq!(
+        plugin.act("comment", json!({"text": "late"}), key),
+        json!({"ok": false, "error": refused})
+    );
+    let stderr = plugin.stderr_soon(&refused);
+    assert!(
+        stderr.contains(&format!("afkd-gitea: {refused}")),
+        "{stderr}"
+    );
+    plugin.finish();
+}
+
+/// A hook's `label_add` for a label the repository never defined — which Gitea drops
+/// under a 200 — is refused with the forge's sentence, so afkd fails the hook there.
+#[test]
+fn a_label_add_gitea_drops_is_refused_over_call() {
+    let fake = forge();
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(
+        plugin.act("label_add", json!({"label": "undefined"}), &unit["key"]),
+        json!({"ok": false, "error": "gitea add label: label “undefined” was not applied \
+                                        (the repository defines no such label)"})
+    );
+    plugin.finish();
+}
+
+// --- pr ---
+
+const PR_KIND: &str = "pr";
 const HEAD: &str = "feature/retry-backoff";
 /// A review comment as a human writes one: wide text, an emoji, a fenced block, and a
 /// trailing newline the brief trims.
@@ -740,19 +874,16 @@ fn pr_forge() -> (FakeGitea, u64) {
     (fake, review)
 }
 
-/// A full `gitea_pr` block, lowered as afkd lowers it: `author_me` a bare flag,
-/// the lifecycle blocks as objects, and afkd's own keys along for the ride.
+/// A full `pr` block, lowered as afkd lowers it: `author_me` a `bool` as its word, and
+/// afkd's own keys along for the ride.
 fn pr_settings(fake: &FakeGitea) -> Value {
     json!({
         "base_url": fake.base_url(),
         "repo": REPO,
         "token": TOKEN,
-        "author_me": true,
+        "author_me": "true",
         "poll_interval": "2m",
         "max_attempts": "2",
-        "on_claim": {"assign_me": [true], "label_add": ["afkd/working"]},
-        "on_done": {"label_remove": ["afkd/working"]},
-        "on_fail": {"label_remove": ["afkd/working"], "unassign": [true]},
     })
 }
 
@@ -764,9 +895,13 @@ fn a_pr_hello_arms_and_lists_release_renew_comments() {
     let mut plugin = Plugin::spawn();
     assert_eq!(
         plugin.hello(PR_KIND, pr_settings(&fake)),
-        json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
+        json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"],
+               "values": {"me": ME}})
     );
-    assert!(fake.seen().is_empty(), "hello touches no forge");
+    assert!(
+        fake.seen().iter().all(|r| r.path == "/api/v1/user"),
+        "hello reads only the token's user"
+    );
     plugin.finish();
 }
 
@@ -810,6 +945,10 @@ fn a_won_pr_race_hands_over_the_built_ins_unit() {
         })
     );
 
+    let issue = fake.issue_state(REPO, 7);
+    assert_eq!(issue.labels, ["afkd/claimed"]);
+    assert!(issue.assignees.is_empty(), "the claim assigns no one");
+    on_claim(&mut plugin, &reply["unit"]);
     let issue = fake.issue_state(REPO, 7);
     assert_eq!(issue.labels, ["afkd/claimed", "afkd/working"]);
     assert_eq!(issue.assignees, [ME]);
@@ -998,7 +1137,9 @@ fn a_pr_release_drops_the_claim() {
     let (fake, _) = pr_forge();
     // An earlier plugin claimed #7 and died mid-run, leaving its journal key.
     let mut crashed = Plugin::armed_as(PR_KIND, pr_settings(&fake));
-    let stale = crashed.poll()["unit"]["key"].clone();
+    let unit = crashed.poll()["unit"].clone();
+    on_claim(&mut crashed, &unit);
+    let stale = unit["key"].clone();
     drop(crashed);
     assert_eq!(
         fake.issue_state(REPO, 7).labels,
@@ -1035,19 +1176,26 @@ fn a_pr_release_drops_the_claim() {
     plugin.finish();
 }
 
-/// A clean round runs `on_done`, leaves the PR open — a human's merge ends the loop, not
-/// afkd — and takes the marker off. The status label stays, since it is not the gate:
+/// A clean round, then `on_done`'s call, leaves the PR open — a human's merge ends the
+/// loop, not afkd — and the marker off. The status label stays, since it is not the gate:
 /// the loop is the watermark's. Once the bot has answered, the PR is quiet; the next
 /// human word fires it again, with only that word in the brief.
 #[test]
-fn a_clean_pr_finish_runs_on_done_and_leaves_the_pr_open() {
+fn a_clean_pr_finish_then_on_done_leaves_the_pr_open() {
     let (fake, _) = pr_forge();
     let mut plugin = Plugin::armed_as(PR_KIND, pr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
-    let mut done = facts("proceed", None);
-    done["run_name"] = json!("260925-095800-pr-7-1");
+    on_claim(&mut plugin, &unit);
     assert_eq!(
-        finish(&mut plugin, &unit, "clean", done),
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    assert_eq!(
+        plugin.act(
+            "label_remove",
+            json!({"label": "afkd/working"}),
+            &unit["key"]
+        ),
         json!({"ok": true})
     );
     let issue = fake.issue_state(REPO, 7);
@@ -1078,13 +1226,14 @@ fn a_clean_pr_finish_runs_on_done_and_leaves_the_pr_open() {
     plugin.finish();
 }
 
-/// A failed round runs `on_fail`: the bot lets go and drops its working label, the PR
-/// stays open, and the marker comes off.
+/// A failed round, then `on_fail`'s calls: the bot lets go and drops its working label,
+/// the PR stays open, and the marker comes off.
 #[test]
-fn a_failed_pr_finish_runs_on_fail() {
+fn a_failed_pr_finish_then_on_fail_lets_go() {
     let (fake, _) = pr_forge();
     let mut plugin = Plugin::armed_as(PR_KIND, pr_settings(&fake));
     let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
     assert_eq!(fake.issue_state(REPO, 7).assignees, [ME]);
     let reply = finish(
         &mut plugin,
@@ -1093,6 +1242,12 @@ fn a_failed_pr_finish_runs_on_fail() {
         facts("fault", Some("cargo test: 3 failed")),
     );
     assert_eq!(reply, json!({"ok": true}));
+    for (action, args) in [
+        ("label_remove", json!({"label": "afkd/working"})),
+        ("unassign", json!({})),
+    ] {
+        assert_eq!(plugin.act(action, args, &unit["key"]), json!({"ok": true}));
+    }
     let issue = fake.issue_state(REPO, 7);
     assert!(issue.assignees.is_empty());
     assert_eq!(issue.labels, ["afkd/claimed"]);

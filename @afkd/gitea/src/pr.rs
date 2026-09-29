@@ -1,5 +1,5 @@
-//! The `gitea_pr` kind's vendor half (ADR-0031 Capability 3), ported from afkd's
-//! `crates/gitea/src/trigger_pr.rs`.
+//! The `pr` kind's vendor half (ADR-0031 Capability 3) — `service(gitea.pr)` in a config —
+//! ported from afkd's `crates/gitea/src/trigger_pr.rs`.
 //!
 //! It polls a repository's (or an org's repositories') **open** pull requests through
 //! the mockable [`GiteaClient`] seam — only the bot's own with `author_me` — and treats a
@@ -10,7 +10,7 @@
 //! It claims one with the same `[afkd-claim]` marker claim as the issue kind, writes the
 //! `afkd/claimed` label as **status** only — the watermark, not the label, is the re-pick
 //! gate — and loops across polls until a human merges or closes the PR, which drops it
-//! out of the `state=open` set. There is **no `on_done close`**, no park and no
+//! out of the `state=open` set. Nothing closes the PR, and there is no park and no
 //! clarification gate.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
@@ -23,7 +23,7 @@ use std::time::Instant;
 
 use crate::client::{GiteaClient, GiteaError, IssueComment, Repo};
 use crate::common::{
-    apply_actions, claim_issue, claim_key_for, claim_label_fault, creds_env, delete_marker,
+    claim_issue, claim_key_for, claim_label_fault, creds_env, delete_marker, do_action,
     ensure_claimed_label, lock, release_claim, release_stale, renew_marker, unit_key, ClaimFault,
     Claimed, Clock, Diag, ScanBudget, Target, CLAIMED_LABEL, ENV_PR_BRANCH, ENV_PR_NUMBER,
     ENV_REPO,
@@ -75,16 +75,12 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `gitea_pr` kind's vendor half: the target, the `author_me` filter, the
-/// claim, and the three lifecycle action lists.
+/// The `pr` kind's vendor half: the target, the `author_me` filter, and the claim.
 pub(crate) struct PrUnits {
     client: Box<dyn GiteaClient>,
     target: Target,
-    /// Restrict to the bot's own PRs (the `author_me` flag).
+    /// Restrict to the bot's own PRs (the `author_me` setting).
     author_me: bool,
-    on_claim: Vec<LifecycleAction>,
-    on_done: Vec<LifecycleAction>,
-    on_fail: Vec<LifecycleAction>,
     /// The token and base URL every unit's `env` carries.
     creds: BTreeMap<String, String>,
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
@@ -98,9 +94,6 @@ impl PrUnits {
             client,
             target: Target::new(cfg),
             author_me: cfg.author_me,
-            on_claim: cfg.on_claim.clone(),
-            on_done: cfg.on_done.clone(),
-            on_fail: cfg.on_fail.clone(),
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
         }
@@ -185,17 +178,6 @@ impl Units for PrUnits {
                                 ClaimFault::Transient(e) => diag.err(&e),
                             }
                         }
-                        // `on_claim` runs before any fire, so neutral facts.
-                        if let Err(e) = apply_actions(
-                            &*self.client,
-                            &repo,
-                            pr.number,
-                            &self.on_claim,
-                            me,
-                            &Facts::none(),
-                        ) {
-                            diag.err(&e);
-                        }
                         return Ok(Some(Unit {
                             repo,
                             number: pr.number,
@@ -244,8 +226,7 @@ impl Units for PrUnits {
         }
     }
 
-    /// Release this unit's claim now — the recovery the built-in's reaper performs for a
-    /// terminal lifecycle that did not land.
+    /// Release this unit's claim now — a unit too big to hand over is taken back.
     fn release(&self, unit: &Unit, diag: &dyn Diag) {
         release_claim(&*self.client, &unit.repo, unit.number, unit.claim_id, diag);
     }
@@ -275,38 +256,32 @@ impl Units for PrUnits {
         self.client.list_issue_comments(&unit.repo, unit.number)
     }
 
-    /// The terminal lifecycle: `on_done` for a clean run, `on_fail` otherwise. There is
-    /// no `on_done close` here — a human's merge ends the loop by dropping the PR from
-    /// the `state=open` set — and no park, so a `park` verdict (which afkd never sends
-    /// this kind, since it answers no `classify`) runs `on_fail` as the built-in does.
+    /// The plugin-owned end of a review round: the claim marker's release, whatever the
+    /// outcome. Nothing closes the PR — a human's merge ends the loop by dropping it from
+    /// the `state=open` set — and there is no park; afkd runs the `on_done`/`on_fail` hook
+    /// after this.
     ///
-    /// Returns whether the moment reached the remote.
-    fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag) -> bool {
-        let actions = match outcome {
-            UnitOutcome::Clean => &self.on_done,
-            UnitOutcome::Park | UnitOutcome::Failed => &self.on_fail,
-        };
-        let delivered = match apply_actions(
-            &*self.client,
-            &unit.repo,
-            unit.number,
-            actions,
-            &unit.claimed_as,
-            facts,
-        ) {
-            Ok(()) => true,
-            Err(e) => {
-                diag.err(&e);
-                false
-            }
-        };
+    /// Always `true`: the release is best-effort, since a leaked marker ages out after
+    /// `CLAIM_LIFETIME`, so nothing here can leave the round undelivered.
+    fn finish(&self, unit: &Unit, _outcome: UnitOutcome, _facts: &Facts, diag: &dyn Diag) -> bool {
         // The claim is over however it ended, so its marker goes — a finished round must
-        // leave no marker to out-order the next claim. Best-effort: a leaked marker ages
-        // out after `CLAIM_LIFETIME`.
+        // leave no marker to out-order the next claim.
         if let Err(e) = self.client.delete_comment(&unit.repo, unit.claim_id) {
             diag.err(&e);
         }
-        delivered
+        true
+    }
+
+    /// Do one action a hook called on the unit's PR — Gitea models a PR as an issue, so
+    /// the issue kind's executor serves it as it is — as the login it was claimed as.
+    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GiteaError> {
+        do_action(
+            &*self.client,
+            &unit.repo,
+            unit.number,
+            action,
+            &unit.claimed_as,
+        )
     }
 }
 
@@ -315,7 +290,7 @@ mod tests {
     //! No network: every test drives the in-memory `MockClient` and a fake clock.
     //!
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief,
-    //! the env, the terminal lifecycle. The drive around it (attempt counting, the claim
+    //! the env, the end of a round. The drive around it (attempt counting, the claim
     //! journal, the run-name mint, the cadence, the framing of `task.md`) is afkd's, on
     //! the far side of the wire; the wire itself is `tests/wire.rs`.
 
@@ -333,11 +308,6 @@ mod tests {
             repo: repo.into(),
             token: "PAT".into(),
             author_me: true,
-            on_claim: vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelAdd(CLAIMED_LABEL.into()),
-            ],
-            on_fail: vec![LifecycleAction::Unassign],
             ..GiteaConfig::default()
         }
     }
@@ -380,6 +350,12 @@ mod tests {
         /// The `finish` call for `unit`, ended `outcome` with `facts`.
         fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts) -> bool {
             self.units.finish(unit, outcome, facts, &self.diag)
+        }
+
+        /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
+        /// (`on_claim`) or a `finish` (the post-run hooks).
+        fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GiteaError> {
+            self.units.act(unit, &action)
         }
     }
 
@@ -455,10 +431,13 @@ mod tests {
         assert_eq!(unit.head_branch, "feature/x");
         assert_eq!(unit.before_comments, [1]);
         assert_eq!(unit.claimed_as, "me");
-        // The claim assigned us + labelled (on_claim).
+        // The claim labelled the PR — its own status write — and ran no hook action:
+        // the assignee is `on_claim`'s, which afkd calls after the `poll`.
         assert!(h.client.has_label(7, CLAIMED_LABEL));
-        assert_eq!(h.client.assignees_of(7), ["me"]);
+        assert!(h.client.assignees_of(7).is_empty());
         assert!(!h.client.has_label(8, CLAIMED_LABEL));
+        h.act(&unit, LifecycleAction::AssignMe).unwrap();
+        assert_eq!(h.client.assignees_of(7), ["me"]);
     }
 
     /// The PR kind writes the status label, so it ensures it: a repository that does not
@@ -651,29 +630,6 @@ mod tests {
     }
 
     #[test]
-    fn an_on_claim_failure_is_logged_but_the_claim_proceeds() {
-        // `on_claim` runs after a won claim; a failure there is logged and swallowed —
-        // the unit is still taken on. Use an `on_claim` the claim itself does not
-        // perform (`close`) and fail that stage.
-        let mut cfg = cfg("acme/widgets");
-        cfg.on_claim = vec![LifecycleAction::Close];
-        let h = Harness::new(cfg);
-        h.client.add_pull(7, "me", "feature/x");
-        h.client.add_comment(7, 1, "human", 100);
-        h.client.fail("set state");
-
-        let unit = h
-            .poll()
-            .expect("no fatal claim verdict")
-            .expect("claimed anyway");
-        assert_eq!(unit.number, 7);
-        assert_eq!(
-            h.diag.lines(),
-            ["gitea set state: no response (mock failure)"]
-        );
-    }
-
-    #[test]
     fn a_forge_error_during_poll_is_logged_and_swallowed() {
         // A transport failure while listing pulls surfaces as a transient fault, which
         // the beat logs with its stage and answers idle.
@@ -769,7 +725,7 @@ mod tests {
         );
     }
 
-    // --- The wire unit + terminal lifecycle ---
+    // --- The wire unit + the end of a round ---
 
     /// The whole wire unit: the number as `id`, the claim-journal key, the stable
     /// thread, the claim-time comments as `seen`, the claim identity as `self`, the PR
@@ -829,8 +785,8 @@ mod tests {
     #[test]
     fn a_clean_finish_emits_no_close() {
         // A human's merge ends the loop, so a clean round records no state change and
-        // takes its marker off the thread. `on_done` is empty here, and `on_fail`'s
-        // `unassign` does not run: the bot stays on the PR it is iterating.
+        // takes its marker off the thread — and runs no hook action: the bot stays on
+        // the PR it is iterating unless afkd's `on_done` calls `unassign`.
         let h = Harness::new(cfg("acme/widgets"));
         h.client.add_pull(7, "me", "feature/x");
         h.client
@@ -848,44 +804,60 @@ mod tests {
         assert!(claim_markers_on(&h, 7).is_empty());
     }
 
-    /// `on_fail` runs for a failed round — and for a `park`, which the built-in folds
-    /// into the same moment since the kind has no park of its own.
+    /// A failed round — or a `park`, which afkd never sends this kind — likewise only
+    /// releases the marker; the `unassign` a PR's `on_fail` typically calls arrives as a
+    /// `call` afterwards, and drops afkd's own assignment alone.
     #[test]
-    fn a_failed_or_parked_finish_runs_on_fail() {
+    fn a_failed_or_parked_finish_runs_no_hook_action() {
         for outcome in [UnitOutcome::Failed, UnitOutcome::Park] {
             let h = Harness::new(cfg("acme/widgets"));
             h.client.add_pull(7, "me", "feature/x");
             h.client
                 .patch_assignees(&repo(), 7, &["alice".into(), "me".into()])
                 .unwrap();
+            let before = h.client.actions().len();
             assert!(h.finish(&unit(9, Vec::new()), outcome, &Facts::none()));
+            assert_eq!(
+                h.client.actions()[before..],
+                [Action::DeleteComment { id: 9 }],
+                "{outcome:?}"
+            );
+            h.act(&unit(9, Vec::new()), LifecycleAction::Unassign)
+                .unwrap();
             assert_eq!(h.client.assignees_of(7), ["alice"], "{outcome:?}");
         }
     }
 
+    /// Nothing the finish does can leave a round undelivered: a marker release the forge
+    /// refused is diagnosed (the marker ages out), and the round is still delivered. A
+    /// hook's action the forge refused is that `call`'s error, for afkd to fail the hook.
     #[test]
-    fn a_terminal_lifecycle_failure_is_logged() {
-        // A faulting run drives the `on_fail` lifecycle; a transport error there is
-        // diagnosed and the moment reports it did not land, so the plugin's fallback can
-        // release the claim.
+    fn a_failed_marker_release_is_logged_and_the_round_still_delivered() {
         let h = Harness::new(cfg("acme/widgets"));
         h.client.add_pull(7, "me", "feature/x");
-        // `on_fail { unassign }` only writes when afkd is actually assigned, so the
-        // fixture puts it there first — then the write it makes is the failing one.
         h.client
             .patch_assignees(&repo(), 7, &["me".into()])
             .unwrap();
-        h.client.fail("patch assignees");
+        h.client.fail("delete comment");
         let facts = Facts {
             signal: "fault".into(),
             reason: Some("nope".into()),
-            ..Facts::none()
         };
-        assert!(!h.finish(&unit(1, Vec::new()), UnitOutcome::Failed, &facts));
+        assert!(h.finish(&unit(1, Vec::new()), UnitOutcome::Failed, &facts));
         assert_eq!(
             h.diag.lines(),
-            ["gitea patch assignees: no response (mock failure)"]
+            ["gitea delete comment: no response (mock failure)"]
         );
+
+        h.client.fail("patch assignees");
+        let err = h
+            .act(&unit(1, Vec::new()), LifecycleAction::Unassign)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "gitea patch assignees: no response (mock failure)"
+        );
+        assert_eq!(h.client.assignees_of(7), ["me"]);
     }
 
     /// The renewal over the real `renew_marker`: the claim marker is edited **in place**

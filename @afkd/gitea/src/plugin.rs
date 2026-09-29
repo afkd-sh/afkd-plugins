@@ -3,30 +3,37 @@
 //! [`crate::pr`], behind [`crate::kind`]). Everything here is written once and shared by
 //! both kinds.
 //!
+//! **afkd runs the hooks.** `on_claim` after a `poll` hands a unit over, and `on_done`,
+//! `on_fail` or the issue kind's `on_park` after its `finish`; each action a hook calls is
+//! one `call`, naming the unit by its key, which this plugin does on that unit's issue or
+//! PR. A finished unit is kept a while for that ([`FINISHED_MAX`]), since its post-run
+//! hook's calls arrive after `finish`.
+//!
 //! Three things the wire forces that the built-in never had to do:
 //!
 //! - **Every reply fits one line.** afkd caps a line at 64 KiB. A `poll` whose brief would
 //!   overflow it is cut to fit ([`fit_poll`]); a `comments` reply sends only what afkd has
 //!   not been told yet, and if that still overflows, the newest that fit.
-//! - **`finish` always answers `ok`.** afkd crashes the service on a refused `finish`, and
-//!   has no "held" reply. The built-in's answer to a terminal lifecycle that did not land
-//!   — hold the claim, release it on the next beat, and on a second failure for the same
-//!   unit leave it for a human — is performed here, at once.
+//! - **`finish` always answers `ok`.** afkd crashes the service on a refused `finish`. The
+//!   built-in's answer to a park that did not land — hold the claim, release it on the
+//!   next beat, and on a second failure for the same unit leave it for a human — is
+//!   performed here, at once.
 //! - **Every call answers within 45 seconds.** afkd ends the service on a missed reply,
 //!   so each armed call runs under [`CALL_BUDGET`], and a forge too slow for it reads as
 //!   a forge that is down.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
 use std::time::Instant;
 
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::claim::is_claim;
 use crate::client::{Gitea, GiteaClient};
 use crate::common::{ClaimFault, Clock, Diag, CALL_BUDGET};
 use crate::issue::IssueUnits;
 use crate::kind::{ClaimedUnit, Units};
+use crate::lifecycle::from_call;
 use crate::pr::PrUnits;
 use crate::rfc3339::format_utc;
 use crate::settings::{issue_config, pr_config, GiteaConfig};
@@ -34,11 +41,16 @@ use crate::wire::{
     fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
 };
 
-/// The issue kind.
-pub(crate) const ISSUE_KIND: &str = "gitea_issue";
+/// The issue kind, the plugin's main one: `service(gitea)` in a config.
+pub(crate) const ISSUE_KIND: &str = "issue";
 
-/// The pull-request kind.
-pub(crate) const PR_KIND: &str = "gitea_pr";
+/// The pull-request kind: `service(gitea.pr)` in a config.
+pub(crate) const PR_KIND: &str = "pr";
+
+/// How many finished units a post-run hook's `call`s can still reach. afkd sends them
+/// straight after `finish`, one unit at a time, so a handful would do; the rest is
+/// headroom, and the oldest goes first.
+const FINISHED_MAX: usize = 16;
 
 /// What the process does with one request.
 #[derive(Debug, PartialEq)]
@@ -69,6 +81,9 @@ trait Service {
     /// Set (or, with `None`, clear) the current call's deadline, which the kind's scan
     /// and every forge request it makes until the next set run under.
     fn set_call_deadline(&self, deadline: Option<Instant>);
+    /// The token's login — the value `me` — resolved once and kept; `None`, diagnosed,
+    /// while the forge cannot say.
+    fn me(&mut self, diag: &dyn Diag) -> Option<String>;
     fn poll(&mut self, clock: &dyn Clock, diag: &dyn Diag) -> Answer;
     fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer;
     fn renew(&self, key: &str, renewal: u64, diag: &dyn Diag) -> Answer;
@@ -76,16 +91,26 @@ trait Service {
     fn classify(&self, scratch: &Path, outcome: UnitOutcome) -> UnitOutcome;
     fn finish(&mut self, key: &str, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag)
         -> Answer;
+    fn call(
+        &self,
+        action: &str,
+        args: &Map<String, Value>,
+        key: Option<&str>,
+        diag: &dyn Diag,
+    ) -> Answer;
 }
 
 /// One armed service of kind `K`.
 struct Armed<K: Units> {
     units: K,
-    /// The token's login, resolved on the first `poll` and kept.
+    /// The token's login, resolved at `hello` (or, failing that, on a `poll`) and kept.
     me: Option<String>,
     /// The units handed over and not yet finished or released, by key.
     live: BTreeMap<String, LiveUnit<K::Unit>>,
-    /// The threads whose terminal lifecycle has failed once.
+    /// The units most recently finished, by key and oldest first, for the post-run hook's
+    /// `call`s; at most [`FINISHED_MAX`].
+    finished: VecDeque<(String, K::Unit)>,
+    /// The threads whose park has failed to land once.
     undelivered: HashSet<String>,
 }
 
@@ -138,15 +163,20 @@ impl Plugin {
                 *armed = arm(&self.connect, proto, &kind, &settings)
                     .map_err(|problem| diag.err(&problem))
                     .ok();
-                Answer::Reply(
-                    match armed {
-                        Some(service) => {
-                            json!({"ok": true, "proto": PROTO, "calls": service.calls()})
-                        }
-                        None => json!({"ok": false, "proto": PROTO}),
-                    }
-                    .to_string(),
-                )
+                let Some(service) = armed.as_deref_mut() else {
+                    return Answer::Reply(json!({"ok": false, "proto": PROTO}).to_string());
+                };
+                // `me` is resolved here, under the call budget like any forge read. A
+                // forge that cannot say yet does not refuse the service over a blip: the
+                // reply leaves `values` out, and the first `poll` resolves it again.
+                service.set_call_deadline(Some(clock.now() + CALL_BUDGET));
+                let me = service.me(diag);
+                service.set_call_deadline(None);
+                let mut reply = json!({"ok": true, "proto": PROTO, "calls": service.calls()});
+                if let Some(me) = me {
+                    reply["values"] = json!({ "me": me });
+                }
+                Answer::Reply(reply.to_string())
             }
             Request::Poll => on_armed(armed, clock, |a| a.poll(clock, diag)),
             Request::Release { key } => on_armed(armed, clock, |a| a.release(&key, diag)),
@@ -163,6 +193,9 @@ impl Plugin {
                 outcome,
                 facts,
             } => on_armed(armed, clock, |a| a.finish(&key, outcome, &facts, diag)),
+            Request::Call { action, args, key } => on_armed(armed, clock, |a| {
+                a.call(&action, &args, key.as_deref(), diag)
+            }),
             Request::Unknown => unlisted(diag),
         }
     }
@@ -232,7 +265,20 @@ impl<K: Units> Armed<K> {
             units,
             me: None,
             live: BTreeMap::new(),
+            finished: VecDeque::new(),
             undelivered: HashSet::new(),
+        }
+    }
+
+    /// The unit `key` names, live or finished since.
+    fn unit(&self, key: &str) -> Option<&K::Unit> {
+        match self.live.get(key) {
+            Some(live) => Some(&live.unit),
+            None => self
+                .finished
+                .iter()
+                .find(|(finished, _)| finished == key)
+                .map(|(_, unit)| unit),
         }
     }
 }
@@ -246,19 +292,22 @@ impl<K: Units> Service for Armed<K> {
         self.units.set_call_deadline(deadline);
     }
 
+    fn me(&mut self, diag: &dyn Diag) -> Option<String> {
+        if self.me.is_none() {
+            match self.units.resolve_me() {
+                Ok(me) => self.me = Some(me),
+                Err(e) => diag.err(&e),
+            }
+        }
+        self.me.clone()
+    }
+
     /// One beat: resolve the identity if it is not yet known, then run the claim race. A
     /// transient forge failure is the built-in's idle beat, diagnosed; a definite one
     /// ends the service with its sentence.
     fn poll(&mut self, clock: &dyn Clock, diag: &dyn Diag) -> Answer {
-        let me = match &self.me {
-            Some(me) => me.clone(),
-            None => match self.units.resolve_me() {
-                Ok(me) => self.me.insert(me).clone(),
-                Err(e) => {
-                    diag.err(&e);
-                    return idle();
-                }
-            },
+        let Some(me) = self.me(diag) else {
+            return idle();
         };
         let unit = match self.units.try_claim_next(&me, diag, clock) {
             Ok(Some(unit)) => unit,
@@ -295,9 +344,11 @@ impl<K: Units> Service for Armed<K> {
         Answer::Reply(line)
     }
 
-    /// Release a leftover journal key — or a unit afkd handed straight back.
+    /// Release a leftover journal key — a unit afkd handed straight back, or one whose
+    /// `on_claim` failed — and forget it.
     fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer {
         self.live.remove(key);
+        self.finished.retain(|(finished, _)| finished != key);
         Answer::Reply(json!({"released": self.units.release_stale(key, diag)}).to_string())
     }
 
@@ -377,9 +428,9 @@ impl<K: Units> Service for Armed<K> {
         K::classify(scratch, outcome)
     }
 
-    /// Run a finished unit's terminal lifecycle. Always `ok` (see the module doc): a
-    /// lifecycle that did not land is released at once so the next poll retries the
-    /// unit, and the second time the same unit fails that way it is left for a human.
+    /// Finish a unit, and keep it for the post-run hook's `call`s. Always `ok` (see the
+    /// module doc): a park that did not land is released at once so the next poll retries
+    /// the unit, and the second time the same unit fails that way it is left for a human.
     fn finish(
         &mut self,
         key: &str,
@@ -394,23 +445,60 @@ impl<K: Units> Service for Armed<K> {
             ));
             return ok;
         };
-        if self.units.finish(&live.unit, outcome, facts, diag) {
-            return ok;
+        if !self.units.finish(&live.unit, outcome, facts, diag) {
+            let thread = live.unit.thread();
+            if self.undelivered.insert(thread.clone()) {
+                self.units.release(&live.unit, diag);
+                diag.err(&format_args!(
+                    "could not deliver the park for {key}; releasing the claim so the next \
+                     poll retries it"
+                ));
+            } else {
+                diag.err(&format_args!(
+                    "the park for {thread} failed twice; leaving the claim in place for a \
+                     human"
+                ));
+            }
         }
-        let thread = live.unit.thread();
-        if self.undelivered.insert(thread.clone()) {
-            self.units.release(&live.unit, diag);
-            diag.err(&format_args!(
-                "could not deliver the terminal lifecycle for {key}; releasing the claim so \
-                 the next poll retries it"
-            ));
-        } else {
-            diag.err(&format_args!(
-                "the terminal lifecycle for {thread} failed twice; leaving the claim in place \
-                 for a human"
-            ));
+        if self.finished.len() == FINISHED_MAX {
+            self.finished.pop_front();
         }
+        self.finished.push_back((key.to_string(), live.unit));
         ok
+    }
+
+    /// Do one action a hook called, on the unit `key` names — a live one, or one finished
+    /// since. `{"ok":false}` with the sentence, diagnosed too, for an action afkd would not
+    /// have bound, a key naming no unit, or a forge that refused it.
+    fn call(
+        &self,
+        action: &str,
+        args: &Map<String, Value>,
+        key: Option<&str>,
+        diag: &dyn Diag,
+    ) -> Answer {
+        let refuse = |error: String| {
+            diag.err(&error);
+            Answer::Reply(json!({"ok": false, "error": error}).to_string())
+        };
+        let decoded = match from_call(action, args) {
+            Ok(decoded) => decoded,
+            Err(problem) => return refuse(problem),
+        };
+        let Some(key) = key else {
+            return refuse(format!(
+                "{action} acts on a claimed unit, and this run has none"
+            ));
+        };
+        let Some(unit) = self.unit(key) else {
+            return refuse(format!(
+                "{action} for {key}, which this plugin holds no claim on"
+            ));
+        };
+        match self.units.act(unit, &decoded) {
+            Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
+            Err(e) => refuse(e.to_string()),
+        }
     }
 }
 
@@ -478,7 +566,7 @@ mod tests {
             }
         }
 
-        /// The same, armed as the `gitea_issue` kind over `settings`.
+        /// The same, armed as the `issue` kind over `settings`.
         fn armed(settings: serde_json::Value) -> Self {
             Self::armed_as(ISSUE_KIND, settings)
         }
@@ -486,8 +574,7 @@ mod tests {
         /// The same, armed as `kind` over `settings`.
         fn armed_as(kind: &str, settings: serde_json::Value) -> Self {
             let mut f = Self::new();
-            let hello =
-                f.call(json!({"call": "hello", "proto": 1, "kind": kind, "settings": settings}));
+            let hello = f.call(hello(kind, settings));
             assert_eq!(hello["ok"], true, "{:?}", f.diag.lines());
             f
         }
@@ -507,27 +594,61 @@ mod tests {
         fn poll(&mut self) -> serde_json::Value {
             self.call(json!({"call": "poll"}))
         }
+
+        /// The `finish` call for `key`, ended `outcome`, with the facts of a run that
+        /// proceeded.
+        fn finish(&mut self, key: &serde_json::Value, outcome: &str) -> serde_json::Value {
+            self.call(
+                json!({"call": "finish", "id": "7", "key": key, "outcome": outcome,
+                             "facts": {"signal": "proceed", "reason": null, "duration_ms": 3,
+                                       "cost": 0.0, "turns": null, "tokens": null,
+                                       "run_name": "260925-100400-unit-7-1"}}),
+            )
+        }
+
+        /// One `call` of `action` with `args` on the unit `key` names, as afkd sends a
+        /// hook's action.
+        fn act(
+            &mut self,
+            action: &str,
+            args: serde_json::Value,
+            key: &serde_json::Value,
+        ) -> serde_json::Value {
+            self.call(json!({"call": "call", "action": action, "args": args, "key": key}))
+        }
+    }
+
+    /// The `hello` afkd writes for `kind` over `settings`.
+    fn hello(kind: &str, settings: serde_json::Value) -> serde_json::Value {
+        json!({"call": "hello", "proto": 2, "kind": kind, "service": "afkd::develop",
+               "settings": settings})
     }
 
     fn settings() -> serde_json::Value {
         json!({"repo": "acme/widgets", "token": "PAT", "source_label": "afkd/ready"})
     }
 
-    /// A `gitea_pr` block over the bot's own PRs.
+    /// A `pr` block over the bot's own PRs, the `bool` lowered to its word.
     fn pr_settings() -> serde_json::Value {
-        json!({"repo": "acme/widgets", "token": "PAT", "author_me": true})
+        json!({"repo": "acme/widgets", "token": "PAT", "author_me": "true"})
     }
 
+    /// The accepted `hello` lists exactly the optional calls the kind answers — `call` is
+    /// proto 2's own and is never listed — and supplies the value `me`, the token's login
+    /// read under the call budget.
     #[test]
-    fn hello_lists_exactly_the_calls_the_kind_answers() {
+    fn hello_lists_every_optional_call_and_supplies_me() {
         let mut f = Fixture::new();
-        let reply = f.call(
-            json!({"call": "hello", "proto": 1, "kind": "gitea_issue", "settings": settings()}),
-        );
+        let reply = f.call(hello(ISSUE_KIND, settings()));
         assert_eq!(
             reply,
-            json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments", "classify"]})
+            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments", "classify"],
+                   "values": {"me": "björn-öst[bot]"}})
         );
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+        let now = f.clock.now();
+        assert_eq!(f.mock.call_deadlines(), [Some(now + CALL_BUDGET), None]);
+        assert!(f.mock.actions().is_empty(), "hello writes nothing");
     }
 
     /// The PR kind lists what it answers: no `classify`, since the built-in keeps the
@@ -535,14 +656,34 @@ mod tests {
     #[test]
     fn a_pr_hello_lists_release_renew_comments() {
         let mut f = Fixture::new();
-        let reply = f.call(
-            json!({"call": "hello", "proto": 1, "kind": "gitea_pr", "settings": pr_settings()}),
-        );
+        let reply = f.call(hello(PR_KIND, pr_settings()));
         assert_eq!(
             reply,
-            json!({"ok": true, "proto": 1, "calls": ["release", "renew", "comments"]})
+            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"],
+                   "values": {"me": "björn-öst[bot]"}})
         );
         assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+    }
+
+    /// A forge that cannot say who the token is at `hello` does not refuse the service
+    /// over a blip: the kind is armed, the reply leaves `values` out, the failure is
+    /// diagnosed, and the first `poll` resolves the login and claims.
+    #[test]
+    fn a_hello_whose_identity_read_fails_is_accepted_without_me() {
+        let mut f = Fixture::new();
+        f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
+        f.mock.fail("current user");
+        assert_eq!(
+            f.call(hello(ISSUE_KIND, settings())),
+            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments", "classify"]})
+        );
+        assert_eq!(
+            f.diag.lines(),
+            ["gitea current user: no response (mock failure)"]
+        );
+        f.mock.clear_failure();
+        let unit = f.poll()["unit"].clone();
+        assert_eq!(unit["self"], "björn-öst[bot]");
     }
 
     /// Each refusal is `ok:false` with the problem, in the built-in's own words, on the
@@ -552,43 +693,46 @@ mod tests {
         for (kind, proto, settings, problem) in [
             (
                 "gitlab_issue",
-                1,
+                2,
                 settings(),
                 "kind `gitlab_issue` is not provided by @afkd/gitea",
-            ),
-            (
-                "gitea_pr",
-                1,
-                json!({"repo": "acme/widgets", "org": "acme", "token": "PAT", "author_me": true}),
-                "trigger gitea_pr: setting `org`: a gitea trigger takes exactly one of \
-                 `repo` or `org` (both were set)",
             ),
             (
                 "gitea_issue",
                 2,
                 settings(),
-                "afkd speaks plugin protocol 2, and this plugin speaks 1",
+                "kind `gitea_issue` is not provided by @afkd/gitea",
             ),
             (
-                "gitea_issue",
+                PR_KIND,
+                2,
+                json!({"repo": "acme/widgets", "org": "acme", "token": "PAT", "author_me": "true"}),
+                "trigger pr: setting `org`: a gitea trigger takes exactly one of `repo` or \
+                 `org` (both were set)",
+            ),
+            (
+                ISSUE_KIND,
                 1,
+                settings(),
+                "afkd speaks plugin protocol 1, and this plugin speaks 2",
+            ),
+            (
+                ISSUE_KIND,
+                2,
                 json!({"repo": "acme/widgets", "org": "acme", "token": "PAT"}),
-                "trigger gitea_issue: setting `org`: a gitea trigger takes exactly one of `repo` \
-                 or `org` (both were set)",
-            ),
-            (
-                "gitea_issue",
-                1,
-                json!({"repo": "acme/widgets", "token": "PAT", "on_claim": {"comment": ["spent @{run:cost}"]}}),
-                "trigger gitea_issue: setting `comment`: `@{run:cost}` references the run's facts, \
-                 but no run happens at claim time",
+                "trigger issue: setting `org`: a gitea trigger takes exactly one of `repo` or \
+                 `org` (both were set)",
             ),
         ] {
             let mut f = Fixture::new();
-            let reply = f
-                .call(json!({"call": "hello", "proto": proto, "kind": kind, "settings": settings}));
-            assert_eq!(reply, json!({"ok": false, "proto": 1}));
+            let mut request = hello(kind, settings);
+            request["proto"] = json!(proto);
+            assert_eq!(f.call(request), json!({"ok": false, "proto": 2}));
             assert_eq!(f.diag.lines(), [problem]);
+            assert!(
+                f.mock.call_deadlines().is_empty(),
+                "a refused hello reads no forge"
+            );
             assert!(matches!(
                 f.plugin.answer(Request::Poll),
                 Answer::Fatal(reason) if reason.contains("before a `hello`")
@@ -612,18 +756,24 @@ mod tests {
         assert_eq!(f.poll()["fire"], true);
     }
 
+    /// An identity neither `hello` nor the beat could resolve is an idle beat, retried on
+    /// the next one; once resolved it is kept, so no later beat reads it again.
     #[test]
     fn an_identity_that_will_not_resolve_is_an_idle_beat_retried_next_poll() {
-        let mut f = Fixture::armed(settings());
-        f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
+        let mut f = Fixture::new();
         f.mock.fail("current user");
+        f.call(hello(ISSUE_KIND, settings()));
+        f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
         assert_eq!(f.poll(), json!({"fire": false}));
         assert_eq!(
             f.diag.lines(),
-            ["gitea current user: no response (mock failure)"]
+            ["gitea current user: no response (mock failure)"; 2]
         );
         f.mock.clear_failure();
         assert_eq!(f.poll()["unit"]["self"], "björn-öst[bot]");
+        f.mock.fail("current user");
+        assert_eq!(f.poll(), json!({"fire": false}), "nothing more to claim");
+        assert_eq!(f.diag.lines().len(), 2, "the kept login is not read again");
     }
 
     /// A definite verdict ends the process with the built-in's sentence.
@@ -811,45 +961,64 @@ mod tests {
         );
     }
 
-    /// A terminal lifecycle that did not land still answers `ok` — afkd would crash the
-    /// service otherwise. The first time, the claim is released so the next poll retries
-    /// the issue; the second time for the same issue, it is left for a human.
+    /// A park that did not land still answers `ok` — afkd would crash the service
+    /// otherwise. The first time, the claim is released so the next poll retries the
+    /// issue; the second time for the same issue, it is left for a human.
     #[test]
-    fn an_undelivered_finish_releases_once_then_leaves_the_claim() {
-        let mut settings = settings();
-        settings["on_done"] = json!({"label_add": ["undefined"]});
-        let mut f = Fixture::armed(settings);
+    fn an_undelivered_park_releases_once_then_leaves_the_claim() {
+        let mut f = Fixture::armed(settings());
         f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
-        let facts = json!({"signal": "proceed", "reason": null, "duration_ms": 3, "cost": 0.0,
-                           "turns": null, "tokens": null, "run_name": "260925-100400-issue-7-1"});
-
+        // The first poll's ensure defines both managed labels; the park's swap then
+        // fails on the forge, so the awaiting label never lands.
         let key = f.poll()["unit"]["key"].clone();
-        let reply = f.call(
-            json!({"call": "finish", "id": "7", "key": key, "outcome": "clean", "facts": facts}),
-        );
-        assert_eq!(reply, json!({"ok": true}));
+        f.mock.fail("add label");
+        assert_eq!(f.finish(&key, "park"), json!({"ok": true}));
+        f.mock.clear_failure();
         assert!(!f.mock.has_label(7, "afkd/claimed"), "released for a retry");
+        assert!(!f.mock.has_label(7, "afkd/awaiting-reply"));
         assert_eq!(
             f.diag.lines().last().unwrap(),
             &format!(
-                "could not deliver the terminal lifecycle for {}; releasing the claim so the \
-                 next poll retries it",
+                "could not deliver the park for {}; releasing the claim so the next poll \
+                 retries it",
                 key.as_str().unwrap()
             )
         );
 
         let key = f.poll()["unit"]["key"].clone();
-        let reply = f.call(
-            json!({"call": "finish", "id": "7", "key": key, "outcome": "clean", "facts": facts}),
-        );
-        assert_eq!(reply, json!({"ok": true}));
+        f.mock.fail("add label");
+        assert_eq!(f.finish(&key, "park"), json!({"ok": true}));
+        f.mock.clear_failure();
         assert!(f.mock.has_label(7, "afkd/claimed"), "left in place");
         assert_eq!(
             f.diag.lines().last().unwrap(),
-            "the terminal lifecycle for acme/widgets#7 failed twice; leaving the claim in \
-             place for a human"
+            "the park for acme/widgets#7 failed twice; leaving the claim in place for a human"
         );
         assert_eq!(f.poll(), json!({"fire": false}), "and not re-claimed");
+    }
+
+    /// A clean finish is plain `ok` and does only the plugin-owned write — the marker's
+    /// release; a finish without a `discuss_with` reads nothing and writes nothing else.
+    #[test]
+    fn poll_and_finish_perform_no_hook_actions() {
+        let mut f = Fixture::armed(settings());
+        f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
+        let key = f.poll()["unit"]["key"].clone();
+        let claimed = f.mock.actions();
+        assert!(
+            claimed.iter().all(|a| match a {
+                Action::Comment { body, .. } => is_claim(body),
+                Action::Label { name, .. } => name == "afkd/claimed",
+                _ => false,
+            }),
+            "the claim ran no hook action: {claimed:?}"
+        );
+        assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
+        assert!(matches!(
+            f.mock.actions()[claimed.len()..],
+            [Action::DeleteComment { .. }]
+        ));
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
     }
 
     /// `finish` for a key the plugin never handed over is diagnosed and still `ok`.
@@ -967,9 +1136,9 @@ mod tests {
     }
 
     /// Every armed call hands the forge a deadline [`CALL_BUDGET`] from the clock's now
-    /// before it runs, and clears it once the reply is built; `hello` and an unknown call
-    /// make no forge request and hand it none. Each call runs at its own `now`, so a
-    /// deadline inherited from the call before would show.
+    /// before it runs, and clears it once the reply is built — `hello` too, for the read
+    /// of `me`; an unknown call makes no forge request and hands it none. Each call runs
+    /// at its own `now`, so a deadline inherited from the call before would show.
     #[test]
     fn every_armed_call_runs_under_the_call_budget_and_clears_it() {
         let mut f = Fixture::armed(settings());
@@ -979,13 +1148,15 @@ mod tests {
             "Steps:\n1. run it\n2. ship it",
             &["afkd/ready"],
         );
-        assert!(f.mock.call_deadlines().is_empty(), "hello hands none");
+        assert_eq!(f.mock.call_deadlines().len(), 2, "hello's read of `me`");
         let scratch = TempDir::new();
 
         let facts = json!({"signal": "proceed", "reason": null, "duration_ms": 3, "cost": 0.0,
-                           "turns": null, "tokens": null, "run_name": "260927-220459-issue-7-1"});
+                           "turns": null, "tokens": null, "run_name": "260927-220459-unit-7-1"});
         let mut key = serde_json::Value::Null;
-        for call in ["poll", "renew", "comments", "classify", "finish", "release"] {
+        for call in [
+            "poll", "renew", "comments", "classify", "finish", "call", "release",
+        ] {
             f.clock.advance(Duration::from_secs(3));
             let now = f.clock.now();
             let reply = match call {
@@ -998,6 +1169,7 @@ mod tests {
                 ),
                 "finish" => f.call(json!({"call": "finish", "id": "7", "key": key,
                                           "outcome": "clean", "facts": facts})),
+                "call" => f.act("close", json!({}), &key),
                 _ => f.call(json!({"call": "release", "key": key})),
             };
             if call == "poll" {
@@ -1013,15 +1185,228 @@ mod tests {
         }
         assert_eq!(
             f.mock.call_deadlines().len(),
-            12,
+            16,
             "one set and one clear each"
         );
 
         f.call(json!({"call": "rewind", "key": "k"}));
         assert_eq!(
             f.mock.call_deadlines().len(),
-            12,
+            16,
             "an unknown call hands none"
         );
+    }
+
+    /// Each of the six actions, as afkd sends a hook's call of it on the live unit, does
+    /// its one forge operation on the claimed issue as its claim identity and answers
+    /// `ok` — a slashed emoji label byte for byte, and a comment's `#{run.x}` left as
+    /// afkd sent it.
+    #[test]
+    fn every_action_over_call_acts_on_the_live_unit() {
+        let mut f = Fixture::armed(settings());
+        f.mock.register_label("afkd/reviewed ✅", false);
+        f.mock
+            .add_issue_assigned(7, "Fix", "do it", &["afkd/ready"], &["alice"]);
+        let key = f.poll()["unit"]["key"].clone();
+        let before = f.mock.actions().len();
+        let markdown = "## 完了 ✅\n\n- took 3m 12s\n- log: #{run.x}\n\nsee the run log.";
+        for (action, args) in [
+            ("assign_me", json!({})),
+            ("label_add", json!({"label": "afkd/reviewed ✅"})),
+            ("label_remove", json!({"label": "afkd/claimed"})),
+            ("comment", json!({"text": markdown})),
+            ("unassign", json!({})),
+            ("close", json!({})),
+        ] {
+            assert_eq!(f.act(action, args, &key), json!({"ok": true}), "{action}");
+        }
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+        let acted = &f.mock.actions()[before..];
+        assert!(
+            matches!(
+                acted,
+                [
+                    Action::Assign { index: 7, assignees: added },
+                    Action::Label { index: 7, name },
+                    Action::Unlabel { index: 7, .. },
+                    Action::Comment { index: 7, body },
+                    Action::Assign { index: 7, assignees: kept },
+                    Action::State { index: 7, state },
+                ] if added == &["alice", "björn-öst[bot]"]
+                    && name == "afkd/reviewed ✅"
+                    && body == markdown
+                    && kept == &["alice"]
+                    && state == "closed"
+            ),
+            "{acted:?}"
+        );
+        assert!(!f.mock.has_label(7, "afkd/claimed"));
+    }
+
+    /// The post-run hook's calls, which afkd sends after `finish`, still reach the
+    /// finished unit — until afkd releases the key, after which a call names no claim.
+    #[test]
+    fn a_post_run_call_acts_on_the_finished_unit_until_it_is_released() {
+        let mut f = Fixture::armed(settings());
+        f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
+        let key = f.poll()["unit"]["key"].clone();
+        assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
+        let closed = |f: &Fixture| {
+            f.mock
+                .actions()
+                .iter()
+                .any(|a| matches!(a, Action::State { state, .. } if state == "closed"))
+        };
+        assert!(
+            !closed(&f),
+            "the finish closed nothing: that is `on_done`'s"
+        );
+
+        assert_eq!(
+            f.act("label_remove", json!({"label": "afkd/claimed"}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(f.act("close", json!({}), &key), json!({"ok": true}));
+        assert!(closed(&f));
+        assert!(!f.mock.has_label(7, "afkd/claimed"));
+
+        assert_eq!(
+            f.call(json!({"call": "release", "key": key})),
+            json!({"released": true})
+        );
+        let released = f.diag.lines().len();
+        assert_eq!(
+            f.act("comment", json!({"text": "late"}), &key),
+            json!({"ok": false, "error": format!(
+                "comment for {}, which this plugin holds no claim on",
+                key.as_str().unwrap()
+            )})
+        );
+        assert_eq!(
+            f.diag.lines().len(),
+            released + 1,
+            "the refusal is diagnosed"
+        );
+    }
+
+    /// The finished units a post-run call reaches are bounded: past [`FINISHED_MAX`] the
+    /// oldest is forgotten, and the newest still answer.
+    #[test]
+    fn the_finished_units_are_bounded_oldest_first() {
+        let mut f = Fixture::armed(settings());
+        let issues = FINISHED_MAX as u64 + 1;
+        for n in 1..=issues {
+            f.mock
+                .add_issue(n, &format!("修复 {n}"), "do it", &["afkd/ready"]);
+        }
+        let keys: Vec<serde_json::Value> = (1..=issues)
+            .map(|_| {
+                let key = f.poll()["unit"]["key"].clone();
+                assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
+                key
+            })
+            .collect();
+        let comment = json!({"text": "see the run log"});
+        assert_eq!(f.act("comment", comment.clone(), &keys[0])["ok"], false);
+        for key in &keys[1..] {
+            assert_eq!(f.act("comment", comment.clone(), key), json!({"ok": true}));
+        }
+    }
+
+    /// Each call the plugin cannot do answers `ok:false` with its sentence — which afkd
+    /// fails the hook's `result` with — and says it on the diagnostic channel too: an
+    /// action afkd would not bind, a bare run's `null` key, a key naming no claim, a
+    /// label the repository does not define, and a forge that never answered.
+    #[test]
+    fn a_call_the_plugin_cannot_do_answers_its_sentence() {
+        let mut f = Fixture::armed(settings());
+        f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
+        let key = f.poll()["unit"]["key"].clone();
+        let before = f.mock.actions().len();
+        let mut expect = Vec::new();
+        for (action, args, key, error) in [
+            ("reopen", json!({}), key.clone(), "no action `reopen`"),
+            (
+                "label_add",
+                json!({}),
+                key.clone(),
+                "label_add: parameter label is required",
+            ),
+            (
+                "comment",
+                json!({"text": 7}),
+                key.clone(),
+                "comment: parameter text must be a string",
+            ),
+            (
+                "close",
+                json!({}),
+                json!(null),
+                "close acts on a claimed unit, and this run has none",
+            ),
+            (
+                "close",
+                json!({}),
+                json!("acme/widgets#9#1"),
+                "close for acme/widgets#9#1, which this plugin holds no claim on",
+            ),
+            (
+                "label_add",
+                json!({"label": "afkd/nirgendwo 🚫"}),
+                key.clone(),
+                "gitea add label: label “afkd/nirgendwo 🚫” was not applied (the repository \
+                 defines no such label)",
+            ),
+        ] {
+            assert_eq!(
+                f.act(action, args, &key),
+                json!({"ok": false, "error": error}),
+                "{action}"
+            );
+            expect.push(error.to_string());
+        }
+        f.mock.fail("set state");
+        assert_eq!(
+            f.act("close", json!({}), &key),
+            json!({"ok": false, "error": "gitea set state: no response (mock failure)"})
+        );
+        expect.push("gitea set state: no response (mock failure)".into());
+        assert_eq!(f.diag.lines(), expect);
+        assert_eq!(f.mock.actions().len(), before, "nothing landed");
+    }
+
+    /// The PR kind answers `call` too, on the claimed pull request.
+    #[test]
+    fn a_pr_call_acts_on_the_claimed_pull_request() {
+        let mut f = Fixture::armed_as(PR_KIND, pr_settings());
+        f.mock
+            .add_pull(7, "björn-öst[bot]", "feature/retry-backoff");
+        f.mock
+            .add_comment_body(7, 41, "陳大文", "看起来不对 🚨", 1_790_330_000);
+        let key = f.poll()["unit"]["key"].clone();
+        assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
+        assert_eq!(
+            f.act("comment", json!({"text": "round done ✅"}), &key),
+            json!({"ok": true})
+        );
+        assert!(f
+            .mock
+            .actions()
+            .iter()
+            .any(|a| matches!(a, Action::Comment { index: 7, body } if body == "round done ✅")));
+    }
+
+    /// A `call` before an accepted `hello` is afkd out of step, like any other call.
+    #[test]
+    fn a_call_before_hello_is_fatal() {
+        let mut f = Fixture::new();
+        let request = serde_json::from_value(
+            json!({"call": "call", "action": "close", "args": {}, "key": "acme/widgets#7#1"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            f.plugin.answer(request),
+            Answer::Fatal(reason) if reason.contains("before a `hello`")
+        ));
     }
 }
