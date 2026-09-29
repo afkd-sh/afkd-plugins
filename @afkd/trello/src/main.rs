@@ -5,11 +5,12 @@
 //! replies and nothing else; every diagnostic and every success line goes to stderr, which
 //! afkd streams into the service log under `[@afkd/trello:err]`.
 //!
-//! The `trello_card` kind ([`card`]) is the vendor half of afkd's built-in Trello trigger,
-//! ported. It keeps the built-in's claim, watermark, attempt and park comments, its
-//! claim-journal keys, session threads, run env and brief, so a claim either one left on a
-//! live card is recognised, renewed and released by the other, and a card parked by one is
-//! resumed by the other.
+//! The `card` kind ([`card`]) — `service(trello)` in a config — is the vendor half of
+//! afkd's built-in Trello trigger, ported. It keeps the built-in's claim, watermark, attempt
+//! and park comments, its claim-journal keys, session threads, run env and brief, so a
+//! claim either one left on a live card is recognised, renewed and released by the other,
+//! and a card parked by one is resumed by the other. The hooks are afkd's: each action one
+//! calls arrives as a `call` ([`lifecycle`]).
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -25,7 +26,6 @@ mod lifecycle;
 mod manifest;
 mod plugin;
 mod rfc3339;
-mod run_ref;
 mod settings;
 mod wire;
 

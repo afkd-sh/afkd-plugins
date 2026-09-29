@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// The plugin protocol version this plugin speaks.
-pub(crate) const PROTO: u32 = 1;
+pub(crate) const PROTO: u32 = 2;
 
 /// The longest reply line afkd reads, **before** its newline: afkd caps a line at 64 KiB
 /// including the `\n`, and a line of exactly 64 KiB not ending in one is over the cap.
@@ -64,6 +64,16 @@ pub(crate) enum Request {
         #[serde(default)]
         reason: Option<String>,
     },
+    /// One action a hook of afkd's calls, by its own name, its arguments bound by
+    /// parameter name, on the unit `key` names — `null` for a bare run. Answered by every
+    /// proto 2 plugin, so it is never listed.
+    Call {
+        action: String,
+        #[serde(default)]
+        args: serde_json::Map<String, serde_json::Value>,
+        #[serde(default)]
+        key: Option<String>,
+    },
     /// A call from a later afkd.
     #[serde(other)]
     Unknown,
@@ -73,16 +83,17 @@ pub(crate) enum Request {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum UnitOutcome {
-    /// An attempt completed cleanly (`on_done`).
+    /// An attempt completed cleanly.
     Clean,
-    /// An attempt asked for human input (the badge, the owner marker, then `on_park`).
+    /// An attempt asked for human input (the badge and the owner marker).
     Park,
-    /// Every attempt faulted (`on_fail`).
+    /// Every attempt faulted.
     Failed,
 }
 
-/// The `finish` envelope's `facts`: what the run did. Only the fields a lifecycle comment
-/// or the backstop reads are decoded; the rest (`tokens`) is ignored.
+/// The `finish` envelope's `facts`: what the run did. Only the fields the backstop reads
+/// are decoded; the rest (`duration_ms`, `cost`, `turns`, `tokens`, `run_name`) is
+/// ignored — a comment that names them is afkd's to interpolate.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub(crate) struct Facts {
     /// The run's terminal control-flow word: `proceed`, `break` or `fault`.
@@ -90,29 +101,15 @@ pub(crate) struct Facts {
     /// A fault's own sentence; `null` otherwise.
     #[serde(default)]
     pub(crate) reason: Option<String>,
-    /// The fire's wall-clock span in milliseconds.
-    pub(crate) duration_ms: u64,
-    /// The run's summed agent cost in USD.
-    pub(crate) cost: f64,
-    /// The agent turns, when every envelope confirmed a count.
-    #[serde(default)]
-    pub(crate) turns: Option<u32>,
-    /// The run directory afkd minted, when it got that far.
-    #[serde(default)]
-    pub(crate) run_name: Option<String>,
 }
 
 impl Facts {
-    /// The neutral facts of a moment with no run behind it (`on_claim`) — afkd's
-    /// `RunFacts::none`.
+    /// The facts of a run that proceeded — afkd's `RunFacts::none`.
+    #[cfg(test)]
     pub(crate) fn none() -> Self {
         Self {
             signal: "proceed".to_string(),
             reason: None,
-            duration_ms: 0,
-            cost: 0.0,
-            turns: None,
-            run_name: None,
         }
     }
 
@@ -273,7 +270,7 @@ mod tests {
             r#"{"call":"finish","id":"1Rkelydw","key":"c#m","outcome":"park",
                 "facts":{"signal":"fault","reason":"parked: awaiting a human reply",
                          "duration_ms":168000,"cost":0.4217,"turns":null,"tokens":null,
-                         "run_name":"260925-100400-card-1Rkelydw-1"},"later":1}"#,
+                         "run_name":"260925-100400-unit-1Rkelydw-1"},"later":1}"#,
         )
         .unwrap();
         let Request::Finish {
@@ -291,10 +288,6 @@ mod tests {
             Facts {
                 signal: "fault".into(),
                 reason: Some("parked: awaiting a human reply".into()),
-                duration_ms: 168000,
-                cost: 0.4217,
-                turns: None,
-                run_name: Some("260925-100400-card-1Rkelydw-1".into()),
             }
         );
         assert_eq!(facts.fault(), Some("parked: awaiting a human reply"));
@@ -318,12 +311,37 @@ mod tests {
         ));
     }
 
+    /// A `call` decodes with its arguments as afkd bound them, a bare run's `null` key
+    /// reads as none, and an action with no parameters may leave `args` out.
+    #[test]
+    fn a_call_decodes_with_its_args_and_key() {
+        let call: Request = serde_json::from_str(
+            r#"{"call":"call","action":"move_to","args":{"list":"Blockerat / Väntar","at":"bottom"},
+                "key":"c#m","later":1}"#,
+        )
+        .unwrap();
+        let Request::Call { action, args, key } = call else {
+            panic!("{call:?}");
+        };
+        assert_eq!(action, "move_to");
+        assert_eq!(args["list"], "Blockerat / Väntar");
+        assert_eq!(args["at"], "bottom");
+        assert_eq!(key.as_deref(), Some("c#m"));
+
+        let bare: Request =
+            serde_json::from_str(r#"{"call":"call","action":"archive","key":null}"#).unwrap();
+        assert!(matches!(
+            bare,
+            Request::Call { action, args, key: None } if action == "archive" && args.is_empty()
+        ));
+    }
+
     /// The `hello` afkd writes: the identity it carries decodes, and one without it (an
     /// older afkd) still decodes, to the empty identity the arm refuses by name.
     #[test]
     fn a_hello_decodes_with_and_without_the_identity() {
         let hello: Request = serde_json::from_str(
-            r#"{"call":"hello","proto":1,"kind":"trello_card","service":"afkd::develop",
+            r#"{"call":"hello","proto":2,"kind":"card","service":"afkd::develop",
                 "roster":["afkd::develop","afkd::discuss"],"owner":"afkd-4242",
                 "settings":{"board":"https://trello.com/b/BID/x"}}"#,
         )
@@ -341,10 +359,9 @@ mod tests {
         assert_eq!(roster, ["afkd::develop", "afkd::discuss"]);
         assert_eq!(owner, "afkd-4242");
 
-        let bare: Request = serde_json::from_str(
-            r#"{"call":"hello","proto":1,"kind":"trello_card","settings":{}}"#,
-        )
-        .unwrap();
+        let bare: Request =
+            serde_json::from_str(r#"{"call":"hello","proto":2,"kind":"card","settings":{}}"#)
+                .unwrap();
         assert!(matches!(
             bare,
             Request::Hello { service, roster, owner, .. }

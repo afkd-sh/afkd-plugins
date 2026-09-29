@@ -472,6 +472,12 @@ impl FakeTrello {
         s.cards.iter().any(|c| c.id == card && c.due_complete)
     }
 
+    /// Whether a card is archived.
+    pub fn archived(&self, card: &str) -> bool {
+        let s = lock(&self.state);
+        s.cards.iter().any(|c| c.id == card && c.closed)
+    }
+
     pub fn seen(&self) -> Vec<Seen> {
         lock(&self.state).seen.clone()
     }

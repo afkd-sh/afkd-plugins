@@ -111,9 +111,15 @@ impl Plugin {
     /// the daemon's roster (both services this board runs) and the claim owner beside
     /// them.
     pub fn hello_as(&mut self, service: &str, settings: Value) -> Value {
-        self.call(json!({"call": "hello", "proto": 1, "kind": "trello_card",
+        self.call(json!({"call": "hello", "proto": 2, "kind": "card",
                          "service": service, "roster": [DEVELOP, DISCUSS],
                          "owner": OWNER, "settings": settings}))
+    }
+
+    /// Call one action on the unit `key` names, as afkd sends each action a hook calls:
+    /// its arguments bound by parameter name, `key` `null` for a bare run.
+    pub fn act(&mut self, action: &str, args: Value, key: &Value) -> Value {
+        self.call(json!({"call": "call", "action": action, "args": args, "key": key}))
     }
 
     /// Write one request and read its reply line: under afkd's cap, newline-terminated,

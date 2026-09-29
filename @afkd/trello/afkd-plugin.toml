@@ -1,80 +1,160 @@
 name = "@afkd/trello"
-version = "0.1.0"
-proto = 1
+version = "0.2.0"
+proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-trello"
 
-# The vocabulary of afkd's retired built-in Trello trigger, key for key.
-#
-# Every lifecycle key is repeatable: an `on_*` body is a sequence of actions. A `move_to`
-# block's `at` is repeatable too, because the built-in reads the first one and ignores a
-# second rather than refusing it; the plugin does the same.
-[[trigger]]
-kind = "trello_card"
-settings = [
-  "board",
-  "base_url",
-  "api_key",
-  "token",
-  "pick_from",
-  "require_member",
-  "require_label",
-  "without_label",
-  "discuss_with",
-  "min_age",
-  "follow_comments",
-  "max_attempts",
-  "poll_interval",
-  "on_claim",
-  "on_done",
-  "on_fail",
-  "on_park",
-]
-required = ["board", "api_key", "token"]
-repeatable = ["without_label", "discuss_with"]
-durations = ["poll_interval", "min_age", "follow_comments"]
-run_kind = "card"
-display_name = "Trello"
-info_keys = ["board", "pick_from", "require_label", "require_member", "poll_interval", "max_attempts"]
+# The one kind, `service(trello)` in a config: a Trello board whose cards are claimed one
+# per run.
+[[kind]]
+name = "card"
+role = "trigger"
+main = true
+claims = true
 
-[[trigger.block]]
-path = "on_claim"
-settings = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
-repeatable = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+  [[kind.setting]]
+  name = "board"
+  type = "string"
+  required = true
 
-[[trigger.block]]
-path = "on_claim.move_to"
-settings = ["at"]
-repeatable = ["at"]
+  [[kind.setting]]
+  name = "base_url"
+  type = "string"
 
-[[trigger.block]]
-path = "on_done"
-settings = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
-repeatable = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+  [[kind.setting]]
+  name = "api_key"
+  type = "string"
+  required = true
 
-[[trigger.block]]
-path = "on_done.move_to"
-settings = ["at"]
-repeatable = ["at"]
+  [[kind.setting]]
+  name = "token"
+  type = "string"
+  required = true
 
-[[trigger.block]]
-path = "on_fail"
-settings = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
-repeatable = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+  [[kind.setting]]
+  name = "pick_from"
+  type = "string"
 
-[[trigger.block]]
-path = "on_fail.move_to"
-settings = ["at"]
-repeatable = ["at"]
+  [[kind.setting]]
+  name = "require_member"
+  type = "string"
 
-[[trigger.block]]
-path = "on_park"
-settings = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
-repeatable = ["mark_complete", "archive", "move_to", "add_label", "remove_label", "add_member", "remove_member", "comment"]
+  [[kind.setting]]
+  name = "require_label"
+  type = "string"
 
-[[trigger.block]]
-path = "on_park.move_to"
-settings = ["at"]
-repeatable = ["at"]
+  [[kind.setting]]
+  name = "without_label"
+  type = "list[string]"
+
+  [[kind.setting]]
+  name = "discuss_with"
+  type = "list[string]"
+
+  # A threshold, so no range: it is not resampled per read.
+  [[kind.setting]]
+  name = "min_age"
+  type = "duration"
+
+  # These three afkd reads itself, as it declares them for every claiming kind.
+  [[kind.setting]]
+  name = "follow_comments"
+  type = "duration"
+  jitter = true
+
+  [[kind.setting]]
+  name = "max_attempts"
+  type = "int"
+  default = 1
+
+  [[kind.setting]]
+  name = "poll_interval"
+  type = "duration"
+  jitter = true
+  default = "30s"
+
+  # afkd runs the hooks; each action one of them calls is one `call` to this plugin.
+  [[kind.hook]]
+  name = "on_claim"
+  when = "pre"
+
+  [[kind.hook]]
+  name = "on_done"
+  when = "post"
+
+  [[kind.hook]]
+  name = "on_fail"
+  when = "post"
+
+  [[kind.hook]]
+  name = "on_park"
+  when = "post"
+
+# The actions a hook calls, each on the claimed card.
+[[action]]
+name = "mark_complete"
+
+[[action]]
+name = "archive"
+
+[[action]]
+name = "move_to"
+
+  [[action.param]]
+  name = "list"
+  type = "string"
+  required = true
+
+  [[action.param]]
+  name = "at"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+  default = "top"
+
+[[action]]
+name = "add_label"
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+[[action]]
+name = "remove_label"
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+[[action]]
+name = "add_member"
+
+  [[action.param]]
+  name = "member"
+  type = "string"
+  required = true
+
+[[action]]
+name = "remove_member"
+
+  [[action.param]]
+  name = "member"
+  type = "string"
+  required = true
+
+[[action]]
+name = "comment"
+
+  [[action.param]]
+  name = "text"
+  type = "string"
+  required = true
+
+# `trello.me`: the member the credentials authenticate as, for a member action or setting.
+[[value]]
+name = "me"
+type = "string"

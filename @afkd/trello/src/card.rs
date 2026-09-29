@@ -1,13 +1,14 @@
-//! The `trello_card` kind's **vendor half**: the Trello-specific side of afkd's unit spine,
+//! The `card` kind's **vendor half**: the Trello-specific side of afkd's unit spine,
 //! ported from the built-in `TrelloCardUnits` (afkd's `crates/trello/src/trigger.rs`)
 //! and re-seated on the plugin wire.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
 //! loop, the framing of `task.md`, the mid-run watch. What lives here is what only a board
 //! can answer: the comment-lock claim, the eligibility gates, the parked-card sweep and
-//! its ownership rule, the brief, the attempt markers, the three-moment terminal
-//! lifecycle, and the owed-lifecycle retry a `held` finish leaves for `release`. It
-//! reaches the board through the mockable [`BoardClient`] seam, so that logic is
+//! its ownership rule, the brief, the attempt markers, the park badge and owner marker
+//! at the end of a run, the owed-finish retry a `held` finish leaves for `release`, and
+//! the one board operation each action a hook calls comes to ([`act`](TrelloUnits::act)).
+//! It reaches the board through the mockable [`BoardClient`] seam, so that logic is
 //! unit-tested with no network against the in-memory `MockBoard`.
 //!
 //! Work is only ever *claimed from the source list*, or re-claimed by the parked sweep
@@ -38,19 +39,18 @@ use crate::common::{
     lock, Clock, Diag, ScanBudget, ENV_API_KEY, ENV_BOARD_ID, ENV_CARD_ID, ENV_TOKEN,
 };
 use crate::lifecycle::{LifecycleAction, ListPosition};
-use crate::run_ref;
-use crate::settings::{BoardConfig, DiscussWith, MemberRef};
+use crate::settings::{BoardConfig, DiscussWith, MemberRef, ME};
 use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
 use crate::{PARK_FILE, TASK_FILE};
 
 /// Marker prefix on a failed-attempt comment.
 const ATTEMPT_MARKER: &str = "[afkd-attempt]";
 
-/// How many beats an owed terminal lifecycle is retried before the card is handed back
-/// to `pick_from` for a human.
+/// How many beats an owed finish is retried before the card is handed back to
+/// `pick_from` for a human.
 const PENDING_FINISH_TRIES: u32 = 5;
 
-/// The bound on remembered undelivered lifecycles. Empty in the steady state — every
+/// The bound on remembered undelivered finishes. Empty in the steady state — every
 /// `release` drains its entry — so this only bites where afkd never asks.
 const PENDING_MAX: usize = 64;
 
@@ -113,20 +113,20 @@ impl Unit {
     pub(crate) fn self_author(&self) -> &str {
         &self.self_author
     }
+
+    /// The claimed card, as the claim read it: what an action a hook calls acts on.
+    pub(crate) fn card(&self) -> &Card {
+        &self.card
+    }
 }
 
-/// One card's terminal lifecycle that never reached the board (ADR-0059): what is still
-/// owed, so a later `release` of the key finishes it rather than re-running the agent.
+/// One card's finish that never reached the board (ADR-0059): what is still owed, so a
+/// later `release` of the key finishes it rather than re-running the agent.
 struct PendingFinish {
     /// The journal key the `release` arrives with, `<card_id>#<claim_id>`.
     key: String,
     /// The card itself: its title for the log lines, its id for every call.
     card: Card,
-    /// The moment's actions that never ran — the suffix `apply_actions` stopped at, so
-    /// an action that already landed (a posted `comment`) is never repeated.
-    actions: Vec<LifecycleAction>,
-    /// The finishing run's facts, for a `comment`'s `@{run:…}` interpolation.
-    facts: Facts,
     /// Whether the [`AWAITING_LABEL`] **badge** a park owes is still unwritten. The badge
     /// is what the next beat's scan re-finds the card by, so a park whose label write
     /// failed is *not* delivered.
@@ -156,8 +156,8 @@ struct DiscussGate {
 
 /// What one claim attempt on one candidate decided.
 enum ClaimRound {
-    /// We hold the sole live claim, `on_claim` has run, and the unit is built from the
-    /// very comment read that judged the race. Boxed because a bare `Unit` is several
+    /// We hold the sole live claim, and the unit is built from the very comment read that
+    /// judged the race. Boxed because a bare `Unit` is several
     /// hundred bytes against an empty variant.
     Won(Box<Unit>),
     /// A rival's claim out-orders ours. Our claim comment is gone; the next candidate
@@ -190,8 +190,8 @@ pub(crate) struct Identity {
     pub(crate) roster: Vec<String>,
 }
 
-/// The `trello_card` kind's vendor half: the board seam, the intake gates, the comment-lock
-/// claim, the brief, and the four lifecycle action lists.
+/// The `card` kind's vendor half: the board seam, the intake gates, the comment-lock claim,
+/// the brief, and the actions a hook calls.
 pub(crate) struct TrelloUnits {
     board: Box<dyn BoardClient>,
     board_id: String,
@@ -204,10 +204,6 @@ pub(crate) struct TrelloUnits {
     min_age: Duration,
     settle: Duration,
     claim_lifetime: Duration,
-    on_claim: Vec<LifecycleAction>,
-    on_done: Vec<LifecycleAction>,
-    on_fail: Vec<LifecycleAction>,
-    on_park: Vec<LifecycleAction>,
     /// The credentials the run's environment carries.
     api_key: String,
     token: String,
@@ -223,7 +219,7 @@ pub(crate) struct TrelloUnits {
     /// [`PARK_SCAN_MAX`] is covered across consecutive beats. Taken modulo the set's
     /// length each beat, so cards leaving or joining it can never index out of range.
     park_cursor: Mutex<usize>,
-    /// Terminal lifecycles this process could not deliver, drained by
+    /// Finishes this process could not deliver, drained by
     /// [`release_stale`](Self::release_stale). A `Vec`, not a map: empty in the steady
     /// state, and its insertion order is what bounds it.
     pending: Mutex<Vec<PendingFinish>>,
@@ -246,10 +242,6 @@ impl TrelloUnits {
             min_age: cfg.min_age,
             settle: CLAIM_SETTLE,
             claim_lifetime: CLAIM_LIFETIME,
-            on_claim: cfg.on_claim.clone(),
-            on_done: cfg.on_done.clone(),
-            on_fail: cfg.on_fail.clone(),
-            on_park: cfg.on_park.clone(),
             api_key: cfg.api_key.clone(),
             token: cfg.token.clone(),
             owner: id.owner,
@@ -389,8 +381,8 @@ impl TrelloUnits {
                     diag.narrate(&line);
                 }
             }
-            // Routed through the ordinary claim, which re-runs `on_claim`, takes the
-            // badge off, and hands back an ordinary fresh unit.
+            // Routed through the ordinary claim, which takes the badge off and hands back
+            // an ordinary fresh unit — whose `on_claim` afkd runs, as for any other.
             match self.attempt_claim(full, diag, clock)? {
                 ClaimRound::Won(unit) => return Ok(ParkScan::Claimed(unit)),
                 ClaimRound::Lost => continue,
@@ -540,9 +532,10 @@ impl TrelloUnits {
     /// claim has time to be seen, re-read the thread, and win only as the single earliest
     /// still-live claim ([`won_claim`]).
     ///
-    /// The win narrates and runs `on_claim` **here**, before returning, and takes the
-    /// park badge and owner marker off a card that carried them. A failed re-read is a
-    /// board fault, not a lost round: our claim is released and the error propagates.
+    /// The win narrates **here**, before returning, and takes the park badge and owner
+    /// marker off a card that carried them; afkd runs `on_claim` once this poll's reply
+    /// hands the unit over. A failed re-read is a board fault, not a lost round: our claim
+    /// is released and the error propagates.
     fn attempt_claim(
         &self,
         card: Card,
@@ -589,8 +582,6 @@ impl TrelloUnits {
             // in it after the board dropped it would be deleted a second time — a 404.
             comments.retain(|c| !removed.contains(&c.id));
         }
-        // on_claim runs before any fire, so neutral facts.
-        self.apply_actions(&self.on_claim, &card, &Facts::none(), diag);
         // The feedback delta and the delivery boundary, computed once from the read that
         // judged the claim, so a comment arriving mid-run lands after the boundary.
         let feedback = feedback_comments(&comments, &self_author);
@@ -647,27 +638,7 @@ impl TrelloUnits {
         }
     }
 
-    /// Run a lifecycle moment's actions in order, surfacing and stopping on the first
-    /// failure. Returns **how many** succeeded, so a caller retrying a partial moment
-    /// finds the outstanding set at `actions[done..]`, with a posted `comment` never
-    /// posted twice.
-    pub(crate) fn apply_actions(
-        &self,
-        actions: &[LifecycleAction],
-        card: &Card,
-        facts: &Facts,
-        diag: &dyn Diag,
-    ) -> usize {
-        for (done, action) in actions.iter().enumerate() {
-            if let Err(e) = self.do_action(action, card, facts, diag) {
-                diag.err(&e);
-                return done;
-            }
-        }
-        actions.len()
-    }
-
-    /// Remember a terminal lifecycle this process could not deliver, for
+    /// Remember a finish this process could not deliver, for
     /// [`release_stale`](Self::release_stale) to replay. Past [`PENDING_MAX`] the oldest
     /// goes.
     fn remember_pending(&self, owed: PendingFinish) {
@@ -678,16 +649,16 @@ impl TrelloUnits {
         }
     }
 
-    /// Take the outstanding terminal lifecycle recorded for `key`, if any.
+    /// Take the outstanding finish recorded for `key`, if any.
     fn take_pending(&self, key: &str) -> Option<PendingFinish> {
         let mut pending = lock(&self.pending);
         let at = pending.iter().position(|p| p.key == key)?;
         Some(pending.remove(at))
     }
 
-    /// One beat's attempt at an owed terminal lifecycle: the park badge, then the actions
-    /// that never ran, then the owner marker, then the lease release — `finish`'s order,
-    /// so a partial delivery resumes rather than restarts. `Some(true)` when everything
+    /// One beat's attempt at an owed finish: the park badge, then the owner marker, then
+    /// the lease release — `finish`'s order, so a partial delivery resumes rather than
+    /// restarts. `Some(true)` when everything
     /// landed, `Some(false)` when something is still owed and kept for the next beat, and
     /// `None` once [`PENDING_FINISH_TRIES`] beats have failed — the entry is dropped and
     /// the caller falls through to the crash-victim reversal.
@@ -710,10 +681,6 @@ impl TrelloUnits {
                 Err(e) => diag.err(&e),
             }
         }
-        if !owed.park {
-            let done = self.apply_actions(&owed.actions, &owed.card, &owed.facts, diag);
-            owed.actions.drain(..done);
-        }
         // The owner marker, before the release and not gated on the badge — `finish`'s
         // order exactly.
         if owed.park_marker {
@@ -728,7 +695,7 @@ impl TrelloUnits {
                 Err(e) => diag.err(&e),
             }
         }
-        let owed_before_release = owed.park || !owed.actions.is_empty() || owed.park_marker;
+        let owed_before_release = owed.park || owed.park_marker;
         if !owed_before_release && owed.release {
             match self.board.delete_comment(&owed.card.id, claim_id) {
                 Ok(()) => {
@@ -743,7 +710,7 @@ impl TrelloUnits {
         }
         if owed.tries >= PENDING_FINISH_TRIES {
             diag.err(&format_args!(
-                "giving up on the terminal lifecycle for card \"{}\" after \
+                "giving up on the finish for card \"{}\" after \
                  {PENDING_FINISH_TRIES} tries; returning it to \"{}\"",
                 owed.card.title, self.pick_from
             ));
@@ -766,14 +733,13 @@ impl TrelloUnits {
         });
     }
 
-    /// Carry out one lifecycle action against a card, and on success narrate it. Each
+    /// Carry out one action a hook called against a card, and on success narrate it. Each
     /// board call is `?`-propagated *before* the narration, so a failing action emits no
     /// success line.
-    fn do_action(
+    pub(crate) fn act(
         &self,
-        action: &LifecycleAction,
         card: &Card,
-        facts: &Facts,
+        action: &LifecycleAction,
         diag: &dyn Diag,
     ) -> Result<(), BoardError> {
         match action {
@@ -795,11 +761,9 @@ impl TrelloUnits {
             LifecycleAction::RemoveMember(member) => {
                 self.board.remove_member(&self.board_id, &card.id, member)?;
             }
+            // Verbatim: afkd has already interpolated whatever `#{…}` the hook wrote.
             LifecycleAction::Comment(text) => {
-                // `@{run:…}` interpolated against the run's facts (ADR-0064); the settings
-                // reader proved every reference legal for this moment.
-                self.board
-                    .post_comment(&card.id, &run_ref::substitute(text, facts))?;
+                self.board.post_comment(&card.id, text)?;
             }
         }
         diag.narrate(&action_line(action, card));
@@ -808,8 +772,8 @@ impl TrelloUnits {
 
     /// Finish, or reverse, a claim named by a whole journal key — the `release` call.
     ///
-    /// **The lifecycle is still owed** (a `held` finish): replay it — an owed park badge,
-    /// the outstanding actions, the owner marker, the lease release. Full success is
+    /// **The finish is still owed** (a `held` finish): replay it — an owed park badge,
+    /// the owner marker, the lease release. Full success is
     /// `Some(true)`; anything left is kept and `Some(false)`, up to
     /// [`PENDING_FINISH_TRIES`] — after which the card takes the reversal below.
     ///
@@ -924,16 +888,18 @@ impl TrelloUnits {
         self.board.card_comments(&unit.card.id)
     }
 
-    /// The terminal lifecycle: the moment's actions, then either the durable
-    /// `[afkd-ran]` watermark (the default path) or the last-speaker backstop (the
-    /// `discuss_with` path), and the lease release last of all. A park adds the
-    /// [`AWAITING_LABEL`] badge before any `on_park` extras, and the [`PARK_MARKER`]
+    /// The end of a unit's run: either the durable `[afkd-ran]` watermark (the default
+    /// path) or the last-speaker backstop (the `discuss_with` path), and the lease release
+    /// last of all. A park adds the [`AWAITING_LABEL`] badge first, and the [`PARK_MARKER`]
     /// naming this service after the branch and **before** the release, so the card is
     /// never badged, unclaimed and ownerless at once.
     ///
-    /// Returns whether the moment was delivered. Anything short of "every action landed,
-    /// the badge and owner marker are up, and the claim comment is gone" is remembered,
-    /// and a later `release` of the key finishes it.
+    /// No action a hook names runs here: afkd runs `on_done`, `on_park` or `on_fail`
+    /// after this returns, one `call` per action.
+    ///
+    /// Returns whether the finish was delivered. Anything short of "the badge and owner
+    /// marker are up, and the claim comment is gone" is remembered, and a later `release`
+    /// of the key finishes it.
     pub(crate) fn finish(
         &self,
         unit: &Unit,
@@ -941,14 +907,8 @@ impl TrelloUnits {
         facts: &Facts,
         diag: &dyn Diag,
     ) -> bool {
-        let actions = match outcome {
-            UnitOutcome::Clean => &self.on_done,
-            UnitOutcome::Park => &self.on_park,
-            UnitOutcome::Failed => &self.on_fail,
-        };
-        // The badge, before any user extras and owned by the kind itself, so the gate
-        // holds with an empty `on_park`. It is the *finding* half, so it joins the
-        // delivery verdict.
+        // The badge, owned by the kind itself, so the gate holds with an empty `on_park`.
+        // It is the *finding* half, so it joins the delivery verdict.
         let mut park_owed = matches!(outcome, UnitOutcome::Park);
         if park_owed {
             match self
@@ -962,13 +922,6 @@ impl TrelloUnits {
                 Err(e) => diag.err(&e),
             }
         }
-        // An owed badge stops the moment where a failed action would: the extras would
-        // announce a state the board does not hold.
-        let done = if park_owed {
-            0
-        } else {
-            self.apply_actions(actions, &unit.card, facts, diag)
-        };
         match &self.discuss_with {
             // Default path: post the durable high-water mark carrying `delivered_upto`
             // — the boundary fixed at the claim read — then prune the priors out of the
@@ -1019,7 +972,7 @@ impl TrelloUnits {
             }
         }
         let mut release_owed = true;
-        if !park_owed && done == actions.len() && !marker_owed {
+        if !park_owed && !marker_owed {
             match self.board.delete_comment(&unit.card.id, &unit.claim_id) {
                 Ok(()) => {
                     diag.narrate(&released_line(&unit.card));
@@ -1033,8 +986,6 @@ impl TrelloUnits {
             self.remember_pending(PendingFinish {
                 key: card_key(&unit.card.id, &unit.claim_id),
                 card: unit.card.clone(),
-                actions: actions[done..].to_vec(),
-                facts: facts.clone(),
                 park: park_owed,
                 park_marker: marker_owed,
                 park_priors,
@@ -1110,7 +1061,7 @@ fn attempt_text(n: u32, max: u32, reason: &str) -> String {
     format!("{ATTEMPT_MARKER} {n}/{max}: {reason}")
 }
 
-/// The human-readable success line for a completed lifecycle `action` on `card`. Names
+/// The human-readable success line for a completed `action` on `card`. Names
 /// the card's title (never its id) and, for a move, the *configured* list name and the
 /// effective placement.
 fn action_line(action: &LifecycleAction, card: &Card) -> String {
@@ -1155,7 +1106,7 @@ fn position_word(position: ListPosition) -> &'static str {
 /// board id or username it resolves to.
 fn member_word(member: &MemberRef) -> &str {
     match member {
-        MemberRef::SelfMember => "self",
+        MemberRef::SelfMember => ME,
         MemberRef::Username(username) => username,
     }
 }
@@ -1449,10 +1400,13 @@ mod tests {
     //! What the built-in's suite drove through afkd's spine — `poll`, `run_unit`, `drive`
     //! and the journal reaper — is driven here through the calls afkd makes over the
     //! wire, in the spine's order: [`try_claim_next`](TrelloUnits::try_claim_next) for a
-    //! poll; per attempt [`classify`](TrelloUnits::classify) and, on a failure,
+    //! poll, then the `on_claim` hook's actions; per attempt
+    //! [`classify`](TrelloUnits::classify) and, on a failure,
     //! [`attempt_failed`](TrelloUnits::attempt_failed); then
-    //! [`finish`](TrelloUnits::finish); and [`release_stale`](TrelloUnits::release_stale)
-    //! for each key a `held` finish or a crash left behind.
+    //! [`finish`](TrelloUnits::finish), then the outcome's hook's actions; and
+    //! [`release_stale`](TrelloUnits::release_stale) for each key a `held` finish or a
+    //! crash left behind. Each hook action is one [`act`](TrelloUnits::act), as each is
+    //! one `call` on the wire.
     //!
     //! Not ported, because they exercise afkd's spine rather than this vendor half: the
     //! drive loop and its attempt count, the claim journal's `claim`/`release`/`abandon`
@@ -1507,12 +1461,8 @@ mod tests {
     }
 
     /// The built-in suite's base config. The attempt bound is afkd's, so it is not here:
-    /// [`Harness::run`] takes it.
-    fn cfg(
-        on_claim: Vec<LifecycleAction>,
-        on_done: Vec<LifecycleAction>,
-        on_fail: Vec<LifecycleAction>,
-    ) -> BoardConfig {
+    /// [`Harness::run`] takes it; nor are the hooks, which [`Hooks`] stands in for.
+    fn cfg() -> BoardConfig {
         BoardConfig {
             board_address: "https://trello.com/b/BID/x".into(),
             board_id: "BID".into(),
@@ -1520,10 +1470,31 @@ mod tests {
             api_key: "k".into(),
             token: "t".into(),
             pick_from: "Up for Grabs".into(),
+            ..BoardConfig::default()
+        }
+    }
+
+    /// The hooks a service's config fills, each as the actions it calls in written order:
+    /// what afkd runs around the calls the [`Harness`] makes, one `call` per action.
+    #[derive(Default)]
+    struct Hooks {
+        on_claim: Vec<LifecycleAction>,
+        on_done: Vec<LifecycleAction>,
+        on_fail: Vec<LifecycleAction>,
+        on_park: Vec<LifecycleAction>,
+    }
+
+    /// The three hooks the built-in suite's configs filled.
+    fn hooks(
+        on_claim: Vec<LifecycleAction>,
+        on_done: Vec<LifecycleAction>,
+        on_fail: Vec<LifecycleAction>,
+    ) -> Hooks {
+        Hooks {
             on_claim,
             on_done,
             on_fail,
-            ..BoardConfig::default()
+            on_park: Vec::new(),
         }
     }
 
@@ -1537,7 +1508,6 @@ mod tests {
         Facts {
             signal: "fault".into(),
             reason: Some(reason.into()),
-            ..Facts::none()
         }
     }
 
@@ -1545,17 +1515,6 @@ mod tests {
     fn broke() -> Facts {
         Facts {
             signal: "break".into(),
-            ..Facts::none()
-        }
-    }
-
-    /// A run that proceeded after 5 s, $1.50 and 3 turns, as `run_name`.
-    fn measured(run_name: &str) -> Facts {
-        Facts {
-            duration_ms: 5_000,
-            cost: 1.5,
-            turns: Some(3),
-            run_name: Some(run_name.into()),
             ..Facts::none()
         }
     }
@@ -1591,6 +1550,7 @@ mod tests {
         units: TrelloUnits,
         diag: CaptureDiag,
         clock: FakeClock,
+        hooks: Hooks,
     }
 
     impl Harness {
@@ -1633,21 +1593,40 @@ mod tests {
                 units,
                 diag: CaptureDiag::default(),
                 clock: FakeClock::new(),
+                hooks: Hooks::default(),
             }
         }
 
-        /// One `poll`, raw: the board fault is the caller's.
+        /// The same, with `hooks` filled.
+        fn with_hooks(self, hooks: Hooks) -> Self {
+            Self { hooks, ..self }
+        }
+
+        /// Run one hook's actions on `card` as afkd does, one `call` each in written
+        /// order, stopping at the first that fails; its error is diagnosed.
+        fn hook(&self, card: &Card, actions: &[LifecycleAction]) {
+            for action in actions {
+                if let Err(e) = self.units.act(card, action, &self.diag) {
+                    self.diag.err(&e);
+                    return;
+                }
+            }
+        }
+
+        /// One `poll`, raw: the board fault is the caller's, and no hook runs.
         fn try_claim(&self) -> Result<Option<Unit>, BoardError> {
             self.units.try_claim_next(&self.diag, &self.clock)
         }
 
-        /// One `poll` as the plugin answers it: a board fault is diagnosed and the beat
-        /// idle — the built-in's swallowed poll.
+        /// One `poll` as the plugin answers it — a board fault is diagnosed and the beat
+        /// idle, the built-in's swallowed poll — and then, on a win, `on_claim`.
         fn poll(&self) -> Option<Unit> {
-            self.try_claim().unwrap_or_else(|e| {
+            let unit = self.try_claim().unwrap_or_else(|e| {
                 self.diag.err(&e);
                 None
-            })
+            })?;
+            self.hook(&unit.card, &self.hooks.on_claim);
+            Some(unit)
         }
 
         /// One poll, returning the claimed card's id (if any).
@@ -1658,7 +1637,8 @@ mod tests {
         /// Run a claimed unit as afkd's spine does: up to `max` attempts, each scripted by
         /// `attempt` over its own fresh scratch directory; `classify` after each, and
         /// `attempt_failed` after each one that failed; then `finish` with the last
-        /// attempt's outcome and facts.
+        /// attempt's outcome and facts, and the hook that outcome picks, whatever
+        /// `finish`'s verdict.
         fn run(&self, unit: &Unit, max: u32, mut attempt: impl FnMut(&Path) -> Facts) -> Run {
             let (mut outcome, mut facts, mut runs) = (UnitOutcome::Failed, Facts::none(), 0);
             for n in 1..=max {
@@ -1673,6 +1653,12 @@ mod tests {
                     .attempt_failed(unit, n, max, facts.fault(), &self.diag);
             }
             let delivered = self.units.finish(unit, outcome, &facts, &self.diag);
+            let hook = match outcome {
+                UnitOutcome::Clean => &self.hooks.on_done,
+                UnitOutcome::Park => &self.hooks.on_park,
+                UnitOutcome::Failed => &self.hooks.on_fail,
+            };
+            self.hook(&unit.card, hook);
             Run {
                 outcome,
                 delivered,
@@ -2243,7 +2229,11 @@ mod tests {
 
     #[test]
     fn claim_wins_runs_on_claim() {
-        let h = Harness::new(cfg(vec![move_to("In Progress")], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
 
@@ -2260,7 +2250,7 @@ mod tests {
     fn gated_cfg(who: MemberRef) -> BoardConfig {
         BoardConfig {
             require_member: Some(who),
-            ..cfg(vec![], vec![], vec![])
+            ..cfg()
         }
     }
 
@@ -2300,7 +2290,7 @@ mod tests {
 
     #[test]
     fn without_require_member_the_head_card_is_claimed_and_no_member_resolved() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_two_cards_second_is_ours(&h.board);
         h.board.set_clock(1000);
 
@@ -2347,7 +2337,7 @@ mod tests {
     /// finish is delivered — so afkd releases the entry rather than holding it.
     #[test]
     fn a_won_claim_is_keyed_by_card_and_claim_and_a_clean_finish_delivers() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
         let unit = h.poll().expect("claimed");
@@ -2359,7 +2349,7 @@ mod tests {
     /// read as a crash victim on the next start.
     #[test]
     fn an_exhausted_run_is_delivered_too() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
         let unit = h.poll().expect("claimed");
@@ -2373,7 +2363,11 @@ mod tests {
     /// crash-victim arm: prune the claim, move the card back to the list the poll reads.
     #[test]
     fn a_unit_that_never_finished_is_reversed_by_release() {
-        let h = Harness::new(cfg(vec![move_to("In Progress")], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
         let unit = h.poll().expect("claimed");
@@ -2403,7 +2397,7 @@ mod tests {
     fn reaps_a_stranded_card_by_pruning_the_claim_and_moving_it_back() {
         // A previous run claimed `card1` (its `on_claim` moved it into "In Progress",
         // where this process never polls) and crashed.
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
         h.board.add_list("In Progress");
         h.board.add_card("In Progress", "card1", "Title", "Body");
@@ -2442,7 +2436,7 @@ mod tests {
     /// released, so a persistently-failing board cannot loop the reap.
     #[test]
     fn a_reversal_the_board_refuses_is_logged_and_still_releases() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "claim1", &claim_text("me"), 500);
@@ -2461,7 +2455,7 @@ mod tests {
 
     #[test]
     fn reap_drops_an_unparseable_victim_key_without_a_board_call() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
 
         assert_eq!(h.release("garbage"), None);
@@ -2471,24 +2465,21 @@ mod tests {
         );
     }
 
-    // --- An undelivered terminal lifecycle holds the claim (ADR-0059 amendment) ---
+    // --- An undelivered finish holds the claim (ADR-0059 amendment) ---
 
-    /// The dead-board fixture: a card whose `on_fail` moment cannot reach the board — a
-    /// move plus a label, both owed — driven through exactly one beat. The key the
-    /// `held` finish leaves.
-    fn a_run_whose_on_fail_cannot_land() -> (Harness, String) {
-        let h = Harness::new(
-            cfg(
-                vec![],
-                vec![],
-                vec![move_to("Backlog"), add_label("Problem")],
-            ),
-            "me",
-        );
+    /// The dead-board fixture: a failed card whose claim cannot be released — the board
+    /// refuses every delete — driven through exactly one beat, `on_fail` and all. The key
+    /// the `held` finish leaves.
+    fn a_run_whose_release_cannot_land() -> (Harness, String) {
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![],
+            vec![],
+            vec![move_to("Backlog"), add_label("Problem")],
+        ));
         seed_source_card(&h.board, "card1");
         h.board.add_list("Backlog");
         h.board.set_clock(1000);
-        h.board.fail("move card");
+        h.board.fail("delete comment");
         let held = h
             .beat(1, |_| fault("cargo test: 3 failed"))
             .expect("the finish is held");
@@ -2496,46 +2487,37 @@ mod tests {
     }
 
     #[test]
-    fn an_undelivered_lifecycle_holds_the_claim_instead_of_releasing_it() {
-        let (h, held) = a_run_whose_on_fail_cannot_land();
+    fn an_undelivered_finish_holds_the_claim_instead_of_releasing_it() {
+        let (h, held) = a_run_whose_release_cannot_land();
         assert_eq!(held, "card1#c1000");
         assert!(
             h.board
                 .comments_on("card1")
                 .iter()
                 .any(|c| is_claim(&c.text)),
-            "the lease is held while the lifecycle is owed: {:?}",
+            "the lease is held while the finish is owed: {:?}",
             h.board.comments_on("card1"),
         );
+        // `on_fail` ran after the held finish, as afkd runs it whatever the verdict.
+        assert!(has_move_to(&h.board, "Backlog"));
     }
 
+    /// The next `release` delivers what is owed — the claim's release alone — and replays
+    /// no hook action: those are afkd's, and afkd retries none.
     #[test]
-    fn the_next_release_delivers_the_owed_on_fail_and_releases_the_key() {
-        let (h, held) = a_run_whose_on_fail_cannot_land();
+    fn the_next_release_delivers_the_owed_release_and_frees_the_key() {
+        let (h, held) = a_run_whose_release_cannot_land();
         h.board.clear_failure();
+        let before = h.board.actions().len();
 
         assert_eq!(h.release(&held), Some(true));
 
-        // `post_comment` records no `Action`, and a *failed* `move_card` records none
-        // either. The `Move` is to "Backlog", the configured `on_fail` destination — not
-        // the crash-victim reversal's move to "Up for Grabs".
         assert_eq!(
-            h.board.actions(),
-            vec![
-                Action::Move {
-                    card: "card1".into(),
-                    list: "Backlog".into(),
-                    position: ListPosition::Top,
-                },
-                Action::AddLabel {
-                    card: "card1".into(),
-                    label: "Problem".into(),
-                },
-                Action::DeleteComment {
-                    card: "card1".into(),
-                    comment: "c1000".into(),
-                },
-            ],
+            h.board.actions()[before..],
+            [Action::DeleteComment {
+                card: "card1".into(),
+                comment: "c1000".into(),
+            }],
         );
         assert!(h
             .board
@@ -2546,7 +2528,7 @@ mod tests {
 
     #[test]
     fn a_release_only_failure_is_retried_with_no_card_move() {
-        // The `afkd::discuss` shape: no lifecycle actions at all, so only the lease
+        // The `afkd::discuss` shape: no hook actions at all, so only the lease
         // release can fail — and the retry prunes the comment WITHOUT moving the card.
         let h = Harness::new(discuss_cfg(DiscussWith::Anyone), "me");
         seed_source_card(&h.board, "card1");
@@ -2576,86 +2558,20 @@ mod tests {
                 .actions()
                 .iter()
                 .any(|a| matches!(a, Action::Move { .. })),
-            "a card with no lifecycle actions is never moved, saw {:?}",
+            "a card with no hook actions is never moved, saw {:?}",
             h.board.actions(),
-        );
-    }
-
-    #[test]
-    fn a_partial_lifecycle_replays_only_the_outstanding_actions() {
-        // A three-action `on_done` whose middle action fails leaves the posted comment
-        // alone and replays only the move and the label.
-        let body = "shipped in @{run:duration} — @{run:cost}, @{run:turns} turns";
-        let posted = "shipped in 5.00s — $1.50, 3 turns";
-        let h = Harness::new(
-            cfg(
-                vec![],
-                vec![
-                    comment_action(body),
-                    move_to("Review"),
-                    add_label("Shipped"),
-                ],
-                vec![],
-            ),
-            "me",
-        );
-        seed_source_card(&h.board, "card1");
-        h.board.set_clock(1000);
-        h.board.fail("move card");
-        let held = h
-            .beat(1, |_| measured("260826-153328-card-nwYGQjnu-1"))
-            .expect("held");
-
-        let posted_count = |h: &Harness| {
-            h.board
-                .comments_on("card1")
-                .iter()
-                .filter(|c| c.text == posted)
-                .count()
-        };
-        assert_eq!(
-            posted_count(&h),
-            1,
-            "the first action landed during the run"
-        );
-
-        h.board.clear_failure();
-        assert_eq!(h.release(&held), Some(true));
-
-        assert_eq!(
-            posted_count(&h),
-            1,
-            "a posted comment is never posted twice"
-        );
-        assert_eq!(
-            h.board.actions(),
-            vec![
-                Action::Move {
-                    card: "card1".into(),
-                    list: "Review".into(),
-                    position: ListPosition::Top,
-                },
-                Action::AddLabel {
-                    card: "card1".into(),
-                    label: "Shipped".into(),
-                },
-                Action::DeleteComment {
-                    card: "card1".into(),
-                    comment: "c1000".into(),
-                },
-            ],
-            "only the outstanding suffix is replayed, then the lease",
         );
     }
 
     #[test]
     fn five_failed_deliveries_return_the_card_to_the_source_list() {
-        // The fault is on `add label`, disjoint from the reversal's own calls, so the
-        // give-up's promise ("returning it to …") is actually reachable.
-        let h = Harness::new(cfg(vec![], vec![], vec![add_label("Problem")]), "me");
+        // The board refuses the claim's release beat after beat; after the fifth, the
+        // card is handed back to the source list for a human, and its claim — still
+        // refused — ages out on its own lifetime.
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
-        h.board.fail("add label");
+        h.board.fail("delete comment");
         let held = h.beat(1, |_| fault("boom")).expect("held");
 
         let verdicts: Vec<Option<bool>> = (0..PENDING_FINISH_TRIES)
@@ -2677,13 +2593,13 @@ mod tests {
             .diag
             .errs()
             .into_iter()
-            .filter(|l| l.contains("giving up on the terminal lifecycle"))
+            .filter(|l| l.contains("giving up on the finish"))
             .collect();
         assert_eq!(
             give_ups,
             vec![
-                "giving up on the terminal lifecycle for card \"Title\" after 5 tries; \
-                 returning it to \"Up for Grabs\""
+                "giving up on the finish for card \"Title\" after 5 tries; returning it to \
+                 \"Up for Grabs\""
             ],
         );
         assert_eq!(
@@ -2694,23 +2610,18 @@ mod tests {
                 position: ListPosition::Bottom,
             }),
         );
-        assert!(h
-            .board
-            .comments_on("card1")
-            .iter()
-            .all(|c| !is_claim(&c.text)));
     }
 
-    /// `finish` reports an undelivered terminal state, and the board sees exactly the
-    /// calls the failing lifecycle makes: the failed move, then the best-effort
-    /// watermark — nothing else.
+    /// `finish` reports an undelivered finish, and the board sees exactly the calls the
+    /// finish makes: the best-effort watermark, then the refused release — nothing else,
+    /// and no hook action.
     #[test]
     fn an_undelivered_finish_adds_no_board_traffic() {
-        let h = Harness::new(cfg(vec![], vec![move_to("Review")], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
-        h.board.fail("move card");
+        h.board.fail("delete comment");
 
         assert!(!h.units.finish(
             &claimed_unit("card1"),
@@ -2718,10 +2629,7 @@ mod tests {
             &Facts::none(),
             &h.diag,
         ));
-        assert_eq!(
-            h.board.calls(),
-            vec!["resolve list", "move card", "post comment"]
-        );
+        assert_eq!(h.board.calls(), vec!["post comment", "delete comment"]);
     }
 
     #[test]
@@ -2729,7 +2637,7 @@ mod tests {
         // An idle poll costs three requests flat: the parked scan's whole-board read,
         // then the list resolve and the card read. Nothing is badged, so no card is read
         // in full and no member is resolved.
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
         for _ in 0..4 {
             assert!(h.poll().is_none());
@@ -2746,7 +2654,7 @@ mod tests {
     fn labelled_cfg(label: &str) -> BoardConfig {
         BoardConfig {
             require_label: Some(label.to_string()),
-            ..cfg(vec![], vec![], vec![])
+            ..cfg()
         }
     }
 
@@ -2782,7 +2690,7 @@ mod tests {
         let both_cfg = BoardConfig {
             require_member: Some(MemberRef::SelfMember),
             require_label: Some("Redo".into()),
-            ..cfg(vec![], vec![], vec![])
+            ..cfg()
         };
         let h = Harness::new(both_cfg, "me");
         seed_source_card(&h.board, "label-only");
@@ -2803,9 +2711,10 @@ mod tests {
     fn on_claim_remove_label_clears_the_gate_label() {
         let cfg = BoardConfig {
             require_label: Some("Redo".into()),
-            ..cfg(vec![remove_label("Redo")], vec![], vec![])
+            ..cfg()
         };
-        let h = Harness::new(cfg, "me");
+        let h =
+            Harness::new(cfg, "me").with_hooks(hooks(vec![remove_label("Redo")], vec![], vec![]));
         seed_source_card(&h.board, "card1");
         h.board.seed_card_label("card1", "Redo");
         h.board.set_clock(1000);
@@ -2836,7 +2745,7 @@ mod tests {
     fn without_label_skips_a_carrying_card() {
         let cfg = BoardConfig {
             without_label: vec!["Hold".into()],
-            ..cfg(vec![], vec![], vec![])
+            ..cfg()
         };
         let h = Harness::new(cfg, "me");
         seed_source_card(&h.board, "card1");
@@ -2853,7 +2762,7 @@ mod tests {
         let cfg = BoardConfig {
             require_label: Some("Redo".into()),
             without_label: vec!["Hold".into()],
-            ..cfg(vec![], vec![], vec![])
+            ..cfg()
         };
         let h = Harness::new(cfg, "me");
         seed_source_card(&h.board, "both");
@@ -2871,7 +2780,7 @@ mod tests {
     fn without_label_excludes_any_of_many() {
         let cfg = BoardConfig {
             without_label: vec!["Hold".into(), "WIP".into()],
-            ..cfg(vec![], vec![], vec![])
+            ..cfg()
         };
         let h = Harness::new(cfg, "me");
         seed_source_card(&h.board, "wip");
@@ -2886,10 +2795,7 @@ mod tests {
     // --- The `min_age` age intake gate ---
 
     fn min_age_cfg(min_age: Duration) -> BoardConfig {
-        BoardConfig {
-            min_age,
-            ..cfg(vec![], vec![], vec![])
-        }
+        BoardConfig { min_age, ..cfg() }
     }
 
     /// A creation time `secs` seconds before real now. The gate reads the host clock
@@ -2912,7 +2818,7 @@ mod tests {
 
     #[test]
     fn min_age_unset_reads_no_creation_time() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.seed_card_created_at("card1", None);
         h.board.seed_card_created_action("card1", SystemTime::now());
@@ -2926,9 +2832,10 @@ mod tests {
     fn a_card_younger_than_min_age_is_not_claimed_or_written_to() {
         let cfg = BoardConfig {
             min_age: TEN_MINUTES,
-            ..cfg(vec![move_to("In Progress")], vec![], vec![])
+            ..cfg()
         };
-        let h = Harness::new(cfg, "me");
+        let h =
+            Harness::new(cfg, "me").with_hooks(hooks(vec![move_to("In Progress")], vec![], vec![]));
         seed_source_card(&h.board, "card1");
         h.board.seed_card_created_at("card1", born_ago(60));
         h.board.set_clock(1000);
@@ -2938,7 +2845,7 @@ mod tests {
             .expect("a card that is merely young is not an error");
         assert!(claimed.is_none());
         assert!(h.board.comments_on("card1").is_empty(), "no claim comment");
-        assert_eq!(h.board.actions(), vec![], "no lifecycle action");
+        assert_eq!(h.board.actions(), vec![], "no hook action");
         assert_eq!(h.board.created_at_calls(), 0);
 
         h.board.seed_card_created_at("card1", born_ago(660));
@@ -3000,7 +2907,7 @@ mod tests {
             require_label: Some("ready".into()),
             without_label: vec!["blocked".into()],
             min_age: TEN_MINUTES,
-            ..cfg(vec![], vec![], vec![])
+            ..cfg()
         };
         let h = Harness::new(cfg, "me");
         h.board.add_list("Up for Grabs");
@@ -3086,7 +2993,7 @@ mod tests {
     fn discuss_cfg(dw: DiscussWith) -> BoardConfig {
         BoardConfig {
             discuss_with: Some(dw),
-            ..cfg(vec![], vec![], vec![])
+            ..cfg()
         }
     }
 
@@ -3257,7 +3164,7 @@ mod tests {
 
     #[test]
     fn discuss_gate_reads_nothing_when_unset() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
 
@@ -3566,7 +3473,11 @@ mod tests {
     /// A lost race's clean-up delete is best-effort but not silent.
     #[test]
     fn a_failing_claim_clean_up_delete_is_logged() {
-        let h = Harness::new(cfg(vec![move_to("In Progress")], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "rival1", &claim_text("rival"), 500);
@@ -3586,7 +3497,7 @@ mod tests {
 
     #[test]
     fn claim_captures_feedback_delta_on_the_unit() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "h1", "please also fix the typo", 500);
@@ -3602,7 +3513,7 @@ mod tests {
 
     #[test]
     fn claim_loses_to_earlier_live_claim_and_deletes_own() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "rival1", &claim_text("rival"), 500);
@@ -3620,7 +3531,7 @@ mod tests {
 
     #[test]
     fn stale_rival_claim_lets_us_win() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "rival1", &claim_text("rival"), 10);
@@ -3633,7 +3544,7 @@ mod tests {
     /// marching down the list on a board that is not answering.
     #[test]
     fn a_failed_reread_deletes_our_claim_and_propagates() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
         h.board.fail("read comments");
@@ -3708,11 +3619,11 @@ mod tests {
 
     #[test]
     fn a_live_claim_is_stepped_over_with_no_discuss_gate() {
-        let h = two_cards_with_a_live_claim(
-            cfg(vec![move_to("In Progress")], vec![], vec![]),
-            "me",
-            "rival-host",
-        );
+        let h = two_cards_with_a_live_claim(cfg(), "me", "rival-host").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         assert_eq!(h.poll_claim().as_deref(), Some("card2"));
         let ids: Vec<String> = h
             .board
@@ -3731,7 +3642,7 @@ mod tests {
 
     #[test]
     fn a_claim_past_its_lifetime_does_not_skip_the_card() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.nest_comments("card1");
         h.board.seed_comment_by(
@@ -3748,7 +3659,7 @@ mod tests {
 
     #[test]
     fn a_lost_claim_race_resumes_the_scan_at_the_next_card() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.add_card("Up for Grabs", "card2", "Second", "Body");
         h.board.nest_comments("card1");
@@ -3775,7 +3686,11 @@ mod tests {
 
     #[test]
     fn a_card_only_in_the_in_progress_list_is_never_picked_up() {
-        let h = Harness::new(cfg(vec![move_to("In Progress")], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         h.board.add_list("Up for Grabs");
         h.board.add_list("In Progress");
         h.board.add_card("In Progress", "card1", "T", "B");
@@ -3785,7 +3700,7 @@ mod tests {
         assert!(h.board.comments_on("card1").is_empty());
     }
 
-    // --- Attempts + the terminal lifecycle ---
+    // --- Attempts, the finish, and the post-run hooks ---
 
     fn deleted(board: &MockBoard, comment: &str) -> bool {
         board
@@ -3796,7 +3711,8 @@ mod tests {
 
     #[test]
     fn attempts_stop_on_first_clean_and_post_markers_on_fault() {
-        let h = Harness::new(cfg(vec![], vec![move_to("Review")], vec![]), "me");
+        let h =
+            Harness::new(cfg(), "me").with_hooks(hooks(vec![], vec![move_to("Review")], vec![]));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -3819,7 +3735,8 @@ mod tests {
 
     #[test]
     fn all_attempts_failing_runs_on_fail_then_releases_lease() {
-        let h = Harness::new(cfg(vec![], vec![], vec![move_to("Backlog")]), "me");
+        let h =
+            Harness::new(cfg(), "me").with_hooks(hooks(vec![], vec![], vec![move_to("Backlog")]));
         seed_source_card(&h.board, "card1");
         h.board.add_list("Backlog");
         h.board
@@ -3842,7 +3759,8 @@ mod tests {
 
     #[test]
     fn on_fail_add_label_attaches_the_label() {
-        let h = Harness::new(cfg(vec![], vec![], vec![add_label("Problem")]), "me");
+        let h =
+            Harness::new(cfg(), "me").with_hooks(hooks(vec![], vec![], vec![add_label("Problem")]));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -3857,14 +3775,11 @@ mod tests {
 
     #[test]
     fn on_done_move_to_applies_the_configured_list_position_to_the_board() {
-        let h = Harness::new(
-            cfg(
-                vec![],
-                vec![move_to_at("Review", ListPosition::Bottom)],
-                vec![],
-            ),
-            "me",
-        );
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![],
+            vec![move_to_at("Review", ListPosition::Bottom)],
+            vec![],
+        ));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -3879,10 +3794,11 @@ mod tests {
 
     #[test]
     fn on_done_comment_posts_the_literal_text_to_the_card() {
-        let h = Harness::new(
-            cfg(vec![], vec![comment_action("handled by afkd")], vec![]),
-            "me",
-        );
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![],
+            vec![comment_action("handled by afkd")],
+            vec![],
+        ));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -3896,40 +3812,12 @@ mod tests {
             .any(|c| c.text == "handled by afkd"));
     }
 
+    /// A post-run hook's action runs after `finish` has released the claim, so one that
+    /// fails holds nothing: it is afkd's to report, and afkd retries no hook action.
     #[test]
-    fn on_done_comment_substitutes_run_facts_onto_the_card() {
-        let h = Harness::new(
-            cfg(
-                vec![],
-                vec![comment_action(
-                    "done in @{run:duration} — @{run:cost}, @{run:turns} turns — \
-                     log: .afkd/runs/afkd::selfdev/@{run:name}/run.log",
-                )],
-                vec![],
-            ),
-            "me",
-        );
-        seed_source_card(&h.board, "card1");
-        h.board
-            .seed_comment("card1", "myclaim", &claim_text("me"), 1);
-
-        h.run_script(
-            &claimed_unit("card1"),
-            &[measured("260722-141802-card-QBOL9KfN-1")],
-        );
-
-        assert!(
-            h.board.comments_on("card1").iter().any(|c| c.text
-                == "done in 5.00s — $1.50, 3 turns — \
-                    log: .afkd/runs/afkd::selfdev/260722-141802-card-QBOL9KfN-1/run.log"),
-            "{:?}",
-            h.board.comments_on("card1"),
-        );
-    }
-
-    #[test]
-    fn failed_terminal_action_holds_the_lease_for_the_pending_retry() {
-        let h = Harness::new(cfg(vec![], vec![move_to("Review")], vec![]), "me");
+    fn a_failed_post_run_action_holds_nothing() {
+        let h =
+            Harness::new(cfg(), "me").with_hooks(hooks(vec![], vec![move_to("Review")], vec![]));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -3937,22 +3825,19 @@ mod tests {
 
         let run = h.run_script(&claimed_unit("card1"), &[proceed()]);
 
-        assert!(!run.delivered);
-        assert!(h
-            .board
-            .comments_on("card1")
-            .iter()
-            .any(|c| c.id == "myclaim"));
-        assert!(!h
-            .board
-            .actions()
-            .iter()
-            .any(|a| matches!(a, Action::DeleteComment { .. })));
+        assert!(run.delivered);
+        assert!(deleted(&h.board, "myclaim"));
+        assert_eq!(
+            h.diag.errs(),
+            ["trello move card: no response (mock failure)"]
+        );
+        assert!(!has_move_to(&h.board, "Review"));
     }
 
     #[test]
     fn run_unit_posts_ran_marker_on_release() {
-        let h = Harness::new(cfg(vec![], vec![move_to("Review")], vec![]), "me");
+        let h =
+            Harness::new(cfg(), "me").with_hooks(hooks(vec![], vec![move_to("Review")], vec![]));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -3978,7 +3863,8 @@ mod tests {
 
     #[test]
     fn run_unit_keeps_single_ran_marker() {
-        let h = Harness::new(cfg(vec![], vec![move_to("Review")], vec![]), "me");
+        let h =
+            Harness::new(cfg(), "me").with_hooks(hooks(vec![], vec![move_to("Review")], vec![]));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -4007,7 +3893,8 @@ mod tests {
 
     #[test]
     fn ran_marker_prune_failure_leaves_boundary_correct() {
-        let h = Harness::new(cfg(vec![], vec![move_to("Review")], vec![]), "me");
+        let h =
+            Harness::new(cfg(), "me").with_hooks(hooks(vec![], vec![move_to("Review")], vec![]));
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -4033,7 +3920,7 @@ mod tests {
     /// and the brief is the only file, unframed.
     #[test]
     fn a_units_name_key_and_thread_are_three_distinct_reads_of_one_card() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         let card = Card {
             id: "6a4dd5de1234abcd5678ef90".into(),
             short_link: "1Rk/el ydw 修 🚨".into(),
@@ -4082,7 +3969,7 @@ mod tests {
     /// journal keys, one thread — and separates one card from another.
     #[test]
     fn the_thread_is_stable_per_card_and_distinct_across_cards() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         let first = h.units.wire_unit(&claimed_unit_with_claim("card1", "c1"));
         let again = h.units.wire_unit(&claimed_unit_with_claim("card1", "c2"));
         let other = h.units.wire_unit(&claimed_unit_with_claim("card2", "c1"));
@@ -4097,7 +3984,7 @@ mod tests {
     /// raw member id, and never afkd's own display name.
     #[test]
     fn the_brief_names_each_commenter_and_leaks_no_member_id() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.seed_comment_named(
             "card1",
@@ -4172,7 +4059,7 @@ mod tests {
     /// to mark, as the built-in returned early on a non-fault signal.
     #[test]
     fn attempt_failed_without_a_reason_posts_nothing() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.units
             .attempt_failed(&claimed_unit("card1"), 1, 2, None, &h.diag);
@@ -4194,7 +4081,7 @@ mod tests {
 
     #[test]
     fn a_poll_board_error_is_swallowed_and_diagnosed_once() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
         h.board.fail("list cards");
@@ -4210,7 +4097,11 @@ mod tests {
 
     #[test]
     fn a_clean_completion_lets_the_next_card_be_claimed() {
-        let h = Harness::new(cfg(vec![move_to("In Progress")], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         seed_source_card(&h.board, "card1");
         h.board.add_card("Up for Grabs", "card2", "Title", "Body");
         h.board.set_clock(1000);
@@ -4224,7 +4115,11 @@ mod tests {
 
     #[test]
     fn a_wind_down_board_error_is_diagnosed_and_the_next_card_is_claimed() {
-        let h = Harness::new(cfg(vec![move_to("In Progress")], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         seed_source_card(&h.board, "card1");
         h.board.add_card("Up for Grabs", "card2", "Title", "Body");
         h.board.set_clock(1000);
@@ -4242,14 +4137,11 @@ mod tests {
 
     #[test]
     fn one_beat_claims_runs_and_finishes_one_card_end_to_end() {
-        let h = Harness::new(
-            cfg(
-                vec![move_to("In Progress")],
-                vec![move_to("Review")],
-                vec![],
-            ),
-            "me",
-        );
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![move_to("Review")],
+            vec![],
+        ));
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
 
@@ -4296,7 +4188,7 @@ mod tests {
         }
     }
 
-    // --- Successful lifecycle actions narrate themselves ---
+    // --- Successful actions narrate themselves ---
 
     /// The card the narration tests render: the delimiter a success line wraps a title
     /// in, wide CJK, an emoji and an em dash.
@@ -4349,7 +4241,7 @@ mod tests {
             ),
             (
                 LifecycleAction::AddMember(MemberRef::SelfMember),
-                format!("{ACTION_TAG} adding member \"self\" to card \"{title}\""),
+                format!("{ACTION_TAG} adding member \"me\" to card \"{title}\""),
             ),
             (
                 add_member_named("marisa"),
@@ -4402,7 +4294,7 @@ mod tests {
 
     #[test]
     fn applying_every_action_narrates_one_tagged_line_each_and_raises_no_error() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
         h.board.add_list("In Progress");
         h.board.add_list("Review");
@@ -4415,11 +4307,11 @@ mod tests {
             .map(|(action, _)| action)
             .collect();
 
-        assert_eq!(
+        for action in &actions {
             h.units
-                .apply_actions(&actions, &card, &Facts::none(), &h.diag),
-            actions.len(),
-        );
+                .act(&card, action, &h.diag)
+                .expect("the board takes it");
+        }
         // Parity against the pure renderer: the narrated lines are its own output.
         assert_eq!(
             h.diag.narrated(),
@@ -4465,58 +4357,47 @@ mod tests {
             .any(|c| c.text.contains("no business in a service log line")));
     }
 
+    /// An action the board refuses is the caller's error, sentence and all — the `call`'s
+    /// `ok:false` — and narrates nothing and diagnoses nothing on its own.
     #[test]
-    fn a_failed_add_member_emits_no_success_line_and_stops_the_moment() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
-        h.board.add_list("In Progress");
-        h.board.fail("add member");
+    fn a_failed_action_emits_no_success_line_and_returns_the_error() {
+        for (stage, action) in [
+            ("add member", add_member_named("marisa")),
+            ("move card", move_to("In Progress")),
+            ("post comment", comment_action("修复 ✅\n\nsee the run log")),
+        ] {
+            let h = Harness::new(cfg(), "me");
+            h.board.add_list("In Progress");
+            h.board.fail(stage);
 
+            let e = h
+                .units
+                .act(&card("card1", "T", "B"), &action, &h.diag)
+                .unwrap_err();
+            assert_eq!(
+                e.to_string(),
+                format!("trello {stage}: no response (mock failure)")
+            );
+            assert!(h.diag.narrated().is_empty(), "{stage}");
+            assert!(h.diag.errs().is_empty(), "{stage}");
+            assert!(h.board.actions().is_empty(), "{stage}");
+        }
+        // A list the board does not have is refused before any move.
+        let h = Harness::new(cfg(), "me");
+        let e = h
+            .units
+            .act(&card("card1", "T", "B"), &move_to("Nirgendwo 🚫"), &h.diag)
+            .unwrap_err();
         assert_eq!(
-            h.units.apply_actions(
-                &[add_member_named("marisa"), move_to("In Progress")],
-                &card("card1", "T", "B"),
-                &Facts::none(),
-                &h.diag
-            ),
-            0,
+            e.to_string(),
+            "trello resolve list: no list named 'Nirgendwo 🚫'"
         );
-        assert!(h.diag.narrated().is_empty());
-        assert_eq!(
-            h.diag.errs(),
-            ["trello add member: no response (mock failure)"]
-        );
-        assert!(!h
-            .board
-            .actions()
-            .iter()
-            .any(|a| matches!(a, Action::Move { .. })));
-    }
-
-    #[test]
-    fn a_failed_action_emits_no_success_line_and_keeps_the_error_path() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
-        h.board.add_list("In Progress");
-        h.board.fail("move card");
-
-        assert_eq!(
-            h.units.apply_actions(
-                &[move_to("In Progress")],
-                &card("card1", "T", "B"),
-                &Facts::none(),
-                &h.diag
-            ),
-            0,
-        );
-        assert!(h.diag.narrated().is_empty());
-        assert_eq!(
-            h.diag.errs(),
-            ["trello move card: no response (mock failure)"]
-        );
+        assert_eq!(h.board.calls(), ["resolve list"]);
     }
 
     #[test]
     fn a_won_claim_logs_a_friendly_line() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
 
@@ -4530,7 +4411,7 @@ mod tests {
 
     #[test]
     fn releasing_the_lease_logs_a_friendly_line() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text("me"), 1);
@@ -4552,7 +4433,7 @@ mod tests {
     const PARK_QUESTION: &str = "I can't build this confidently — the card reads two ways:\n\n\
          1. `pick_from` names the **list** a card is claimed from, or\n\
          2. it names the label 名前 the card must carry\n\n\
-         ```conf\ntrigger trello_card { pick_from \"Up for Grabs\" }\n```\n\n\
+         ```afkd\ndevelop :: service(trello) { pick_from \"Up for Grabs\" }\n```\n\n\
          which did you mean? 🙏   ";
 
     /// The human's answer, posted after afkd's last word — the comment that re-arms a
@@ -4565,7 +4446,12 @@ mod tests {
     /// `on_done` moves it to `Review`, and `on_fail` is the dead end the park avoids —
     /// `Backlog` under a red `Problem` label. Run with two attempts.
     fn park_cfg() -> BoardConfig {
-        cfg(
+        cfg()
+    }
+
+    /// [`park_cfg`]'s hooks.
+    fn park_hooks() -> Hooks {
+        hooks(
             vec![move_to("In Progress")],
             vec![move_to("Review")],
             vec![move_to("Backlog"), add_label("Problem")],
@@ -4606,7 +4492,7 @@ mod tests {
         // `classify` reads the marker BEFORE the signal, so an ask that ends in `fail`,
         // in `break`, or cleanly parks alike.
         for facts in [fault("parked: awaiting a human reply"), broke(), proceed()] {
-            let h = Harness::new(park_cfg(), "me");
+            let h = Harness::new(park_cfg(), "me").with_hooks(park_hooks());
             seed_park_board(&h.board);
             let unit = h.poll().expect("claimed");
             let run = h.run(&unit, 2, ask(&h.board, "card1", facts.clone()));
@@ -4645,7 +4531,7 @@ mod tests {
 
     #[test]
     fn a_parked_card_is_re_armed_by_a_reply_ahead_of_pick_from() {
-        let h = Harness::new(park_cfg(), "me");
+        let h = Harness::new(park_cfg(), "me").with_hooks(park_hooks());
         seed_park_board(&h.board);
         assert_eq!(park_beat(&h), None);
         assert!(is_badged(&h.board, "card1"));
@@ -4679,7 +4565,7 @@ mod tests {
     #[test]
     fn a_resumed_parked_card_is_an_ordinary_fresh_claim() {
         // A re-armed card starts over: both attempts of its budget run, each marked.
-        let h = Harness::new(park_cfg(), "me");
+        let h = Harness::new(park_cfg(), "me").with_hooks(park_hooks());
         seed_park_board(&h.board);
         park_beat(&h);
         h.board
@@ -4709,13 +4595,11 @@ mod tests {
 
     #[test]
     fn a_discuss_service_re_arms_a_parked_card_from_its_own_last_word() {
-        let h = Harness::new(
-            BoardConfig {
-                on_claim: vec![move_to("In Progress")],
-                ..discuss_cfg(DiscussWith::Anyone)
-            },
-            "me",
-        );
+        let h = Harness::new(discuss_cfg(DiscussWith::Anyone), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         seed_park_board(&h.board);
         park_beat(&h);
         assert!(!h.board.comments_on("card1").iter().any(|c| is_ran(&c.text)));
@@ -4815,7 +4699,11 @@ mod tests {
 
     #[test]
     fn a_badged_card_with_no_reply_is_left_alone_and_the_beat_claims_on() {
-        let h = Harness::new(cfg(vec![move_to("In Progress")], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
         parked_board(&h, false);
 
         assert_eq!(h.poll_claim().as_deref(), Some("queued"));
@@ -4835,7 +4723,7 @@ mod tests {
 
     #[test]
     fn an_archived_badged_card_is_never_scanned() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         parked_board(&h, true);
         h.board.archive_card("parked").unwrap();
 
@@ -4845,7 +4733,7 @@ mod tests {
 
     #[test]
     fn a_card_gone_between_the_two_reads_is_skipped() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         parked_board(&h, true);
         h.board.vanish_on_read("parked");
 
@@ -4860,7 +4748,7 @@ mod tests {
 
     #[test]
     fn a_badged_card_whose_read_fails_stays_badged_and_the_beat_polls_on() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
         h.board.add_list("In Progress");
         h.board
@@ -4893,7 +4781,7 @@ mod tests {
             BoardConfig {
                 without_label: vec!["Hold".into()],
                 require_label: Some("Ready".into()),
-                ..cfg(vec![], vec![], vec![])
+                ..cfg()
             },
             "me",
         );
@@ -4914,7 +4802,7 @@ mod tests {
         let h2 = Harness::new(
             BoardConfig {
                 require_label: Some("Ready".into()),
-                ..cfg(vec![], vec![], vec![])
+                ..cfg()
             },
             "me",
         );
@@ -4925,7 +4813,7 @@ mod tests {
 
     #[test]
     fn a_badged_card_under_a_live_claim_is_stepped_over() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         parked_board(&h, true);
         h.board.seed_comment_by(
             "parked",
@@ -4941,7 +4829,7 @@ mod tests {
 
     #[test]
     fn a_badged_card_dragged_into_pick_from_is_claimed_once_and_unbadged() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
         h.board
             .add_card("Up for Grabs", "parked", "Fix the retry backoff", "Body");
@@ -4979,7 +4867,8 @@ mod tests {
     fn a_parked_card_is_resumed_only_by_the_service_that_parked_it() {
         let board = Arc::new(MockBoard::new());
         let roster = [TEST_SERVICE, OTHER_SERVICE];
-        let dev = Harness::on_board(Arc::clone(&board), park_cfg(), "me", TEST_SERVICE, &roster);
+        let dev = Harness::on_board(Arc::clone(&board), park_cfg(), "me", TEST_SERVICE, &roster)
+            .with_hooks(park_hooks());
         seed_park_board(&board);
         board.add_list("Discussion");
         let discuss = Harness::on_board(
@@ -4991,7 +4880,8 @@ mod tests {
             "me",
             OTHER_SERVICE,
             &roster,
-        );
+        )
+        .with_hooks(park_hooks());
 
         park_beat(&dev);
         assert_eq!(
@@ -5022,7 +4912,8 @@ mod tests {
     fn without_the_owner_marker_the_rival_service_takes_the_card() {
         let board = Arc::new(MockBoard::new());
         let roster = [TEST_SERVICE, OTHER_SERVICE];
-        let dev = Harness::on_board(Arc::clone(&board), park_cfg(), "me", TEST_SERVICE, &roster);
+        let dev = Harness::on_board(Arc::clone(&board), park_cfg(), "me", TEST_SERVICE, &roster)
+            .with_hooks(park_hooks());
         seed_park_board(&board);
         board.add_list("Discussion");
         let discuss = Harness::on_board(
@@ -5034,7 +4925,8 @@ mod tests {
             "me",
             OTHER_SERVICE,
             &roster,
-        );
+        )
+        .with_hooks(park_hooks());
         park_beat(&dev);
         board.seed_comment_named("card1", "reply", PARK_REPLY, "mem-phil", "Phil Ek", 2000);
         let marker = board
@@ -5056,7 +4948,7 @@ mod tests {
         ] {
             let h = Harness::on_board(
                 Arc::new(MockBoard::new()),
-                cfg(vec![], vec![], vec![]),
+                cfg(),
                 "me",
                 // afkd strips the resumer's own name before `hello`; the marker's is
                 // stripped here, on the read side.
@@ -5081,7 +4973,7 @@ mod tests {
         ] {
             let h = Harness::on_board(
                 Arc::new(MockBoard::new()),
-                cfg(vec![], vec![], vec![]),
+                cfg(),
                 "me",
                 OTHER_SERVICE,
                 &[TEST_SERVICE, OTHER_SERVICE],
@@ -5103,7 +4995,7 @@ mod tests {
     fn a_park_marker_naming_a_vanished_service_is_taken_over_with_one_line() {
         let h = Harness::as_service(
             Arc::new(MockBoard::new()),
-            cfg(vec![], vec![], vec![]),
+            cfg(),
             two_service_identity(TEST_SERVICE),
         );
         h.board.add_list("Up for Grabs");
@@ -5148,7 +5040,7 @@ mod tests {
     fn a_card_owned_by_a_live_sibling_is_swept_past_in_silence() {
         let h = Harness::as_service(
             Arc::new(MockBoard::new()),
-            cfg(vec![], vec![], vec![]),
+            cfg(),
             two_service_identity(OTHER_SERVICE),
         );
         parked_board_owned_by(&h, true, Some(&park_text(TEST_SERVICE)));
@@ -5163,7 +5055,7 @@ mod tests {
 
     #[test]
     fn a_park_leaves_exactly_one_owner_marker_and_the_reclaim_removes_it() {
-        let h = Harness::new(park_cfg(), "me");
+        let h = Harness::new(park_cfg(), "me").with_hooks(park_hooks());
         seed_park_board(&h.board);
         h.board
             .seed_comment_by("card1", "stale-park", &park_text("afkd::old"), SELF_ID, 150);
@@ -5204,7 +5096,7 @@ mod tests {
 
     #[test]
     fn a_re_park_deletes_each_marker_exactly_once() {
-        let h = Harness::new(park_cfg(), "me");
+        let h = Harness::new(park_cfg(), "me").with_hooks(park_hooks());
         seed_park_board(&h.board);
 
         park_beat(&h);
@@ -5313,7 +5205,7 @@ mod tests {
     fn a_badged_card_in_another_services_pick_from_is_left_for_its_owner() {
         let h = Harness::on_board(
             Arc::new(MockBoard::new()),
-            cfg(vec![], vec![], vec![]),
+            cfg(),
             "me",
             OTHER_SERVICE,
             &[TEST_SERVICE, OTHER_SERVICE],
@@ -5348,7 +5240,7 @@ mod tests {
         ] {
             let h = Harness::on_board(
                 Arc::new(MockBoard::new()),
-                cfg(vec![], vec![], vec![]),
+                cfg(),
                 "me",
                 TEST_SERVICE,
                 &[TEST_SERVICE, OTHER_SERVICE],
@@ -5369,7 +5261,7 @@ mod tests {
     fn an_unmarked_badged_card_in_another_services_pick_from_is_still_claimed() {
         let h = Harness::on_board(
             Arc::new(MockBoard::new()),
-            cfg(vec![], vec![], vec![]),
+            cfg(),
             "me",
             OTHER_SERVICE,
             &[TEST_SERVICE, OTHER_SERVICE],
@@ -5391,7 +5283,7 @@ mod tests {
                 };
                 let h = Harness::on_board(
                     Arc::new(MockBoard::new()),
-                    cfg(vec![], vec![], vec![]),
+                    cfg(),
                     "me",
                     OTHER_SERVICE,
                     &[TEST_SERVICE, OTHER_SERVICE],
@@ -5425,7 +5317,7 @@ mod tests {
         // Route 1 — the parked sweep: answered, and sitting in `In Progress`.
         let swept = Harness::as_service(
             Arc::new(MockBoard::new()),
-            cfg(vec![], vec![], vec![]),
+            cfg(),
             two_service_identity(TEST_SERVICE),
         );
         badged_card_in_pick_from(&swept.board, Some(&park_text(gone)));
@@ -5446,7 +5338,7 @@ mod tests {
         // Route 2 — the ordinary list scan: unanswered, sitting in `pick_from`.
         let scanned = Harness::as_service(
             Arc::new(MockBoard::new()),
-            cfg(vec![], vec![], vec![]),
+            cfg(),
             two_service_identity(TEST_SERVICE),
         );
         badged_card_in_pick_from(&scanned.board, Some(&park_text(gone)));
@@ -5470,7 +5362,7 @@ mod tests {
 
     #[test]
     fn an_unbadged_poll_asks_the_board_exactly_what_it_asked_before() {
-        let plain = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let plain = Harness::new(cfg(), "me");
         seed_source_card(&plain.board, "card1");
         plain
             .board
@@ -5488,7 +5380,7 @@ mod tests {
             ],
         );
 
-        let badged = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let badged = Harness::new(cfg(), "me");
         seed_source_card(&badged.board, "card1");
         badged
             .board
@@ -5514,7 +5406,7 @@ mod tests {
 
     #[test]
     fn forty_badged_cards_are_read_sixteen_a_beat_and_all_within_three() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
         h.board.add_list("In Progress");
         for n in 0..40 {
@@ -5539,70 +5431,56 @@ mod tests {
         assert_eq!(h.board.card_reads().len(), 3 * PARK_SCAN_MAX);
     }
 
-    // --- `on_park` extras, and the park's own delivery verdict ---
+    // --- `on_park`, and the park's own delivery verdict ---
 
+    /// The park's own board writes all land in `finish` — the badge first, the claim's
+    /// release last — and afkd's `on_park` runs after them, in the order it is written.
     #[test]
-    fn on_park_actions_run_after_the_badge() {
-        let h = Harness::new(
-            BoardConfig {
-                on_park: vec![
-                    move_to("Discussion"),
-                    comment_action("parked after @{run:duration} — @{run:turns} turns"),
-                ],
-                ..park_cfg()
-            },
-            "me",
-        );
+    fn the_on_park_hook_runs_after_the_finish() {
+        let h = Harness::new(park_cfg(), "me").with_hooks(Hooks {
+            on_park: vec![
+                move_to("Discussion"),
+                comment_action("parked — awaiting a human reply 🙏\n\nsee the question above"),
+            ],
+            ..park_hooks()
+        });
         seed_park_board(&h.board);
         h.board.add_list("Discussion");
-        h.beat(
-            2,
-            ask(
-                &h.board,
-                "card1",
-                Facts {
-                    signal: "fault".into(),
-                    reason: Some("parked: awaiting a human reply".into()),
-                    ..measured("260906-085008-card-U9VjXLga-1")
-                },
-            ),
-        );
+        park_beat(&h);
 
-        let ordered: Vec<String> = h
-            .board
-            .actions()
-            .iter()
-            .filter_map(|a| match a {
-                Action::Move { list, .. } => Some(format!("move {list}")),
-                Action::AddLabel { label, .. } => Some(format!("label {label}")),
-                _ => None,
-            })
-            .collect();
         assert_eq!(
-            ordered,
+            h.board
+                .actions()
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Move { list, .. } => Some(format!("move {list}")),
+                    Action::AddLabel { label, .. } => Some(format!("label {label}")),
+                    Action::DeleteComment { comment, .. } if comment == "c1000" => {
+                        Some("release".to_string())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
             [
                 "move In Progress".to_string(),
                 format!("label {AWAITING_LABEL}"),
-                "move Discussion".to_string()
+                "release".to_string(),
+                "move Discussion".to_string(),
             ]
         );
-        assert!(h
-            .board
-            .comments_on("card1")
-            .iter()
-            .any(|c| c.text == "parked after 5.00s — 3 turns"));
+        assert_eq!(
+            h.board.comments_on("card1").last().map(|c| c.text.clone()),
+            Some("parked — awaiting a human reply 🙏\n\nsee the question above".to_string())
+        );
     }
 
     /// The park whose badge cannot reach the board, driven through one beat; `extras`
-    /// are the `on_park` block. The key the `held` finish leaves.
+    /// are the `on_park` hook's actions. The key the `held` finish leaves.
     fn a_park_whose_badge_cannot_land_with(extras: Vec<LifecycleAction>) -> (Harness, String) {
-        let h = Harness::new(
-            BoardConfig {
-                on_park: extras,
-                ..park_cfg()
-            },
-            "me",
-        );
+        let h = Harness::new(park_cfg(), "me").with_hooks(Hooks {
+            on_park: extras,
+            ..park_hooks()
+        });
         seed_park_board(&h.board);
         h.board.add_list("Discussion");
         h.board.fail("add label");
@@ -5641,6 +5519,8 @@ mod tests {
         assert!(is_badged(&h.board, "card1"));
     }
 
+    /// A park whose badge fails is undelivered and holds the claim; `on_park` is afkd's
+    /// and runs after the `held` finish all the same.
     #[test]
     fn a_park_whose_badge_fails_is_undelivered_and_holds_the_claim() {
         let (h, _) = a_park_whose_badge_cannot_land();
@@ -5649,10 +5529,8 @@ mod tests {
             .comments_on("card1")
             .iter()
             .any(|c| is_claim(&c.text)));
-        assert!(
-            !has_move_to(&h.board, "Discussion"),
-            "the extras wait for the badge"
-        );
+        assert!(!is_badged(&h.board, "card1"));
+        assert!(has_move_to(&h.board, "Discussion"));
         assert!(h
             .board
             .comments_on("card1")
@@ -5660,8 +5538,10 @@ mod tests {
             .any(|c| c.text == PARK_QUESTION));
     }
 
+    /// The release that follows delivers what the finish still owes — the badge, then the
+    /// claim's release — and replays no hook action.
     #[test]
-    fn a_recovered_board_delivers_the_owed_badge_then_the_extras() {
+    fn a_recovered_board_delivers_the_owed_badge_then_the_release() {
         let (h, held) = a_park_whose_badge_cannot_land();
         h.board.clear_failure();
 
@@ -5679,8 +5559,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "move In Progress".to_string(),
-                format!("label {AWAITING_LABEL}"),
                 "move Discussion".to_string(),
+                format!("label {AWAITING_LABEL}"),
                 "release".to_string(),
             ],
         );
@@ -5688,7 +5568,7 @@ mod tests {
 
     #[test]
     fn a_park_posts_the_owner_marker_before_it_releases_the_claim() {
-        let h = Harness::new(park_cfg(), "me");
+        let h = Harness::new(park_cfg(), "me").with_hooks(park_hooks());
         seed_park_board(&h.board);
 
         park_beat(&h);
@@ -5731,7 +5611,7 @@ mod tests {
 
     #[test]
     fn a_park_whose_marker_cannot_land_holds_the_claim_until_the_release_posts_it() {
-        let h = Harness::new(park_cfg(), "me");
+        let h = Harness::new(park_cfg(), "me").with_hooks(park_hooks());
         seed_park_board(&h.board);
         h.board.fail_post_matching(PARK_MARKER);
 
@@ -5791,7 +5671,7 @@ mod tests {
             .diag
             .errs()
             .iter()
-            .any(|l| l.contains("giving up on the terminal lifecycle")));
+            .any(|l| l.contains("giving up on the finish")));
         assert!(h.board.actions().iter().any(|a| matches!(
             a,
             Action::Move { card, list, position }
@@ -5806,7 +5686,7 @@ mod tests {
 
     #[test]
     fn a_card_with_an_edited_claim_is_stepped_over() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.nest_comments("card1");
         h.board.seed_comment_renewed(
@@ -5834,7 +5714,7 @@ mod tests {
 
     #[test]
     fn an_edited_claim_loses_us_the_race_past_the_pre_scan() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.nest_comments("card1");
         h.board
@@ -5855,7 +5735,7 @@ mod tests {
     #[test]
     fn renewing_a_claim_edits_the_marker_in_place() {
         let owner = "afkd-4242";
-        let h = Harness::new(cfg(vec![], vec![], vec![]), owner);
+        let h = Harness::new(cfg(), owner);
         seed_source_card(&h.board, "card1");
         h.board
             .seed_comment("card1", "myclaim", &claim_text(owner), 1);
@@ -5882,7 +5762,7 @@ mod tests {
 
     #[test]
     fn a_failing_renewal_raises_one_diagnostic_and_nothing_else() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         let claim = claim_text("me");
         h.board.seed_comment("card1", "myclaim", &claim, 1);
@@ -5903,7 +5783,7 @@ mod tests {
     /// lost race — one settle — and a scan over twenty-five of them outruns the budget.
     #[test]
     fn the_list_scan_stops_at_its_budget_and_says_so_once() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
         for n in 0..25 {
             let id = format!("card{n:02}");
@@ -5945,7 +5825,7 @@ mod tests {
     fn the_parked_sweep_stops_at_its_budget() {
         let h = Harness {
             clock: FakeClock::ticking(Duration::from_secs(10)),
-            ..Harness::new(cfg(vec![], vec![], vec![]), "me")
+            ..Harness::new(cfg(), "me")
         };
         h.board.add_list("Up for Grabs");
         h.board.add_list("In Progress");
@@ -5988,7 +5868,7 @@ mod tests {
     /// beat rather than risk a lease the call could not see through.
     #[test]
     fn a_scan_with_less_than_the_claim_reserve_left_posts_no_claim() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]), "me");
+        let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.units.set_call_deadline(Some(
             h.clock.now() + CLAIM_RESERVE - Duration::from_millis(1),
@@ -6015,7 +5895,7 @@ mod tests {
         // The parked sweep: an answered question, which it would otherwise re-claim.
         let h = Harness {
             clock: FakeClock::ticking(Duration::from_secs(2)),
-            ..Harness::new(cfg(vec![], vec![], vec![]), "me")
+            ..Harness::new(cfg(), "me")
         };
         h.board.add_list("Up for Grabs");
         h.board.add_list("In Progress");
@@ -6050,7 +5930,7 @@ mod tests {
         // The list scan: one plain card, and nothing badged.
         let h = Harness {
             clock: FakeClock::ticking(Duration::from_secs(2)),
-            ..Harness::new(cfg(vec![], vec![], vec![]), "me")
+            ..Harness::new(cfg(), "me")
         };
         seed_source_card(&h.board, "card1");
         let read0 = h.clock.now();

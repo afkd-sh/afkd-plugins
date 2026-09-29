@@ -1,30 +1,33 @@
-//! Read the `trello_card` kind's settings block — as afkd lowers it to JSON in `hello` —
-//! into a typed [`BoardConfig`], and wire its lifecycle moments to the action vocabulary.
+//! Read the `card` kind's settings block — as afkd lowers it to JSON in `hello` — into a
+//! typed [`BoardConfig`].
 //!
-//! afkd has already held the block to the manifest before this plugin is spawned: every
-//! key is one the kind's manifest table declares, `board`/`api_key`/`token` are present,
-//! no single-valued key is written twice, and only the `on_*` keys (and a `move_to` inside
-//! one) carry a block. What is left here is the part a manifest cannot say — a gate that
-//! names nothing, a lifecycle action naming no operand, `@{run:…}` legality per moment, a
-//! `min_age` that is not a plain duration — in the built-in trigger's own sentences. The
-//! cadence, the attempt bound and the mid-run watch (`poll_interval`, `max_attempts`,
-//! `follow_comments`) are afkd's and are not read here.
+//! afkd has already typed the block against the manifest before this plugin is spawned:
+//! every key is one the kind declares, `board`/`api_key`/`token` are present, and each
+//! value is of its declared type. What is left here is the part a manifest cannot say — a
+//! list that names nothing, a `min_age` that is not a plain duration — in the built-in
+//! trigger's own sentences. The cadence, the attempt bound and the mid-run watch
+//! (`poll_interval`, `max_attempts`, `follow_comments`) are afkd's and are not read here,
+//! and the hooks never arrive here at all: afkd runs them, and each action they call is
+//! one `call` ([`crate::lifecycle`]).
 //!
-//! The lowering (afkd's `pluginworker::settings_json`): a value is a string, several are
-//! an array of strings, a bare flag is `true`, a block is an object (a value beside it
-//! rides as `@value`), and a repeatable key is always an array.
+//! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a duration
+//! its largest whole unit, a range `lo..hi`), and a `list[…]` is always an array — of the
+//! one item, or holding the array of several.
 
 use std::time::Duration;
 
 use serde_json::{Map, Value};
 
 use crate::client::TRELLO_BASE;
-use crate::lifecycle::{parse_block, LifecycleAction};
 
-/// Who an `add_member` action, or a `require_member` intake gate, names.
-///
-/// The reserved operand `self` selects the member the credentials authenticate as. The
-/// consequence is that a board member whose username is literally `self` cannot be named.
+/// The plugin's value `me` (`trello.me` in a config), as `hello` supplies it: Trello's own
+/// alias for the member the token authenticates as, which every member operand reads as
+/// that member. No username can collide with it, since Trello's are at least three
+/// characters long.
+pub(crate) const ME: &str = "me";
+
+/// Who an `add_member` / `remove_member` action, a `require_member` intake gate or a
+/// `discuss_with` entry names: [`ME`], or a board member's username.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MemberRef {
     /// The member the trigger's credentials authenticate as.
@@ -47,7 +50,7 @@ pub(crate) enum DiscussWith {
     Members(Vec<MemberRef>),
 }
 
-/// A validated `trello_card` trigger configuration.
+/// A validated `card` trigger configuration.
 ///
 /// `Debug` is **hand-written** so the credential fields never reach a diagnostic.
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -80,15 +83,6 @@ pub(crate) struct BoardConfig {
     /// The age intake gate, measured from the card's creation. [`Duration::ZERO`] (the
     /// default) filters nothing.
     pub(crate) min_age: Duration,
-    /// Actions performed when work on a card begins.
-    pub(crate) on_claim: Vec<LifecycleAction>,
-    /// Actions performed when a card's work finishes successfully.
-    pub(crate) on_done: Vec<LifecycleAction>,
-    /// Actions performed when a card's work fails.
-    pub(crate) on_fail: Vec<LifecycleAction>,
-    /// Optional extras performed when a run parks a card. The `Awaiting Reply` badge is
-    /// the kind's own, so the gate holds with no block at all.
-    pub(crate) on_park: Vec<LifecycleAction>,
 }
 
 /// Redact the credential fields so a `{:?}` of a [`BoardConfig`] can never spill
@@ -109,10 +103,6 @@ impl std::fmt::Debug for BoardConfig {
             .field("without_label", &self.without_label)
             .field("discuss_with", &self.discuss_with)
             .field("min_age", &self.min_age)
-            .field("on_claim", &self.on_claim)
-            .field("on_done", &self.on_done)
-            .field("on_fail", &self.on_fail)
-            .field("on_park", &self.on_park)
             .finish()
     }
 }
@@ -142,45 +132,42 @@ impl std::fmt::Display for SettingsError {
     }
 }
 
-// The built-in's vocabulary, verbatim. afkd reads the manifest, never these: they are
-// what `manifest.rs`'s test holds `afkd-plugin.toml` to, so the two cannot drift apart.
-
-/// The `trello_card` kind's full key set, exactly the built-in's `ALLOWED_KEYS`, in its
-/// order.
+/// One setting as the manifest declares it: its name, its `type`, and its other keys
+/// with their values as the manifest spells them (`("default", "\"30s\"")`).
 #[cfg(test)]
-pub(crate) const ALLOWED_KEYS: &[&str] = &[
-    "board",
-    "base_url",
-    "api_key",
-    "token",
-    "pick_from",
-    "require_member",
-    "require_label",
-    "without_label",
-    "discuss_with",
-    "min_age",
-    "follow_comments",
-    "max_attempts",
-    "poll_interval",
-    "on_claim",
-    "on_done",
-    "on_fail",
-    "on_park",
+pub(crate) type Declared = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+/// The `card` kind's settings as the manifest declares them, in its order: each name,
+/// its `type`, and its other keys spelled as the manifest spells their values. afkd reads
+/// the manifest, never this: it is what `manifest.rs`'s test holds `afkd-plugin.toml` to,
+/// so the two cannot drift apart.
+///
+/// The last three are afkd's own claim keys, declared exactly as afkd declares them for
+/// every claiming kind; afkd's declaration is the one that applies.
+#[cfg(test)]
+pub(crate) const SETTINGS: &[Declared] = &[
+    ("board", "string", &[("required", "true")]),
+    ("base_url", "string", &[]),
+    ("api_key", "string", &[("required", "true")]),
+    ("token", "string", &[("required", "true")]),
+    ("pick_from", "string", &[]),
+    ("require_member", "string", &[]),
+    ("require_label", "string", &[]),
+    ("without_label", "list[string]", &[]),
+    ("discuss_with", "list[string]", &[]),
+    ("min_age", "duration", &[]),
+    ("follow_comments", "duration", &[("jitter", "true")]),
+    ("max_attempts", "int", &[("default", "1")]),
+    (
+        "poll_interval",
+        "duration",
+        &[("jitter", "true"), ("default", "\"30s\"")],
+    ),
 ];
-
-/// The keys a `trello_card` block may write more than once: the two filter lists it reads
-/// as sequences.
-#[cfg(test)]
-pub(crate) const REPEATABLE_KEYS: &[&str] = &["without_label", "discuss_with"];
-
-/// The keys afkd reads as a duration, compared by value across a reload.
-#[cfg(test)]
-pub(crate) const DURATION_KEYS: &[&str] = &["poll_interval", "min_age", "follow_comments"];
-
-/// The keys the block must carry: the board and its credentials, which flow config →
-/// child env with no process-env fallback.
-#[cfg(test)]
-pub(crate) const REQUIRED_KEYS: &[&str] = &["board", "api_key", "token"];
 
 /// Read the lowered `settings` into a [`BoardConfig`], or report the first setting it
 /// cannot use, in the built-in's order.
@@ -216,13 +203,6 @@ pub(crate) fn board_config(settings: &Value) -> Result<BoardConfig, SettingsErro
             }
         }),
         min_age: parse_min_age(settings)?,
-        // `on_claim` runs before any fire, so a `@{run:…}` reference is illegal there;
-        // the terminal moments — the park among them, which has the ask's run behind
-        // it — receive the attempt's real facts.
-        on_claim: parse_block(settings.get("on_claim"), false)?,
-        on_done: parse_block(settings.get("on_done"), true)?,
-        on_fail: parse_block(settings.get("on_fail"), true)?,
-        on_park: parse_block(settings.get("on_park"), true)?,
     })
 }
 
@@ -238,12 +218,12 @@ pub(crate) fn derive_board_id(address: &str) -> String {
     address.to_string()
 }
 
-/// The one `self`-or-username rule every member operand is read by: the reserved operand
-/// `self` (case-sensitively — Trello usernames are lowercase) selects the authed member,
-/// any other names a board member by username.
+/// The one [`ME`]-or-username rule every member operand is read by: `me`
+/// (case-sensitively — Trello usernames are lowercase) selects the authed member, any
+/// other names a board member by username.
 pub(crate) fn member_ref(who: &str) -> MemberRef {
     match who {
-        "self" => MemberRef::SelfMember,
+        ME => MemberRef::SelfMember,
         username => MemberRef::Username(username.to_string()),
     }
 }
@@ -351,7 +331,6 @@ fn parse_duration(s: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::ListPosition;
     use serde_json::json;
 
     /// The three required credentials plus `extra`, as afkd lowers a block: the
@@ -414,8 +393,20 @@ mod tests {
         assert!(cfg.without_label.is_empty());
         assert_eq!(cfg.discuss_with, None);
         assert_eq!(cfg.min_age, Duration::ZERO);
-        assert!(cfg.on_claim.is_empty() && cfg.on_done.is_empty());
-        assert!(cfg.on_fail.is_empty() && cfg.on_park.is_empty());
+    }
+
+    /// The hooks are afkd's and never cross in `settings`; a proto 1-shaped leftover that
+    /// did — an `on_claim` block, a bare `on_done` — is ignored, not a fault.
+    #[test]
+    fn hook_keys_in_settings_are_ignored() {
+        assert_eq!(
+            cfg(json!({
+                "on_claim": {"add_member": ["self"], "comment": ["claimed at @{run:cost}"]},
+                "on_done": true,
+                "on_fail": [{"move_to": ["Backlog"]}],
+            })),
+            cfg(json!({}))
+        );
     }
 
     #[test]
@@ -443,15 +434,23 @@ mod tests {
     }
 
     #[test]
-    fn require_member_parses_self_and_a_username() {
+    fn require_member_parses_me_and_a_username() {
         assert_eq!(
-            cfg(json!({"require_member": "self"})).require_member,
+            cfg(json!({"require_member": "me"})).require_member,
             Some(MemberRef::SelfMember)
         );
         assert_eq!(
             cfg(json!({"require_member": "marisa"})).require_member,
             Some(MemberRef::Username("marisa".into()))
         );
+        // `me` is the one reserved spelling: proto 1's `self` is a username now, and so is
+        // a differently-cased `Me`.
+        for username in ["self", "Me"] {
+            assert_eq!(
+                cfg(json!({"require_member": username})).require_member,
+                Some(MemberRef::Username(username.into()))
+            );
+        }
     }
 
     /// A valueless gate names nothing. It must fault on its own key rather than read as
@@ -512,10 +511,10 @@ mod tests {
                 MemberRef::Username("bob".into()),
             ]))
         );
-        // A lone non-`anyone` operand is still a one-member allow-list, `self` is the
-        // reserved operand, and two entries flatten into one list.
+        // A lone non-`anyone` operand is still a one-member allow-list, `me` is the
+        // authed member, and two entries flatten into one list.
         assert_eq!(
-            cfg(json!({"discuss_with": ["self", "björn"]})).discuss_with,
+            cfg(json!({"discuss_with": ["me", "björn"]})).discuss_with,
             Some(DiscussWith::Members(vec![
                 MemberRef::SelfMember,
                 MemberRef::Username("björn".into()),
@@ -594,76 +593,6 @@ mod tests {
                 )
             );
         }
-    }
-
-    /// Each moment reaches the parser under its own `run_refs_allowed`, into its own
-    /// field: `on_claim` before any fire, the three terminal moments after one.
-    #[test]
-    fn lifecycle_blocks_wire_each_moment_to_its_run_ref_rule() {
-        let terminal = "done in @{run:duration} — log @{run:name}";
-        let cfg = cfg(json!({
-            "on_claim": {"add_member": ["self"], "move_to": [{"@value": "In Progress", "at": ["top"]}]},
-            "on_done": {"comment": [terminal]},
-            "on_fail": {"add_label": ["Problem"]},
-            "on_park": {"comment": ["parked after @{run:duration}"]},
-        }));
-        assert_eq!(
-            cfg.on_claim,
-            vec![
-                LifecycleAction::AddMember(MemberRef::SelfMember),
-                LifecycleAction::MoveTo {
-                    list: "In Progress".into(),
-                    position: ListPosition::Top,
-                },
-            ]
-        );
-        assert_eq!(cfg.on_done, vec![LifecycleAction::Comment(terminal.into())]);
-        assert_eq!(
-            cfg.on_fail,
-            vec![LifecycleAction::AddLabel {
-                name: "Problem".into()
-            }]
-        );
-        assert_eq!(
-            cfg.on_park,
-            vec![LifecycleAction::Comment(
-                "parked after @{run:duration}".into()
-            )]
-        );
-
-        // The very same comment is a hard fault at claim time.
-        let e = err(json!({"on_claim": {"comment": [terminal]}}));
-        assert_eq!(e.key, "comment");
-        assert_eq!(
-            e.problem,
-            "`@{run:duration}` references the run's facts, but no run happens at claim time"
-        );
-    }
-
-    /// Every lifecycle key is a sequence element, so two of one verb both land, in
-    /// written order — while across verbs the canonical order runs (see `lifecycle.rs`),
-    /// which puts the built-in's trailing `mark_complete` first.
-    #[test]
-    fn on_done_performs_two_add_labels_in_source_order() {
-        let cfg = cfg(json!({"on_done": {
-            "add_label": ["shipped", "reviewed ✅"],
-            "comment": ["landed by @{run:name}", "see the run log"],
-            "mark_complete": [true],
-        }}));
-        assert_eq!(
-            cfg.on_done,
-            vec![
-                LifecycleAction::MarkComplete,
-                LifecycleAction::AddLabel {
-                    name: "shipped".into(),
-                },
-                LifecycleAction::AddLabel {
-                    name: "reviewed ✅".into(),
-                },
-                LifecycleAction::Comment("landed by @{run:name}".into()),
-                LifecycleAction::Comment("see the run log".into()),
-            ]
-        );
     }
 
     #[test]

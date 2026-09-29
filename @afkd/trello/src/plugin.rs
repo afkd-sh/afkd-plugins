@@ -1,6 +1,11 @@
 //! The plugin's state across calls, and one handler per call: the thin layer between
-//! afkd's wire ([`crate::wire`]) and the `trello_card` kind's vendor half
-//! ([`crate::card`]).
+//! afkd's wire ([`crate::wire`]) and the `card` kind's vendor half ([`crate::card`]).
+//!
+//! **afkd runs the hooks.** `on_claim` after a `poll` hands a unit over, and `on_done`,
+//! `on_park` or `on_fail` after its `finish`; each action a hook calls is one `call`,
+//! naming the unit by its key, which this plugin does on that unit's card. A finished
+//! unit's card is kept a while for that ([`FINISHED_MAX`]), since its post-run hook's
+//! calls arrive after `finish`.
 //!
 //! Five things the wire forces that the built-in never had to do:
 //!
@@ -10,33 +15,39 @@
 //! - **Every reply fits one line.** afkd caps a line at 64 KiB. A `poll` whose brief would
 //!   overflow it is cut to fit ([`fit_poll`]); a `comments` reply sends only what afkd has
 //!   not been told yet, and if that still overflows, the newest that fit.
-//! - **An undelivered terminal lifecycle is `held`.** The built-in held the claim when its
-//!   terminal moment did not land and its reaper finished it on a later beat; `finish`
-//!   answers `{"ok":true,"held":true}` and afkd asks `release` for the key on a later
-//!   beat, which replays what is owed.
+//! - **An undelivered finish is `held`.** The built-in held the claim when its terminal
+//!   moment did not land and its reaper finished it on a later beat; `finish` answers
+//!   `{"ok":true,"held":true}` and afkd asks `release` for the key on a later beat, which
+//!   replays what is owed — the park badge, the owner marker, the claim's release.
 //! - **The lines go to stderr.** The success narration and the diagnostics alike, which
 //!   afkd files under `[@afkd/trello:err]`.
 //! - **Every call answers within 45 seconds.** afkd ends the service on a missed reply,
 //!   so each armed call runs under [`CALL_BUDGET`], and a board too slow for it reads as
 //!   a board that is down.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
 
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
-use crate::board::BoardClient;
+use crate::board::{BoardClient, Card};
 use crate::card::{is_afkd, Identity, TrelloUnits, Unit};
 use crate::client::TrelloClient;
 use crate::common::{Clock, Diag, CALL_BUDGET};
+use crate::lifecycle::from_call;
 use crate::rfc3339::format_utc;
-use crate::settings::{board_config, BoardConfig};
+use crate::settings::{board_config, BoardConfig, ME};
 use crate::wire::{
     fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
 };
 
-/// The one kind this plugin provides.
-pub(crate) const TRELLO_KIND: &str = "trello_card";
+/// The one kind this plugin provides, its main one: `service(trello)` in a config.
+pub(crate) const TRELLO_KIND: &str = "card";
+
+/// How many finished units' cards a post-run hook's `call`s can still reach. afkd sends
+/// them straight after `finish`, one unit at a time, so a handful would do; the rest is
+/// headroom, and the oldest goes first.
+const FINISHED_MAX: usize = 16;
 
 /// The optional calls the kind answers, exactly as `hello` lists them: every one afkd
 /// has, since the built-in used the whole spine.
@@ -69,6 +80,9 @@ struct Armed {
     units: TrelloUnits,
     /// The units handed over and not yet finished or released, by key.
     live: BTreeMap<String, LiveUnit>,
+    /// The cards of the units most recently finished, by key and oldest first, for the
+    /// post-run hook's `call`s; at most [`FINISHED_MAX`].
+    finished: VecDeque<(String, Card)>,
 }
 
 /// A unit afkd is running.
@@ -128,7 +142,8 @@ impl Plugin {
                     .ok();
                 Answer::Reply(
                     match armed {
-                        Some(_) => json!({"ok": true, "proto": PROTO, "calls": CALLS}),
+                        Some(_) => json!({"ok": true, "proto": PROTO, "calls": CALLS,
+                                          "values": {"me": ME}}),
                         None => json!({"ok": false, "proto": PROTO}),
                     }
                     .to_string(),
@@ -157,6 +172,9 @@ impl Plugin {
                 outcome,
                 facts,
             } => on_armed(armed, clock, |a| a.finish(&key, outcome, &facts, diag)),
+            Request::Call { action, args, key } => on_armed(armed, clock, |a| {
+                a.call(&action, &args, key.as_deref(), diag)
+            }),
             Request::Unknown => {
                 diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
                 Answer::Reply(json!({"ok": false}).to_string())
@@ -215,6 +233,7 @@ fn arm(
     Ok(Armed {
         units: TrelloUnits::new(connect(&cfg), &cfg, id),
         live: BTreeMap::new(),
+        finished: VecDeque::new(),
     })
 }
 
@@ -261,10 +280,11 @@ impl Armed {
         Answer::Reply(line)
     }
 
-    /// Release a journal key — a crashed run's, a `held` finish's, or a unit afkd handed
-    /// straight back — and forget it if it was live.
+    /// Release a journal key — a crashed run's, a `held` finish's, a unit afkd handed
+    /// straight back, or one whose `on_claim` failed — and forget it.
     fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer {
         self.live.remove(key);
+        self.finished.retain(|(finished, _)| finished != key);
         let released = self.units.release_stale(key, diag);
         Answer::Reply(json!({ "released": released }).to_string())
     }
@@ -362,9 +382,9 @@ impl Armed {
         Answer::Reply(json!({ "ok": ok }).to_string())
     }
 
-    /// Run a finished unit's terminal lifecycle. A moment that did not land is `held`:
-    /// afkd keeps the claim and sends `release` for the key on a later beat, which
-    /// replays what is owed.
+    /// Finish a unit, and keep its card for the post-run hook's `call`s. A finish that did
+    /// not land is `held`: afkd keeps the claim and sends `release` for the key on a later
+    /// beat, which replays what is owed.
     fn finish(
         &mut self,
         key: &str,
@@ -382,12 +402,55 @@ impl Armed {
             json!({"ok": true})
         } else {
             diag.err(&format_args!(
-                "could not deliver the terminal lifecycle for {key}; afkd holds the claim and \
-                 releases it on a later beat"
+                "could not deliver the finish for {key}; afkd holds the claim and releases it \
+                 on a later beat"
             ));
             json!({"ok": true, "held": true})
         };
+        if self.finished.len() == FINISHED_MAX {
+            self.finished.pop_front();
+        }
+        self.finished
+            .push_back((key.to_string(), live.unit.card().clone()));
         Answer::Reply(reply.to_string())
+    }
+
+    /// Do one action a hook called, on the card of the unit `key` names — a live one, or
+    /// one finished since. `{"ok":false}` with the sentence, diagnosed too, for an action
+    /// afkd would not have bound, a key naming no card, or a board that refused it.
+    fn call(
+        &self,
+        action: &str,
+        args: &Map<String, Value>,
+        key: Option<&str>,
+        diag: &dyn Diag,
+    ) -> Answer {
+        let refuse = |error: String| {
+            diag.err(&error);
+            Answer::Reply(json!({"ok": false, "error": error}).to_string())
+        };
+        let decoded = match from_call(action, args) {
+            Ok(decoded) => decoded,
+            Err(problem) => return refuse(problem),
+        };
+        let Some(key) = key else {
+            return refuse(format!("{action} acts on a card, and this run has none"));
+        };
+        let card = match self.live.get(key) {
+            Some(live) => live.unit.card(),
+            None => match self.finished.iter().find(|(finished, _)| finished == key) {
+                Some((_, card)) => card,
+                None => {
+                    return refuse(format!(
+                        "{action} for {key}, which this plugin holds no card for"
+                    ))
+                }
+            },
+        };
+        match self.units.act(card, &decoded, diag) {
+            Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
+            Err(e) => refuse(e.to_string()),
+        }
     }
 }
 
@@ -401,6 +464,8 @@ mod tests {
     use crate::board::{Action, MockBoard, SELF_ID};
     use crate::claim::{claim_text, is_claim};
     use crate::common::{CaptureDiag, FakeClock, TempDir};
+    use crate::lifecycle::ListPosition;
+    use crate::settings::MemberRef;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -465,7 +530,7 @@ mod tests {
             }
         }
 
-        /// The same, armed as the `trello_card` kind over `settings`, as `afkd::develop`.
+        /// The same, armed as the `card` kind over `settings`, as `afkd::develop`.
         fn armed(settings: serde_json::Value) -> Self {
             let mut f = Self::new();
             let hello = f.call(hello(settings));
@@ -494,14 +559,25 @@ mod tests {
                 json!({"call": "finish", "id": "card1", "key": key, "outcome": outcome,
                        "facts": {"signal": "proceed", "reason": null, "duration_ms": 3,
                                  "cost": 0.0, "turns": null, "tokens": null,
-                                 "run_name": "260926-100400-card-card1-1"}}),
+                                 "run_name": "260926-100400-unit-card1-1"}}),
             )
+        }
+
+        /// One `call` of `action` with `args` on the unit `key` names, as afkd sends a
+        /// hook's action.
+        fn act(
+            &mut self,
+            action: &str,
+            args: serde_json::Value,
+            key: &serde_json::Value,
+        ) -> serde_json::Value {
+            self.call(json!({"call": "call", "action": action, "args": args, "key": key}))
         }
     }
 
     /// The `hello` today's afkd writes, carrying `settings`.
     fn hello(settings: serde_json::Value) -> serde_json::Value {
-        json!({"call": "hello", "proto": 1, "kind": TRELLO_KIND, "service": SERVICE,
+        json!({"call": "hello", "proto": 2, "kind": TRELLO_KIND, "service": SERVICE,
                "roster": [SERVICE, "afkd::discuss"], "owner": "afkd-4242",
                "settings": settings})
     }
@@ -512,7 +588,7 @@ mod tests {
     }
 
     /// The board every test polls: `Up for Grabs` holding `card1`, and the two lists the
-    /// lifecycle moves to.
+    /// hooks move to.
     fn seed(board: &MockBoard) {
         board.add_list("Up for Grabs");
         board.add_list("In Progress");
@@ -529,13 +605,16 @@ mod tests {
             .count()
     }
 
+    /// The accepted `hello` lists every optional call — `call` is proto 2's own and is
+    /// never listed — and supplies the value `me`.
     #[test]
-    fn hello_lists_every_optional_call() {
+    fn hello_lists_every_optional_call_and_supplies_me() {
         let mut f = Fixture::new();
         assert_eq!(
             f.call(hello(settings())),
-            json!({"ok": true, "proto": 1,
-                   "calls": ["release", "renew", "comments", "attempt_failed", "classify"]})
+            json!({"ok": true, "proto": 2,
+                   "calls": ["release", "renew", "comments", "attempt_failed", "classify"],
+                   "values": {"me": "me"}})
         );
         assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
         assert!(f.board.calls().is_empty(), "hello touches no board");
@@ -554,13 +633,11 @@ mod tests {
         let mut empty_owner = hello(settings());
         empty_owner["owner"] = json!("");
         let mut wrong_proto = hello(settings());
-        wrong_proto["proto"] = json!(2);
+        wrong_proto["proto"] = json!(1);
         let mut wrong_kind = hello(settings());
-        wrong_kind["kind"] = json!("gitea_issue");
+        wrong_kind["kind"] = json!("trello_card");
         let mut settings_fault = hello(settings());
         settings_fault["settings"]["require_label"] = json!(true);
-        let mut claim_cost = hello(settings());
-        claim_cost["settings"]["on_claim"] = json!({"comment": ["claimed at @{run:cost}"]});
         let mut min_range = hello(settings());
         min_range["settings"]["min_age"] = json!("2m..3m");
         let identity = "afkd did not say which service this is; @afkd/trello needs an afkd \
@@ -571,30 +648,25 @@ mod tests {
             (empty_owner, identity),
             (
                 wrong_proto,
-                "afkd speaks plugin protocol 2, and this plugin speaks 1",
+                "afkd speaks plugin protocol 1, and this plugin speaks 2",
             ),
             (
                 wrong_kind,
-                "kind `gitea_issue` is not provided by @afkd/trello",
+                "kind `trello_card` is not provided by @afkd/trello",
             ),
             (
                 settings_fault,
-                "trigger trello_card: setting `require_label`: setting `require_label` \
-                 expects a single value",
-            ),
-            (
-                claim_cost,
-                "trigger trello_card: setting `comment`: `@{run:cost}` references the run's \
-                 facts, but no run happens at claim time",
+                "trigger card: setting `require_label`: setting `require_label` expects a \
+                 single value",
             ),
             (
                 min_range,
-                "trigger trello_card: setting `min_age`: setting `min_age` is not a duration \
-                 (try `30s`, `5m`, `1h`): `2m..3m`",
+                "trigger card: setting `min_age`: setting `min_age` is not a duration (try \
+                 `30s`, `5m`, `1h`): `2m..3m`",
             ),
         ] {
             let mut f = Fixture::new();
-            assert_eq!(f.call(request), json!({"ok": false, "proto": 1}));
+            assert_eq!(f.call(request), json!({"ok": false, "proto": 2}));
             assert_eq!(f.diag.errs(), [problem]);
             assert!(matches!(
                 f.plugin.answer(Request::Poll),
@@ -638,6 +710,7 @@ mod tests {
             "attempt_failed",
             "classify",
             "finish",
+            "call",
             "release",
         ] {
             f.clock.advance(Duration::from_secs(3));
@@ -655,6 +728,7 @@ mod tests {
                            "outcome": "clean"}),
                 ),
                 "finish" => f.finish(&key, "clean"),
+                "call" => f.act("move_to", json!({"list": "Review"}), &key),
                 _ => f.call(json!({"call": "release", "key": key})),
             };
             if call == "poll" {
@@ -670,14 +744,14 @@ mod tests {
         }
         assert_eq!(
             f.board.call_deadlines().len(),
-            14,
+            16,
             "one set and one clear each"
         );
 
         f.call(json!({"call": "rewind", "key": "k"}));
         assert_eq!(
             f.board.call_deadlines().len(),
-            14,
+            16,
             "an unknown call hands none"
         );
     }
@@ -943,27 +1017,24 @@ mod tests {
         }
     }
 
-    /// A terminal lifecycle that did not land is `held`: afkd keeps the claim and sends
-    /// `release` for the key on a later beat. While the board is still down that
-    /// `release` keeps the key (`false`); once it is back, it delivers the moment and
-    /// frees the key (`true`).
+    /// A finish that did not land is `held`: afkd keeps the claim and sends `release` for
+    /// the key on a later beat. While the board is still down that `release` keeps the key
+    /// (`false`); once it is back, it releases the claim and frees the key (`true`).
     #[test]
     fn an_undelivered_finish_is_held_and_a_later_release_delivers_it() {
-        let mut settings = settings();
-        settings["on_done"] = json!({"move_to": [{"@value": "Review", "at": ["top"]}]});
-        let mut f = Fixture::armed(settings);
+        let mut f = Fixture::armed(settings());
         seed(&f.board);
         let key = f.poll()["unit"]["key"].clone();
-        f.board.fail("move card");
+        f.board.fail("delete comment");
 
         assert_eq!(f.finish(&key, "clean"), json!({"ok": true, "held": true}));
         assert_eq!(
             f.diag.errs(),
             [
-                "trello move card: no response (mock failure)".to_string(),
+                "trello delete comment: no response (mock failure)".to_string(),
                 format!(
-                    "could not deliver the terminal lifecycle for {}; afkd holds the claim \
-                     and releases it on a later beat",
+                    "could not deliver the finish for {}; afkd holds the claim and releases \
+                     it on a later beat",
                     key.as_str().unwrap()
                 ),
             ]
@@ -982,9 +1053,13 @@ mod tests {
             json!({"released": true})
         );
         assert_eq!(claims_on(&f.board, "card1"), 0);
-        assert!(f.board.actions().iter().any(
-            |a| matches!(a, Action::Move { card, list, .. } if card == "card1" && list == "Review")
-        ));
+        assert!(
+            !f.board
+                .actions()
+                .iter()
+                .any(|a| matches!(a, Action::Move { .. })),
+            "a finish moves no card: the hooks are afkd's"
+        );
     }
 
     /// A delivered finish is plain `ok`, and `finish` for a key the plugin never handed
@@ -1058,5 +1133,247 @@ mod tests {
             f.diag.errs(),
             ["the brief for card1 was cut to fit afkd's 64 KiB plugin line"]
         );
+    }
+
+    /// Each of the eight actions, as afkd sends a hook's call of it on the live unit, does
+    /// its one board operation on the claimed card, narrates one line naming the card's
+    /// title, and answers `ok` — the names and texts byte for byte, `me` read as the authed
+    /// member, and a comment's `@{run:x}` left as afkd sent it.
+    #[test]
+    fn every_action_over_call_acts_on_the_live_card_and_narrates() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        f.board.add_list("Blockerat / Väntar");
+        let key = f.poll()["unit"]["key"].clone();
+        let (actions, narrated) = (f.board.actions().len(), f.diag.narrated().len());
+        let markdown = "## 完了 ✅\n\n- took 3m 12s\n- log: @{run:x}\n\nsee the run log.";
+        for (action, args) in [
+            ("add_member", json!({"member": "me"})),
+            ("remove_member", json!({"member": "björn-öst"})),
+            ("move_to", json!({"list": "In Progress", "at": "top"})),
+            (
+                "move_to",
+                json!({"list": "Blockerat / Väntar", "at": "bottom"}),
+            ),
+            ("add_label", json!({"label": "reviewed ✅"})),
+            ("remove_label", json!({"label": "Redo"})),
+            ("comment", json!({"text": markdown})),
+            ("mark_complete", json!({})),
+            ("archive", json!({})),
+        ] {
+            assert_eq!(f.act(action, args, &key), json!({"ok": true}), "{action}");
+        }
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+        let card = || "card1".to_string();
+        assert_eq!(
+            f.board.actions()[actions..],
+            [
+                Action::AddMember {
+                    card: card(),
+                    member: MemberRef::SelfMember,
+                },
+                Action::RemoveMember {
+                    card: card(),
+                    member: MemberRef::Username("björn-öst".into()),
+                },
+                Action::Move {
+                    card: card(),
+                    list: "In Progress".into(),
+                    position: ListPosition::Top,
+                },
+                Action::Move {
+                    card: card(),
+                    list: "Blockerat / Väntar".into(),
+                    position: ListPosition::Bottom,
+                },
+                Action::AddLabel {
+                    card: card(),
+                    label: "reviewed ✅".into(),
+                },
+                Action::RemoveLabel {
+                    card: card(),
+                    label: "Redo".into(),
+                },
+                Action::Complete(card()),
+                Action::Archive(card()),
+            ]
+        );
+        assert_eq!(
+            f.board.comments_on("card1").last().map(|c| c.text.clone()),
+            Some(markdown.to_string())
+        );
+        let title = TITLE;
+        assert_eq!(
+            f.diag.narrated()[narrated..],
+            [
+                format!("[trello] adding member \"me\" to card \"{title}\""),
+                format!("[trello] removing member \"björn-öst\" from card \"{title}\""),
+                format!("[trello] moving card \"{title}\" to list \"In Progress\" (at top)"),
+                format!(
+                    "[trello] moving card \"{title}\" to list \"Blockerat / Väntar\" (at bottom)"
+                ),
+                format!("[trello] adding label \"reviewed ✅\" to card \"{title}\""),
+                format!("[trello] removing label \"Redo\" from card \"{title}\""),
+                format!("[trello] commenting on card \"{title}\""),
+                format!("[trello] marking card \"{title}\" complete"),
+                format!("[trello] archiving card \"{title}\""),
+            ]
+        );
+    }
+
+    /// `poll` and `finish` move nothing themselves, and the post-run hook's calls, which
+    /// afkd sends after `finish`, still reach the finished card — a `held` one's too —
+    /// until afkd releases the key.
+    #[test]
+    fn a_post_run_call_acts_on_the_finished_card_until_it_is_released() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        let key = f.poll()["unit"]["key"].clone();
+        f.board.fail("delete comment");
+        assert_eq!(f.finish(&key, "park"), json!({"ok": true, "held": true}));
+        let moved = |f: &Fixture| {
+            f.board
+                .actions()
+                .into_iter()
+                .filter(|a| matches!(a, Action::Move { .. }))
+                .count()
+        };
+        assert_eq!(moved(&f), 0, "poll and finish run no hook");
+
+        assert_eq!(
+            f.act("move_to", json!({"list": "Review", "at": "top"}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(moved(&f), 1);
+        f.board.clear_failure();
+        assert_eq!(
+            f.call(json!({"call": "release", "key": key})),
+            json!({"released": true})
+        );
+        let released = f.diag.errs().len();
+        assert_eq!(
+            f.act("comment", json!({"text": "late"}), &key),
+            json!({"ok": false, "error": format!(
+                "comment for {}, which this plugin holds no card for",
+                key.as_str().unwrap()
+            )})
+        );
+        assert_eq!(
+            f.diag.errs().len(),
+            released + 1,
+            "the refusal is diagnosed"
+        );
+    }
+
+    /// The finished cards a post-run call reaches are bounded: past [`FINISHED_MAX`] the
+    /// oldest is forgotten, and the newest still answers.
+    #[test]
+    fn the_finished_cards_are_bounded_oldest_first() {
+        let mut f = Fixture::armed(settings());
+        f.board.add_list("Up for Grabs");
+        f.board.add_list("Review");
+        let mut keys = Vec::new();
+        for n in 0..=FINISHED_MAX {
+            f.board.add_card(
+                "Up for Grabs",
+                &format!("card{n}"),
+                &format!("卡片 {n}"),
+                "",
+            );
+            f.board.set_clock(1000 + n as u64);
+            let key = f.poll()["unit"]["key"].clone();
+            assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
+            // The `on_done` afkd runs next, so the next poll claims the next card.
+            assert_eq!(
+                f.act("move_to", json!({"list": "Review"}), &key),
+                json!({"ok": true})
+            );
+            keys.push(key);
+        }
+        let comment = json!({"text": "see the run log"});
+        assert_eq!(f.act("comment", comment.clone(), &keys[0])["ok"], false);
+        for key in &keys[1..] {
+            assert_eq!(f.act("comment", comment.clone(), key), json!({"ok": true}));
+        }
+    }
+
+    /// Each call the plugin cannot do answers `ok:false` with its sentence — which afkd
+    /// fails the hook's `result` with — and says it on the diagnostic channel too: an
+    /// action afkd would not bind, a bare run's `null` key, a key naming no card, and a
+    /// board that refused or never answered.
+    #[test]
+    fn a_call_the_plugin_cannot_do_answers_its_sentence() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        let key = f.poll()["unit"]["key"].clone();
+        let before = f.board.actions().len();
+        let mut expect = Vec::new();
+        for (action, args, key, error) in [
+            ("rename", json!({}), key.clone(), "no action `rename`"),
+            (
+                "move_to",
+                json!({"list": "Review", "at": "sideways"}),
+                key.clone(),
+                "move_to: parameter at is top or bottom, not \"sideways\"",
+            ),
+            (
+                "add_label",
+                json!({}),
+                key.clone(),
+                "add_label: parameter label is required",
+            ),
+            (
+                "archive",
+                json!({}),
+                json!(null),
+                "archive acts on a card, and this run has none",
+            ),
+            (
+                "archive",
+                json!({}),
+                json!("card9#c9"),
+                "archive for card9#c9, which this plugin holds no card for",
+            ),
+            (
+                "move_to",
+                json!({"list": "Nirgendwo 🚫"}),
+                key.clone(),
+                "trello resolve list: no list named 'Nirgendwo 🚫'",
+            ),
+        ] {
+            assert_eq!(
+                f.act(action, args, &key),
+                json!({"ok": false, "error": error}),
+                "{action}"
+            );
+            expect.push(error.to_string());
+        }
+        f.board.fail("add member");
+        assert_eq!(
+            f.act("add_member", json!({"member": "me"}), &key),
+            json!({"ok": false, "error": "trello add member: no response (mock failure)"})
+        );
+        expect.push("trello add member: no response (mock failure)".into());
+        assert_eq!(f.diag.errs(), expect);
+        assert_eq!(f.board.actions().len(), before, "nothing landed");
+        assert_eq!(
+            f.diag.narrated(),
+            [format!("[trello] claimed card \"{TITLE}\"")],
+            "and nothing was narrated as done"
+        );
+    }
+
+    /// A `call` before an accepted `hello` is afkd out of step, like any other call.
+    #[test]
+    fn a_call_before_hello_is_fatal() {
+        let mut f = Fixture::new();
+        let request = serde_json::from_value(
+            json!({"call": "call", "action": "archive", "args": {}, "key": "card1#c1"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            f.plugin.answer(request),
+            Answer::Fatal(reason) if reason.contains("before a `hello`")
+        ));
     }
 }

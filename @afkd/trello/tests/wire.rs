@@ -74,9 +74,8 @@ fn board() -> Board {
     }
 }
 
-/// The live selfdev block, lowered to JSON as afkd lowers it: repeatable keys as arrays,
-/// flags as `true`, blocks as objects with the value beside them as `@value` — and afkd's
-/// own three keys along for the ride.
+/// The live selfdev service's settings, lowered to JSON as afkd lowers them: every value a
+/// string — afkd's own three keys along for the ride — and no hook, since afkd runs those.
 fn settings(fake: &FakeTrello) -> Value {
     json!({
         "board": format!("https://trello.com/b/{BOARD}/afkd-selfdev"),
@@ -87,16 +86,63 @@ fn settings(fake: &FakeTrello) -> Value {
         "poll_interval": "30s",
         "max_attempts": "2",
         "follow_comments": "2m",
-        "on_claim": {"add_member": ["self"], "move_to": [{"@value": "In Progress", "at": ["top"]}]},
-        "on_done": {"move_to": [{"@value": "Review", "at": ["top"]}], "comment": [
-            "afkd landed this card in @{run:duration} - @{run:cost}, @{run:turns} agent turns."
-        ]},
-        "on_fail": {"move_to": [{"@value": "Backlog", "at": ["bottom"]}], "add_label": ["Problem"]},
-        "on_park": {"comment": ["parked after @{run:duration}, waiting on you"]},
     })
 }
 
-/// The grooming service's block: `discuss_with anyone` over its own list, no lifecycle.
+/// The selfdev service's hooks, as afkd runs them: each action one `call` on the unit's
+/// key, in written order, every reply `ok`. A comment arrives as afkd interpolated it.
+///
+/// ```text
+/// on_claim { trello.add_member(trello.me); trello.move_to("In Progress", at=top) }
+/// on_done  { trello.move_to("Review", at=top)
+///            trello.comment("afkd landed this card in #{run.duration} - …") }
+/// on_fail  { trello.move_to("Backlog", at=bottom); trello.add_label("Problem") }
+/// on_park  { trello.comment("parked after #{run.duration}, waiting on you") }
+/// ```
+fn hook(plugin: &mut Plugin, name: &str, unit: &Value) {
+    let calls: &[(&str, Value)] = match name {
+        "on_claim" => &[
+            ("add_member", json!({"member": "me"})),
+            ("move_to", json!({"list": "In Progress", "at": "top"})),
+        ],
+        "on_done" => &[
+            ("move_to", json!({"list": "Review", "at": "top"})),
+            ("comment", json!({"text": LANDED})),
+        ],
+        "on_fail" => &[
+            ("move_to", json!({"list": "Backlog", "at": "bottom"})),
+            ("add_label", json!({"label": "Problem"})),
+        ],
+        _ => &[(
+            "comment",
+            json!({"text": "parked after 2m48s, waiting on you"}),
+        )],
+    };
+    for (action, args) in calls {
+        assert_eq!(
+            plugin.act(action, args.clone(), &unit["key"]),
+            json!({"ok": true}),
+            "{name}: {action}; stderr: {}",
+            plugin.stderr()
+        );
+    }
+}
+
+/// The `on_done` comment, as afkd interpolates `#{run.duration}`, `#{run.cost}` and
+/// `#{run.turns}` into it.
+const LANDED: &str = "afkd landed this card in 2m48s - $0.42, 3 agent turns.";
+
+/// One beat that hands a unit over, and the `on_claim` afkd runs on it.
+fn claim_one(plugin: &mut Plugin) -> Value {
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let unit = reply["unit"].clone();
+    hook(plugin, "on_claim", &unit);
+    unit
+}
+
+/// The grooming service's settings: `discuss_with [ "anyone" ]` over its own list, no
+/// hooks.
 fn discuss_settings(fake: &FakeTrello) -> Value {
     json!({
         "board": format!("https://trello.com/b/{BOARD}/afkd-selfdev"),
@@ -108,10 +154,11 @@ fn discuss_settings(fake: &FakeTrello) -> Value {
     })
 }
 
-/// The `finish` envelope's facts, as afkd writes them.
+/// The `finish` envelope's facts, as afkd writes them: every field, though the plugin
+/// reads only the signal and the reason.
 fn facts(signal: &str, reason: Option<&str>) -> Value {
     json!({"signal": signal, "reason": reason, "duration_ms": 168000, "cost": 0.4217,
-           "turns": 3, "tokens": null, "run_name": "260926-095800-card-Rk7eLy5w-1"})
+           "turns": 3, "tokens": null, "run_name": "260926-095800-unit-Rk7eLy5w-1"})
 }
 
 fn finish(plugin: &mut Plugin, unit: &Value, outcome: &str, facts: Value) -> Value {
@@ -140,23 +187,26 @@ fn said(fake: &FakeTrello, card: &str, prefix: &str) -> Vec<String> {
 
 // --- hello ---
 
+/// The accepted `hello` lists every optional call it answers and supplies the value
+/// `me`, which every member action reads as the authed member.
 #[test]
 fn hello_arms_and_lists_every_call_it_answers() {
     let b = board();
     let mut plugin = Plugin::spawn();
     assert_eq!(
         plugin.hello(settings(&b.fake)),
-        json!({"ok": true, "proto": 1,
-               "calls": ["release", "renew", "comments", "attempt_failed", "classify"]})
+        json!({"ok": true, "proto": 2,
+               "calls": ["release", "renew", "comments", "attempt_failed", "classify"],
+               "values": {"me": "me"}})
     );
     assert!(b.fake.seen().is_empty(), "hello touches no board");
     plugin.finish();
 }
 
 /// What `hello` cannot arm with answers `ok:false`, with the problem on stderr in the
-/// built-in's own sentence — a kind this plugin does not provide, a block the manifest
-/// cannot refuse, a `hello` from an afkd too old to say who is asking, and a protocol
-/// from a later afkd.
+/// built-in's own sentence — a kind this plugin does not provide (proto 1's
+/// `trello_card` among them), a block the manifest cannot refuse, a `hello` from an afkd
+/// too old to say who is asking, and the protocol of an afkd before config language v2.
 #[test]
 fn hello_refuses_what_it_cannot_arm_with() {
     let b = board();
@@ -166,23 +216,23 @@ fn hello_refuses_what_it_cannot_arm_with() {
     };
     let mut flag_gate = settings(&b.fake);
     flag_gate["require_label"] = json!(true);
-    let mut anonymous = hello("trello_card", 1, settings(&b.fake));
+    let mut anonymous = hello("card", 2, settings(&b.fake));
     for field in ["service", "roster", "owner"] {
         anonymous.as_object_mut().unwrap().remove(field);
     }
     for (request, sentence) in [
         (
-            hello("gitea_issue", 1, settings(&b.fake)),
+            hello("gitea_issue", 2, settings(&b.fake)),
             "kind `gitea_issue` is not provided by @afkd/trello",
         ),
         (
-            hello("trello", 1, settings(&b.fake)),
-            "kind `trello` is not provided by @afkd/trello",
+            hello("trello_card", 2, settings(&b.fake)),
+            "kind `trello_card` is not provided by @afkd/trello",
         ),
         (
-            hello("trello_card", 1, flag_gate),
-            "trigger trello_card: setting `require_label`: setting `require_label` expects a \
-             single value",
+            hello("card", 2, flag_gate),
+            "trigger card: setting `require_label`: setting `require_label` expects a single \
+             value",
         ),
         (
             anonymous,
@@ -190,12 +240,12 @@ fn hello_refuses_what_it_cannot_arm_with() {
              carries `service`, `roster` and `owner`",
         ),
         (
-            hello("trello_card", 2, settings(&b.fake)),
-            "afkd speaks plugin protocol 2, and this plugin speaks 1",
+            hello("trello_card", 1, settings(&b.fake)),
+            "afkd speaks plugin protocol 1, and this plugin speaks 2",
         ),
     ] {
         let mut plugin = Plugin::spawn();
-        assert_eq!(plugin.call(request), json!({"ok": false, "proto": 1}));
+        assert_eq!(plugin.call(request), json!({"ok": false, "proto": 2}));
         assert_eq!(
             plugin.stderr_soon(sentence),
             format!("afkd-trello: {sentence}\n")
@@ -210,7 +260,8 @@ fn hello_refuses_what_it_cannot_arm_with() {
 /// The won race hands over exactly the unit the built-in would have run — its journal
 /// key and session thread, the claim-read thread as `seen`, afkd's member id, the four
 /// env names the skill reads, and the brief unframed — and the board holds the claim as
-/// the built-in leaves it, `on_claim` run, every line narrated on stderr.
+/// the built-in leaves it. The `poll` moves nothing itself: `on_claim`'s calls, sent
+/// after it, do, and every line is narrated on stderr.
 #[test]
 fn a_won_race_hands_over_the_built_ins_unit() {
     let b = board();
@@ -246,13 +297,20 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         })
     );
 
+    assert_eq!(b.fake.list_of(&b.card), "Up for Grabs");
+    assert!(b.fake.members(&b.card).is_empty());
+    hook(&mut plugin, "on_claim", &reply["unit"]);
     assert_eq!(b.fake.list_of(&b.card), "In Progress");
-    assert_eq!(b.fake.members(&b.card), ["afkd-bot"]);
+    assert_eq!(
+        b.fake.members(&b.card),
+        ["afkd-bot"],
+        "`me` is the token's member"
+    );
     assert_eq!(
         plugin.stderr_soon("In Progress"),
         format!(
             "[trello] claimed card \"{TITLE}\"\n\
-             [trello] adding member \"self\" to card \"{TITLE}\"\n\
+             [trello] adding member \"me\" to card \"{TITLE}\"\n\
              [trello] moving card \"{TITLE}\" to list \"In Progress\" (at top)\n"
         )
     );
@@ -287,7 +345,7 @@ fn a_lost_race_takes_its_marker_back_and_moves_on() {
     b.fake.race_on_next_claim(&b.card);
     let mut plugin = Plugin::armed(settings(&b.fake));
 
-    let unit = plugin.poll()["unit"].clone();
+    let unit = claim_one(&mut plugin);
     assert_eq!(unit["thread"], "Nx2Pq8Za");
     // A bodyless card briefs with its title alone.
     assert_eq!(unit["files"][0]["text"], "Cap the backoff at 30s");
@@ -322,7 +380,7 @@ fn a_live_claim_is_stepped_over_in_silence() {
         .comment(&b.card, &rival, "[afkd-claim] owner=afkd-17 renewal=3", 5);
     let mut plugin = Plugin::armed(settings(&b.fake));
 
-    assert_eq!(plugin.poll()["unit"]["thread"], "Nx2Pq8Za");
+    assert_eq!(claim_one(&mut plugin)["thread"], "Nx2Pq8Za");
     assert!(
         b.fake
             .seen()
@@ -542,7 +600,7 @@ fn release_reverses_a_crashed_claim_and_reads_every_key_shape() {
         [b.card.clone(), crashed.clone()]
     );
 
-    let unit = plugin.poll()["unit"].clone();
+    let unit = claim_one(&mut plugin);
     assert_eq!(unit["thread"], SHORT_LINK);
     assert_eq!(
         plugin.call(json!({"call": "release", "key": unit["key"]})),
@@ -555,6 +613,14 @@ fn release_reverses_a_crashed_claim_and_reads_every_key_shape() {
         json!({"ok": false}),
         "a released unit is forgotten"
     );
+    assert_eq!(
+        plugin.act("comment", json!({"text": "late"}), &unit["key"]),
+        json!({"ok": false, "error": format!(
+            "comment for {}, which this plugin holds no card for",
+            unit["key"].as_str().unwrap()
+        )}),
+        "by `call` too"
+    );
 
     for key in ["garbage", ""] {
         assert_eq!(
@@ -565,13 +631,13 @@ fn release_reverses_a_crashed_claim_and_reads_every_key_shape() {
     plugin.finish();
 }
 
-// --- finish, per outcome ---
+// --- finish, per outcome, and the hook afkd runs after it ---
 
-/// A clean finish runs `on_done` with the run's facts substituted, posts one `[afkd-ran]`
-/// watermark carrying the boundary fixed at the claim read (pruning the prior one), and
-/// releases the claim last.
+/// A clean finish moves nothing: it posts one `[afkd-ran]` watermark carrying the
+/// boundary fixed at the claim read (pruning the prior one) and releases the claim last.
+/// `on_done`'s calls, sent after it, move the card and post the comment verbatim.
 #[test]
-fn a_clean_finish_runs_on_done_and_leaves_one_watermark() {
+fn a_clean_finish_leaves_one_watermark_and_on_done_lands_after_it() {
     let b = board();
     let phil_at = b.fake.comments(&b.card)[0].posted;
     let prior = b.fake.comment(
@@ -581,7 +647,7 @@ fn a_clean_finish_runs_on_done_and_leaves_one_watermark() {
         2700,
     );
     let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = plugin.poll()["unit"].clone();
+    let unit = claim_one(&mut plugin);
     // The prior watermark delivered Phil's comment; only Chen's is new.
     let brief = unit["files"][0]["text"].as_str().unwrap();
     assert!(
@@ -595,10 +661,10 @@ fn a_clean_finish_runs_on_done_and_leaves_one_watermark() {
         finish(&mut plugin, &unit, "clean", facts("proceed", None)),
         json!({"ok": true})
     );
-    assert_eq!(b.fake.list_of(&b.card), "Review");
     assert_eq!(
-        said(&b.fake, &b.card, "afkd landed"),
-        ["afkd landed this card in 2m48s - $0.42, 3 agent turns."]
+        b.fake.list_of(&b.card),
+        "In Progress",
+        "finish moves nothing"
     );
     let chen_at = b
         .fake
@@ -617,17 +683,21 @@ fn a_clean_finish_runs_on_done_and_leaves_one_watermark() {
     assert!(plugin
         .stderr_soon("released claim")
         .ends_with(&format!("[trello] released claim on card \"{TITLE}\"\n")));
+
+    hook(&mut plugin, "on_done", &unit);
+    assert_eq!(b.fake.list_of(&b.card), "Review");
+    assert_eq!(said(&b.fake, &b.card, "afkd landed"), [LANDED]);
     plugin.finish();
 }
 
 #[test]
-fn a_failed_finish_runs_on_fail() {
+fn a_failed_finish_then_on_fail_moves_the_card_to_the_bottom_of_the_backlog() {
     let b = board();
     let queued = b
         .fake
         .card("Backlog", "Qu3u3d00", "Already in the backlog", "");
     let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = plugin.poll()["unit"].clone();
+    let unit = claim_one(&mut plugin);
     assert_eq!(
         finish(
             &mut plugin,
@@ -637,25 +707,27 @@ fn a_failed_finish_runs_on_fail() {
         ),
         json!({"ok": true})
     );
+    assert!(b.fake.labels(&b.card).is_empty(), "finish labels nothing");
+    assert_eq!(said(&b.fake, &b.card, "[afkd-ran]").len(), 1);
+    assert!(claims(&b.fake, &b.card).is_empty());
+    hook(&mut plugin, "on_fail", &unit);
     assert_eq!(
         b.fake.cards_in("Backlog"),
         [queued, b.card.clone()],
         "at the bottom"
     );
     assert_eq!(b.fake.labels(&b.card), ["Problem"]);
-    assert_eq!(said(&b.fake, &b.card, "[afkd-ran]").len(), 1);
-    assert!(claims(&b.fake, &b.card).is_empty());
     plugin.finish();
 }
 
-/// A park badges the card itself, runs the `on_park` extras, posts the owner marker
-/// naming the configured service, and only then releases the claim — leaving the card
-/// where `on_claim` put it.
+/// A park badges the card itself, posts the owner marker naming the configured service,
+/// and only then releases the claim — leaving the card where `on_claim` put it; the
+/// `on_park` comment afkd sends after the finish lands after all of that.
 #[test]
 fn a_park_finish_badges_marks_and_releases() {
     let b = board();
     let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = plugin.poll()["unit"].clone();
+    let unit = claim_one(&mut plugin);
     let scratch = TempDir::new("park");
     std::fs::write(scratch.path().join("park"), b"").unwrap();
     assert_eq!(
@@ -681,26 +753,36 @@ fn a_park_finish_badges_marks_and_releases() {
         "a park does not move"
     );
     assert_eq!(
-        said(&b.fake, &b.card, "parked after"),
-        ["parked after 2m48s, waiting on you"]
-    );
-    assert_eq!(
         said(&b.fake, &b.card, "[afkd-park]"),
         ["[afkd-park] service=afkd::develop"]
     );
     assert!(claims(&b.fake, &b.card).is_empty());
-    // The release is the last write: every post a park owes is up before the claim goes.
-    let writes: Vec<String> = b
-        .fake
-        .seen()
-        .into_iter()
-        .filter(|r| r.method == "POST" || r.method == "DELETE")
-        .map(|r| format!("{} {}", r.method, r.path.rsplit('/').next().unwrap_or("")))
-        .collect();
-    assert_eq!(writes.last().map(String::as_str), Some("DELETE comments"));
+    // The release is the finish's last write: every post a park owes is up before the
+    // claim goes.
+    let writes = |fake: &FakeTrello| -> Vec<String> {
+        fake.seen()
+            .into_iter()
+            .filter(|r| r.method == "POST" || r.method == "DELETE")
+            .map(|r| format!("{} {}", r.method, r.path.rsplit('/').next().unwrap_or("")))
+            .collect()
+    };
+    assert_eq!(
+        writes(&b.fake).last().map(String::as_str),
+        Some("DELETE comments")
+    );
     assert!(plugin.stderr_soon("parked card").contains(&format!(
         "[trello] parked card \"{TITLE}\" awaiting a reply (label \"Awaiting Reply\")\n"
     )));
+
+    hook(&mut plugin, "on_park", &unit);
+    assert_eq!(
+        said(&b.fake, &b.card, "parked after"),
+        ["parked after 2m48s, waiting on you"]
+    );
+    assert_eq!(
+        writes(&b.fake).last().map(String::as_str),
+        Some("POST comments")
+    );
     plugin.finish();
 }
 
@@ -733,17 +815,18 @@ fn a_discuss_turn_that_said_nothing_is_backstopped() {
     plugin.finish();
 }
 
-/// A terminal lifecycle that does not land is `held`: the claim stays on the card, and
-/// afkd's later `release` of the key replays what is owed — `false` while the board is
-/// still down, `true` once it lands. A child that did not hold the finish — afkd
-/// restarted in between — takes the crash reversal for the same key instead.
+/// A finish that does not land is `held`: the claim stays on the card, `on_done`'s calls
+/// after it still reach the card, and afkd's later `release` of the key replays what is
+/// owed — `false` while the board is still down, `true` once it lands — without repeating
+/// a hook action. A child that did not hold the finish — afkd restarted in between —
+/// takes the crash reversal for the same key instead.
 #[test]
 fn an_undelivered_finish_is_held_and_release_delivers_it() {
     let b = board();
     let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = plugin.poll()["unit"].clone();
+    let unit = claim_one(&mut plugin);
     let key = unit["key"].as_str().unwrap().to_string();
-    b.fake.fail("move card", 500);
+    b.fake.fail("delete comment", 500);
 
     assert_eq!(
         finish(&mut plugin, &unit, "clean", facts("proceed", None)),
@@ -753,14 +836,16 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
         plugin
             .stderr_soon("afkd holds the claim")
             .ends_with(&format!(
-                "afkd-trello: trello move card: board returned status 500\n\
-             afkd-trello: could not deliver the terminal lifecycle for {key}; afkd holds the \
-             claim and releases it on a later beat\n"
+                "afkd-trello: trello delete comment: board returned status 500\n\
+             afkd-trello: could not deliver the finish for {key}; afkd holds the claim and \
+             releases it on a later beat\n"
             )),
         "{}",
         plugin.stderr()
     );
     assert_eq!(claims(&b.fake, &b.card).len(), 1, "the lease is held");
+    hook(&mut plugin, "on_done", &unit);
+    assert_eq!(b.fake.list_of(&b.card), "Review");
     assert_eq!(
         plugin.call(json!({"call": "release", "key": key})),
         json!({"released": false}),
@@ -768,7 +853,7 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
     );
     assert_eq!(claims(&b.fake, &b.card).len(), 1);
 
-    b.fake.heal("move card");
+    b.fake.heal("delete comment");
     assert_eq!(
         plugin.call(json!({"call": "release", "key": key})),
         json!({"released": true})
@@ -785,15 +870,15 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
     // After a restart: the same shape, held by a child that is gone.
     let b = board();
     let mut before = Plugin::armed(settings(&b.fake));
-    let unit = before.poll()["unit"].clone();
+    let unit = claim_one(&mut before);
     let key = unit["key"].as_str().unwrap().to_string();
-    b.fake.fail("move card", 500);
+    b.fake.fail("delete comment", 500);
     assert_eq!(
         finish(&mut before, &unit, "clean", facts("proceed", None)),
         json!({"ok": true, "held": true})
     );
     before.finish();
-    b.fake.heal("move card");
+    b.fake.heal("delete comment");
     let mut after = Plugin::armed(settings(&b.fake));
     assert_eq!(
         after.call(json!({"call": "release", "key": key})),
@@ -806,6 +891,141 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
         "reversed to the bottom of pick_from"
     );
     after.finish();
+}
+
+// --- call: every action, over the real wire ---
+
+/// Every action afkd's hooks may call, one `call` each on a claimed card over the real
+/// wire and a real HTTP board: each answers `ok`, lands on the board and narrates one line
+/// naming the card. `me` resolves to the token's own member and a username to that
+/// member; a new label is created on the board; the comment — multi-line markdown with CJK
+/// and a literal `@{run:x}` — arrives byte for byte. A card finished since is still
+/// reached, and what cannot be done answers `ok:false` with the sentence.
+#[test]
+fn every_action_over_call_reaches_the_board() {
+    let b = board();
+    let bottom = b
+        .fake
+        .card("Discussion", "B0tt0m00", "Already discussed", "");
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = plugin.poll()["unit"].clone();
+    let key = unit["key"].clone();
+    let mut act = |action: &str, args: Value| plugin.act(action, args, &key);
+    let ok = json!({"ok": true});
+
+    assert_eq!(act("add_member", json!({"member": "me"})), ok);
+    assert_eq!(act("add_member", json!({"member": "chen"})), ok);
+    assert_eq!(b.fake.members(&b.card), ["afkd-bot", "chen"]);
+    assert_eq!(act("remove_member", json!({"member": "chen"})), ok);
+    assert_eq!(b.fake.members(&b.card), ["afkd-bot"]);
+
+    assert_eq!(
+        act("move_to", json!({"list": "Discussion", "at": "bottom"})),
+        ok
+    );
+    assert_eq!(
+        b.fake.cards_in("Discussion"),
+        [bottom.clone(), b.card.clone()]
+    );
+    assert_eq!(
+        act("move_to", json!({"list": "Discussion", "at": "top"})),
+        ok
+    );
+    assert_eq!(b.fake.cards_in("Discussion"), [b.card.clone(), bottom]);
+    assert_eq!(
+        act("move_to", json!({"list": "In Progress"})),
+        ok,
+        "at defaults to top"
+    );
+    assert_eq!(b.fake.list_of(&b.card), "In Progress");
+
+    let label = "needs review 👀 レビュー";
+    assert_eq!(act("add_label", json!({"label": label})), ok);
+    assert_eq!(b.fake.labels(&b.card), [label], "created on the board");
+    assert_eq!(act("remove_label", json!({"label": label})), ok);
+    assert!(b.fake.labels(&b.card).is_empty());
+
+    let text = "## 完了 ✅\n\n- capped the backoff at 30s\n- log: `@{run:x}` stays literal\n\n> 陳大文 asked for it";
+    assert_eq!(act("comment", json!({"text": text})), ok);
+    assert_eq!(said(&b.fake, &b.card, "## 完了"), [text]);
+
+    assert_eq!(act("mark_complete", json!({})), ok);
+    assert!(b.fake.complete(&b.card));
+
+    // afkd sends a post-run hook's calls after `finish`: the finished card is reached.
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    assert_eq!(
+        plugin.act("move_to", json!({"list": "Review", "at": "top"}), &key),
+        ok
+    );
+    assert_eq!(b.fake.list_of(&b.card), "Review");
+    assert_eq!(plugin.act("archive", json!({}), &key), ok);
+    assert!(b.fake.archived(&b.card));
+
+    let stderr = plugin.stderr_soon("archiving");
+    let done: Vec<&str> = stderr
+        .lines()
+        .filter(|l| !l.contains("claimed card") && !l.contains("released claim"))
+        .collect();
+    assert_eq!(
+        done,
+        [
+            format!("[trello] adding member \"me\" to card \"{TITLE}\""),
+            format!("[trello] adding member \"chen\" to card \"{TITLE}\""),
+            format!("[trello] removing member \"chen\" from card \"{TITLE}\""),
+            format!("[trello] moving card \"{TITLE}\" to list \"Discussion\" (at bottom)"),
+            format!("[trello] moving card \"{TITLE}\" to list \"Discussion\" (at top)"),
+            format!("[trello] moving card \"{TITLE}\" to list \"In Progress\" (at top)"),
+            format!("[trello] adding label \"{label}\" to card \"{TITLE}\""),
+            format!("[trello] removing label \"{label}\" from card \"{TITLE}\""),
+            format!("[trello] commenting on card \"{TITLE}\""),
+            format!("[trello] marking card \"{TITLE}\" complete"),
+            format!("[trello] moving card \"{TITLE}\" to list \"Review\" (at top)"),
+            format!("[trello] archiving card \"{TITLE}\""),
+        ]
+    );
+
+    // What cannot be done answers its sentence.
+    b.fake.fail("add label", 503);
+    for (action, args, key, error) in [
+        (
+            "add_label",
+            json!({"label": "Problem"}),
+            key.clone(),
+            "trello add label: board returned status 503".to_string(),
+        ),
+        (
+            "archive",
+            json!({}),
+            Value::Null,
+            "archive acts on a card, and this run has none".to_string(),
+        ),
+        (
+            "move_to",
+            json!({"list": "Nirgendwo 🚫"}),
+            key.clone(),
+            "trello resolve list: no list named 'Nirgendwo 🚫'".to_string(),
+        ),
+        (
+            "rename",
+            json!({"to": "x"}),
+            key.clone(),
+            "no action `rename`".to_string(),
+        ),
+    ] {
+        assert_eq!(
+            plugin.act(action, args, &key),
+            json!({"ok": false, "error": error}),
+            "{action}"
+        );
+        assert!(plugin
+            .stderr_soon(&error)
+            .contains(&format!("afkd-trello: {error}\n")));
+    }
+    plugin.finish();
 }
 
 // --- the park owner across two services ---
@@ -821,7 +1041,7 @@ fn the_park_owner_holds_across_two_services_on_one_board() {
     let mut develop = Plugin::armed(settings(&b.fake));
     let mut discuss = Plugin::armed_as(DISCUSS, discuss_settings(&b.fake));
 
-    let unit = develop.poll()["unit"].clone();
+    let unit = claim_one(&mut develop);
     let scratch = TempDir::new("owner");
     std::fs::write(scratch.path().join("park"), b"").unwrap();
     assert_eq!(
