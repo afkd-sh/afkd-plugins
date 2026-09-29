@@ -172,7 +172,7 @@ widgets :: service(trello) {{
 
 /// Write `config` as `home`'s main config.
 fn write_config(home: &Path, config: &str) {
-    let conf = main_conf(home);
+    let conf = main_afkd(home);
     std::fs::create_dir_all(conf.parent().expect("has parent")).expect("mk the config dir");
     std::fs::write(&conf, config).expect("write the config");
 }
@@ -349,25 +349,25 @@ fn install_leg_places_the_plugin_and_runs_one_card_through_it() {
 // --- config language v2's complete example -------------------------------------------
 
 /// §24's entry file.
-const SECTION_24_MAIN: &str = r#"// afkd.conf
+const SECTION_24_MAIN: &str = r#"// main.afkd
 package main
 
 import "afkd"
 "#;
 
 /// §24's shared queues.
-const SECTION_24_QUEUES: &str = r#"// shared/queues.conf
+const SECTION_24_QUEUES: &str = r#"// shared/queues.afkd
 package shared
 
 develop :: queue { slots 1 }
 discuss :: queue { slots 2 }
 "#;
 
-/// §24's `afkd/selfdev.conf`, copied from `docs/lang-v2.md` at afkd master, up to the
+/// §24's `afkd/selfdev.afkd`, copied from `docs/lang-v2.md` at afkd master, up to the
 /// `develop` service's end. The `discuss` half after it is left out: it writes
 /// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
 /// `list[string]` and is written `[ "anyone" ]`.
-const SECTION_24_SELFDEV: &str = r##"// afkd/selfdev.conf - Trello-driven pipeline: afkd develops itself.
+const SECTION_24_SELFDEV: &str = r##"// afkd/selfdev.afkd - Trello-driven pipeline: afkd develops itself.
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
 // on exhaustion the card returns to Backlog. Markers live under $AFKD_SCRATCH_DIR.
 
@@ -561,9 +561,9 @@ fn the_lang_v2_complete_example_develop_service_validates() {
     install(home.path(), &stage(stage_dir.path()));
     let config = config_dir(home.path());
     for (file, text) in [
-        ("afkd.conf", SECTION_24_MAIN),
-        ("shared/queues.conf", SECTION_24_QUEUES),
-        ("afkd/selfdev.conf", SECTION_24_SELFDEV),
+        ("main.afkd", SECTION_24_MAIN),
+        ("shared/queues.afkd", SECTION_24_QUEUES),
+        ("afkd/selfdev.afkd", SECTION_24_SELFDEV),
     ] {
         let path = config.join(file);
         std::fs::create_dir_all(path.parent().expect("has parent")).expect("mk the package");
@@ -572,7 +572,7 @@ fn the_lang_v2_complete_example_develop_service_validates() {
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "§24 validates:\n{report}");
     assert!(
-        report.contains("afkd/selfdev.conf") && !report.contains("warning:"),
+        report.contains("afkd/selfdev.afkd") && !report.contains("warning:"),
         "every file checked, cleanly:\n{report}"
     );
 }
