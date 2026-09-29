@@ -213,10 +213,17 @@ fn reap_within(child: &mut Child, budget: Duration) -> bool {
 /// One afkd subcommand, `args` whole (`install <path>`), run to completion with `$HOME`
 /// pinned to `dir` and every other anchor cleared.
 pub(crate) fn run_subcommand_args(dir: &Path, args: &[&str]) -> Output {
+    run_subcommand_env(dir, args, &[])
+}
+
+/// [`run_subcommand_args`] with `vars` set in its environment too: what a config's
+/// `env.NAME` reads at load.
+pub(crate) fn run_subcommand_env(dir: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(bin_path());
     clear_layout_env(&mut cmd)
         .current_dir(dir)
         .env("HOME", dir)
+        .envs(vars.iter().copied())
         .args(args)
         .output()
         .expect("run afkd subcommand")

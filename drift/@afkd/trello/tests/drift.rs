@@ -1,20 +1,14 @@
-//! The gate that holds the **shipped `@afkd/trello` plugin** — the `trello_card` trigger
-//! kind, built from source at install time — to a real afkd: the `afkd` first on `PATH`, the
-//! installed one and never a build, since a plugin is checked against the afkd it will meet
-//! ([`bin_path`]).
+//! The gate that holds the **shipped `@afkd/trello` plugin** — a manifest v2 provider whose
+//! main kind is `service(trello)`, built from source at install time — to a real afkd: the
+//! `afkd` first on `PATH`, the installed one and never a build, since a plugin is checked
+//! against the afkd it will meet ([`bin_path`]).
 //!
-//! A plugin may never shadow a built-in, so an afkd that had this kind built in would refuse
-//! the install. That shapes the gate:
-//!
-//! - The **install** leg installs the tree the release tarball holds. While the built-in is
-//!   there it expects exactly that refusal, says it is skipping, and passes; once afkd drops
-//!   the built-in it builds, places and runs the plugin through one card.
-//! - The **live-today** leg runs the same card *now*, by installing a copy whose manifest
-//!   renames the kind (`trello_card_probe`) and whose `exec` is a wrapper that renames `hello`'s
-//!   kind back — so the unmodified plugin binary meets afkd's real spine (journal, cadence,
-//!   watch, framing) before the rip-out, not after.
+//! - The **install** leg installs the tree the release tarball holds and runs one card
+//!   through it on a real daemon, its hooks' actions crossing as `call`s.
+//! - The **complete example** leg `afkd validate`s the selfdev pipeline of config language
+//!   v2's §24 against the installed plugin.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
-//!   against whatever vocabulary the afkd on PATH has for the kind.
+//!   each a whole `package main` file, against the installed plugin.
 //!
 //! The Trello is the plugin's own loopback fake ([`fake`]), so no leg touches a network, and
 //! every wait is bounded and every spawn held in a [`Daemon`]: a claim that never lands must
@@ -26,7 +20,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use common::fake::{FakeTrello, BOARD, KEY, TOKEN};
+use common::fake::{FakeTrello, BOARD, KEY, ME, TOKEN};
 use common::*;
 use tempfile::TempDir;
 
@@ -87,79 +81,22 @@ fn stage(dst: &Path) -> PathBuf {
     staged
 }
 
-/// What `afkd install` made of a staged tree.
-enum Install {
-    /// Built and placed under the plugins root.
-    Placed,
-    /// Refused because afkd still provides the kind the manifest declares; the report.
-    BuiltIn(String),
-}
-
-/// `afkd install <root>` into `home`. A refusal is recognised by its exact sentence, and
-/// anything else that is not a success fails the leg with the full report.
-fn install(home: &Path, root: &Path) -> Install {
+/// `afkd install <root>` into `home`, failing the leg with the full report unless the
+/// plugin is placed.
+fn install(home: &Path, root: &Path) {
     let out = run_subcommand_args(home, &["install", &root.display().to_string()]);
-    let report = format!(
-        "{}{}",
+    assert!(
+        out.status.success(),
+        "`afkd install {}` failed ({:?}):\n{}{}",
+        root.display(),
+        out.status.code(),
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    if out.status.success() {
-        return Install::Placed;
-    }
-    let refused = report.contains("declares trigger kind `trello_card`, which is built in");
     assert!(
-        out.status.code() == Some(1) && refused,
-        "`afkd install {}` failed, and not because the kind is built in ({:?}):\n{report}",
-        root.display(),
-        out.status.code()
+        plugins_root(home).join(NAME).is_dir(),
+        "the install placed {NAME}"
     );
-    assert!(
-        !plugins_root(home).join(NAME).exists(),
-        "a refused install placed nothing:\n{report}"
-    );
-    Install::BuiltIn(report.trim().to_string())
-}
-
-/// The wrapper the probe manifest's `exec` names. afkd greets the plugin with a `hello`
-/// naming the kind it asks for, which here is the probe kind; the wrapper renames that one
-/// line back to the kind the binary serves, then passes every later line through untouched.
-const PROBE_EXEC: &str = r#"#!/bin/sh
-# afkd's hello names a probe kind; the plugin binary knows only the real one. Rename the
-# kind on that first line, then hand the binary the rest of the stream as it arrives.
-here=$(dirname "$0")
-{
-  IFS= read -r hello
-  printf '%s\n' "$hello" | sed -e 's/"kind":"trello_card_probe"/"kind":"trello_card"/'
-  cat
-} | "$here/target/release/afkd-trello"
-"#;
-
-/// Turn a staged copy into the probe: the kind renamed so afkd has no built-in to refuse it
-/// over, and `exec` pointed at [`PROBE_EXEC`]. Each rewrite must hit exactly one line, so a
-/// reshaped manifest reddens here rather than probing nothing.
-fn probe_manifest(staged: &Path) {
-    let manifest = staged.join("afkd-plugin.toml");
-    let text = std::fs::read_to_string(&manifest).expect("the staged manifest");
-    let rewrites = [
-        (r#"kind = "trello_card""#, r#"kind = "trello_card_probe""#),
-        (
-            r#"exec = "target/release/afkd-trello""#,
-            r#"exec = "probe-exec""#,
-        ),
-    ];
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    for (from, to) in rewrites {
-        let hits: Vec<&mut String> = lines.iter_mut().filter(|line| *line == from).collect();
-        assert_eq!(hits.len(), 1, "the manifest has exactly one `{from}` line");
-        for line in hits {
-            *line = to.to_string();
-        }
-    }
-    std::fs::write(&manifest, lines.join("\n") + "\n").expect("write the probe manifest");
-    let exec = staged.join("probe-exec");
-    std::fs::write(&exec, PROBE_EXEC).expect("write the probe exec");
-    std::fs::set_permissions(&exec, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
 // --- the scenario ------------------------------------------------------------------
@@ -193,30 +130,39 @@ fn seed() -> (FakeTrello, String) {
     (fake, card)
 }
 
-/// The service that drives the seeded card through a trigger of `kind`, `home` its work dir.
-/// The run step holds until the test creates `release` — bounded, so a test that never does
-/// cannot wedge it — which is what lets the test see the claim and the run mid-flight.
-fn service(home: &Path, kind: &str, base_url: &str) -> String {
+/// The service that drives the seeded card, `home` its work dir: a v2 file importing the
+/// plugin, whose hooks call its actions — `trello.me` among them — and whose `on_done`
+/// comment afkd interpolates. The run holds until the test creates `release` — bounded, so
+/// a test that never does cannot wedge it — which is what lets the test see the claim and
+/// the run mid-flight.
+fn service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"service widgets {{
-  work_dir "{home}"
-  trigger {kind} {{
-    board         "https://trello.com/b/{BOARD}/afkd-drift"
-    base_url      "{base_url}"
-    api_key       "{KEY}"
-    token         "{TOKEN}"
-    pick_from     "Up for Grabs"
-    poll_interval 1s
-    max_attempts  1
-    on_claim {{ move_to "In Progress" {{ at top }} }}
-    on_done {{
-      move_to "Review" {{ at top }}
-      comment "done in @{{run:duration}}"
-    }}
+        r#"package main
+
+import "@afkd/trello"
+
+widgets :: service(trello) {{
+  board         "https://trello.com/b/{BOARD}/afkd-drift"
+  base_url      "{base_url}"
+  api_key       "{KEY}"
+  token         "{TOKEN}"
+  pick_from     "Up for Grabs"
+  poll_interval 1s
+  max_attempts  1
+
+  on_claim {{
+    trello.add_member(trello.me)
+    trello.move_to("In Progress", at=top)
   }}
-  run {{
-    run_cmd """i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done"""
-    run_cmd "cat $AFKD_SCRATCH_DIR/task.md"
+  on_done {{
+    trello.move_to("Review", at=top)
+    trello.comment("done in #{{run.duration}}")
+  }}
+
+  work_dir "{home}"
+  on_run {{
+    $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    $ cat $AFKD_SCRATCH_DIR/task.md
   }}
 }}
 "#,
@@ -231,9 +177,18 @@ fn write_config(home: &Path, config: &str) {
     std::fs::write(&conf, config).expect("write the config");
 }
 
-/// `afkd validate` over `home`'s main config: the exit code and the report.
+/// The credentials a config reads from the daemon's environment (`env.TRELLO_API_KEY`), as
+/// the README's lead example and §24 do, and §24's `GH_TOKEN`.
+const CONFIG_ENV: &[(&str, &str)] = &[
+    ("TRELLO_API_KEY", KEY),
+    ("TRELLO_TOKEN", TOKEN),
+    ("GH_TOKEN", "gh-token-drift"),
+];
+
+/// `afkd validate` over `home`'s config, with [`CONFIG_ENV`] set: the exit code and the
+/// report.
 fn validate(home: &Path) -> (Option<i32>, String) {
-    let out = run_subcommand_args(home, &["validate"]);
+    let out = run_subcommand_env(home, &["validate"], CONFIG_ENV);
     (
         out.status.code(),
         format!(
@@ -308,24 +263,25 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-/// Drive one card through the plugin, installed in `home` and serving `kind`, on a real
-/// daemon: it is **claimed** (the claim comment, and `on_claim` moved it), **run** (its run
-/// dir is named for the card, and its task carries the card and its thread whole) and
-/// **finished** (`on_done` applied, the claim released), and the daemon then drains clean.
-fn drive_one_card(home: &Path, kind: &str) {
+/// Drive one card through the plugin, installed in `home`, on a real daemon: it is
+/// **claimed** (the claim comment, and `on_claim`'s calls added the token's own member and
+/// moved it), **run** (its run dir is named for the card, and its task carries the card and
+/// its thread whole) and **finished** (the claim released, and `on_done`'s calls moved it
+/// and commented), and the daemon then drains clean.
+fn drive_one_card(home: &Path) {
     let (fake, card) = seed();
-    write_config(home, &service(home, kind, fake.base_url()));
+    write_config(home, &service(home, fake.base_url()));
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
 
     let daemon = spawn_headless_streaming(home, &[]);
 
     wait_for(home, &fake, &card, &daemon, "the card is claimed", || {
-        claimed(&fake, &card) && fake.list_of(&card) == "In Progress"
+        claimed(&fake, &card) && fake.list_of(&card) == "In Progress" && fake.members(&card) == [ME]
     });
     // The run dir is made before the spine lays the unit's files into it, so the wait is
     // for a written brief, not the bare dir.
-    let run_suffix = format!("-card-{SHORT_LINK}-1");
+    let run_suffix = format!("-unit-{SHORT_LINK}-1");
     let brief = || {
         run_dirs(home)
             .into_iter()
@@ -356,8 +312,8 @@ fn drive_one_card(home: &Path, kind: &str) {
     assert!(
         fake.comments(&card)
             .iter()
-            .any(|c| c.author == me && c.text.starts_with("done in ") && !c.text.contains("@{")),
-        "on_done's comment landed with its run reference filled in:\n{}",
+            .any(|c| c.author == me && c.text.starts_with("done in ") && !c.text.contains("#{")),
+        "on_done's comment landed with its run fact filled in:\n{}",
         dump(home, &fake, &card, &daemon)
     );
 
@@ -374,39 +330,251 @@ fn drive_one_card(home: &Path, kind: &str) {
 // --- the legs ----------------------------------------------------------------------
 
 #[test]
-fn install_leg_is_refused_while_the_kind_is_built_in_and_runs_once_it_is_not() {
+fn install_leg_places_the_plugin_and_runs_one_card_through_it() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     let staged = stage(stage_dir.path());
-    match install(home.path(), &staged) {
-        Install::BuiltIn(report) => eprintln!(
-            "skipping: the afkd on PATH has {NAME}'s kind built in, so it refuses it \
-             ({report}); this leg goes live once afkd drops the built-in"
-        ),
-        Install::Placed => {
-            let exec = plugins_root(home.path())
-                .join(NAME)
-                .join("target/release/afkd-trello");
-            let mode = std::fs::metadata(&exec)
-                .unwrap_or_else(|e| panic!("the install built {}: {e}", exec.display()))
-                .permissions()
-                .mode();
-            assert!(mode & 0o111 != 0, "{} is executable", exec.display());
-            drive_one_card(home.path(), "trello_card");
-        }
-    }
+    install(home.path(), &staged);
+    let exec = plugins_root(home.path())
+        .join(NAME)
+        .join("target/release/afkd-trello");
+    let mode = std::fs::metadata(&exec)
+        .unwrap_or_else(|e| panic!("the install built {}: {e}", exec.display()))
+        .permissions()
+        .mode();
+    assert!(mode & 0o111 != 0, "{} is executable", exec.display());
+    drive_one_card(home.path());
 }
 
+// --- config language v2's complete example -------------------------------------------
+
+/// §24's entry file.
+const SECTION_24_MAIN: &str = r#"// afkd.conf
+package main
+
+import "afkd"
+"#;
+
+/// §24's shared queues.
+const SECTION_24_QUEUES: &str = r#"// shared/queues.conf
+package shared
+
+develop :: queue { slots 1 }
+discuss :: queue { slots 2 }
+"#;
+
+/// §24's `afkd/selfdev.conf`, copied from `docs/lang-v2.md` at afkd master, up to the
+/// `develop` service's end. The `discuss` half after it is left out: it writes
+/// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
+/// `list[string]` and is written `[ "anyone" ]`.
+const SECTION_24_SELFDEV: &str = r##"// afkd/selfdev.conf - Trello-driven pipeline: afkd develops itself.
+// Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
+// on exhaustion the card returns to Backlog. Markers live under $AFKD_SCRATCH_DIR.
+
+package afkd
+
+import "shared"
+import "@afkd/trello"
+
+PROMPTS    :: "docs/agents"
+REPO       :: "/home/user/Projects/afkd"
+PLUGINS    :: "/home/user/Projects/afkd-plugins"
+PNPM_STORE :: "/home/user/Projects/.pnpm-store"
+
+TRELLO_BOARD   :: "https://trello.com/b/BOARDID/afkd"
+TRELLO_API_KEY :: env.TRELLO_API_KEY
+TRELLO_TOKEN   :: env.TRELLO_TOKEN
+
+// gh's keyring is unreachable inside the sandbox, so the token travels by env.
+GH_TOKEN :: env.GH_TOKEN
+
+// Git commands the review-only agents may never run.
+GIT_WRITES :: [
+  "Bash(git checkout *)",
+  "Bash(git clean *)",
+  "Bash(git commit *)",
+  "Bash(git push *)",
+  "Bash(git reset *)",
+]
+
+// Plans, implements, commits. Unattended, so bypass_permissions.
+builder :: agent(claude) {
+  timeout         4h
+  model           "opus"
+  effort          high
+  permission_mode bypass_permissions
+  skills          [ "@afkd/trello/trello" ]
+  tools           [ "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write" ]
+}
+
+// Gates each phase, review-only. Commits stay denied even under bypass_permissions.
+critic :: agent(claude) {
+  timeout         1h
+  model           "opus"
+  effort          high
+  permission_mode bypass_permissions
+  skills          [ "@afkd/trello/trello" ]
+  tools           [ "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write" ]
+  deny            GIT_WRITES
+}
+
+// Confine the pipeline to the repo plus its Rust/claude toolchain.
+repo_jail :: sandbox {
+  network host
+
+  read_write [
+    REPO,
+    PLUGINS,
+    run.scratch_dir,
+    "#{env.HOME}/.config/afkd/",
+    "#{env.HOME}/.cargo/",
+    "#{env.HOME}/.cache/pnpm/",
+    "#{env.HOME}/.claude/",
+    "#{env.HOME}/.claude.json",
+    "#{PNPM_STORE}/",
+  ]
+
+  // NOTE: granting ~/.ssh exposes private keys to the agent.
+  read_only [
+    "/etc/ca-certificates/",
+    "/etc/group",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/passwd",
+    "/etc/resolv.conf",
+    "/etc/ssl/",
+    "/usr/",
+    "#{env.HOME}/.gitconfig",
+    "#{env.HOME}/.local/bin/",
+    "#{env.HOME}/.local/share/claude/",
+    "#{env.HOME}/.local/share/nvm/",
+    "#{env.HOME}/.rustup/",
+    "#{env.HOME}/.ssh/",
+  ]
+}
+
+// Fresh marker state each run, and a tree that starts where master is.
+prep :: proc() {
+  git.fetch("origin", "master")
+  $ git reset --hard
+  $ git checkout -B master origin/master
+  $ rm -f $AFKD_SCRATCH_DIR/plan.md $AFKD_SCRATCH_DIR/*.ok \
+      $AFKD_SCRATCH_DIR/*.blocked $AFKD_SCRATCH_DIR/*-feedback.md
+}
+
+// Build, then critique, up to three times.
+gate :: proc(phase: string, build: string, critique: string) -> "blocked" | "approved" | "rejected" {
+  for _ in 0..<3 {
+    builder <- fs.read("#{PROMPTS}/#{build}")
+    if fs.is_file("#{run.scratch_dir}/#{phase}.blocked") { return "blocked" }
+
+    critic <- fs.read("#{PROMPTS}/#{critique}")
+    if fs.is_file("#{run.scratch_dir}/#{phase}.ok") { return "approved" }
+  }
+  return "rejected"
+}
+
+plan :: proc() {
+  verdict := gate("plan", "20-plan-build.md", "21-plan-critique.md")
+  if verdict == "blocked" {
+    fail "card unimplementable as written - see card comment"
+  } else if verdict == "rejected" {
+    fail "plan not approved within retries"
+  }
+}
+
+implement :: proc() {
+  verdict := gate("impl", "30-implement-build.md", "31-implement-critique.md")
+  if verdict == "blocked" {
+    fail "implementation blocked - see card comment"
+  } else if verdict == "rejected" {
+    fail "implementation not approved within retries"
+  }
+}
+
+// Commit the approved work, then check the fact rather than the agent's word.
+commit :: proc() {
+  builder <- fs.read("#{PROMPTS}/40-commit.md")
+  if fs.is_file("#{run.scratch_dir}/commit.blocked") {
+    fail "commit blocked: approval stale, real change needed - see card comment"
+  }
+
+  git.fetch("origin", "master")
+  if !git.is_merged("HEAD", into="origin/master") {
+    fail "the commit never reached origin/master - the push did not land"
+  }
+}
+
+task :: proc() {
+  prep()
+  plan()
+  implement()
+  commit()
+}
+
+develop :: service(trello) {
+  board         TRELLO_BOARD
+  api_key       TRELLO_API_KEY
+  token         TRELLO_TOKEN
+  pick_from     "Up for Grabs"
+  min_age       1m
+  max_attempts  2
+  poll_interval 1m to 3m
+
+  on_claim {
+    trello.add_member(trello.me)
+    trello.move_to("In Progress", at=top)
+  }
+  on_done {
+    trello.move_to("Review", at=top)
+    trello.comment("afkd landed this card in #{run.duration} - #{run.cost}, #{run.turns} agent turns.")
+  }
+  on_park {
+    trello.comment("parked after #{run.duration}: waiting for a reply.")
+  }
+  on_fail {
+    trello.move_to("Backlog", at=bottom)
+    trello.add_label("Problem")
+  }
+
+  work_dir    REPO
+  sandbox     repo_jail
+  queue       shared.develop
+  description "Builds a card promoted to Up for Grabs through prep, critic-gated planning and implementation, then commit and push"
+
+  env {
+    GH_TOKEN:              GH_TOKEN,
+    PNPM_CONFIG_STORE_DIR: PNPM_STORE,
+  }
+
+  on_run { task() }
+}
+"##;
+
+/// The selfdev pipeline of config language v2's §24, `develop` service and all, validates
+/// against the installed plugin: every setting it writes is one the manifest declares, of
+/// its type, and every action its hooks call is one the plugin provides.
 #[test]
-fn the_plugin_binary_runs_on_the_real_spine_under_a_probe_kind() {
+fn the_lang_v2_complete_example_develop_service_validates() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
-    let staged = stage(stage_dir.path());
-    probe_manifest(&staged);
-    if let Install::BuiltIn(report) = install(home.path(), &staged) {
-        panic!("the probe kind is never built in, yet afkd refused it:\n{report}");
+    install(home.path(), &stage(stage_dir.path()));
+    let config = config_dir(home.path());
+    for (file, text) in [
+        ("afkd.conf", SECTION_24_MAIN),
+        ("shared/queues.conf", SECTION_24_QUEUES),
+        ("afkd/selfdev.conf", SECTION_24_SELFDEV),
+    ] {
+        let path = config.join(file);
+        std::fs::create_dir_all(path.parent().expect("has parent")).expect("mk the package");
+        std::fs::write(&path, text).expect("write the file");
     }
-    drive_one_card(home.path(), "trello_card_probe");
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "§24 validates:\n{report}");
+    assert!(
+        report.contains("afkd/selfdev.conf") && !report.contains("warning:"),
+        "every file checked, cleanly:\n{report}"
+    );
 }
 
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence
@@ -442,13 +610,7 @@ fn every_readme_conf_fence_validates() {
 
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
-    match install(home.path(), &stage(stage_dir.path())) {
-        Install::BuiltIn(_) => eprintln!(
-            "the afkd on PATH has {NAME}'s kind built in: the fences validate against its \
-             vocabulary"
-        ),
-        Install::Placed => eprintln!("{NAME} installed: the fences validate against its manifest"),
-    }
+    install(home.path(), &stage(stage_dir.path()));
     for (n, (line, fence)) in fences.iter().enumerate() {
         assert!(
             !fence.trim().is_empty(),
