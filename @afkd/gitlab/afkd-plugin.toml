@@ -1,83 +1,154 @@
 name = "@afkd/gitlab"
-version = "0.1.0"
-proto = 1
+version = "0.2.0"
+proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-gitlab"
 
-# The issue kind: the vocabulary of afkd's retired built-in GitLab issue trigger, key for key.
-[[trigger]]
-kind = "gitlab_issue"
-settings = [
-  "base_url",
-  "project",
-  "token",
-  "source_label",
-  "follow_comments",
-  "max_attempts",
-  "poll_interval",
-  "on_claim",
-  "on_done",
-  "on_fail",
-]
-required = ["token"]
-repeatable = []
-durations = ["poll_interval", "follow_comments"]
-run_kind = "issue"
-display_name = "GitLab issues"
-info_keys = []
+# The issue kind, `service(gitlab)` in a config: a project's issues, claimed one per run.
+[[kind]]
+name = "issue"
+role = "trigger"
+main = true
+claims = true
 
-[[trigger.block]]
-path = "on_claim"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "base_url"
+  type = "string"
 
-[[trigger.block]]
-path = "on_done"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "project"
+  type = "string"
 
-[[trigger.block]]
-path = "on_fail"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "token"
+  type = "string"
+  required = true
 
-# The merge-request kind: the retired built-in GitLab MR trigger's vocabulary, key for key —
-# the issue kind's keys with `author_me` in place of `source_label`, and the same three
-# lifecycle blocks (GitLab has no `on_park`).
-[[trigger]]
-kind = "gitlab_mr"
-settings = [
-  "base_url",
-  "project",
-  "token",
-  "author_me",
-  "follow_comments",
-  "max_attempts",
-  "poll_interval",
-  "on_claim",
-  "on_done",
-  "on_fail",
-]
-required = ["token"]
-repeatable = []
-durations = ["poll_interval", "follow_comments"]
-run_kind = "mr"
-display_name = "GitLab MRs"
-info_keys = []
+  [[kind.setting]]
+  name = "source_label"
+  type = "string"
 
-[[trigger.block]]
-path = "on_claim"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  # These three afkd reads itself, as it declares them for every claiming kind.
+  [[kind.setting]]
+  name = "follow_comments"
+  type = "duration"
+  jitter = true
 
-[[trigger.block]]
-path = "on_done"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "max_attempts"
+  type = "int"
+  default = 1
 
-[[trigger.block]]
-path = "on_fail"
-settings = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
-repeatable = ["assign_me", "unassign", "label_add", "label_remove", "close", "comment"]
+  [[kind.setting]]
+  name = "poll_interval"
+  type = "duration"
+  jitter = true
+  default = "30s"
+
+  # afkd runs the hooks; each action one of them calls is one `call` to this plugin.
+  [[kind.hook]]
+  name = "on_claim"
+  when = "pre"
+
+  [[kind.hook]]
+  name = "on_done"
+  when = "post"
+
+  [[kind.hook]]
+  name = "on_fail"
+  when = "post"
+
+# The merge-request kind, `service(gitlab.mr)` in a config: the review loop over a
+# project's merge requests. It has `author_me` in place of `source_label`.
+[[kind]]
+name = "mr"
+role = "trigger"
+claims = true
+
+  [[kind.setting]]
+  name = "base_url"
+  type = "string"
+
+  [[kind.setting]]
+  name = "project"
+  type = "string"
+
+  [[kind.setting]]
+  name = "token"
+  type = "string"
+  required = true
+
+  [[kind.setting]]
+  name = "author_me"
+  type = "bool"
+  default = false
+
+  # These three afkd reads itself, as it declares them for every claiming kind.
+  [[kind.setting]]
+  name = "follow_comments"
+  type = "duration"
+  jitter = true
+
+  [[kind.setting]]
+  name = "max_attempts"
+  type = "int"
+  default = 1
+
+  [[kind.setting]]
+  name = "poll_interval"
+  type = "duration"
+  jitter = true
+  default = "30s"
+
+  [[kind.hook]]
+  name = "on_claim"
+  when = "pre"
+
+  [[kind.hook]]
+  name = "on_done"
+  when = "post"
+
+  [[kind.hook]]
+  name = "on_fail"
+  when = "post"
+
+# The actions a hook calls, each on the claimed issue or merge request.
+[[action]]
+name = "assign_me"
+
+[[action]]
+name = "unassign"
+
+[[action]]
+name = "label_add"
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+[[action]]
+name = "label_remove"
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+[[action]]
+name = "close"
+
+[[action]]
+name = "comment"
+
+  [[action.param]]
+  name = "text"
+  type = "string"
+  required = true
+
+# `gitlab.me`: the username the token authenticates as, for a hook's comment or label.
+[[value]]
+name = "me"
+type = "string"

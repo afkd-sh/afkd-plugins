@@ -1,8 +1,7 @@
 # Cut the release `afkd install @afkd/gitlab` fetches.
 #
 # afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose `@afkd/gitlab`
-# entry is to name this repository's `releases/download/gitlab/afkd-gitlab.tar.gz` (the entry
-# lands with the card that removes afkd's built-in GitLab triggers). afkd cannot
+# entry names this repository's `releases/download/gitlab/afkd-gitlab.tar.gz`. afkd cannot
 # install a subdirectory of a monorepo — its git leg requires the manifest at the clone root,
 # and its tarball leg steps through exactly one wrapper directory — so the installable
 # artifact is this per-plugin tarball, whose single top-level directory is the plugin itself.
@@ -79,6 +78,9 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/gitlab/afkd-plugin.toml')
           test -n "$version"
-          printf '`afkd install @afkd/gitlab`, or `afkd update @afkd/gitlab` if you already have it.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
+          # the notes name the afkd it needs: 0.2.186 is the first with config language v2
+          # and plugin protocol 2, which this manifest declares.
+          printf '`afkd install @afkd/gitlab`, or `afkd update @afkd/gitlab` if you already have it.\n\nNeeds afkd 0.2.186 or newer (config language v2, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete gitlab --yes --cleanup-tag || true
           gh release create gitlab --target "$GITHUB_SHA" --title "@afkd/gitlab $version" --notes-file notes.md afkd-gitlab.tar.gz

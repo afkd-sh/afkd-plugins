@@ -213,10 +213,17 @@ fn reap_within(child: &mut Child, budget: Duration) -> bool {
 /// One afkd subcommand, `args` whole (`install <path>`), run to completion with `$HOME`
 /// pinned to `dir` and every other anchor cleared.
 pub(crate) fn run_subcommand_args(dir: &Path, args: &[&str]) -> Output {
+    run_subcommand_env(dir, args, &[])
+}
+
+/// [`run_subcommand_args`] with `vars` set in its environment too: what a config's
+/// `env.NAME` reads at load.
+pub(crate) fn run_subcommand_env(dir: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(bin_path());
     clear_layout_env(&mut cmd)
         .current_dir(dir)
         .env("HOME", dir)
+        .envs(vars.iter().copied())
         .args(args)
         .output()
         .expect("run afkd subcommand")
@@ -238,6 +245,12 @@ impl StreamingDaemon {
         unsafe {
             libc::kill(self.child.id() as libc::pid_t, signum);
         }
+    }
+
+    /// The daemon's stderr so far, lossily decoded. A plugin's own stderr is relayed here
+    /// and never reaches `daemon.log`, so a wait that fails mid-run reads it off this.
+    pub(crate) fn stderr_so_far(&self) -> String {
+        String::from_utf8_lossy(&self.stderr.lock().expect("stderr buffer")).into_owned()
     }
 
     /// Wait for the daemon to exit within `budget`, collecting its output, and SIGKILL it

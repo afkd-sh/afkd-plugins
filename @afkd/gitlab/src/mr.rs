@@ -1,5 +1,5 @@
-//! The `gitlab_mr` kind's vendor half (ADR-0041), ported from afkd's
-//! `crates/gitlab/src/trigger_mr.rs`.
+//! The `mr` kind's vendor half (ADR-0041) — `service(gitlab.mr)` in a config — ported from
+//! afkd's `crates/gitlab/src/trigger_mr.rs`.
 //!
 //! It polls a single project's **open** merge requests through the mockable
 //! [`GitlabClient`] seam — only the bot's own with `author_me` — and treats an MR as
@@ -9,7 +9,7 @@
 //! It claims one with the same `[afkd-claim]` marker note as the issue kind, writes the
 //! `afkd::claimed` label as **status** only — the watermark, not the label, is the re-pick
 //! gate — and loops across polls until a human merges or closes the MR, which drops it out
-//! of the `state=opened` set. There is **no `on_done close`**, no park and no
+//! of the `state=opened` set. Nothing closes the MR, and there is no park and no
 //! clarification gate.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
@@ -29,14 +29,14 @@ use std::time::{Instant, SystemTime};
 use crate::claim::is_claim;
 use crate::client::{GitlabClient, GitlabError, ItemKind, Note, Project, User};
 use crate::common::{
-    apply_actions, claim_item, claim_key_for, creds_env, delete_marker, lock, release_claim,
+    claim_item, claim_key_for, creds_env, delete_marker, do_action, lock, release_claim,
     release_stale, renew_marker, unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL,
     ENV_MR_BRANCH, ENV_MR_NUMBER, ENV_PROJECT,
 };
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::LifecycleAction;
 use crate::settings::GitlabConfig;
-use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
+use crate::wire::{WireFile, WireUnit};
 use crate::{MR_DIR, NUMBER_FILE, TASK_FILE};
 
 /// One MR taken on as a unit of work.
@@ -57,7 +57,7 @@ pub(crate) struct Unit {
     /// so the thread the brief was built from is never re-delivered as new.
     pub(crate) before_notes: Vec<u64>,
     /// The user this MR was claimed as: the unit's `self` (its username), and the identity
-    /// the terminal lifecycle assigns and unassigns (its id).
+    /// the hooks' actions assign and unassign (its id).
     pub(crate) claimed_as: User,
 }
 
@@ -86,16 +86,13 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `gitlab_mr` kind's vendor half: the single-project target, the `author_me`
+/// The `mr` kind's vendor half: the single-project target, the `author_me`
 /// filter, the claim, and the three lifecycle action lists.
 pub(crate) struct MrUnits {
     client: Box<dyn GitlabClient>,
     project: Project,
     /// Restrict to the bot's own MRs (the `author_me` flag).
     author_me: bool,
-    on_claim: Vec<LifecycleAction>,
-    on_done: Vec<LifecycleAction>,
-    on_fail: Vec<LifecycleAction>,
     /// The token and base URL every unit's `env` carries.
     creds: BTreeMap<String, String>,
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
@@ -109,9 +106,6 @@ impl MrUnits {
             client,
             project: Project::new(cfg.project.clone()),
             author_me: cfg.author_me,
-            on_claim: cfg.on_claim.clone(),
-            on_done: cfg.on_done.clone(),
-            on_fail: cfg.on_fail.clone(),
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
         }
@@ -165,18 +159,6 @@ impl MrUnits {
                     ) {
                         diag.err(&e);
                     }
-                    // `on_claim` runs before any fire, so neutral facts.
-                    if let Err(e) = apply_actions(
-                        &*self.client,
-                        &self.project,
-                        ItemKind::MergeRequest,
-                        mr.iid,
-                        &self.on_claim,
-                        me,
-                        &Facts::none(),
-                    ) {
-                        diag.err(&e);
-                    }
                     return Ok(Some(Unit {
                         project: self.project.clone(),
                         iid: mr.iid,
@@ -223,39 +205,11 @@ impl MrUnits {
         }
     }
 
-    /// The terminal lifecycle: `on_done` (clean) or `on_fail` (exhausted). There is no
-    /// `on_done close` here — a human's merge ends the loop by dropping the MR from the
-    /// open set — and no `on_park`, so a park runs `on_fail`, as the built-in does.
-    /// Returns whether the moment reached the remote.
-    pub(crate) fn finish(
-        &self,
-        unit: &Unit,
-        outcome: UnitOutcome,
-        facts: &Facts,
-        diag: &dyn Diag,
-    ) -> bool {
-        let actions = match outcome {
-            UnitOutcome::Clean => &self.on_done,
-            UnitOutcome::Park | UnitOutcome::Failed => &self.on_fail,
-        };
-        let delivered = match apply_actions(
-            &*self.client,
-            &unit.project,
-            ItemKind::MergeRequest,
-            unit.iid,
-            actions,
-            &unit.claimed_as,
-            facts,
-        ) {
-            Ok(()) => true,
-            Err(e) => {
-                diag.err(&e);
-                false
-            }
-        };
-        // The claim is over however this round ended, so its marker goes — a finished
-        // round must leave no marker to out-order the next claim. Best-effort: a leaked
-        // marker ages out after `CLAIM_LIFETIME`.
+    /// The plugin-owned end of a round, whatever its outcome: the claim marker's release,
+    /// so a finished round leaves no marker to out-order the next claim. Best-effort: a
+    /// leaked marker ages out after `CLAIM_LIFETIME`. afkd runs the `on_done`/`on_fail` hook
+    /// after this, each action it calls one `call` ([`act`](Self::act)).
+    pub(crate) fn finish(&self, unit: &Unit, diag: &dyn Diag) {
         delete_marker(
             &*self.client,
             &unit.project,
@@ -264,11 +218,22 @@ impl MrUnits {
             unit.claim_id,
             diag,
         );
-        delivered
+    }
+
+    /// Do one action a hook called on the unit's merge request, as the user it was claimed as.
+    pub(crate) fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GitlabError> {
+        do_action(
+            &*self.client,
+            &unit.project,
+            ItemKind::MergeRequest,
+            unit.iid,
+            action,
+            &unit.claimed_as,
+        )
     }
 }
 
-/// The `gitlab_mr` kind behind the plugin's seam.
+/// The `mr` kind behind the plugin's seam.
 impl Units for MrUnits {
     type Unit = Unit;
 
@@ -344,8 +309,12 @@ impl Units for MrUnits {
             .list_notes(&unit.project, ItemKind::MergeRequest, unit.iid)
     }
 
-    fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag) -> bool {
-        MrUnits::finish(self, unit, outcome, facts, diag)
+    fn finish(&self, unit: &Unit, diag: &dyn Diag) {
+        MrUnits::finish(self, unit, diag);
+    }
+
+    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GitlabError> {
+        MrUnits::act(self, unit, action)
     }
 }
 
@@ -437,9 +406,10 @@ mod tests {
     //! No network: every test drives the in-memory `MockClient` and a fake clock.
     //!
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief, the
-    //! env, the terminal lifecycle. The drive around it (attempt counting, the claim
-    //! journal, the run-name mint, the cadence, the framing of `task.md`) is afkd's, on
-    //! the far side of the wire; the wire itself is `tests/wire.rs`.
+    //! env, the end of a round and the hooks' actions. The drive around it (attempt
+    //! counting, the claim journal, the run-name mint, the cadence, the framing of
+    //! `task.md`) is afkd's, on the far side of the wire; the wire itself is
+    //! `tests/wire.rs`.
 
     use super::*;
     use crate::claim::{claim_renewal_text, claim_text, split_claim_key, CLAIM_MARKER};
@@ -454,11 +424,6 @@ mod tests {
             project: "group/widgets".into(),
             token: "PAT".into(),
             author_me: true,
-            on_claim: vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelAdd("afkd::reviewing".into()),
-            ],
-            on_fail: vec![LifecycleAction::Unassign],
             ..GitlabConfig::default()
         }
     }
@@ -496,9 +461,15 @@ mod tests {
             }
         }
 
-        /// The `finish` call for `unit`, ended `outcome` with `facts`.
-        fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts) -> bool {
-            self.units.finish(unit, outcome, facts, &self.diag)
+        /// The `finish` call for `unit`.
+        fn finish(&self, unit: &Unit) {
+            self.units.finish(unit, &self.diag);
+        }
+
+        /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
+        /// (`on_claim`) or a `finish` (the post-run hooks).
+        fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GitlabError> {
+            self.units.act(unit, &action)
         }
 
         /// Seed the bot's open MR !`iid` on `feature/x` with one human note — an MR with
@@ -896,7 +867,10 @@ mod tests {
         assert_eq!(unit.iid, 7);
         assert_eq!(unit.source_branch, "feature/x");
         assert_eq!(bodies(&unit.feedback), ["note 1"]);
-        // The kind's status label, then `on_claim` — all on the MR path.
+        // The kind's status label alone, then `on_claim`'s calls — all on the MR path.
+        h.act(&unit, LifecycleAction::AssignMe).unwrap();
+        h.act(&unit, LifecycleAction::LabelAdd("afkd::reviewing".into()))
+            .unwrap();
         let writes: Vec<Action> = h
             .client
             .actions()
@@ -1064,26 +1038,6 @@ mod tests {
             .has_label(ItemKind::MergeRequest, 8, "afkd::claimed"));
     }
 
-    #[test]
-    fn an_on_claim_failure_is_logged_but_the_claim_proceeds() {
-        // `on_claim` runs after a won claim; a failure there is logged and swallowed, and
-        // the unit is still taken on. A `close` the claim itself does not perform is
-        // failed here.
-        let h = Harness::new(GitlabConfig {
-            on_claim: vec![LifecycleAction::Close],
-            ..cfg()
-        });
-        h.mr_with_feedback(7);
-        h.client.fail("set state");
-
-        let unit = h.poll().expect("claimed anyway");
-        assert_eq!(unit.iid, 7);
-        assert_eq!(
-            h.diag.lines(),
-            ["gitlab set state: no response (mock failure)"]
-        );
-    }
-
     /// A forge failure *during the claim itself* (the marker post errors) is not a lost
     /// race but a transport fault: it propagates out of the poll, which the plugin turns
     /// into an idle beat.
@@ -1175,28 +1129,30 @@ mod tests {
 
     // --- Lifecycle on terminal outcomes ---
 
-    /// A finished round leaves no marker: the release runs whatever the terminal moment
-    /// did, so the next round's claim is not out-ordered by a marker nobody is acting on
-    /// (and the MR's own watermark never meets one). All three dispositions are driven.
+    /// A finished round leaves no marker: the release is the finish's one write, so the
+    /// next round's claim is not out-ordered by a marker nobody is acting on (and the MR's
+    /// own watermark never meets one).
     #[test]
     fn a_finished_round_leaves_no_claim_marker() {
-        for outcome in [UnitOutcome::Clean, UnitOutcome::Failed, UnitOutcome::Park] {
-            let h = Harness::new(cfg());
-            h.mr_with_feedback(7);
+        let h = Harness::new(cfg());
+        h.mr_with_feedback(7);
 
-            let unit = h.poll().expect("claimed");
-            assert_eq!(claim_markers_on(&h, 7).len(), 1, "the claim is held");
+        let unit = h.poll().expect("claimed");
+        assert_eq!(claim_markers_on(&h, 7).len(), 1, "the claim is held");
+        let before = h.client.actions().len();
 
-            assert!(h.finish(&unit, outcome, &Facts::none()));
-            assert!(
-                claim_markers_on(&h, 7).is_empty(),
-                "a round ending {outcome:?} released its marker: {:?}",
-                claim_markers_on(&h, 7)
-            );
-            assert_all_on_the_mr_path(&h);
-        }
+        h.finish(&unit);
+        assert_eq!(
+            h.client.actions()[before..],
+            [Action::DeleteComment {
+                kind: ItemKind::MergeRequest,
+                iid: 7,
+                id: unit.claim_id
+            }]
+        );
+        assert!(claim_markers_on(&h, 7).is_empty());
+        assert_all_on_the_mr_path(&h);
     }
-
     /// The journal key carries the claim, the session thread does not: two successive
     /// claims of the same MR give two different keys (each naming its own marker) and one
     /// identical thread, so an agent session resumes per MR across review rounds.
@@ -1208,7 +1164,7 @@ mod tests {
         let first = h.poll().expect("claimed");
         // Wind the round down as a finished run does (marker released), then let the human
         // speak again so the MR is eligible for a second round.
-        h.finish(&first, UnitOutcome::Clean, &Facts::none());
+        h.finish(&first);
         h.client
             .add_note(ItemKind::MergeRequest, 7, 2, 99, "human", 300);
         let second = h.poll().expect("re-claimed");
@@ -1230,15 +1186,15 @@ mod tests {
         }
     }
 
-    /// The MR-review service configures no `on_done` — a human's merge ends the loop — so
-    /// a clean round records no state change (no `close`), and the MR stays open.
+    /// A human's merge ends the loop, so a round's end records no state change (no `close`)
+    /// and the MR stays open.
     #[test]
-    fn a_clean_run_emits_no_on_done_close() {
+    fn a_finished_round_emits_no_close() {
         let h = Harness::new(cfg());
         h.mr_with_feedback(7);
         let unit = h.poll().expect("claimed");
 
-        assert!(h.finish(&unit, UnitOutcome::Clean, &Facts::none()));
+        h.finish(&unit);
 
         assert!(!h
             .client
@@ -1253,60 +1209,60 @@ mod tests {
             1
         );
     }
-
-    /// GitLab has no `on_park`: a parked attempt runs `on_fail`, with the run's facts.
+    /// The `unassign` and comment an MR's `on_fail` typically calls arrive as `call`s after
+    /// the finish: the bot alone leaves the assignees, and the comment posts byte for byte
+    /// on the MR.
     #[test]
-    fn a_park_runs_on_fail_with_the_run_facts() {
-        let h = Harness::new(GitlabConfig {
-            on_done: vec![LifecycleAction::LabelAdd("afkd::reviewed".into())],
-            on_fail: vec![LifecycleAction::Comment(
-                "Stopped after @{run:duration}: over to a human.".into(),
-            )],
-            ..cfg()
-        });
+    fn an_on_fail_acts_on_the_mr_after_the_finish() {
+        let h = Harness::new(cfg());
         h.mr_with_feedback(7);
         let unit = h.poll().expect("claimed");
-        let facts = Facts {
-            duration_ms: 168_000,
-            ..Facts::none()
-        };
+        h.act(&unit, LifecycleAction::AssignMe).unwrap();
+        h.finish(&unit);
+        assert_eq!(h.client.assignee_ids(ItemKind::MergeRequest, 7), vec![1]);
 
-        assert!(h.finish(&unit, UnitOutcome::Park, &facts));
-
+        let text = "Stopped after 2m 48s: over to a human — 看起来不对 🚨";
+        h.act(&unit, LifecycleAction::Unassign).unwrap();
+        h.act(&unit, LifecycleAction::Comment(text.into())).unwrap();
+        assert!(h.client.assignee_ids(ItemKind::MergeRequest, 7).is_empty());
         assert!(h.client.actions().contains(&Action::Comment {
             kind: ItemKind::MergeRequest,
             iid: 7,
-            body: "Stopped after 2m48s: over to a human.".into(),
+            body: text.into(),
         }));
-        assert!(
-            !h.client
-                .has_label(ItemKind::MergeRequest, 7, "afkd::reviewed"),
-            "`on_done` did not run"
-        );
+        assert_all_on_the_mr_path(&h);
     }
-
-    /// A terminal moment that did not land answers `false` — the plugin's `held` — and is
-    /// diagnosed by its stage; the marker still goes. `unassign` reads the set before
-    /// replacing it, so the read is where a transport fault strikes first.
+    /// A hook's action the forge refused is that `call`'s error, for afkd to fail the hook
+    /// with — `unassign` reads the set before replacing it, so the read is where a
+    /// transport fault strikes first; a marker release the forge refused is diagnosed, and
+    /// the finish still ends.
     #[test]
-    fn a_terminal_lifecycle_failure_returns_false_and_is_logged() {
+    fn a_refused_action_is_the_calls_error_and_a_refused_release_is_logged() {
         let h = Harness::new(cfg());
         h.mr_with_feedback(7);
         let unit = h.poll().expect("claimed");
         h.client.fail("get item");
+        let err = h.act(&unit, LifecycleAction::Unassign).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "gitlab get item: no response (mock failure)"
+        );
 
-        assert!(!h.finish(&unit, UnitOutcome::Failed, &Facts::none()));
-
+        h.client.fail("delete comment");
+        h.finish(&unit);
         assert_eq!(
             h.diag.lines(),
-            ["gitlab get item: no response (mock failure)"]
+            ["gitlab delete comment: no response (mock failure)"]
         );
-        assert!(claim_markers_on(&h, 7).is_empty());
+        assert_eq!(
+            claim_markers_on(&h, 7).len(),
+            1,
+            "the marker ages out instead"
+        );
         assert!(h
             .client
             .has_label(ItemKind::MergeRequest, 7, "afkd::claimed"));
     }
-
     /// The renewal edits the claim marker **in place** — same id, a body that still reads
     /// as a claim — on the MR's own thread, and the forge's last-touched stamp moves with
     /// it.

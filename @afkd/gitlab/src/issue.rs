@@ -1,10 +1,10 @@
-//! The `gitlab_issue` kind's vendor half (ADR-0041), ported from afkd's
-//! `crates/gitlab/src/trigger_issue.rs`.
+//! The `issue` kind's vendor half (ADR-0041) — `service(gitlab)` in a config — ported from
+//! afkd's `crates/gitlab/src/trigger_issue.rs`.
 //!
 //! It polls a single project through the mockable [`GitlabClient`] seam for issues that
 //! are **open** and carry the configured **source label**; claims one with a
 //! `[afkd-claim]` marker note (post → settle → re-read → decide, then the `afkd::claimed`
-//! status label and `on_claim`); and reflects the run's end back through GitLab's native
+//! status label); and does each action afkd's hooks call through GitLab's native
 //! assignee/label/state primitives. Its logic is unit-tested with **no network** against
 //! [`MockClient`](crate::client::MockClient) and a fake clock.
 //!
@@ -23,14 +23,14 @@ use std::time::Instant;
 
 use crate::client::{GitlabClient, GitlabError, Issue, ItemKind, Note, Project, User};
 use crate::common::{
-    apply_actions, claim_item, claim_key_for, creds_env, delete_marker, lock, release_claim,
+    claim_item, claim_key_for, creds_env, delete_marker, do_action, lock, release_claim,
     release_stale, renew_marker, unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL,
     ENV_ISSUE_NUMBER, ENV_PROJECT,
 };
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::LifecycleAction;
 use crate::settings::GitlabConfig;
-use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
+use crate::wire::{WireFile, WireUnit};
 use crate::{ISSUE_DIR, NUMBER_FILE, TASK_FILE};
 
 /// One issue taken on as a unit of work.
@@ -45,7 +45,7 @@ pub(crate) struct Unit {
     pub(crate) title: String,
     pub(crate) body: String,
     /// The user this issue was claimed as: the unit's `self` (its username), and the
-    /// identity the terminal lifecycle assigns and unassigns (its id).
+    /// identity the hooks' actions assign and unassign (its id).
     pub(crate) claimed_as: User,
 }
 
@@ -73,15 +73,12 @@ impl ClaimedUnit for Unit {
     }
 }
 
-/// The `gitlab_issue` kind's vendor half: the single-project target, the source-label intake
+/// The `issue` kind's vendor half: the single-project target, the source-label intake
 /// gate, the claim, and the three lifecycle action lists.
 pub(crate) struct IssueUnits {
     client: Box<dyn GitlabClient>,
     project: Project,
     source_label: String,
-    on_claim: Vec<LifecycleAction>,
-    on_done: Vec<LifecycleAction>,
-    on_fail: Vec<LifecycleAction>,
     /// The token and base URL every unit's `env` carries.
     creds: BTreeMap<String, String>,
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
@@ -95,9 +92,6 @@ impl IssueUnits {
             client,
             project: Project::new(cfg.project.clone()),
             source_label: cfg.source_label.clone(),
-            on_claim: cfg.on_claim.clone(),
-            on_done: cfg.on_done.clone(),
-            on_fail: cfg.on_fail.clone(),
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
         }
@@ -148,25 +142,12 @@ impl IssueUnits {
                 Claimed::Won(claim_id) => {
                     // The claim is the marker; the label is the status it shows — and the
                     // re-pick gate `eligible` reads, so the kind adds it itself rather
-                    // than trusting an `on_claim` block to.
+                    // than trusting an `on_claim` hook to.
                     if let Err(e) = self.client.add_label(
                         &self.project,
                         ItemKind::Issue,
                         issue.iid,
                         CLAIMED_LABEL,
-                    ) {
-                        diag.err(&e);
-                    }
-                    // First claim of this issue: `on_claim` runs now (no run yet, so
-                    // neutral facts).
-                    if let Err(e) = apply_actions(
-                        &*self.client,
-                        &self.project,
-                        ItemKind::Issue,
-                        issue.iid,
-                        &self.on_claim,
-                        me,
-                        &Facts::none(),
                     ) {
                         diag.err(&e);
                     }
@@ -215,38 +196,11 @@ impl IssueUnits {
         }
     }
 
-    /// The terminal lifecycle: `on_done` (clean) or `on_fail` (exhausted). This kind has
-    /// no clarification gate or `on_park`, so a park runs `on_fail`, as the built-in does.
-    /// Returns whether the moment reached the remote.
-    pub(crate) fn finish(
-        &self,
-        unit: &Unit,
-        outcome: UnitOutcome,
-        facts: &Facts,
-        diag: &dyn Diag,
-    ) -> bool {
-        let actions = match outcome {
-            UnitOutcome::Clean => &self.on_done,
-            UnitOutcome::Park | UnitOutcome::Failed => &self.on_fail,
-        };
-        let delivered = match apply_actions(
-            &*self.client,
-            &unit.project,
-            ItemKind::Issue,
-            unit.iid,
-            actions,
-            &unit.claimed_as,
-            facts,
-        ) {
-            Ok(()) => true,
-            Err(e) => {
-                diag.err(&e);
-                false
-            }
-        };
-        // The claim is over however it ended, so its marker goes — a finished unit must
-        // leave no marker to out-order the next claim. Best-effort: a leaked marker ages
-        // out after `CLAIM_LIFETIME`.
+    /// The plugin-owned end of a run, whatever its outcome: the claim marker's release,
+    /// so a finished unit leaves no marker to out-order the next claim. Best-effort: a
+    /// leaked marker ages out after `CLAIM_LIFETIME`. afkd runs the `on_done`/`on_fail` hook
+    /// after this, each action it calls one `call` ([`act`](Self::act)).
+    pub(crate) fn finish(&self, unit: &Unit, diag: &dyn Diag) {
         delete_marker(
             &*self.client,
             &unit.project,
@@ -255,11 +209,22 @@ impl IssueUnits {
             unit.claim_id,
             diag,
         );
-        delivered
+    }
+
+    /// Do one action a hook called on the unit's issue, as the user it was claimed as.
+    pub(crate) fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GitlabError> {
+        do_action(
+            &*self.client,
+            &unit.project,
+            ItemKind::Issue,
+            unit.iid,
+            action,
+            &unit.claimed_as,
+        )
     }
 }
 
-/// The `gitlab_issue` kind behind the plugin's seam.
+/// The `issue` kind behind the plugin's seam.
 impl Units for IssueUnits {
     type Unit = Unit;
 
@@ -327,8 +292,12 @@ impl Units for IssueUnits {
             .list_notes(&unit.project, ItemKind::Issue, unit.iid)
     }
 
-    fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag) -> bool {
-        IssueUnits::finish(self, unit, outcome, facts, diag)
+    fn finish(&self, unit: &Unit, diag: &dyn Diag) {
+        IssueUnits::finish(self, unit, diag);
+    }
+
+    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GitlabError> {
+        IssueUnits::act(self, unit, action)
     }
 }
 
@@ -346,9 +315,9 @@ mod tests {
     //! No network: every test drives the in-memory `MockClient` and a fake clock.
     //!
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief, the
-    //! env, the terminal lifecycle. The drive around it (attempt counting, the claim
-    //! journal, the run-name mint, the cadence, the framing of `task.md`) is afkd's, on
-    //! the far side of the wire; the wire itself is `tests/wire.rs`.
+    //! env, the end of a run and the hooks' actions. The drive around it (attempt counting,
+    //! the claim journal, the run-name mint, the cadence, the framing of `task.md`) is
+    //! afkd's, on the far side of the wire; the wire itself is `tests/wire.rs`.
 
     use super::*;
     use crate::claim::{claim_renewal_text, claim_text, is_claim, split_claim_key, CLAIM_SETTLE};
@@ -357,20 +326,13 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn cfg(
-        on_claim: Vec<LifecycleAction>,
-        on_done: Vec<LifecycleAction>,
-        on_fail: Vec<LifecycleAction>,
-    ) -> GitlabConfig {
+    fn cfg() -> GitlabConfig {
         GitlabConfig {
             base_url: "https://gitlab.example.com".into(),
             project: "group/widgets".into(),
             token: "PAT".into(),
             source_label: "afkd::ready".into(),
             author_me: false,
-            on_claim,
-            on_done,
-            on_fail,
         }
     }
 
@@ -407,9 +369,15 @@ mod tests {
             }
         }
 
-        /// The `finish` call for `unit`, ended `outcome` with `facts`.
-        fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts) -> bool {
-            self.units.finish(unit, outcome, facts, &self.diag)
+        /// The `finish` call for `unit`.
+        fn finish(&self, unit: &Unit) {
+            self.units.finish(unit, &self.diag);
+        }
+
+        /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
+        /// (`on_claim`) or a `finish` (the post-run hooks).
+        fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GitlabError> {
+            self.units.act(unit, &action)
         }
     }
 
@@ -451,7 +419,7 @@ mod tests {
 
     #[test]
     fn only_open_source_labelled_unclaimed_issues_are_eligible() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         // Eligible.
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
         // Already claimed → never re-picked.
@@ -476,42 +444,45 @@ mod tests {
     /// candidate — the key is what narrows intake.
     #[test]
     fn without_a_source_label_every_open_issue_is_a_candidate() {
-        let mut c = cfg(vec![], vec![], vec![]);
+        let mut c = cfg();
         c.source_label = String::new();
         let h = Harness::new(c);
         h.client.add_issue(4, "Unlabelled", "do it", &[]);
         assert_eq!(h.poll().expect("claimed").iid, 4);
     }
 
+    /// A claim does only the plugin-owned writes — the marker and the `afkd::claimed`
+    /// gate — and no hook action: afkd runs `on_claim` after the `poll`, and its actions
+    /// arrive as `call`s that act as the claim identity (by id).
     #[test]
-    fn claim_runs_on_claim_assign_and_label() {
-        let h = Harness::new(cfg(
-            vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelAdd("afkd::working".into()),
-            ],
-            vec![],
-            vec![],
-        ));
+    fn a_claim_does_only_the_plugin_owned_writes_and_on_claim_acts_after() {
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
 
-        h.poll().expect("claimed");
-        // `on_claim` assigned us (by id) and added the working label, after the kind's
-        // own status label.
-        let writes: Vec<Action> = h
-            .client
-            .actions()
-            .into_iter()
-            .filter(|a| !matches!(a, Action::Comment { .. }))
-            .collect();
+        let unit = h.poll().expect("claimed");
+        let writes = || -> Vec<Action> {
+            h.client
+                .actions()
+                .into_iter()
+                .filter(|a| !matches!(a, Action::Comment { .. }))
+                .collect()
+        };
         assert_eq!(
-            writes,
+            writes(),
+            [Action::Label {
+                kind: ItemKind::Issue,
+                iid: 1,
+                name: "afkd::claimed".into()
+            }]
+        );
+        assert_eq!(h.clock.sleeps(), [CLAIM_SETTLE]);
+
+        h.act(&unit, LifecycleAction::AssignMe).unwrap();
+        h.act(&unit, LifecycleAction::LabelAdd("afkd::working ⚙".into()))
+            .unwrap();
+        assert_eq!(
+            writes()[1..],
             [
-                Action::Label {
-                    kind: ItemKind::Issue,
-                    iid: 1,
-                    name: "afkd::claimed".into()
-                },
                 Action::Assign {
                     kind: ItemKind::Issue,
                     iid: 1,
@@ -520,18 +491,16 @@ mod tests {
                 Action::Label {
                     kind: ItemKind::Issue,
                     iid: 1,
-                    name: "afkd::working".into()
+                    name: "afkd::working ⚙".into()
                 },
             ]
         );
-        assert_eq!(h.clock.sleeps(), [CLAIM_SETTLE]);
     }
-
     /// The claim's status half is the kind's own: a won claim adds `afkd::claimed` (the
-    /// re-pick gate) even when no `on_claim` block spells it.
+    /// re-pick gate) with no hook calling for it.
     #[test]
-    fn a_won_claim_labels_the_issue_even_with_an_empty_on_claim() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+    fn a_won_claim_labels_the_issue_with_no_hook() {
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
 
         h.poll().expect("claimed");
@@ -540,16 +509,17 @@ mod tests {
 
     /// A human assignee is **not** a rival claimant: an eligible issue a person already
     /// assigned themselves to is claimed and run, and the human keeps their assignment
-    /// through the status write, which under GitLab's replace-set `PUT` used to evict
-    /// them.
+    /// through `on_claim`'s `assign_me`, which under GitLab's replace-set `PUT` used to
+    /// evict them.
     #[test]
     fn an_issue_with_a_human_assignee_is_still_claimable() {
-        let h = Harness::new(cfg(vec![LifecycleAction::AssignMe], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client
             .add_issue_assigned(1, "Fix", "do it", &["afkd::ready"], &[(99, "陳大文")]);
 
         let unit = h.poll().expect("an issue a human is on is still claimable");
         assert_eq!(unit.iid, 1);
+        h.act(&unit, LifecycleAction::AssignMe).unwrap();
         assert_eq!(h.client.assignee_ids(ItemKind::Issue, 1), vec![99, 1]);
         assert!(
             !h.client
@@ -564,7 +534,7 @@ mod tests {
 
     #[test]
     fn lost_claim_race_releases_the_marker_and_skips() {
-        let h = Harness::new(cfg(vec![LifecycleAction::AssignMe], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
         // A rival's marker lands between our post and our re-read, one second ahead of
         // ours in the order and well inside the claim lifetime.
@@ -572,8 +542,8 @@ mod tests {
         h.client.rival_claims_next(99, "rival", 42, T - 1);
 
         assert!(h.poll().is_none());
-        // The status label was never applied, `on_claim` never ran, and our marker went
-        // with the loss.
+        // The status label was never applied, no unit was handed over for `on_claim` to
+        // act on, and our marker went with the loss.
         assert!(!h.client.has_label(ItemKind::Issue, 1, "afkd::claimed"));
         assert!(h.client.assignee_ids(ItemKind::Issue, 1).is_empty());
         assert_eq!(
@@ -588,7 +558,7 @@ mod tests {
     /// left with neither our marker nor the claimed label.
     #[test]
     fn a_lost_claim_moves_on_to_the_next_candidate() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
         h.client.add_issue(2, "Other", "do that", &["afkd::ready"]);
         // Armed for the next note read, which is issue #1's claim re-read.
@@ -607,42 +577,43 @@ mod tests {
         assert_eq!(h.clock.sleeps(), [CLAIM_SETTLE, CLAIM_SETTLE]);
     }
 
-    /// A finished unit leaves no marker: the release runs whatever the terminal moment
-    /// did, so the next claim of this issue is not out-ordered by a marker nobody is
-    /// acting on. All three dispositions are driven.
+    /// A finished unit leaves no marker: the release runs whatever the run did, so the next
+    /// claim of this issue is not out-ordered by a marker nobody is acting on — and it is
+    /// the finish's only write: closing, unlabelling and unassigning are the hooks'.
     #[test]
-    fn a_finished_unit_leaves_no_claim_marker() {
-        for outcome in [UnitOutcome::Clean, UnitOutcome::Failed, UnitOutcome::Park] {
-            let h = Harness::new(cfg(
-                vec![],
-                vec![LifecycleAction::Close],
-                vec![LifecycleAction::Unassign],
-            ));
-            h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
+    fn a_finish_releases_the_marker_and_does_nothing_else() {
+        let h = Harness::new(cfg());
+        h.client
+            .add_issue_assigned(1, "Fix", "do it", &["afkd::ready"], &[(1, "me")]);
 
-            let unit = h.poll().expect("claimed");
-            assert_eq!(claim_markers_on(&h, 1).len(), 1, "the claim is held");
+        let unit = h.poll().expect("claimed");
+        assert_eq!(claim_markers_on(&h, 1).len(), 1, "the claim is held");
+        let before = h.client.actions().len();
 
-            assert!(h.finish(&unit, outcome, &Facts::none()));
-            assert!(
-                claim_markers_on(&h, 1).is_empty(),
-                "a run ending {outcome:?} released its marker: {:?}",
-                claim_markers_on(&h, 1)
-            );
-        }
+        h.finish(&unit);
+        assert_eq!(
+            h.client.actions()[before..],
+            [Action::DeleteComment {
+                kind: ItemKind::Issue,
+                iid: 1,
+                id: unit.claim_id
+            }]
+        );
+        assert!(claim_markers_on(&h, 1).is_empty());
+        assert!(h.client.has_label(ItemKind::Issue, 1, "afkd::claimed"));
+        assert_eq!(h.client.assignee_ids(ItemKind::Issue, 1), vec![1]);
     }
-
     /// The journal key carries the claim, the session thread does not: two successive
     /// claims of the same issue give two different keys (each naming its own marker) and
     /// one identical thread, so an agent session resumes per issue.
     #[test]
     fn the_journal_key_carries_the_claim_but_the_thread_does_not() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client.add_issue(7, "Fix", "do it", &["afkd::ready"]);
 
         let first = h.poll().expect("claimed");
         // Wind the claim down as a finished run does, so the issue is claimable again.
-        h.finish(&first, UnitOutcome::Clean, &Facts::none());
+        h.finish(&first);
         h.client
             .remove_label(
                 &Project::new("group/widgets"),
@@ -666,31 +637,15 @@ mod tests {
         }
     }
 
-    // --- Lifecycle on terminal outcomes ---
+    // --- The post-run hooks' `call`s ---
 
+    /// Each action a post-run hook calls does its one forge operation on the finished
+    /// unit's issue, as its claim identity: `label_remove` removes by **name**, `unassign`
+    /// takes the bot alone back out, a comment posts its text byte for byte, and `close`
+    /// sends the close state event.
     #[test]
-    fn clean_run_applies_on_done_close() {
-        let h = Harness::new(cfg(vec![], vec![LifecycleAction::Close], vec![]));
-        h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
-
-        assert!(h.finish(&unit(1), UnitOutcome::Clean, &Facts::none()));
-
-        assert!(h.client.actions().iter().any(|a| matches!(
-            a,
-            Action::State { event, .. } if event == "close"
-        )));
-    }
-
-    #[test]
-    fn failed_run_applies_on_fail_label_remove_by_name_and_unassign() {
-        let h = Harness::new(cfg(
-            vec![],
-            vec![],
-            vec![
-                LifecycleAction::LabelRemove("afkd::claimed".into()),
-                LifecycleAction::Unassign,
-            ],
-        ));
+    fn a_post_run_hooks_actions_act_on_the_units_issue() {
+        let h = Harness::new(cfg());
         h.client.add_issue_assigned(
             1,
             "Fix",
@@ -698,66 +653,56 @@ mod tests {
             &["afkd::ready", "afkd::claimed"],
             &[(1, "me"), (99, "josefandersson")],
         );
+        let unit = unit(1);
+        h.finish(&unit);
+        let text = "## 失敗 ❌\n\nran out of attempts: #{run.x}";
+        for action in [
+            LifecycleAction::LabelRemove("afkd::claimed".into()),
+            LifecycleAction::Unassign,
+            LifecycleAction::Comment(text.into()),
+            LifecycleAction::Close,
+        ] {
+            h.act(&unit, action).unwrap();
+        }
 
-        assert!(h.finish(&unit(1), UnitOutcome::Failed, &Facts::none()));
-
-        // `on_fail` removed the claimed label BY NAME and took the bot back out of the
-        // assignees — only the bot.
         assert!(h.client.actions().iter().any(|a| matches!(
             a,
             Action::Unlabel { name, .. } if name == "afkd::claimed"
         )));
         assert_eq!(h.client.assignee_ids(ItemKind::Issue, 1), vec![99]);
         assert!(!h.client.has_label(ItemKind::Issue, 1, "afkd::claimed"));
-    }
-
-    /// GitLab has no `on_park`: a parked attempt runs `on_fail`, with the run's facts.
-    #[test]
-    fn a_park_runs_on_fail_with_the_run_facts() {
-        let h = Harness::new(cfg(
-            vec![],
-            vec![LifecycleAction::Close],
-            vec![LifecycleAction::Comment(
-                "Stopped after @{run:duration}: over to a human.".into(),
-            )],
-        ));
-        h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
-        let facts = Facts {
-            duration_ms: 168_000,
-            ..Facts::none()
-        };
-
-        assert!(h.finish(&unit(1), UnitOutcome::Park, &facts));
-
+        assert!(h
+            .client
+            .actions()
+            .iter()
+            .any(|a| matches!(a, Action::Comment { body, .. } if body == text)));
         assert!(h.client.actions().iter().any(|a| matches!(
             a,
-            Action::Comment { body, .. } if body == "Stopped after 2m48s: over to a human."
+            Action::State { event, .. } if event == "close"
         )));
-        assert!(
-            !h.client
-                .actions()
-                .iter()
-                .any(|a| matches!(a, Action::State { .. })),
-            "`on_done` did not run"
-        );
     }
 
-    /// A terminal moment that did not land answers `false` — the plugin's `held` — and
-    /// the marker still goes: the lock is the label, and afkd's later `release` takes it.
+    /// A marker release the forge refused is one diagnostic line: the finish still ends,
+    /// and a leaked marker ages out. A hook's action the forge refused is that `call`'s
+    /// error, for afkd to fail the hook with.
     #[test]
-    fn an_undelivered_on_done_returns_false_and_still_drops_the_marker() {
-        let h = Harness::new(cfg(vec![], vec![LifecycleAction::Close], vec![]));
+    fn a_refused_release_is_diagnosed_and_a_refused_action_is_the_calls_error() {
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
         let unit = h.poll().expect("claimed");
-        h.client.fail("set state");
-
-        assert!(!h.finish(&unit, UnitOutcome::Clean, &Facts::none()));
-
+        h.client.fail("delete comment");
+        h.finish(&unit);
         assert_eq!(
             h.diag.lines(),
-            ["gitlab set state: no response (mock failure)"]
+            ["gitlab delete comment: no response (mock failure)"]
         );
-        assert!(claim_markers_on(&h, 1).is_empty());
+
+        h.client.fail("set state");
+        let err = h.act(&unit, LifecycleAction::Close).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "gitlab set state: no response (mock failure)"
+        );
         assert!(h.client.has_label(ItemKind::Issue, 1, "afkd::claimed"));
     }
 
@@ -765,7 +710,7 @@ mod tests {
 
     #[test]
     fn the_wire_unit_carries_the_built_ins_key_thread_env_and_layout() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         let unit = Unit {
             claim_id: 1_000_001,
             title: "修复 the retry storm 🚨".into(),
@@ -817,7 +762,7 @@ mod tests {
 
     #[test]
     fn a_bodyless_issue_briefs_with_just_the_title() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         let bare = Unit {
             body: "  \n ".into(),
             title: "Just a title".into(),
@@ -832,7 +777,7 @@ mod tests {
     /// the next beat, with the forge back, claims.
     #[test]
     fn a_poll_forge_error_is_returned_and_the_next_poll_claims() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
         h.client.fail("list issues");
 
@@ -845,23 +790,11 @@ mod tests {
         assert!(h.poll().is_some());
     }
 
+    /// A status label the forge refused is logged and swallowed, and the unit is still
+    /// taken on: the claim is the marker.
     #[test]
-    fn an_on_claim_failure_is_logged_but_the_issue_is_still_taken_on() {
-        // `on_claim` runs after a won claim; a failure there is logged and swallowed, and
-        // the unit is still returned. A `close` in `on_claim` the claim itself does not
-        // perform is failed here — and so is the status label, which is logged the same.
-        let h = Harness::new(cfg(vec![LifecycleAction::Close], vec![], vec![]));
-        h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
-        h.client.fail("set state");
-
-        let unit = h.poll().expect("claimed anyway");
-        assert_eq!(unit.iid, 1);
-        assert_eq!(
-            h.diag.lines(),
-            ["gitlab set state: no response (mock failure)"]
-        );
-
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+    fn a_status_label_failure_is_logged_but_the_issue_is_still_taken_on() {
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
         h.client.fail("add label");
         assert_eq!(h.poll().expect("claimed anyway").iid, 1);
@@ -870,12 +803,11 @@ mod tests {
             ["gitlab add label: no response (mock failure)"]
         );
     }
-
     /// The renewal edits the claim marker **in place** — same id, a body that still reads
     /// as a claim — and the forge's last-touched stamp moves with it.
     #[test]
     fn renewing_a_claim_edits_the_marker_in_place() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
         h.client
             .add_note_body(ItemKind::Issue, 1, 9, 1, "me", &claim_text("me"), 100);
@@ -909,7 +841,7 @@ mod tests {
     /// A renewal the forge refuses is one diagnostic line and nothing else.
     #[test]
     fn a_failing_renewal_raises_one_diagnostic_and_nothing_else() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client.add_issue(1, "Fix", "do it", &["afkd::ready"]);
         let claim = claim_text("me");
         h.client
@@ -939,7 +871,7 @@ mod tests {
     /// candidate is the first the budget turns away — and nothing after it is posted to.
     #[test]
     fn the_poll_budget_ends_the_scan_and_says_so() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client.set_clock(T);
         for n in 1..=25 {
             h.client.add_issue(
@@ -993,7 +925,7 @@ mod tests {
     /// beat rather than risk a marker the call could not see through.
     #[test]
     fn a_scan_with_less_than_the_claim_reserve_left_posts_no_claim() {
-        let h = Harness::new(cfg(vec![], vec![], vec![]));
+        let h = Harness::new(cfg());
         h.client.add_issue(
             7,
             "Fix the 修复 path — 🚨",

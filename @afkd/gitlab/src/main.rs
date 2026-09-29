@@ -6,12 +6,13 @@
 //! service log under `[@afkd/gitlab:err]`.
 //!
 //! Two kinds, each the vendor half of one of afkd's built-in GitLab triggers, ported: the
-//! `gitlab_issue` kind ([`issue`]) takes open, source-labelled issues, and the `gitlab_mr`
-//! kind ([`mr`]) takes the bot's open merge requests that carry feedback newer than its last
-//! word. Both keep the built-in's claim markers, lifecycle
-//! comments, claim-journal keys, session threads, run env and brief, so a claim either one
-//! left on a live issue or MR is recognised, renewed and released by the other. `hello`
-//! names the kind, and [`plugin`] dispatches on it.
+//! issue kind ([`issue`]), `service(gitlab)` in a config, takes open, source-labelled
+//! issues, and the merge-request kind ([`mr`]), `service(gitlab.mr)`, takes the bot's open
+//! merge requests that carry feedback newer than its last word. Both keep the built-in's
+//! claim markers, claim-journal keys, session threads, run env and brief, so a claim either
+//! one left on a live issue or MR is recognised, renewed and released by the other. `hello`
+//! names the kind, and [`plugin`] dispatches on it. The hooks are afkd's: each action one
+//! calls arrives as a `call` ([`lifecycle`]).
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -28,7 +29,6 @@ mod manifest;
 mod mr;
 mod plugin;
 mod rfc3339;
-mod run_ref;
 mod settings;
 mod wire;
 

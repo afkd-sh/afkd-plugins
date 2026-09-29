@@ -1,21 +1,15 @@
-//! The **lifecycle-action vocabulary** and its parser: the six actions an `on_claim` /
-//! `on_done` / `on_fail` block is written in, and the parse that flattens such a block —
-//! as afkd lowers it to JSON — into an ordered list of them. Ported from afkd's
-//! `afkd_forge::lifecycle`, with one difference the wire forces.
+//! The **action vocabulary** afkd's hooks call: the six things a hook may do to the
+//! claimed issue or merge request, and the decode of one `call` request into one of them.
 //!
-//! **The order is canonical, not written.** afkd lowers a block to a JSON object, and
-//! every lifecycle key is repeatable, so `on_done { label_remove "x"; close }` crosses as
-//! `{"close":[true],"label_remove":["x"]}`: the order *within* one verb survives (it is
-//! an array) and the order *across* verbs does not. The actions therefore run in the one
-//! fixed order [`ACTION_ORDER`] names — the order every documented block is written in —
-//! and, within a verb, in the order the operator wrote them.
+//! afkd runs the hooks (`on_claim`, `on_done`, `on_fail`) as code, in the order they are
+//! written, and each plugin action a hook calls — `gitlab.label_remove("afkd::claimed")` —
+//! crosses as one `call`, its arguments already bound and typed against the manifest and
+//! any `#{…}` in a comment already interpolated. What is left here is reading those
+//! arguments back, and refusing a shape only a hand-written wire could send.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use crate::run_ref::{self, RunRefFault};
-use crate::settings::{inline, SettingsError};
-
-/// A lifecycle action performed on an issue at a moment in its life.
+/// A lifecycle action performed on an issue or merge request at a moment in its life.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LifecycleAction {
     /// Assign the issue to the bot (the token's own user).
@@ -32,10 +26,10 @@ pub(crate) enum LifecycleAction {
     Comment(String),
 }
 
-/// The lifecycle actions an `on_*` block recognizes, in afkd's own order — the order the
-/// manifest declares them in, which a test holds it to.
+/// The actions afkd may `call`, in the order the manifest declares them: what
+/// `manifest.rs`'s test holds `afkd-plugin.toml` to, and [`from_call`] decodes.
 #[cfg(test)]
-pub(crate) const LIFECYCLE_KEYS: &[&str] = &[
+pub(crate) const ACTIONS: &[&str] = &[
     "assign_me",
     "unassign",
     "label_add",
@@ -44,91 +38,31 @@ pub(crate) const LIFECYCLE_KEYS: &[&str] = &[
     "comment",
 ];
 
-/// The order a block's actions run in (see the module doc): take the issue, swap its
-/// labels, say something, hand it back, close it. Every block the operator reference
-/// documents — `on_claim { assign_me; label_add … }`, `on_done { label_remove …; close }`,
-/// `on_fail { label_remove …; unassign }`, a `comment …; close` — runs in its written
-/// order under it.
-pub(crate) const ACTION_ORDER: [&str; 6] = [
-    "assign_me",
-    "label_remove",
-    "label_add",
-    "comment",
-    "unassign",
-    "close",
-];
-
-/// Parse one lowered `on_*` block into its actions, in [`ACTION_ORDER`] and, within a
-/// verb, in written order. An absent block, or a bare `on_done` written with no block, is
-/// no actions. `run_refs_allowed` is whether this moment receives the run's facts; it
-/// gates a `@{run:…}` reference in a `comment` (ADR-0064).
-pub(crate) fn parse_block(
-    block: Option<&Value>,
-    run_refs_allowed: bool,
-) -> Result<Vec<LifecycleAction>, SettingsError> {
-    let Some(Value::Object(block)) = block else {
-        return Ok(Vec::new());
+/// Decode one `call` — the action's name and its arguments by parameter name — into the
+/// action it asks for, or the sentence that refuses it.
+///
+/// afkd binds every argument against the manifest before it sends the call, so a
+/// missing or mistyped argument only comes from a hand-written wire; it is refused rather
+/// than guessed at. An argument the action has no parameter for is ignored, since the wire
+/// is additive.
+pub(crate) fn from_call(
+    action: &str,
+    args: &Map<String, Value>,
+) -> Result<LifecycleAction, String> {
+    let string = |param: &str| match args.get(param) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(_) => Err(format!("{action}: parameter {param} must be a string")),
+        None => Err(format!("{action}: parameter {param} is required")),
     };
-    let mut actions = Vec::new();
-    for key in ACTION_ORDER {
-        // Every lifecycle key is declared repeatable, so afkd always sends an array; a
-        // lone value is read as a one-element one rather than refused.
-        let entries = match block.get(key) {
-            None => continue,
-            Some(Value::Array(entries)) => entries.as_slice(),
-            Some(entry) => std::slice::from_ref(entry),
-        };
-        for entry in entries {
-            actions.push(match key {
-                "assign_me" => LifecycleAction::AssignMe,
-                "unassign" => LifecycleAction::Unassign,
-                "close" => LifecycleAction::Close,
-                "label_add" => LifecycleAction::LabelAdd(label_name(entry, key)?),
-                "label_remove" => LifecycleAction::LabelRemove(label_name(entry, key)?),
-                _ => LifecycleAction::Comment(comment_text(entry, run_refs_allowed)?),
-            });
-        }
-    }
-    Ok(actions)
-}
-
-/// Read a `label_add`/`label_remove` entry's value as the label name, or fault when it
-/// names none — a bare flag, or the folded `label_add "a" "b"` form.
-fn label_name(entry: &Value, key: &str) -> Result<String, SettingsError> {
-    match inline(entry) {
-        Some(Value::String(name)) => Ok(name.clone()),
-        _ => Err(SettingsError::new(
-            key,
-            format!("`{key}` expects a label name"),
-        )),
-    }
-}
-
-/// Read a `comment` entry's value as the comment text, checked for `@{run:…}` legality
-/// at this moment. An empty string is accepted (the API rejects an empty body — not our
-/// business).
-fn comment_text(entry: &Value, run_refs_allowed: bool) -> Result<String, SettingsError> {
-    let Some(Value::String(text)) = inline(entry) else {
-        return Err(SettingsError::new("comment", "`comment` expects a comment"));
-    };
-    run_ref::check(text, run_refs_allowed)
-        .map_err(|fault| SettingsError::new("comment", run_ref_problem(fault)))?;
-    Ok(text.clone())
-}
-
-/// Word a [`RunRefFault`] into a `comment` fault, in afkd's own sentence.
-fn run_ref_problem(fault: RunRefFault) -> String {
-    match fault {
-        RunRefFault::ReservedContext { key } => {
-            format!("`@{{run:{key}}}` references the run's facts, but no run happens at claim time")
-        }
-        RunRefFault::UnknownKey { key } => {
-            format!(
-                "unknown run fact `{key}` (valid: {})",
-                run_ref::KEYS.join(", ")
-            )
-        }
-    }
+    Ok(match action {
+        "assign_me" => LifecycleAction::AssignMe,
+        "unassign" => LifecycleAction::Unassign,
+        "label_add" => LifecycleAction::LabelAdd(string("label")?),
+        "label_remove" => LifecycleAction::LabelRemove(string("label")?),
+        "close" => LifecycleAction::Close,
+        "comment" => LifecycleAction::Comment(string("text")?),
+        _ => return Err(format!("no action `{action}`")),
+    })
 }
 
 #[cfg(test)]
@@ -136,157 +70,98 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn parse(block: Value, run_refs_allowed: bool) -> Result<Vec<LifecycleAction>, SettingsError> {
-        parse_block(Some(&block), run_refs_allowed)
+    fn call(action: &str, args: Value) -> Result<LifecycleAction, String> {
+        from_call(action, args.as_object().expect("an args object"))
     }
 
+    /// Every action in [`ACTIONS`] decodes from the arguments afkd binds for it, each
+    /// label and text byte for byte: a slashed emoji label, and a multi-line markdown
+    /// comment carrying CJK and a literal `#{run.x}` that afkd did not interpolate.
     #[test]
-    fn a_lowered_block_parses_with_its_label_names_and_texts() {
-        // Slashed and non-ASCII label names, a repeated key, an empty comment, and a
-        // multi-line markdown comment with wide glyphs and a run reference — carried
-        // through byte for byte.
-        let markdown =
-            "## 完了 ✅\n\n- duration: @{run:duration}\n- cost: @{run:cost}\n\nsee the run log.";
+    fn every_action_decodes_from_its_bound_arguments() {
+        let markdown = "## 完了 ✅\n\n- took 3m\n- log: #{run.x}\n\nsee the run log.";
+        let decoded: Vec<LifecycleAction> = [
+            ("assign_me", json!({})),
+            ("unassign", json!({})),
+            ("label_add", json!({"label": "afkd::reviewed ✅"})),
+            ("label_remove", json!({"label": "afkd::claimed"})),
+            ("close", json!({})),
+            ("comment", json!({"text": markdown})),
+        ]
+        .into_iter()
+        .map(|(action, args)| call(action, args).expect(action))
+        .collect();
         assert_eq!(
-            parse(
-                json!({
-                    "label_add": ["shipped", "reviewed ✅"],
-                    "comment": [markdown, ""],
-                    "close": [true],
-                }),
-                true
-            )
-            .expect("valid"),
-            vec![
-                LifecycleAction::LabelAdd("shipped".into()),
-                LifecycleAction::LabelAdd("reviewed ✅".into()),
+            decoded,
+            [
+                LifecycleAction::AssignMe,
+                LifecycleAction::Unassign,
+                LifecycleAction::LabelAdd("afkd::reviewed ✅".into()),
+                LifecycleAction::LabelRemove("afkd::claimed".into()),
+                LifecycleAction::Close,
                 LifecycleAction::Comment(markdown.into()),
-                LifecycleAction::Comment(String::new()),
-                LifecycleAction::Close,
             ]
         );
-        // The zero-output shapes: an empty block, an absent one, a bare `on_done` flag.
-        assert_eq!(parse(json!({}), true).expect("valid"), vec![]);
-        assert_eq!(parse_block(None, false).expect("valid"), vec![]);
-        assert_eq!(parse(json!(true), false).expect("valid"), vec![]);
+        assert_eq!(decoded.len(), ACTIONS.len());
     }
 
-    /// The order the wire cannot carry is made canonical: however the object's keys
-    /// arrive (serde_json orders them alphabetically), all six verbs run in
-    /// [`ACTION_ORDER`], and two of each run in the order they were written.
+    /// An empty comment is a comment (the forge refusing an empty body is not ours to
+    /// pre-empt), and an argument the action has no parameter for is ignored.
     #[test]
-    fn the_action_order_is_canonical_and_keeps_source_order_within_a_verb() {
-        let block = json!({
-            "unassign": [true, true],
-            "label_add": ["b-second", "a-first"],
-            "close": [true, true],
-            "comment": ["två", "一"],
-            "label_remove": ["z", "y"],
-            "assign_me": [true, true],
-        });
+    fn an_empty_comment_decodes_and_extra_args_are_ignored() {
         assert_eq!(
-            parse(block, true).expect("valid"),
-            vec![
-                LifecycleAction::AssignMe,
-                LifecycleAction::AssignMe,
-                LifecycleAction::LabelRemove("z".into()),
-                LifecycleAction::LabelRemove("y".into()),
-                LifecycleAction::LabelAdd("b-second".into()),
-                LifecycleAction::LabelAdd("a-first".into()),
-                LifecycleAction::Comment("två".into()),
-                LifecycleAction::Comment("一".into()),
-                LifecycleAction::Unassign,
-                LifecycleAction::Unassign,
-                LifecycleAction::Close,
-                LifecycleAction::Close,
-            ]
+            call("comment", json!({"text": ""})),
+            Ok(LifecycleAction::Comment(String::new()))
         );
-        assert_eq!(ACTION_ORDER.len(), LIFECYCLE_KEYS.len());
-        assert!(ACTION_ORDER.iter().all(|k| LIFECYCLE_KEYS.contains(k)));
+        assert_eq!(
+            call("close", json!({"label": "afkd::claimed"})),
+            Ok(LifecycleAction::Close)
+        );
+        assert_eq!(
+            call("label_add", json!({"label": "shipped", "later": 1})),
+            Ok(LifecycleAction::LabelAdd("shipped".into()))
+        );
     }
 
-    /// Every block the operator reference documents, lowered exactly as afkd lowers it,
-    /// runs in the order it is written in.
+    /// Each shape afkd would never bind is refused with a sentence naming the action and
+    /// the parameter: an unknown action, a missing parameter, and one of the wrong type.
     #[test]
-    fn every_documented_block_runs_in_its_written_order() {
-        for (block, written) in [
+    fn a_call_afkd_would_not_bind_is_refused_by_name() {
+        for (action, args, problem) in [
+            ("reopen", json!({}), "no action `reopen`"),
+            ("", json!({}), "no action ``"),
             (
-                json!({"assign_me": [true], "label_add": ["afkd::working"]}),
-                vec![
-                    LifecycleAction::AssignMe,
-                    LifecycleAction::LabelAdd("afkd::working".into()),
-                ],
+                "label_add",
+                json!({}),
+                "label_add: parameter label is required",
             ),
             (
-                json!({"label_remove": ["afkd::working"], "close": [true]}),
-                vec![
-                    LifecycleAction::LabelRemove("afkd::working".into()),
-                    LifecycleAction::Close,
-                ],
+                "label_add",
+                json!({"label": ["a", "b"]}),
+                "label_add: parameter label must be a string",
             ),
             (
-                json!({"label_remove": ["afkd::working"], "unassign": [true]}),
-                vec![
-                    LifecycleAction::LabelRemove("afkd::working".into()),
-                    LifecycleAction::Unassign,
-                ],
+                "label_remove",
+                json!({"name": "afkd::claimed"}),
+                "label_remove: parameter label is required",
             ),
             (
-                json!({"comment": ["Fixed in @{run:duration} for @{run:cost}."], "close": [true]}),
-                vec![
-                    LifecycleAction::Comment("Fixed in @{run:duration} for @{run:cost}.".into()),
-                    LifecycleAction::Close,
-                ],
+                "label_remove",
+                json!({"label": null}),
+                "label_remove: parameter label must be a string",
+            ),
+            ("comment", json!({}), "comment: parameter text is required"),
+            (
+                "comment",
+                json!({"text": {"@value": "x"}}),
+                "comment: parameter text must be a string",
             ),
         ] {
-            assert_eq!(parse(block, true).expect("valid"), written);
+            assert_eq!(
+                call(action, args.clone()),
+                Err(problem.to_string()),
+                "{action} {args}"
+            );
         }
-    }
-
-    /// A label action that names no label — the bare flag, and the folded two-operand
-    /// form — faults with afkd's own sentence, on its own key.
-    #[test]
-    fn a_valueless_label_add_or_a_label_list_faults_with_the_in_tree_text() {
-        for (block, key) in [
-            (json!({"label_add": [true]}), "label_add"),
-            (json!({"label_remove": [["a", "b"]]}), "label_remove"),
-            (json!({"label_add": ["ok", {}]}), "label_add"),
-        ] {
-            let err = parse(block, true).unwrap_err();
-            assert_eq!(err.key, key);
-            assert_eq!(err.problem, format!("`{key}` expects a label name"));
-        }
-        let err = parse(json!({"comment": [true]}), true).unwrap_err();
-        assert_eq!(err.key, "comment");
-        assert_eq!(err.problem, "`comment` expects a comment");
-    }
-
-    #[test]
-    fn a_run_reference_is_checked_against_the_moment() {
-        // No run has happened at claim time; the fault names the key it saw.
-        let idiom = "log: .afkd/runs/@{service}/@{run:name}/run.log";
-        let err = parse(json!({"comment": [idiom]}), false).unwrap_err();
-        assert_eq!(err.key, "comment");
-        assert_eq!(
-            err.problem,
-            "`@{run:name}` references the run's facts, but no run happens at claim time"
-        );
-        assert_eq!(
-            parse(json!({"comment": [idiom]}), true).expect("valid"),
-            vec![LifecycleAction::Comment(idiom.into())]
-        );
-        // An unknown key is loud, naming the valid set; at claim time the moment rule
-        // preempts it.
-        let err = parse(json!({"comment": ["@{run:bogus}"]}), true).unwrap_err();
-        assert_eq!(
-            err.problem,
-            "unknown run fact `bogus` (valid: duration, cost, turns, name)"
-        );
-        let err = parse(json!({"comment": ["@{run:bogus}"]}), false).unwrap_err();
-        assert!(
-            err.problem.contains("no run happens at claim time"),
-            "{}",
-            err.problem
-        );
     }
 }

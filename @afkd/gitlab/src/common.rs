@@ -1,8 +1,8 @@
 //! Drive scaffolding both kinds are built from (ADR-0041): the env spellings, the call
-//! budget and the poll's scan budget, the credentials-env builder, the lifecycle-action executor over the
-//! [`GitlabClient`] seam, the **claim** — a `[afkd-claim]` marker note decided by
-//! [`crate::claim`]'s pure winner rule — and the two seams the rest is written against: the
-//! [`Clock`] the claim settles on and the [`Diag`] sink diagnostics go to.
+//! budget and the poll's scan budget, the credentials-env builder, the one-action executor
+//! behind `call` over the [`GitlabClient`] seam, the **claim** — a `[afkd-claim]` marker note
+//! decided by [`crate::claim`]'s pure winner rule — and the two seams the rest is written
+//! against: the [`Clock`] the claim settles on and the [`Diag`] sink diagnostics go to.
 //!
 //! Ported from afkd's `crates/gitlab/src/common.rs`. The claim is a marker, not an
 //! assignee: GitLab's assignee write is a **replace-set** `PUT` (`assignee_ids`), so an
@@ -10,7 +10,7 @@
 //! the item's append-only note log, settled, re-read, and won iff a pure function of that
 //! shared list names us. The assignee and the `afkd::claimed` label are **visible
 //! status**, written after the claim is decided; the label is also the re-pick gate, so
-//! the plugin — not a user's `on_claim` list — adds it.
+//! the plugin — not a user's `on_claim` hook — adds it.
 //!
 //! GitLab's identity is an id **and** a username: the assignee verbs write and compare
 //! numeric ids, while the marker's owner field and the note author compare usernames.
@@ -33,13 +33,12 @@ use crate::claim::{
 };
 use crate::client::{GitlabClient, GitlabError, ItemKind, Note, Project, User};
 use crate::lifecycle::LifecycleAction;
-use crate::run_ref;
 use crate::settings::GitlabConfig;
-use crate::wire::Facts;
 
-/// The in-progress label the claim adds (and `on_fail` removes by name). A fixed internal
-/// name, like the `[afkd-claim]` marker; GitLab labels are commonly scoped, so this uses
-/// the `::` convention. GitLab creates a label on first use, so the add always lands.
+/// The in-progress label the claim adds (and a hook's `label_remove` removes by name). A
+/// fixed internal name, like the `[afkd-claim]` marker; GitLab labels are commonly scoped,
+/// so this uses the `::` convention. GitLab creates a label on first use, so the add always
+/// lands.
 pub(crate) const CLAIMED_LABEL: &str = "afkd::claimed";
 
 /// Env var carrying the personal/project access token to the run.
@@ -197,26 +196,10 @@ pub(crate) fn claim_key_for(project: &Project, iid: u64, marker_id: u64) -> Stri
     claim_key(project.raw(), iid, marker_id)
 }
 
-/// Run a lifecycle moment's actions in order, stopping at the first failure, which is
-/// returned for the caller to log. `facts` are what the finishing run did (the pre-run
-/// `on_claim` passes [`Facts::none`]); a `comment` interpolates its `@{run:…}` references
-/// against them.
-pub(crate) fn apply_actions(
-    client: &dyn GitlabClient,
-    project: &Project,
-    kind: ItemKind,
-    iid: u64,
-    actions: &[LifecycleAction],
-    me: &User,
-    facts: &Facts,
-) -> Result<(), GitlabError> {
-    for action in actions {
-        do_action(client, project, kind, iid, action, me, facts)?;
-    }
-    Ok(())
-}
-
-/// Carry out one lifecycle action against an item.
+/// Carry out one lifecycle action against an item — what one `call` does.
+///
+/// A `Comment` posts its text as afkd sent it: any `#{…}` in it is afkd's, already
+/// interpolated.
 ///
 /// `LabelRemove` removes the single named label via `remove_labels` (**never** an
 /// all-clearing path — GitLab has none); no name→id lookup is needed. `Close` uses the
@@ -229,7 +212,6 @@ pub(crate) fn do_action(
     iid: u64,
     action: &LifecycleAction,
     me: &User,
-    facts: &Facts,
 ) -> Result<(), GitlabError> {
     match action {
         LifecycleAction::AssignMe => assign_me(client, project, kind, iid, me),
@@ -237,11 +219,7 @@ pub(crate) fn do_action(
         LifecycleAction::LabelAdd(name) => client.add_label(project, kind, iid, name),
         LifecycleAction::LabelRemove(name) => client.remove_label(project, kind, iid, name),
         LifecycleAction::Close => client.set_state(project, kind, iid, "close"),
-        // Interpolate `@{run:…}` against the finishing run's facts (ADR-0064). The
-        // settings reader has already proven every reference legal for this moment.
-        LifecycleAction::Comment(text) => client
-            .post_comment(project, kind, iid, &run_ref::substitute(text, facts))
-            .map(|_| ()),
+        LifecycleAction::Comment(text) => client.post_comment(project, kind, iid, text).map(|_| ()),
     }
 }
 
@@ -844,7 +822,6 @@ mod tests {
             7,
             &LifecycleAction::AssignMe,
             &me(),
-            &Facts::none(),
         )
         .unwrap();
         assert_eq!(c.assignee_ids(ItemKind::Issue, 7), vec![99, 1]);
@@ -857,7 +834,6 @@ mod tests {
             7,
             &LifecycleAction::AssignMe,
             &me(),
-            &Facts::none(),
         )
         .unwrap();
         assert_eq!(
@@ -881,7 +857,6 @@ mod tests {
             7,
             &LifecycleAction::Unassign,
             &me(),
-            &Facts::none(),
         )
         .unwrap();
         assert_eq!(c.assignee_ids(ItemKind::Issue, 7), vec![99]);
@@ -898,7 +873,6 @@ mod tests {
             7,
             &LifecycleAction::Unassign,
             &me(),
-            &Facts::none(),
         )
         .unwrap();
         assert_eq!(c.actions().len(), before, "nothing to take back");
@@ -1042,7 +1016,6 @@ mod tests {
             7,
             &LifecycleAction::LabelRemove("afkd::claimed".into()),
             &me(),
-            &Facts::none(),
         )
         .unwrap();
         assert!(c.actions().iter().any(|a| matches!(
@@ -1063,7 +1036,6 @@ mod tests {
             7,
             &LifecycleAction::Close,
             &me(),
-            &Facts::none(),
         )
         .unwrap();
         assert!(c.actions().iter().any(|a| matches!(
@@ -1083,7 +1055,6 @@ mod tests {
             3,
             &LifecycleAction::Comment("handled by afkd".into()),
             &me(),
-            &Facts::none(),
         )
         .unwrap();
         assert!(c.actions().iter().any(|a| matches!(
@@ -1093,69 +1064,27 @@ mod tests {
         )));
     }
 
+    /// The text is posted byte for byte: multi-line markdown, CJK, and a literal
+    /// `#{run.x}` or `@{run:cost}` — afkd interpolates a hook's comment before it sends
+    /// the `call`, so whatever reaches here is the text.
     #[test]
-    fn apply_actions_stops_at_the_first_failure() {
-        // A lifecycle moment's actions run in order; the first failure aborts the rest and
-        // is returned, so a half-applied moment is surfaced (not silently finished). Here
-        // the label add fails, so the following Close never runs.
-        let c = MockClient::new(1, "me");
-        c.add_issue(7, "T", "B", &["afkd::ready"]);
-        c.fail("add label");
-        let err = apply_actions(
-            &c,
-            &project(),
-            ItemKind::Issue,
-            7,
-            &[
-                LifecycleAction::LabelAdd("afkd::claimed".into()),
-                LifecycleAction::Close,
-            ],
-            &me(),
-            &Facts::none(),
-        )
-        .expect_err("the failing label add aborts the moment");
-        assert_eq!(err.stage(), "add label");
-        assert!(
-            !c.actions()
-                .iter()
-                .any(|a| matches!(a, Action::State { .. })),
-            "actions after the first failure are not applied"
-        );
-    }
-
-    #[test]
-    fn do_action_comment_substitutes_run_facts() {
-        // A `@{run:…}` comment posts the rendered facts at run end (ADR-0064), the fire's
-        // own run directory name among them.
+    fn do_action_comment_posts_the_text_byte_for_byte() {
         let c = MockClient::new(1, "me");
         c.add_mr(3, 1, "me", "topic");
-        let facts = Facts {
-            duration_ms: 5_000,
-            cost: 1.5,
-            turns: Some(3),
-            run_name: Some("260722-141802-mr-3-1".into()),
-        };
+        let text = "## 完了 ✅\n\n- took 3m 12s\n- literal: #{run.x} @{run:cost}\n\n```\nok\n```";
         do_action(
             &c,
             &project(),
             ItemKind::MergeRequest,
             3,
-            &LifecycleAction::Comment(
-                "done in @{run:duration} — @{run:cost}, @{run:turns} turns — \
-                 log: .afkd/runs/afkd::selfdev/@{run:name}/run.log"
-                    .into(),
-            ),
+            &LifecycleAction::Comment(text.into()),
             &me(),
-            &facts,
         )
         .unwrap();
         assert!(
-            c.actions().iter().any(|a| matches!(
-                a,
-                Action::Comment { kind: ItemKind::MergeRequest, body, .. }
-                    if body == "done in 5.00s — $1.50, 3 turns — \
-                                log: .afkd/runs/afkd::selfdev/260722-141802-mr-3-1/run.log"
-            )),
+            c.actions()
+                .iter()
+                .any(|a| matches!(a, Action::Comment { body, .. } if body == text)),
             "{:?}",
             c.actions()
         );
