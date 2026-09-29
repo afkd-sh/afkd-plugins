@@ -1,0 +1,27 @@
+name = "@afkd/web_top"
+version = "0.4.0"
+proto = 2
+shape = "companion"
+source = "https://github.com/afkd-sh/afkd-plugins"
+exec = "web_top"
+
+[[config.setting]]
+name = "listen"
+type = "string"
+default = "127.0.0.1:8771"
+
+# No default: the relay derives it from the socket afkd hands it, `<dir of socket>/runs`,
+# which a static default cannot say.
+[[config.setting]]
+name = "runs_dir"
+type = "string"
+
+[[config.setting]]
+name = "max_clients"
+type = "int"
+default = 8
+
+[[config.setting]]
+name = "log_lines"
+type = "int"
+default = 2000

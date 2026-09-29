@@ -1,4 +1,4 @@
-// The keymap transcription's own suite: `node --test @afkd/web-top/keymap.test.mjs`.
+// The keymap transcription's own suite: `node --test @afkd/web_top/keymap.test.mjs`.
 //
 // This is the pinning test the card asks for. `keymap.mjs` is a hand-written copy of afkd's
 // `DEFAULT_KEYS`, and a hand-written copy of a table in another language is exactly the kind of

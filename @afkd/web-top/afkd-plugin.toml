@@ -1,9 +1,0 @@
-name = "@afkd/web-top"
-version = "0.3.3"
-proto = 1
-shape = "companion"
-source = "https://github.com/afkd-sh/afkd-plugins"
-exec = "web-top"
-
-[config]
-settings = ["listen", "runs_dir", "max_clients", "log_lines"]

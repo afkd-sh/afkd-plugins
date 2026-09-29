@@ -1,6 +1,6 @@
 //! The harness the drift gate drives afkd through. Every spawn runs the `afkd` first on
 //! `PATH` ([`bin_path`]) with `$HOME` pinned to a temp dir, so nothing here builds afkd or
-//! reaches the operator's own daemon. It is the headless half of `@afkd/web-top`'s harness,
+//! reaches the operator's own daemon. It is the headless half of `@afkd/web_top`'s harness,
 //! copied rather than shared: this gate paints no screen, so it carries none of the PTY.
 //!
 //! The GitLab the plugin talks to is [`fake`], the stateful loopback fake the plugin's own

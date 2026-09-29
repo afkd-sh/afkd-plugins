@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cut @afkd/web-top's cell face and write it into the plugin's stylesheet.
+"""Cut @afkd/web_top's cell face and write it into the plugin's stylesheet.
 
 afkd top draws its symbols -- the status shapes, the slot bars, the box lines, the rail's
 marks -- in the terminal's own monospace face. A browser draws them in whatever face the
@@ -16,7 +16,7 @@ embedded font back and holds it to the layout.
 
 Run it from the repository root whenever the layout draws a new symbol:
 
-    python3 tools/@afkd/web-top/cell-face.py [DEJAVU_DIR]
+    python3 tools/@afkd/web_top/cell-face.py [DEJAVU_DIR]
 
 It needs fontTools and DejaVu's TTFs (`/usr/share/fonts/truetype/dejavu` by default). The page
 and its relay need neither.
@@ -36,7 +36,7 @@ from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTFont
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
-PLUGIN = ROOT / "@afkd" / "web-top"
+PLUGIN = ROOT / "@afkd" / "web_top"
 STYLESHEET = PLUGIN / "dashboard.css"
 FAMILY = "afkd cells"
 POSTSCRIPT = "afkdCells"

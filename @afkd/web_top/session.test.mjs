@@ -1,4 +1,4 @@
-// The session's own suite: `node --test @afkd/web-top/session.test.mjs`.
+// The session's own suite: `node --test @afkd/web_top/session.test.mjs`.
 //
 // Every board here is **folded from a recorded capture** under `fixtures/` at a fixed synthetic
 // clock — the rule `fixtures/README.md` states, and the reason a re-capture cannot quietly make

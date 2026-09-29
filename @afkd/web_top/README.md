@@ -1,4 +1,4 @@
-# `@afkd/web-top`
+# `@afkd/web_top`
 
 A **companion** plugin: a program the daemon runs alongside itself for as long as it runs.
 This one is a **relay** — `afkd top`'s wire, put in front of a browser. Every subscriber
@@ -22,45 +22,50 @@ setting exists because an operator with a private network and a reason may widen
 a decision, not a default. Put a reverse proxy that authenticates in front of it, or leave
 it on loopback and reach it through an SSH tunnel.
 
-## Install it, then name it
-
-Installing a companion does not start it; the config naming it does.
+## Install it, then configure it
 
 ```console
-$ afkd install @afkd/web-top
-Installed @afkd/web-top 0.3.3 (companion)
+$ afkd install @afkd/web_top
+Installed @afkd/web_top 0.4.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
-```conf
-plugin @afkd/web-top {
-  listen "127.0.0.1:8771"
-}
+Under a v2 config — a `main.afkd` — installing is what runs it: no config line names a
+companion. Its settings live beside its install directory, in
+`plugins/@afkd/web_top.afkd`:
+
+```text
+// ~/.config/afkd/plugins/@afkd/web_top.afkd
+listen "127.0.0.1:8771"
 ```
+
+With no file it runs on the defaults below. Under a v1 `afkd.conf`, the same keys go in a
+`plugin @afkd/web_top { … }` block, and that block is what starts it.
 
 The daemon spawns it, hands it the socket it just bound, and pumps its output into the
 daemon log under its own tag:
 
 ```text
-companion @afkd/web-top: started (pid=5467)
-companion @afkd/web-top: out (serving http://127.0.0.1:8771)
+companion @afkd/web_top: started (pid=5467)
+companion @afkd/web_top: out (serving http://127.0.0.1:8771)
 ```
 
-An empty block is legal and comes up on the defaults; a key the manifest does not declare
-fails `afkd validate` rather than being quietly ignored.
+An empty file or block is legal and comes up on the defaults; a key the manifest does not
+declare, or a value of the wrong type, fails `afkd validate` rather than being quietly
+ignored. A changed file restarts the relay on the next reload, with the new settings.
 
 ## Settings
 
-| Key | Default | What it does |
-|---|---|---|
-| `listen` | `"127.0.0.1:8771"` | the IPv4 address to serve on, as `"host[:port]"` — the shape afkd's own `bind { listen … }` takes. A bare host keeps port `8771`, and `:0` binds an ephemeral port and prints the one it got. Read the section above before you widen the host |
-| `max_clients` | `8` | how many subscribers may be attached at once; the next one is a `503` |
-| `runs_dir` | `<state dir>/runs` | where the daemon keeps its run corpus. Read off disk on every subscriber's attach and served ahead of that subscriber's live frames, so a run view opened after a fire is not empty — see *The disk backfill*. Set it when afkd's own top-level `runs_dir` moves the corpus off the default |
-| `log_lines` | `2000` | how many log lines the page keeps per service. The terminal dashboard's own `LOG_RING_CAPACITY`, so a browser and a terminal watching one daemon scroll back the same distance. Carried to the page on its `stream` event — the ring it bounds lives in the browser, not here |
+| Key | Type | Default | What it does |
+|---|---|---|---|
+| `listen` | string | `"127.0.0.1:8771"` | the IPv4 address to serve on, as `"host[:port]"` — the shape afkd's own `bind { listen … }` takes. A bare host keeps port `8771`, and `:0` binds an ephemeral port and prints the one it got. Read the section above before you widen the host |
+| `max_clients` | int | `8` | how many subscribers may be attached at once; the next one is a `503` |
+| `runs_dir` | string | `<state dir>/runs` | where the daemon keeps its run corpus. Read off disk on every subscriber's attach and served ahead of that subscriber's live frames, so a run view opened after a fire is not empty — see *The disk backfill*. Set it when afkd's own top-level `runs_dir` moves the corpus off the default |
+| `log_lines` | int | `2000` | how many log lines the page keeps per service. The terminal dashboard's own `LOG_RING_CAPACITY`, so a browser and a terminal watching one daemon scroll back the same distance. Carried to the page on its `stream` event — the ring it bounds lives in the browser, not here |
 
-Every value arrives as a string — afkd lowers a scalar to a JSON string and a bare key with
-no value to `true` — so the program coerces and range-checks in one place and says so in a
-sentence when it fails.
+Under a v2 config every value arrives typed by the manifest — an int as a JSON number, with
+the defaults filled in — and under a v1 block as a string; the program coerces and
+range-checks either one in one place and says so in a sentence when it fails.
 
 ## Routes
 
@@ -82,7 +87,7 @@ The program takes one argument form of its own, for asking what a tab opening *n
 served out of the run corpus:
 
 ```console
-$ web-top --backfill <runs_dir> <service> busy|idle
+$ web_top --backfill <runs_dir> <service> busy|idle
 ```
 
 It prints the burst as JSONL — one `backfill` / `backfill_log` frame per line — through the
@@ -153,7 +158,7 @@ Two properties it holds on purpose:
 
 Its suite is `fold.test.mjs`, driven by JSONL captured off a real daemon under
 `fixtures/` — see [`fixtures/README.md`](fixtures/README.md) for how each file was
-recorded and what it holds. Run it with `node --test @afkd/web-top/fold.test.mjs`;
+recorded and what it holds. Run it with `node --test @afkd/web_top/fold.test.mjs`;
 the drift gate's `cargo test` runs it too ([against a real afkd](#against-a-real-afkd)), and
 skips loudly on a host with no `node`.
 
@@ -198,7 +203,7 @@ the box-drawing, block and geometric-shape blocks whole, cut out of DejaVu Sans 
 renamed as its license asks. It heads the font stack but claims no text, so the visitor's own
 monospace face still draws every letter and sets the rows' metrics. `face.test.mjs` reads the
 embedded font back and holds it to the layout; after the layout draws a new symbol, recut it
-with `python3 tools/@afkd/web-top/cell-face.py` (fontTools, and DejaVu's TTFs) from the
+with `python3 tools/@afkd/web_top/cell-face.py` (fontTools, and DejaVu's TTFs) from the
 repository root. Anything still left to a visitor's face — an emoji, a CJK name — is measured
 once, then centred on its cells at its own size and shrunk only when its ink is wider than they
 are.
@@ -209,7 +214,7 @@ each cell says it in, and its weight-or-band, one letter per cell so the planes 
 text in any terminal. A cell's look is half its meaning here (the gated footer hints, the
 trend lanes' recession, the bold column header, the selection bar), and a text-only golden
 would pass over a page painted flat. They are regenerated deliberately — `node
-@afkd/web-top/layout.test.mjs --write-goldens` — never by the test run.
+@afkd/web_top/layout.test.mjs --write-goldens` — never by the test run.
 `paint.test.mjs` and `input.test.mjs` cover the two DOM-touching modules against a **stub**
 DOM: a painter that makes no layout decision should need no layout engine to test, and a key
 seam that captures rather than steals should need no browser to prove it — the stub is the
@@ -393,7 +398,7 @@ Whether it *says* so depends on which kind of "cannot be read" it is:
 
 - the block **named** a `runs_dir` that is not there, or the base is there and this process may
   not read it — a mistake either way. The relay writes one sentence to stderr at start (which
-  reaches the daemon log under `companion @afkd/web-top: err`) and sends each subscriber a
+  reaches the daemon log under `companion @afkd/web_top: err`) and sends each subscriber a
   `meta.error` naming the path it tried, which the page flashes;
 - nobody named it and the default `<state dir>/runs` is simply **not there yet** — the state of
   every install before its first fire. Silent, on both channels. `afkd top` reads the same disk
@@ -403,7 +408,7 @@ Whether it *says* so depends on which kind of "cannot be read" it is:
 ## Against a real afkd
 
 Everything above is held to afkd by the drift gate beside this directory, in
-[`drift/@afkd/web-top`](../../drift/@afkd/web-top). It installs this tree into a throwaway
+[`drift/@afkd/web_top`](../../drift/@afkd/web_top). It installs this tree into a throwaway
 `$HOME`, runs it under a real daemon, and diffs the page's screen against the one `afkd top`
 paints on a PTY of the same size, cell for cell. Run it from the repository root:
 

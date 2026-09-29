@@ -250,7 +250,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-top-drift"
+name = "web_top-drift"
 version = "0.0.0"
 dependencies = [
  "libc",

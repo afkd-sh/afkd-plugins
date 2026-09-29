@@ -3,7 +3,7 @@
 The plugins afkd provides. One directory per plugin, named for the plugin
 itself, holding that plugin's own `afkd-plugin.toml` at its root.
 
-- [`@afkd/web-top`](@afkd/web-top) — a companion that relays `afkd top`'s
+- [`@afkd/web_top`](@afkd/web_top) — a companion that relays `afkd top`'s
   control wire to a browser.
 - [`@afkd/gitea`](@afkd/gitea) — Gitea issues and pull-request reviews as afkd
   triggers, with the skill an agent answers them through.
@@ -36,10 +36,10 @@ Plugins here are published as per-plugin release tarballs and listed in afkd's
 plugin index, so a name is enough:
 
 ```
-afkd install @afkd/web-top
+afkd install @afkd/web_top
 ```
 
-`afkd update @afkd/web-top` picks up the next release, provided it raises the
+`afkd update @afkd/web_top` picks up the next release, provided it raises the
 `version` in the plugin's `afkd-plugin.toml`: afkd decides that an install is
 already current on the version alone. Each plugin's release tag is fixed and
 moves onto the newest release, because `afkd update` re-fetches the source URL

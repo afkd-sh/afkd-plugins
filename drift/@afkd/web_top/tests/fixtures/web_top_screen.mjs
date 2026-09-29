@@ -1,4 +1,4 @@
-// A headless driver for `@afkd/web-top`'s renderer: it folds a captured JSONL of control-wire
+// A headless driver for `@afkd/web_top`'s renderer: it folds a captured JSONL of control-wire
 // frames into a board, replays a few chords through the page's own session seam, lays that
 // board out on a fixed `cols`×`rows` grid, and prints the screen one field per **column**.
 //

@@ -1,10 +1,10 @@
-// The cell face's own suite: `node --test @afkd/web-top/face.test.mjs`.
+// The cell face's own suite: `node --test @afkd/web_top/face.test.mjs`.
 //
 // afkd top draws its symbols in the terminal's own monospace face. A browser draws them in
 // whatever face the visitor happens to have them in, and a fallback face sizes and places a
 // shape for text rather than for a cell: one visitor's `▷` was a full em wide, another's `▯` a
 // sliver. So the page carries its own face for them, cut out of DejaVu Sans Mono and embedded
-// in `dashboard.css` by `tools/@afkd/web-top/cell-face.py`. This suite holds that embedded
+// in `dashboard.css` by `tools/@afkd/web_top/cell-face.py`. This suite holds that embedded
 // face to the layout it serves, by reading the font itself rather than the script's word.
 
 import assert from "node:assert/strict";
@@ -47,7 +47,7 @@ function faces() {
       file: Buffer.from(body.match(/src: url\(data:font\/woff;base64,([A-Za-z0-9+/=]+)\) format\("woff"\);/)?.[1] ?? "", "base64"),
       range: rangeOf(body.match(/unicode-range: ([^;]+);/)?.[1] ?? ""),
     }));
-  assert.ok(found.length > 0, `dashboard.css embeds no "${FAMILY}" face; run tools/@afkd/web-top/cell-face.py`);
+  assert.ok(found.length > 0, `dashboard.css embeds no "${FAMILY}" face; run tools/@afkd/web_top/cell-face.py`);
   return found;
 }
 
@@ -135,7 +135,7 @@ test("the cell face draws every symbol the layout draws", () => {
     assert.deepEqual(
       hex(missing),
       hex(UNCOVERED.keys()),
-      `the ${face.weight} face covers and claims every symbol but the ones no DejaVu face has; rerun tools/@afkd/web-top/cell-face.py`,
+      `the ${face.weight} face covers and claims every symbol but the ones no DejaVu face has; rerun tools/@afkd/web_top/cell-face.py`,
     );
     const unmapped = new Set([...face.range].filter((cp) => !mapped.has(cp)));
     assert.equal(hex(unmapped), "", `the ${face.weight} face claims only what it draws`);

@@ -1,4 +1,4 @@
-// The layout's own suite: `node --test @afkd/web-top/layout.test.mjs`.
+// The layout's own suite: `node --test @afkd/web_top/layout.test.mjs`.
 //
 // Every board here is **folded from a recorded capture** under `fixtures/` at a fixed
 // synthetic clock — the rule `fixtures/README.md` states, and the reason a re-capture cannot

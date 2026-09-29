@@ -1,10 +1,10 @@
-//! The gate that holds the **shipped `@afkd/web-top` companion** — the relay that puts the
+//! The gate that holds the **shipped `@afkd/web_top` companion** — the relay that puts the
 //! daemon's control wire in front of a browser — to a real afkd: the `afkd` first on `PATH`,
 //! the installed one and never a build, since a plugin is checked against the afkd it will
 //! meet ([`bin_path`]). The legs that read afkd's own source as well want an afkd checkout
 //! named by `AFKD_SRC` ([`afkd_src`]), and skip loudly without one.
 //!
-//! web-top folds **nothing**, and that is the shape the suite is built around.
+//! web_top folds **nothing**, and that is the shape the suite is built around.
 //! Every subscriber opens its own attach, every frame that attach reads is forwarded
 //! verbatim, and the commands a page posts are keyed back to that subscriber's own socket.
 //! So the claims here are about *per-subscriber* behaviour — two snapshots rather than one
@@ -47,13 +47,13 @@ use tempfile::TempDir;
 // --- the shipped tree --------------------------------------------------------------
 
 /// The relay's name, as the manifest spells it and every verb reads it back.
-const NAME: &str = "@afkd/web-top";
+const NAME: &str = "@afkd/web_top";
 
 /// The relay's root — the directory `afkd install` takes, whose path this crate's own
 /// mirrors under `drift/`. Canonicalized, because the install report echoes the resolved path
 /// and the test compares against it.
 fn plugin_root() -> PathBuf {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../@afkd/web-top");
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../@afkd/web_top");
     std::fs::canonicalize(root).expect("the shipped relay resolves")
 }
 
@@ -519,7 +519,7 @@ impl Stub {
         let stderr = std::fs::File::create(dir.path().join("stderr.log")).expect("stderr log");
         let mut cmd = Command::new(python3_path());
         clear_layout_env(&mut cmd)
-            .arg(plugin_root().join("web-top"))
+            .arg(plugin_root().join("web_top"))
             .current_dir(plugin_root())
             .env("HOME", dir.path())
             .stdin(Stdio::piped())
@@ -552,12 +552,13 @@ impl Stub {
         stub
     }
 
-    /// The ordinary `hello`: proto 1, this plugin's name, the stub's socket, `settings`.
+    /// The ordinary `hello`: the manifest's proto 2, this plugin's name, the stub's socket,
+    /// `settings`.
     fn spawn_with(settings: serde_json::Value) -> Stub {
         Stub::spawn(|socket| {
             serde_json::json!({
                 "call": "hello",
-                "proto": 1,
+                "proto": 2,
                 "name": NAME,
                 "socket": socket,
                 "settings": settings,
@@ -589,7 +590,7 @@ impl Stub {
             .unwrap_or_else(|e| panic!("the reply is not JSON ({e}): {line}"));
         assert_eq!(
             reply,
-            serde_json::json!({"ok": true, "proto": 1}),
+            serde_json::json!({"ok": true, "proto": 2}),
             "the `hello` reply is the one the protocol fixes"
         );
     }
@@ -744,7 +745,7 @@ fn the_verbs_accept_the_shipped_manifest() {
 
     // The tree is placed whole, two levels down, with the program still executable — and
     // there is no build step, so what is placed is what runs.
-    let placed = plugins_root(dir.path()).join("@afkd").join("web-top");
+    let placed = plugins_root(dir.path()).join("@afkd").join("web_top");
     for leaf in [
         "afkd-plugin.toml",
         "README.md",
@@ -766,7 +767,7 @@ fn the_verbs_accept_the_shipped_manifest() {
     ] {
         assert!(placed.join(leaf).is_file(), "the install placed {leaf}");
     }
-    let exec = placed.join("web-top");
+    let exec = placed.join("web_top");
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(&exec)
         .expect("stat the program")
@@ -818,28 +819,359 @@ fn the_verbs_accept_the_shipped_manifest() {
     let manifest = placed.join("afkd-plugin.toml");
     let skewed = std::fs::read_to_string(&manifest)
         .expect("the placed manifest")
-        .replace("proto = 1", "proto = 99");
+        .replace("proto = 2", "proto = 99");
     std::fs::write(&manifest, skewed).expect("skew the placed manifest");
     let broken = run_subcommand_args(dir.path(), &["doctor"]);
     let report = String::from_utf8_lossy(&broken.stdout).into_owned()
         + &String::from_utf8_lossy(&broken.stderr);
     assert_eq!(broken.status.code(), Some(1), "a skewed manifest is a red");
     assert!(
-        report.contains(&manifest.display().to_string()) && report.contains("speaks 1"),
+        report.contains(&manifest.display().to_string()) && report.contains("speaks 1 and 2"),
         "…naming the manifest and both versions: {report}"
+    );
+}
+
+// --- manifest v2 -------------------------------------------------------------------------
+
+/// A v2 `main.afkd` with two services and **no line about the companion**: under a v2
+/// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
+const V2_MAIN: &str = "package main\n\n\
+     tick :: service(interval) {\n  every 1h\n\n  on_run {\n    $ true\n  }\n}\n\n\
+     hello :: service(manual) {\n  on_run {\n    $ echo ライン one\n  }\n}\n";
+
+/// A home whose config directory holds [`V2_MAIN`] and nothing else — no `afkd.conf` for the
+/// daemon to read instead.
+fn v2_home() -> TempDir {
+    let home = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(config_dir(home.path())).expect("mk the config dir");
+    std::fs::write(main_afkd(home.path()), V2_MAIN).expect("write main.afkd");
+    home
+}
+
+/// `<config dir>/plugins/@afkd/web_top.afkd` — the relay's settings under a v2 config,
+/// beside its install directory `plugins/@afkd/web_top/`.
+fn settings_file(home: &Path) -> PathBuf {
+    plugins_root(home).join(format!("{NAME}.afkd"))
+}
+
+/// Write the relay's v2 settings file.
+fn write_settings_file(home: &Path, body: &str) {
+    let path = settings_file(home);
+    std::fs::create_dir_all(path.parent().expect("has parent")).expect("mk the scope dir");
+    std::fs::write(path, body).expect("write the settings file");
+}
+
+/// `n` or more serving lines in `home`'s daemon log, the last one's port — a restarted relay
+/// announces again, and only the newest line is the address it serves now.
+fn nth_relay_port(home: &Path, n: usize) -> u16 {
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let log = std::fs::read_to_string(daemon_log(home)).unwrap_or_default();
+        if log.matches("serving http://").count() >= n {
+            return serving_port(&log)
+                .unwrap_or_else(|| panic!("no port on the serving line:\n{log}"));
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the relay never announced a port {n} time(s):\n{log}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn the_daemon_runs_the_relay_from_its_v2_settings_file_and_restarts_it_on_reload() {
+    // The card's first criterion against a real daemon: under a v2 config, installing is
+    // what runs the relay, and `plugins/@afkd/web_top.afkd` is what configures it. The port
+    // is `:0`, so the page is only reachable at all if the file's `listen` crossed; the two
+    // ints are left out, so the `log_lines` the page is told is the default; and `runs_dir`
+    // names an absolute path that is not
+    // there, with a wide-glyph segment and a space in it, which the relay has to quote back
+    // byte for byte in its sentence and in the refusal every tab is sent.
+    if !python3_available() {
+        eprintln!("skipping: python3 is not on PATH, and the relay is python");
+        return;
+    }
+    let home = v2_home();
+    let (out, err, code) = install_relay(home.path());
+    assert_eq!(code, Some(0), "installing the shipped relay: {out}{err}");
+    let missing = home.path().join("ラン runs").display().to_string();
+    write_settings_file(
+        home.path(),
+        &format!(
+            "// the dashboard, on an ephemeral port\nlisten \"127.0.0.1:0\"\nruns_dir \"{missing}\"\n"
+        ),
+    );
+
+    let validated = run_subcommand_args(home.path(), &["validate"]);
+    assert_eq!(
+        validated.status.code(),
+        Some(0),
+        "the settings file validates against the typed `[config]`: {}{}",
+        String::from_utf8_lossy(&validated.stdout),
+        String::from_utf8_lossy(&validated.stderr)
+    );
+
+    let daemon = spawn_headless_streaming(home.path(), &[]);
+    let port = nth_relay_port(home.path(), 1);
+    assert_ne!(
+        port, 8771,
+        "the relay serves where its file said, not on its default"
+    );
+    let (status, _, page) = get(port, "/");
+    assert_eq!(status, 200, "GET / on the file's address: {page}");
+
+    let mut sse = Sse::admitted(port);
+    let (event, stream) = sse.named(BUDGET);
+    assert_eq!(event, "stream", "a stream opens with its own id: {stream}");
+    assert_eq!(
+        stream["log_lines"],
+        serde_json::json!(2000),
+        "the manifest's `log_lines` default reaches the page as a number: {stream}"
+    );
+    let (event, welcome) = sse.named(BUDGET);
+    assert_eq!(event, "welcome", "…then the daemon's welcome: {welcome}");
+    let mut raw = Vec::new();
+    let told = sse.collect_frames(BUDGET, &mut raw, |f| f["meta"] == "error");
+    assert!(told, "the tab was told its runs_dir is not there: {raw:?}");
+    let frames: Vec<serde_json::Value> = raw
+        .iter()
+        .map(|line| serde_json::from_str(line).expect("a forwarded frame is JSON"))
+        .collect();
+    assert_eq!(frames[0]["meta"], "snapshot", "the tab is seeded first");
+    let names: Vec<&str> = frames[0]["services"]
+        .as_array()
+        .expect("the snapshot carries a services array")
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert_eq!(names, ["tick", "hello"], "the v2 config's two services");
+    let message = frames
+        .last()
+        .and_then(|f| f["message"].as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains(&missing) && message.contains(NAME),
+        "the refusal quotes the file's runs_dir verbatim: {message}"
+    );
+    drop(sse);
+
+    let log = wait_for_daemon_log(home.path(), &format!("companion {NAME}: err"), BUDGET);
+    assert!(
+        log.contains(&format!("companion {NAME}: started")),
+        "installing ran the relay with no config line naming it:\n{log}"
+    );
+    let sentence = log
+        .lines()
+        .find(|l| l.contains(&format!("companion {NAME}: err")))
+        .unwrap_or_else(|| panic!("no runs_dir sentence in the daemon log:\n{log}"));
+    assert!(
+        sentence.contains(&missing),
+        "the sentence names the file's runs_dir: {sentence}"
+    );
+
+    // The reload. A changed file restarts the relay, which comes back on a new address with
+    // the two ints the file now carries — read as ints, so `max_clients 1` really is a
+    // ceiling of one.
+    write_settings_file(
+        home.path(),
+        "listen \"127.0.0.1:0\"\nmax_clients 1\nlog_lines 500\n",
+    );
+    daemon.signal(libc::SIGHUP);
+    let restarted = format!("companion `{NAME}` restarted (settings changed)");
+    let log = wait_for_daemon_log(home.path(), &restarted, BUDGET);
+    assert!(log.contains(&restarted), "the reload restarted it:\n{log}");
+    let port = nth_relay_port(home.path(), 2);
+
+    let mut first = Sse::admitted(port);
+    let (event, stream) = first.named(BUDGET);
+    assert_eq!(event, "stream", "{stream}");
+    assert_eq!(
+        stream["log_lines"],
+        serde_json::json!(500),
+        "the file's new `log_lines` reaches the page: {stream}"
+    );
+    let (status, body) = refused_stream(port);
+    assert_eq!(
+        status, 503,
+        "`max_clients 1` admits one subscriber and refuses the next: {body}"
+    );
+    drop(first);
+
+    daemon.signal(libc::SIGTERM);
+    let out = daemon.reap(BUDGET);
+    assert_eq!(out.status.code(), Some(0), "a clean drain");
+    let log = std::fs::read_to_string(daemon_log(home.path())).expect("daemon log");
+    assert!(
+        log.contains(&format!("companion {NAME}: stopped (eof)")),
+        "…and it went on the EOF:\n{log}"
+    );
+}
+
+#[test]
+fn a_v2_settings_file_the_manifest_refuses_never_starts_the_relay() {
+    // The typed `[config]` is what afkd checks the file against: a key it does not declare
+    // and a value of the wrong type are each a `validate` refusal naming the file, so the
+    // relay is never started on either. Ungated: nothing here runs python.
+    let home = v2_home();
+    let (out, err, code) = install_relay(home.path());
+    assert_eq!(code, Some(0), "installing the shipped relay: {out}{err}");
+
+    for (body, needle) in [
+        ("lisen \"127.0.0.1:1\"\n", "did you mean \"listen\""),
+        ("max_clients \"eight\"\n", "expected int"),
+    ] {
+        write_settings_file(home.path(), body);
+        let refused = run_subcommand_args(home.path(), &["validate"]);
+        let report = String::from_utf8_lossy(&refused.stdout).into_owned()
+            + &String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(
+            refused.status.code(),
+            Some(1),
+            "{body:?} is refused: {report}"
+        );
+        assert!(
+            report.contains(&format!("plugins/{NAME}.afkd")) && report.contains(needle),
+            "{body:?}: the refusal names the file and says `{needle}`: {report}"
+        );
+    }
+}
+
+/// The shipped manifest's `[[config.setting]]` blocks, in order, each a map of its keys to
+/// their raw TOML values — read line-wise, like [`manifest_version`], so no TOML parser.
+fn manifest_settings() -> Vec<BTreeMap<String, String>> {
+    let manifest =
+        std::fs::read_to_string(plugin_root().join("afkd-plugin.toml")).expect("the manifest");
+    let mut settings: Vec<BTreeMap<String, String>> = Vec::new();
+    let mut inside = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = line == "[[config.setting]]";
+            if inside {
+                settings.push(BTreeMap::new());
+            }
+        } else if let (true, Some((key, value))) = (inside, line.split_once(" = ")) {
+            let block = settings.last_mut().expect("inside a block");
+            block.insert(key.to_string(), value.to_string());
+        }
+    }
+    settings
+}
+
+/// One `CONSTANT = value` line off the relay program, the value as written.
+fn program_constant(name: &str) -> String {
+    let program = std::fs::read_to_string(plugin_root().join("web_top")).expect("the program");
+    program
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name} = ")))
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| panic!("the program declares no {name}"))
+}
+
+#[test]
+fn the_manifest_is_proto_2_and_its_defaults_are_the_relays_own() {
+    // The defaults live in two places on purpose: the manifest, which afkd fills in under a
+    // v2 config, and the program, which a v1 block and a direct spawn fall back to. This is
+    // what keeps the two one number each.
+    let manifest =
+        std::fs::read_to_string(plugin_root().join("afkd-plugin.toml")).expect("the manifest");
+    assert!(
+        manifest.lines().any(|line| line == "proto = 2"),
+        "the manifest is proto 2:\n{manifest}"
+    );
+    assert!(
+        manifest.lines().any(|line| line == "shape = \"companion\""),
+        "…and a companion:\n{manifest}"
+    );
+    assert_eq!(
+        program_constant("PLUGIN_PROTO"),
+        "2",
+        "the program answers the `hello` in the manifest's proto"
+    );
+
+    let settings = manifest_settings();
+    let shape: Vec<(&str, &str)> = settings
+        .iter()
+        .map(|s| (s["name"].as_str(), s["type"].as_str()))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("\"listen\"", "\"string\""),
+            ("\"runs_dir\"", "\"string\""),
+            ("\"max_clients\"", "\"int\""),
+            ("\"log_lines\"", "\"int\""),
+        ],
+        "exactly the four settings, typed"
+    );
+    assert!(
+        settings.iter().all(|s| !s.contains_key("required")),
+        "none is required: the relay comes up on an empty file"
+    );
+    let default = |name: &str| {
+        settings
+            .iter()
+            .find(|s| s["name"] == format!("\"{name}\""))
+            .and_then(|s| s.get("default"))
+            .cloned()
+    };
+    assert_eq!(
+        default("runs_dir"),
+        None,
+        "runs_dir has no static default: the relay derives it from the socket it is handed"
+    );
+    let host = program_constant("DEFAULT_HOST");
+    let port = program_constant("DEFAULT_PORT");
+    assert_eq!(
+        default("listen"),
+        Some(format!("\"{}:{port}\"", host.trim_matches('"'))),
+        "listen's default is the program's host and port"
+    );
+    assert_eq!(
+        default("max_clients"),
+        Some(program_constant("DEFAULT_MAX_CLIENTS"))
+    );
+    assert_eq!(
+        default("log_lines"),
+        Some(program_constant("DEFAULT_LOG_LINES"))
+    );
+}
+
+#[test]
+fn a_typed_v2_hello_is_accepted_and_answered_in_proto_2() {
+    // What a v2 config hands the relay: every setting typed, the ints as JSON numbers, the
+    // defaults already filled in. It is taken as it is and answered in proto 2.
+    if !python3_available() {
+        eprintln!("skipping: python3 is not on PATH, and the relay is python");
+        return;
+    }
+    let stub = Stub::spawn_with(serde_json::json!({
+        "listen": "127.0.0.1:0",
+        "max_clients": 2,
+        "log_lines": 2000,
+    }));
+    stub.expect_hello_reply();
+    let port = stub.serving_port();
+    let (event, stream) = Sse::admitted(port).named(BUDGET);
+    assert_eq!(event, "stream", "{stream}");
+    assert_eq!(stream["log_lines"], serde_json::json!(2000), "{stream}");
+    assert!(
+        stub.stderr().is_empty(),
+        "a typed hello is not a fault: {}",
+        stub.stderr()
     );
 }
 
 // --- the published index ---------------------------------------------------------------
 
 /// The URL afkd's index lists the relay at — the release this repository's workflow cuts
-/// onto the fixed `web-top` tag.
+/// onto the fixed `web_top` tag.
 ///
 /// The tag is fixed on purpose: `afkd update` re-fetches the source it **recorded** at
 /// install time and never re-reads the index, so a moving tag behind one address is what
 /// lets an already-installed operator reach the next version at all.
 const RELEASE_URL: &str =
-    "https://github.com/afkd-sh/afkd-plugins/releases/download/web-top/afkd-web-top.tar.gz";
+    "https://github.com/afkd-sh/afkd-plugins/releases/download/web_top/afkd-web_top.tar.gz";
 
 /// The name the shipped manifest declares — **parsed**, like [`manifest_version`], so the
 /// index-key assertion below compares two files rather than one file and a literal.
@@ -876,7 +1208,7 @@ fn tar_available() -> bool {
 }
 
 /// Copy `src` onto `dst` recursively. `std::fs::copy` carries the source's mode on Unix, so
-/// `web-top`'s executable bit rides into the archive exactly as the workflow's `cp -a` does.
+/// `web_top`'s executable bit rides into the archive exactly as the workflow's `cp -a` does.
 fn copy_tree(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).expect("mk dst");
     for entry in std::fs::read_dir(src).expect("read src") {
@@ -892,13 +1224,13 @@ fn copy_tree(src: &Path, dst: &Path) {
 }
 
 /// Pack the **shipped** plugin tree the way `.github/workflows/release.yml` does: one
-/// top-level `afkd-web-top/` directory and nothing else, mode bits carried.
+/// top-level `afkd-web_top/` directory and nothing else, mode bits carried.
 ///
 /// `version` rewrites the packed manifest's version line, which is how the update leg gets
 /// a genuinely newer artifact at the same address without a second server.
 fn pack_release(at: &Path, version: Option<&str>) -> Vec<u8> {
     let staged = at.join(format!("pack-{}", version.unwrap_or("shipped")));
-    let wrapper = staged.join("afkd-web-top");
+    let wrapper = staged.join("afkd-web_top");
     copy_tree(&plugin_root(), &wrapper);
     if let Some(version) = version {
         let manifest = wrapper.join("afkd-plugin.toml");
@@ -912,11 +1244,11 @@ fn pack_release(at: &Path, version: Option<&str>) -> Vec<u8> {
     }
     let packed = Command::new("tar")
         .current_dir(&staged)
-        .args(["czf", "afkd-web-top.tar.gz", "afkd-web-top"])
+        .args(["czf", "afkd-web_top.tar.gz", "afkd-web_top"])
         .status()
         .expect("run tar");
     assert!(packed.success(), "tar refused to pack the shipped tree");
-    std::fs::read(staged.join("afkd-web-top.tar.gz")).expect("read the archive")
+    std::fs::read(staged.join("afkd-web_top.tar.gz")).expect("read the archive")
 }
 
 /// A loopback server that keeps answering `/<leaf>` with **whatever bytes it holds now**,
@@ -1061,7 +1393,7 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
     }
     let dir = dir_with_config(SERVICES);
     let packing = TempDir::new().expect("a packing dir");
-    let tarball = serve_tarball("afkd-web-top.tar.gz", pack_release(packing.path(), None));
+    let tarball = serve_tarball("afkd-web_top.tar.gz", pack_release(packing.path(), None));
     let index = serve_index(&index_listing(&tarball.url));
     let pointed = [("AFKD_PLUGIN_INDEX_URL", index.url.as_str())];
 
@@ -1085,10 +1417,10 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
     // The tree is placed whole, under the scope, with the archive's own wrapper stepped
     // through rather than planted — and the program still executable, since there is no
     // build step and what is placed is what the daemon runs.
-    let placed = plugins_root(dir.path()).join("@afkd").join("web-top");
+    let placed = plugins_root(dir.path()).join("@afkd").join("web_top");
     for leaf in [
         "afkd-plugin.toml",
-        "web-top",
+        "web_top",
         "index.html",
         "top.mjs",
         "layout.mjs",
@@ -1102,7 +1434,7 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
         );
     }
     assert!(
-        !placed.join("afkd-web-top").exists(),
+        !placed.join("afkd-web_top").exists(),
         "the archive's one wrapper directory is stepped through, not placed"
     );
     use std::os::unix::fs::PermissionsExt;
@@ -1113,7 +1445,7 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
             .mode()
     };
     assert_eq!(
-        mode(&placed.join("web-top")) & 0o111,
+        mode(&placed.join("web_top")) & 0o111,
         0o111,
         "the executable bit survives the tarball round-trip"
     );
@@ -1171,7 +1503,7 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
     );
     assert_eq!(tarball.hits(), 2, "…which is one more fetch of that URL");
     assert_eq!(
-        mode(&placed.join("web-top")) & 0o111,
+        mode(&placed.join("web_top")) & 0o111,
         0o111,
         "the executable bit survives the update too"
     );
@@ -1488,7 +1820,7 @@ fn the_static_allowlist_serves_three_extensions_and_nothing_else() {
 
     // A file with an **allowlisted extension** outside the plugin directory, placed where
     // a traversal would really reach it: the tree is installed at
-    // `<home>/.config/afkd/plugins/@afkd/web-top`, so five `..` land on `<home>`. Without
+    // `<home>/.config/afkd/plugins/@afkd/web_top`, so five `..` land on `<home>`. Without
     // it the traversals below are refused by the extension check alone and the
     // one-segment rule is never exercised.
     const SECRET: &str = "<!doctype html>the operator's own files";
@@ -1521,7 +1853,7 @@ fn the_static_allowlist_serves_three_extensions_and_nothing_else() {
     for path in [
         "/README.md",
         "/afkd-plugin.toml",
-        "/web-top",
+        "/web_top",
         "/sub/dir.mjs",
         "/../../etc/passwd",
         "/%2e%2e%2f%2e%2e%2fetc%2fpasswd",
@@ -1600,6 +1932,13 @@ fn a_bad_setting_is_one_sentence_and_exit_one() {
         (serde_json::json!({"log_lines": "0"}), "log_lines"),
         (serde_json::json!({"log_lines": "100001"}), "log_lines"),
         (serde_json::json!({"log_lines": "lots"}), "log_lines"),
+        // The same bounds over a v2 config's **typed** values: afkd has checked each is an
+        // int and hands it over as a JSON number, but the range is the program's own. A JSON
+        // `true` is not an int, even though python would count it as one.
+        (serde_json::json!({"max_clients": 0}), "max_clients"),
+        (serde_json::json!({"max_clients": 65}), "max_clients"),
+        (serde_json::json!({"max_clients": true}), "max_clients"),
+        (serde_json::json!({"log_lines": 100001}), "log_lines"),
     ] {
         let mut stub = Stub::spawn_with(settings.clone());
         assert_eq!(
@@ -1632,15 +1971,22 @@ fn a_bad_setting_is_one_sentence_and_exit_one() {
         "a malformed hello is a sentence: {}",
         junk.stderr()
     );
-    let mut skewed = Stub::spawn(|socket| {
-        serde_json::json!({"call": "hello", "proto": 9, "name": NAME, "socket": socket}).to_string()
-    });
-    assert_eq!(skewed.exit_code(BUDGET), 1, "{}", skewed.stderr());
-    let stderr = skewed.stderr();
-    assert!(
-        stderr.contains("skew") && stderr.contains("v1") && stderr.contains("v9"),
-        "a plugin-protocol skew names both versions: {stderr}"
-    );
+    // A skew either way names both versions — the future one, and the proto 1 an afkd that
+    // predates manifest v2 would still send.
+    for proto in [9, 1] {
+        let mut skewed = Stub::spawn(|socket| {
+            serde_json::json!({"call": "hello", "proto": proto, "name": NAME, "socket": socket})
+                .to_string()
+        });
+        assert_eq!(skewed.exit_code(BUDGET), 1, "{}", skewed.stderr());
+        let stderr = skewed.stderr();
+        assert!(
+            stderr.contains("skew")
+                && stderr.contains("v2")
+                && stderr.contains(&format!("v{proto}")),
+            "a plugin-protocol skew names both versions: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -1896,7 +2242,7 @@ fn an_unreadable_runs_dir_starts_anyway_says_so_once_and_flashes_every_tab() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let missing = "/nonexistent/afkd-web-top/does-not-exist";
+    let missing = "/nonexistent/afkd-web_top/does-not-exist";
     let (daemon, dir, port) = daemon_serving(&config_with_block(&format!(
         "  listen \"127.0.0.1:0\"\n  runs_dir \"{missing}\"\n"
     )));
@@ -2064,7 +2410,7 @@ fn the_plugin_tree_imports_nothing_outside_the_standard_library() {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        // Matched by shebang, not by extension: the program is `web-top`, with no suffix.
+        // Matched by shebang, not by extension: the program is `web_top`, with no suffix.
         let is_python = path.extension().is_some_and(|e| e == "py")
             || text.starts_with("#!/usr/bin/env python3");
         if !is_python {
@@ -2086,7 +2432,7 @@ fn the_plugin_tree_imports_nothing_outside_the_standard_library() {
         }
     }
     assert!(
-        imported.iter().any(|(file, _)| file == "web-top"),
+        imported.iter().any(|(file, _)| file == "web_top"),
         "the walk found the relay itself; it collected {imported:?}"
     );
     for (file, module) in &imported {
@@ -2145,7 +2491,7 @@ fn the_plugins_own_suites_run_under_node() {
     // reads afkd's `crates/config/src/keymap.rs` and holds the page's transcription of
     // `DEFAULT_KEYS` to it row for row, so a rebind in the Rust reddens the javascript in the
     // same run; and
-    // `backfill.test.mjs` spawns the relay itself (`web-top --backfill …`), so the disk read is
+    // `backfill.test.mjs` spawns the relay itself (`web_top --backfill …`), so the disk read is
     // exercised as it ships rather than re-stated in javascript.
     if !node_available() {
         eprintln!("skipping: node is not on PATH, and the plugin's suites are javascript");
@@ -2617,14 +2963,14 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
     let (top_head, plugin_head) = (header_shape(&top.grid[0]), header_shape(&plugin.grid[0]));
     if top_head != plugin_head {
         return Err(format!(
-            "the header line differs:\n  afkd top: {top_head}\n  web-top:  {plugin_head}{both}"
+            "the header line differs:\n  afkd top: {top_head}\n  web_top:  {plugin_head}{both}"
         ));
     }
 
     // The load strip's *identity*, not its readings: the two trend lanes hold different
     // sample counts by construction — the terminal's ring is as old as the daemon, the
     // plugin's as old as the capture — so only the fact that both draw one is a claim.
-    for (whose, screen) in [("afkd top", top), ("web-top", plugin)] {
+    for (whose, screen) in [("afkd top", top), ("web_top", plugin)] {
         let strip = screen.row_text(1);
         if !strip.trim_start().starts_with("CPU") {
             return Err(format!(
@@ -2641,7 +2987,7 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
     };
     if top_header != plugin_header {
         return Err(format!(
-            "the column header differs:\n  afkd top: {top_header:?}\n  web-top:  {plugin_header:?}{both}"
+            "the column header differs:\n  afkd top: {top_header:?}\n  web_top:  {plugin_header:?}{both}"
         ));
     }
     let spans = column_spans(&top_header, usize::from(DRIFT_COLS));
@@ -2649,7 +2995,7 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
     let (top_rows, plugin_rows) = (top.service_rows(), plugin.service_rows());
     if top_rows.len() != plugin_rows.len() {
         return Err(format!(
-            "afkd top lists {} service rows, web-top {}{both}",
+            "afkd top lists {} service rows, web_top {}{both}",
             top_rows.len(),
             plugin_rows.len()
         ));
@@ -2662,7 +3008,7 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
             );
             if mine != theirs {
                 return Err(format!(
-                    "service row {at}'s `{label}` cell differs:\n  afkd top: {mine:?}\n  web-top:  {theirs:?}{both}"
+                    "service row {at}'s `{label}` cell differs:\n  afkd top: {mine:?}\n  web_top:  {theirs:?}{both}"
                 ));
             }
         }
@@ -2671,7 +3017,7 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
     let (top_hints, plugin_hints) = (top.footer_hints(), plugin.footer_hints());
     if top_hints != plugin_hints {
         return Err(format!(
-            "the footer's hint set differs:\n  afkd top: {top_hints:?}\n  web-top:  {plugin_hints:?}{both}"
+            "the footer's hint set differs:\n  afkd top: {top_hints:?}\n  web_top:  {plugin_hints:?}{both}"
         ));
     }
 
@@ -2750,13 +3096,13 @@ fn peek_drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
     };
     if top_header != plugin_header {
         return Err(format!(
-            "the column header differs:\n  afkd top: {top_header:?}\n  web-top:  {plugin_header:?}{both}"
+            "the column header differs:\n  afkd top: {top_header:?}\n  web_top:  {plugin_header:?}{both}"
         ));
     }
     let (top_rows, plugin_rows) = (top.service_rows(), plugin.service_rows());
     if top_rows.len() != plugin_rows.len() {
         return Err(format!(
-            "afkd top lists {} rows under its header, web-top {}{both}",
+            "afkd top lists {} rows under its header, web_top {}{both}",
             top_rows.len(),
             plugin_rows.len()
         ));
@@ -2766,7 +3112,7 @@ fn peek_drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
         let (mine, theirs) = (cell_text(mine, whole), cell_text(theirs, whole));
         if mine != theirs {
             return Err(format!(
-                "row {at} under the header differs:\n  afkd top: {mine:?}\n  web-top:  {theirs:?}{both}"
+                "row {at} under the header differs:\n  afkd top: {mine:?}\n  web_top:  {theirs:?}{both}"
             ));
         }
     }
@@ -2781,7 +3127,7 @@ fn peek_drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
     let (top_hints, plugin_hints) = (top.footer_hints(), plugin.footer_hints());
     if top_hints != plugin_hints {
         return Err(format!(
-            "the footer's hint set differs:\n  afkd top: {top_hints:?}\n  web-top:  {plugin_hints:?}{both}"
+            "the footer's hint set differs:\n  afkd top: {top_hints:?}\n  web_top:  {plugin_hints:?}{both}"
         ));
     }
     Ok(())
@@ -2899,8 +3245,8 @@ const STOPPED_ICON: &str = "\u{25AA}\u{FE0F}";
 /// (FdK5ONtJ). Held to the fixture by [`drift`]'s floor on it.
 const OPERATOR_ICON: &str = "\u{2605}\u{FE0F}";
 
-/// Every variation-selector glyph afkd top's source (`crates/tui/src`) or web-top's
-/// (`@afkd/web-top/*.mjs`) spells, by name — the set
+/// Every variation-selector glyph afkd top's source (`crates/tui/src`) or web_top's
+/// (`@afkd/web_top/*.mjs`) spells, by name — the set
 /// `every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top` checks.
 const VARIATION_GLYPHS: [&str; 16] = [
     "\u{21BB}\u{FE0E}",
@@ -3050,7 +3396,7 @@ fn every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top() {
     // Both are measured here; no width is written down.
     if !node_available() {
         eprintln!(
-            "skipping the variation-glyph parity test: node is not on PATH, and web-top's \
+            "skipping the variation-glyph parity test: node is not on PATH, and web_top's \
              `textWidth` is javascript"
         );
         return;
@@ -3068,7 +3414,7 @@ fn every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top() {
         assert!(
             tui.contains(glyph) && web.contains(glyph),
             "{glyph} ({}) is spelled in both trees, so both measure it; the scan found it in \
-             crates/tui: {}, web-top: {}",
+             crates/tui: {}, web_top: {}",
             code_points(glyph),
             tui.contains(glyph),
             web.contains(glyph)
@@ -3081,7 +3427,7 @@ fn every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top() {
         let side = |g: &str| match (tui.contains(g), web.contains(g)) {
             (true, true) => "both",
             (true, false) => "crates/tui",
-            (false, true) => "web-top",
+            (false, true) => "web_top",
             (false, false) => "neither",
         };
         let added: Vec<String> = scanned
@@ -3109,10 +3455,10 @@ fn every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top() {
         .arg(plugin_root().join("layout.mjs"))
         .arg(serde_json::to_string(&VARIATION_GLYPHS).expect("the glyphs as JSON"))
         .output()
-        .expect("run web-top's textWidth under node");
+        .expect("run web_top's textWidth under node");
     assert!(
         out.status.success(),
-        "web-top's textWidth is red:\n{}",
+        "web_top's textWidth is red:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
     let widths: Vec<usize> =
@@ -3130,7 +3476,7 @@ fn every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top() {
             let afkd_top = unicode_width::UnicodeWidthStr::width(*glyph);
             (afkd_top != *web_top).then(|| {
                 format!(
-                    "{glyph} ({}): afkd top {afkd_top}, web-top {web_top}",
+                    "{glyph} ({}): afkd top {afkd_top}, web_top {web_top}",
                     code_points(glyph)
                 )
             })
@@ -3181,7 +3527,7 @@ fn every_emoji_presentation_base_measures_alike_in_afkd_top_and_web_top() {
     // `layout.mjs`'s `textWidth` under node. Both are measured here; no width is written down.
     if !node_available() {
         eprintln!(
-            "skipping the emoji-presentation parity test: node is not on PATH, and web-top's \
+            "skipping the emoji-presentation parity test: node is not on PATH, and web_top's \
              `textWidth` is javascript"
         );
         return;
@@ -3230,10 +3576,10 @@ fn every_emoji_presentation_base_measures_alike_in_afkd_top_and_web_top() {
         )
         .arg(plugin_root().join("layout.mjs"))
         .output()
-        .expect("run web-top's textWidth under node");
+        .expect("run web_top's textWidth under node");
     assert!(
         out.status.success(),
-        "web-top's textWidth is red:\n{}",
+        "web_top's textWidth is red:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
     let measured: Vec<(u32, usize, usize)> =
@@ -3255,12 +3601,12 @@ fn every_emoji_presentation_base_measures_alike_in_afkd_top_and_web_top() {
             // `top_vs16 == 2` holds the vendored file to the crate's own list.
             if top_vs16 != 2 || web_vs16 != top_vs16 {
                 mismatches.push(format!(
-                    "{glyph} ({}, listed): afkd top {top_vs16}, web-top {web_vs16}",
+                    "{glyph} ({}, listed): afkd top {top_vs16}, web_top {web_vs16}",
                     code_points(&glyph)
                 ));
             }
         } else if top_bare == web_bare && top_bare != 0 {
-            // A base the two already measure apart (`⌚`: web-top 1, afkd top 2) or a
+            // A base the two already measure apart (`⌚`: web_top 1, afkd top 2) or a
             // zero-width one (a mark, with VS16 after it) is a gap in the base widths, not in
             // the selector's, and outside this card.
             unlisted_checked += 1;
@@ -3269,7 +3615,7 @@ fn every_emoji_presentation_base_measures_alike_in_afkd_top_and_web_top() {
             }
             if web_vs16 != top_vs16 {
                 mismatches.push(format!(
-                    "{glyph} ({}): afkd top {top_vs16}, web-top {web_vs16}",
+                    "{glyph} ({}): afkd top {top_vs16}, web_top {web_vs16}",
                     code_points(&glyph)
                 ));
             }
@@ -3395,7 +3741,7 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     // same seven cells as `Trigger`, so the width shed is untouched and the label is the
     // only thing that moved.
     let mutated = TempDir::new().expect("a tempdir for the mutated copy");
-    let copy = mutated.path().join("web-top");
+    let copy = mutated.path().join("web_top");
     copy_tree(&plugin_root(), &copy);
     let layout = copy.join("layout.mjs");
     let before = std::fs::read_to_string(&layout).expect("the copy's layout module");
@@ -3499,7 +3845,7 @@ const PANE_BODY_ROW: usize = 4;
 
 /// `logview::render_line`'s lead-in: `stamp_hms`'s twelve columns plus the one space it
 /// joins the message with. The terminal spends it on every log row and the plugin spends
-/// none of it — the first of the three log divergences `plugins/@afkd/web-top/README.md`
+/// none of it — the first of the three log divergences `plugins/@afkd/web_top/README.md`
 /// already records — so [`run_drift`] matches it against its exact shape and accounts for
 /// it, rather than stripping it.
 const LOG_STAMP_W: usize = 13;
@@ -3614,7 +3960,7 @@ fn run_drift(
     );
     if top_ink != plugin_ink {
         return Err(format!(
-            "the run header's lead-in differs: afkd top's first ink is at column {top_ink:?}, web-top's at {plugin_ink:?}\n  afkd top: {:?}\n  web-top:  {:?}{both}",
+            "the run header's lead-in differs: afkd top's first ink is at column {top_ink:?}, web_top's at {plugin_ink:?}\n  afkd top: {:?}\n  web_top:  {:?}{both}",
             top.row_text(RUN_HEADER_ROW).trim_end(),
             plugin.row_text(RUN_HEADER_ROW).trim_end(),
         ));
@@ -3626,7 +3972,7 @@ fn run_drift(
         );
         if mine != theirs {
             return Err(format!(
-                "the run header's `{label}` cell differs:\n  afkd top: {mine:?}\n  web-top:  {theirs:?}{both}"
+                "the run header's `{label}` cell differs:\n  afkd top: {mine:?}\n  web_top:  {theirs:?}{both}"
             ));
         }
     }
@@ -3634,7 +3980,7 @@ fn run_drift(
     let (top_title, plugin_title) = (top.pane_title(), plugin.pane_title());
     if top_title != plugin_title {
         return Err(format!(
-            "the pane title differs:\n  afkd top: {top_title:?}\n  web-top:  {plugin_title:?}{both}"
+            "the pane title differs:\n  afkd top: {top_title:?}\n  web_top:  {plugin_title:?}{both}"
         ));
     }
 
@@ -3646,7 +3992,7 @@ fn run_drift(
         RunPane::Tree => {
             if top_body.len() != plugin_body.len() {
                 return Err(format!(
-                    "afkd top draws {} tree rows, web-top {}{both}",
+                    "afkd top draws {} tree rows, web_top {}{both}",
                     top_body.len(),
                     plugin_body.len()
                 ));
@@ -3655,7 +4001,7 @@ fn run_drift(
                 let (mine, theirs) = (segments(top_row), segments(plugin_row));
                 if mine.len() != theirs.len() {
                     return Err(format!(
-                        "tree row {at} splits into {} segments on afkd top and {} on web-top:\n  afkd top: {mine:?}\n  web-top:  {theirs:?}{both}",
+                        "tree row {at} splits into {} segments on afkd top and {} on web_top:\n  afkd top: {mine:?}\n  web_top:  {theirs:?}{both}",
                         mine.len(),
                         theirs.len()
                     ));
@@ -3666,7 +4012,7 @@ fn run_drift(
                     let (mine_text, their_text) = (normalise(mine_text), normalise(their_text));
                     if mine_text != their_text || mine_at != their_at {
                         return Err(format!(
-                            "tree row {at}'s segment {nth} differs:\n  afkd top: ({mine_text:?}, {mine_at})\n  web-top:  ({their_text:?}, {their_at}){both}"
+                            "tree row {at}'s segment {nth} differs:\n  afkd top: ({mine_text:?}, {mine_at})\n  web_top:  ({their_text:?}, {their_at}){both}"
                         ));
                     }
                 }
@@ -3680,7 +4026,7 @@ fn run_drift(
             // downstream as a stamp that would not parse or a pane one row too long.
             for (whose, rows, hang) in [
                 ("afkd top", &top_body, "             "),
-                ("web-top", &plugin_body, "  "),
+                ("web_top", &plugin_body, "  "),
             ] {
                 if let Some(row) = rows
                     .iter()
@@ -3709,20 +4055,20 @@ fn run_drift(
                 };
                 let Some(mine) = theirs.next() else {
                     return Err(format!(
-                        "afkd top's log pane holds a line web-top's does not: {painted:?}{both}"
+                        "afkd top's log pane holds a line web_top's does not: {painted:?}{both}"
                     ));
                 };
                 let mine = mine.concat();
                 let mine = mine.trim_end();
                 if painted != format!("{stamp}{mine}").trim_end() {
                     return Err(format!(
-                        "log line {at} differs:\n  afkd top: {painted:?}\n  web-top:  {mine:?} (under afkd top's {stamp:?}){both}"
+                        "log line {at} differs:\n  afkd top: {painted:?}\n  web_top:  {mine:?} (under afkd top's {stamp:?}){both}"
                     ));
                 }
             }
             if let Some(extra) = theirs.next() {
                 return Err(format!(
-                    "web-top's log pane holds a line afkd top's does not: {:?}{both}",
+                    "web_top's log pane holds a line afkd top's does not: {:?}{both}",
                     extra.concat().trim_end()
                 ));
             }
@@ -3732,14 +4078,14 @@ fn run_drift(
     let (top_hints, plugin_hints) = (top.footer_hints(), plugin.footer_hints());
     if top_hints != plugin_hints {
         return Err(format!(
-            "the run view's footer hint set differs:\n  afkd top: {top_hints:?}\n  web-top:  {plugin_hints:?}{both}"
+            "the run view's footer hint set differs:\n  afkd top: {top_hints:?}\n  web_top:  {plugin_hints:?}{both}"
         ));
     }
 
     // …and the floors, so an empty pane cannot agree with an empty renderer and call it
     // parity. Last, as [`drift`] does it, so an honest disagreement is always reported before
     // "there was nothing on screen".
-    for (whose, screen) in [("afkd top", top), ("web-top", plugin)] {
+    for (whose, screen) in [("afkd top", top), ("web_top", plugin)] {
         let gutter = screen.scrollbar_gutter();
         if !gutter.trim().is_empty() {
             return Err(format!(
@@ -4004,7 +4350,7 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     // readable. `Tree` is the string the terminal paints (`shell.rs:2046`; the comment at
     // `shell.rs:945` still says `Trace` and is stale), so the rename runs that way round.
     let mutated = TempDir::new().expect("a tempdir for the mutated copy");
-    let copy = mutated.path().join("web-top");
+    let copy = mutated.path().join("web_top");
     copy_tree(&plugin_root(), &copy);
     let layout = copy.join("layout.mjs");
     let before = std::fs::read_to_string(&layout).expect("the copy's layout module");
@@ -4041,9 +4387,9 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     );
 }
 
-// --- the divergence ledger: where web-top differs from afkd top on purpose -----------------
+// --- the divergence ledger: where web_top differs from afkd top on purpose -----------------
 
-/// One place `@afkd/web-top` differs from `afkd top` **on purpose**: the surface and field
+/// One place `@afkd/web_top` differs from `afkd top` **on purpose**: the surface and field
 /// it covers, a phrase quoted off the `layout.mjs` line that intends it, and why.
 ///
 /// `intent` is a verbatim phrase rather than a line number because a number goes stale on
@@ -4208,7 +4554,7 @@ fn note<T: PartialEq + std::fmt::Debug>(
     if top != plugin {
         out.insert(
             format!("{surface} · {field}"),
-            format!("afkd top: {top:?} · web-top: {plugin:?}"),
+            format!("afkd top: {top:?} · web_top: {plugin:?}"),
         );
     }
 }
@@ -4596,7 +4942,7 @@ fn check_ledger(observed: &Observed, top: &Captured, plugin: &Captured) -> Resul
         .filter(|key| !observed.contains_key(key))
         .collect();
     if !unlisted.is_empty() || !stale.is_empty() {
-        let mut message = String::from("web-top's divergences from afkd top are not the ledger's");
+        let mut message = String::from("web_top's divergences from afkd top are not the ledger's");
         for key in &unlisted {
             message += &format!(
                 "\n  unlisted `{key}` — {}; ledger it with the line that intends it, or close it",
@@ -4620,7 +4966,7 @@ fn check_ledger(observed: &Observed, top: &Captured, plugin: &Captured) -> Resul
 
     // …and the floors, last, as [`drift`] closes: a reader that saw nothing on both sides
     // agrees with itself, and would pass every entry that is not about that screen.
-    for (whose, screens) in [("afkd top", top), ("web-top", plugin)] {
+    for (whose, screens) in [("afkd top", top), ("web_top", plugin)] {
         let rows = screens.overview.service_rows().len();
         if rows < SERVICE_ROW_FLOOR {
             return Err(fault(format!(
@@ -4640,7 +4986,7 @@ fn check_ledger(observed: &Observed, top: &Captured, plugin: &Captured) -> Resul
         }
     }
     let (top_info, plugin_info) = info_pages(&top.info, &plugin.info);
-    for (whose, page) in [("afkd top", &top_info), ("web-top", &plugin_info)] {
+    for (whose, page) in [("afkd top", &top_info), ("web_top", &plugin_info)] {
         if page.fields.len() < INFO_FIELD_FLOOR || page.sections.len() != INFO_SECTIONS {
             return Err(fault(format!(
                 "{whose}'s info view read as {} fields in {} sections ({:?}); `{INFO_SERVICE}` carries at least {INFO_FIELD_FLOOR} in {INFO_SECTIONS}",
@@ -4756,7 +5102,7 @@ fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
     // itself and call the agreement a refusal.
     let mutate = |from: &str, to: &str| -> Captured {
         let mutated = TempDir::new().expect("a tempdir for the mutated copy");
-        let copy = mutated.path().join("web-top");
+        let copy = mutated.path().join("web_top");
         copy_tree(&plugin_root(), &copy);
         let layout = copy.join(LEDGER_SOURCE);
         let before = std::fs::read_to_string(&layout).expect("the copy's layout module");

@@ -1,9 +1,9 @@
 [package]
-name = "web-top-drift"
+name = "web_top-drift"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Holds @afkd/web-top to the afkd installed on PATH, screen for screen"
+description = "Holds @afkd/web_top to the afkd installed on PATH, screen for screen"
 
 [dev-dependencies]
 libc = "0.2"

@@ -1,8 +1,8 @@
-// The disk backfill's suite: `node --test @afkd/web-top/backfill.test.mjs`.
+// The disk backfill's suite: `node --test @afkd/web_top/backfill.test.mjs`.
 //
 // The relay reads the daemon's own run corpus off disk and serves it as `backfill` /
 // `backfill_log` frames ahead of a subscriber's live stream. This suite drives that read
-// **as it ships** — by spawning `web-top --backfill <runs_dir> <service> busy|idle`, the
+// **as it ships** — by spawning `web_top --backfill <runs_dir> <service> busy|idle`, the
 // same producer the stream seam calls — and folds what it prints through `fold.mjs`.
 // Re-stating the disk-to-wire map in javascript would be a second implementation to keep in
 // step, which is the trap the whole plugin avoids.
@@ -60,7 +60,7 @@ const SKIP_PYTHON = python3Available() ? false : "python3 is not on PATH, and th
  * seconds, so the name is the chronology the corpus was taken with, and git *does* carry it.
  */
 function corpus(name) {
-  const at = mkdtempSync(join(tmpdir(), "afkd-web-top-"));
+  const at = mkdtempSync(join(tmpdir(), "afkd-web_top-"));
   const root = join(at, name);
   cpSync(join(HERE, "fixtures", name), root, { recursive: true });
   for (const service of readdirSync(root)) {
@@ -88,7 +88,7 @@ function corpus(name) {
 function servedBurst(name, liveness) {
   const { root, dispose } = corpus(name);
   try {
-    const out = execFileSync("python3", [join(HERE, "web-top"), "--backfill", root, SERVICE, liveness], {
+    const out = execFileSync("python3", [join(HERE, "web_top"), "--backfill", root, SERVICE, liveness], {
       encoding: "utf8",
     });
     return out

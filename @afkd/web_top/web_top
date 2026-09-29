@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""@afkd/web-top — an afkd companion that relays the control wire to a browser.
+"""@afkd/web_top — an afkd companion that relays the control wire to a browser.
 
 The daemon starts this program, hands it the control socket it already bound and the
-settings its `plugin @afkd/web-top { … }` block carried, and from there this is a **relay**
-and very nearly nothing else: every subscriber gets its **own** attach to the daemon, every
-frame that attach reads is forwarded verbatim as one SSE `data:` line, and the operator's
-intents come back the other way as `command` frames on that same attach.
+settings its `plugins/@afkd/web_top.afkd` carried (under a v1 config, its
+`plugin @afkd/web_top { … }` block), and from there this is a **relay** and very nearly
+nothing else: every subscriber gets its **own** attach to the daemon, every frame that
+attach reads is forwarded verbatim as one SSE `data:` line, and the operator's intents come
+back the other way as `command` frames on that same attach.
 
 It folds nothing and keeps no model. That is the whole design: the daemon serves each
 connection its own `meta.snapshot`, so a second browser is a second attach rather than a
@@ -34,18 +35,21 @@ import unicodedata
 import urllib.parse
 
 # This plugin's own name, as the manifest spells it and every sentence it writes names it.
-NAME = "@afkd/web-top"
+NAME = "@afkd/web_top"
 
 # The plugin protocol the `hello` is compared on, and the control wire's own version. Two
-# different integers in afkd; both are 1 today, and each is compared by equality.
-PLUGIN_PROTO = 1
+# different integers in afkd, each compared by equality: the manifest is proto 2, so the
+# `hello` is too, while the control wire is still at 1.
+PLUGIN_PROTO = 2
 WIRE_PROTO = 1
 
 # The most bytes either end buffers for one JSONL frame — the bound the daemon holds too.
 MAX_LINE = 64 * 1024
 
 # What an unwritten setting means. A block naming this companion with nothing in it must
-# still come up, which is the first thing anybody tries. 8770 is the example companion's,
+# still come up, which is the first thing anybody tries. The manifest's `[config]` carries
+# the same defaults, which afkd fills in under a v2 config; these serve a v1 block, where
+# nothing is filled. 8770 is the example companion's,
 # so the two can be run side by side, and a `listen` that names a host alone keeps the
 # port.
 DEFAULT_HOST = "127.0.0.1"
@@ -101,10 +105,12 @@ def die(sentence):
 def setting_int(settings, key, default, low, high):
     """One setting as an integer in range, or a named fault.
 
-    Every value arrives as a **string**: afkd lowers a scalar to a JSON string and a bare
-    key with no value to `true`, and omits an unwritten key entirely. So the coercion and
-    the default live in one place, and `max_clients` written as a word is a sentence
-    rather than a traceback four frames later.
+    Under a v2 config the value arrives **typed** — afkd has already checked it is an int
+    against the manifest and hands it over as a JSON number. Under a v1 block it arrives as
+    a **string**: afkd lowers a scalar to a JSON string and a bare key with no value to
+    `true`, and omits an unwritten key entirely. Either is taken here, so the coercion, the
+    range and the default live in one place, and `max_clients` written as a word is a
+    sentence rather than a traceback four frames later.
     """
     raw = settings.get(key, default)
     if isinstance(raw, bool) or not isinstance(raw, (str, int)):
@@ -257,7 +263,7 @@ def runs_fault(base, named):
       the same disk and says nothing at all about that state, and a page that flashed a
       refusal at every tab on every install until the first fire would be **louder than the
       terminal over the same disk** — which is the one thing this page is not allowed to be.
-    - **missing while the block named a `runs_dir`, or there but unreadable** -> a sentence
+    - **missing while the settings named a `runs_dir`, or there but unreadable** -> a sentence
       naming the path. Both are somebody's mistake rather than a state that fixes itself: a
       path written down that is not there, or one this process may not read.
 
@@ -834,7 +840,7 @@ class Relay:
     def __init__(self, socket_path, runs_dir, runs_named, max_clients, log_lines):
         self.socket_path = socket_path
         self.runs_dir = runs_dir
-        # Whether the block **named** `runs_dir` rather than taking the default — which is
+        # Whether the settings **named** `runs_dir` rather than taking the default — which is
         # what [`runs_fault`] reads to tell a configuration mistake from a fresh install.
         self.runs_named = runs_named
         self.log_lines = log_lines
@@ -1281,7 +1287,7 @@ def main():
     # into it.
     if sys.argv[1:2] == ["--backfill"]:
         if len(sys.argv) != 5:
-            die("%s: usage: web-top --backfill <runs_dir> <service> busy|idle" % NAME)
+            die("%s: usage: web_top --backfill <runs_dir> <service> busy|idle" % NAME)
         return inspect(sys.argv[2], sys.argv[3], sys.argv[4])
     call = hello()
     socket_path = named_socket(call)
@@ -1296,7 +1302,7 @@ def main():
     log_lines = setting_int(settings, "log_lines", DEFAULT_LOG_LINES, 1, 100000)
     check_socket(socket_path)
     # One sentence, once, naming a runs base that is a genuine fault — the daemon log carries
-    # it under `companion @afkd/web-top: err`. A **report**, not a latch: it decides nothing
+    # it under `companion @afkd/web_top: err`. A **report**, not a latch: it decides nothing
     # about what any later burst does, and never a `die()`, because the relay comes up either
     # way and every subscriber is told on its own stream besides.
     fault = runs_fault(runs_dir, "runs_dir" in settings)

@@ -196,7 +196,7 @@ body {
 /* The cell face: every symbol the layout draws, and the box-drawing, block and geometric-shape
    blocks whole, in the face a terminal draws them in — so no visitor's fallback face ever
    sizes or places one. `face.test.mjs` holds it to the layout. It is written by
-   `tools/@afkd/web-top/cell-face.py`: rerun that rather than editing the block below.
+   `tools/@afkd/web_top/cell-face.py`: rerun that rather than editing the block below.
 
    The face is cut out of DejaVu Sans Mono (with `∥` from DejaVu Sans) and renamed, as the
    license below asks of a modified copy. Its notices travel with it:
