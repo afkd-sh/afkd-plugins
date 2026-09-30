@@ -34,7 +34,7 @@ use crate::common::{
     ENV_MR_BRANCH, ENV_MR_NUMBER, ENV_PROJECT,
 };
 use crate::kind::{ClaimedUnit, Units};
-use crate::lifecycle::LifecycleAction;
+use crate::lifecycle::{LifecycleAction, Vocabulary, MR_VOCABULARY};
 use crate::settings::GitlabConfig;
 use crate::wire::{WireFile, WireUnit};
 use crate::{MR_DIR, NUMBER_FILE, TASK_FILE};
@@ -241,6 +241,8 @@ impl Units for MrUnits {
     /// spine's defaults for both, so it never parks — so `classify` and `attempt_failed`
     /// are not among them.
     const CALLS: &'static [&'static str] = &["release", "renew", "comments"];
+
+    const VOCABULARY: Vocabulary = MR_VOCABULARY;
 
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         *lock(&self.call_deadline) = deadline;

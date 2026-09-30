@@ -1,10 +1,52 @@
 name = "@afkd/gitlab"
-version = "0.2.0"
+version = "0.3.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-gitlab"
+
+# The items a run claims, one handle type per kind: every slot of the kind is passed its
+# item, and every action on it takes it first. afkd carries `id` (the number) and `key`
+# (afkd's claim key) for every handle; the fields below are the rest of what the plugin
+# knows about the item.
+[[handle]]
+name = "Issue"
+
+  [[handle.field]]
+  name = "title"
+  type = "string"
+
+  [[handle.field]]
+  name = "url"
+  type = "string"
+
+  [[handle.field]]
+  name = "number"
+  type = "int"
+
+  [[handle.field]]
+  name = "labels"
+  type = "list[string]"
+
+[[handle]]
+name = "Merge_Request"
+
+  [[handle.field]]
+  name = "title"
+  type = "string"
+
+  [[handle.field]]
+  name = "url"
+  type = "string"
+
+  [[handle.field]]
+  name = "number"
+  type = "int"
+
+  [[handle.field]]
+  name = "branch"
+  type = "string"
 
 # The issue kind, `service(gitlab)` in a config: a project's issues, claimed one per run.
 [[kind]]
@@ -47,18 +89,62 @@ claims = true
   jitter = true
   default = "30s"
 
-  # afkd runs the hooks; each action one of them calls is one `call` to this plugin.
-  [[kind.hook]]
+  # The slots afkd runs, each passed the run and its issue, and after the run its
+  # outcome; each action a slot calls is one `call` to this plugin.
+  [[kind.slot]]
+  name = "on_run"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+  [[kind.slot]]
   name = "on_claim"
   when = "pre"
 
-  [[kind.hook]]
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+  [[kind.slot]]
   name = "on_done"
   when = "post"
 
-  [[kind.hook]]
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
   name = "on_fail"
   when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
 
 # The merge-request kind, `service(gitlab.mr)` in a config: the review loop over a
 # project's merge requests. It has `author_me` in place of `source_label`.
@@ -102,27 +188,87 @@ claims = true
   jitter = true
   default = "30s"
 
-  [[kind.hook]]
+  # The slots afkd runs, each passed the run and its merge request, and after the run its
+  # outcome; each action a slot calls is one `call` to this plugin.
+  [[kind.slot]]
+  name = "on_run"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "mr"
+    type = "Merge_Request"
+
+  [[kind.slot]]
   name = "on_claim"
   when = "pre"
 
-  [[kind.hook]]
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "mr"
+    type = "Merge_Request"
+
+  [[kind.slot]]
   name = "on_done"
   when = "post"
 
-  [[kind.hook]]
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "mr"
+    type = "Merge_Request"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
   name = "on_fail"
   when = "post"
 
-# The actions a hook calls, each on the claimed issue or merge request.
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "mr"
+    type = "Merge_Request"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+# The actions a slot of the issue kind calls, each on the issue it is passed first.
 [[action]]
 name = "assign_me"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
 
 [[action]]
 name = "unassign"
 
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
 [[action]]
 name = "label_add"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
 
   [[action.param]]
   name = "label"
@@ -133,6 +279,11 @@ name = "label_add"
 name = "label_remove"
 
   [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
   name = "label"
   type = "string"
   required = true
@@ -140,15 +291,90 @@ name = "label_remove"
 [[action]]
 name = "close"
 
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
 [[action]]
 name = "comment"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
 
   [[action.param]]
   name = "text"
   type = "string"
   required = true
 
-# `gitlab.me`: the username the token authenticates as, for a hook's comment or label.
+# The same six for a slot of the mr kind, each on the merge request it is passed first: a
+# config's types have no subtyping, so one action cannot take both kinds' items.
+[[action]]
+name = "mr_assign_me"
+
+  [[action.param]]
+  name = "mr"
+  type = "Merge_Request"
+  required = true
+
+[[action]]
+name = "mr_unassign"
+
+  [[action.param]]
+  name = "mr"
+  type = "Merge_Request"
+  required = true
+
+[[action]]
+name = "mr_label_add"
+
+  [[action.param]]
+  name = "mr"
+  type = "Merge_Request"
+  required = true
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+[[action]]
+name = "mr_label_remove"
+
+  [[action.param]]
+  name = "mr"
+  type = "Merge_Request"
+  required = true
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+[[action]]
+name = "mr_close"
+
+  [[action.param]]
+  name = "mr"
+  type = "Merge_Request"
+  required = true
+
+[[action]]
+name = "mr_comment"
+
+  [[action.param]]
+  name = "mr"
+  type = "Merge_Request"
+  required = true
+
+  [[action.param]]
+  name = "text"
+  type = "string"
+  required = true
+
+# `gitlab.me`: the username the token authenticates as, for a slot's comment or label.
 [[value]]
 name = "me"
 type = "string"

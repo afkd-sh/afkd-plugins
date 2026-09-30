@@ -2,7 +2,7 @@
 
 A **provider** plugin with two trigger kinds. [`service(gitea)`](#servicegitea-issues) turns
 open issues on a Gitea repository — or every repository of an org — into afkd runs, and gives
-the service's hooks the actions that reflect progress back through each issue's assignee,
+the service's slots the actions that reflect progress back through each issue's assignee,
 labels and state. [`service(gitea.pr)`](#servicegiteapr-pull-request-review) runs the review
 loop on open pull requests: it fires whenever a human leaves feedback newer than the bot's
 last word. It also ships the `gitea` skill an agent uses to answer the issue or the review:
@@ -36,10 +36,11 @@ afkd copies the tree and runs `cargo build --release --locked` in it, so the hos
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
 the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
-Run it on **afkd 0.2.186 or newer**, the first to speak plugin protocol 2: this is a
-manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
-imports, and afkd runs its hooks, sending each action a hook calls as a `call`. An older
-afkd refuses the plugin at its `hello`.
+Run it on **afkd 0.2.197 or newer**, the first with handle types and slot signatures: this
+is a manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
+imports; afkd passes its slots the claimed issue as a `gitea.Issue`, or the pull request as
+a `gitea.Pull_Request`, and sends each action a slot calls on one as a `call`. An older afkd
+refuses the manifest when it is installed.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `gitea`:
 
@@ -60,26 +61,49 @@ develop :: service(gitea) {
   token         GITEA_TOKEN
   poll_interval 1m to 3m
 
-  on_claim {
-    gitea.assign_me()
-    gitea.label_add("afkd/working")
+  on_claim(run, issue) {
+    gitea.assign_me(issue)
+    gitea.label_add(issue, "afkd/working")
   }
-  on_done {
-    gitea.label_remove("afkd/working")
-    gitea.comment("Fixed in #{run.duration} by #{gitea.me}.")
-    gitea.close()
+  on_done(run, issue, outcome) {
+    gitea.label_remove(issue, "afkd/working")
+    gitea.comment(issue, "Fixed in #{outcome.duration} by #{gitea.me}.")
+    gitea.close(issue)
   }
-  on_fail {
-    gitea.label_remove("afkd/working")
-    gitea.unassign()
+  on_park(run, issue, outcome) {
+    gitea.comment(issue, "parked after #{outcome.duration}: waiting for a reply.")
+  }
+  on_fail(run, issue, outcome) {
+    gitea.label_remove(issue, "afkd/working")
+    gitea.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run { task() }
+  on_run() { task() }
+}
+
+reviews :: service(gitea.pr) {
+  base_url      "https://gitea.example.com"
+  repo          "acme/widgets"
+  token         GITEA_TOKEN
+  author_me     true
+  poll_interval 2m to 4m
+
+  on_claim(run, pr) { gitea.pr_label_add(pr, "afkd/working") }
+  on_done(run, pr, outcome) {
+    gitea.pr_label_remove(pr, "afkd/working")
+    gitea.pr_comment(pr, "Round done in #{outcome.duration}.")
+  }
+  on_fail(run, pr, outcome) { gitea.pr_label_remove(pr, "afkd/working") }
+
+  work_dir "/srv/acme/widgets"
+  on_run() { task() }
 }
 ```
 
-The token comes from the daemon's environment, so it never sits in the file.
+The token comes from the daemon's environment, so it never sits in the file. Each action
+names the item it acts on — the `issue` or `pr` its slot is passed — so it reads the same
+wherever it is written, and a slot may act on another item than the one its run claimed.
 
 ## Name the skill
 
@@ -104,7 +128,7 @@ the same skill reads and answers the PR.
 
 ## `service(gitea)` (issues)
 
-Fires for open issues on a Gitea repository — or every repository of an org — and its hooks
+Fires for open issues on a Gitea repository — or every repository of an org — and its slots
 reflect progress back through the issue's assignee, labels, and state.
 
 An issue is **up for grabs** when it is **assigned to the bot** — the user the `token`
@@ -128,19 +152,19 @@ gate for those who want it; either signal suffices.
 The last three are afkd's own, read by afkd for every kind that claims its work.
 
 **Exactly one** of `repo` (a single `owner/name`) or `org` (every repo of an org) is
-required — naming neither or both is refused when the service starts. The hooks only manage
+required — naming neither or both is refused when the service starts. The slots only manage
 the issue's *status* — its assignee, labels, and state. The **claim** itself is a
-`[afkd-claim]` marker comment the plugin posts and releases on its own; no hook holds or
+`[afkd-claim]` marker comment the plugin posts and releases on its own; no slot holds or
 releases it. afkd keeps that marker **alive while the run is**, asking the plugin to edit it
 every few minutes, so a run past an hour still holds its issue and a second instance loses
 the race rather than double-claiming it; only a marker nobody is renewing any more ages out.
 Opening the PR and posting the reply comment are the **agent's** job, done through the
-`@afkd/gitea/gitea` skill, not through hook actions.
+`@afkd/gitea/gitea` skill, not through slot actions.
 
 **The claim label.** The plugin holds its re-pick gate in `afkd/claimed`: it adds the label
 itself when a claim is won, and an issue carrying it is never picked up again (a human, or a
-hook's `gitea.label_remove("afkd/claimed")`, removes it to retry). It **creates that label**
-— and `afkd/awaiting-reply` — in the repository when they are missing, as plain
+slot's `gitea.label_remove(issue, "afkd/claimed")`, removes it to retry). It **creates that
+label** — and `afkd/awaiting-reply` — in the repository when they are missing, as plain
 non-exclusive labels. Do not redefine either as an **exclusive** scoped label: Gitea strips
 an exclusive label the moment another label in the same scope is added, so the gate would
 vanish under your own `on_claim` and the issue would be claimed again on every poll. A
@@ -161,12 +185,12 @@ widgets :: service(gitea) {
   org      "acme"
   token    "REPLACE_ME"
 
-  on_claim { gitea.assign_me() }
-  on_done { gitea.close() }
-  on_fail { gitea.unassign() }
+  on_claim(run, issue) { gitea.assign_me(issue) }
+  on_done(run, issue) { gitea.close(issue) }
+  on_fail(run, issue) { gitea.unassign(issue) }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -179,7 +203,7 @@ writes the marker `park` into the run's scratch dir (`$AFKD_SCRATCH_DIR`). The p
 that marker at the end of the run and *parks* the issue instead of failing it — drops the
 claim, labels it `afkd/awaiting-reply`, removes the bot from the assignees, **without
 closing it**. The label is managed by the plugin itself, so the gate holds even with no
-`on_park` hook; `on_park` is only for extras (a custom label, say). A parked issue is
+`on_park` slot; `on_park` is only for extras (a custom label, say). A parked issue is
 **re-claimed automatically on a later poll once a human replies** with a comment newer than
 the bot's last word — a fresh run starts with the answer in its brief. The exchange repeats
 until the agent has what it needs, then it proceeds to `on_done` as usual.
@@ -209,10 +233,12 @@ requirement remains:
     repo     "acme/widgets"
     token    "REPLACE_ME"
 
-    on_park { gitea.comment("parked after #{run.duration} — waiting on you") }
+    on_park(run, issue, outcome) {
+      gitea.comment(issue, "parked after #{outcome.duration} — waiting on you")
+    }
 
     work_dir "/srv/acme/widgets"
-    on_run {
+    on_run(run) {
       fixer <- "fix the issue; run the gitea skill's ask action if unclear"
       if fs.is_file("#{run.scratch_dir}/park") { fail "parked: awaiting a human reply" }
       // reviewer / commit / PR steps below never run when the agent asked
@@ -241,7 +267,7 @@ regenerated brief hands the agent, filtered by the same allow-list.
 Every gated turn ends with afkd as the last speaker: if the agent posts nothing during the
 run, the plugin posts one terse backstop comment (`reviewed, nothing to add`, `awaiting a
 human reply`, or `run did not complete: …`) so the issue does not re-fire on the next poll.
-A comment a post-run hook calls for lands after that backstop — see
+A comment a post-run slot calls for lands after that backstop — see
 [below](#where-it-differs-from-the-built-in). Omitting the key leaves the claim path
 unchanged — no comments are read at all outside the `afkd/awaiting-reply` re-arm above;
 `[ "anyone" ]` is an explicit value, not the same as omitting it.
@@ -258,7 +284,7 @@ groom :: service(gitea) {
   discuss_with [ "alice", "bob" ]
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -284,7 +310,7 @@ widgets :: service(gitea) {
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -295,7 +321,7 @@ multi-agent run reads the correction in the task itself, and a retry keeps it. T
 picks a delivered message up at its next tool boundary. Comments are delivered once each,
 oldest-first, attributed exactly as a brief's `## New comments` section is; afkd's own
 comments and `[afkd-claim]` markers are never delivered back. A comment that lands after
-the last tick is picked up by the **run-end sweep** afkd makes before the post-run hook,
+the last tick is picked up by the **run-end sweep** afkd makes before the post-run slot,
 and earns the issue another round of the same fire. Cost: one extra comment read per
 interval **per running issue**, plus one at the end of each run, and nothing at all while
 no run is in flight. All of this is afkd's own mid-run watch; the plugin only reads the
@@ -317,11 +343,11 @@ leaves feedback newer than the bot's last word, for an automated review loop.
 | `max_attempts`    | `int`      | retries per round; default `1`                         |
 | `poll_interval`   | `duration` | default `30s`; a range `2m to 3m` jitters              |
 
-`source_label` and `discuss_with` are not keys here, and the kind has no `on_park` hook.
+`source_label` and `discuss_with` are not keys here, and the kind has no `on_park` slot.
 
 **Cadence.** Polls the forge every `poll_interval` for open PRs, optionally narrowed to the
 bot's own via `author_me`, across a single `repo` or every repo of an `org`. Concurrency,
-retries, and the hooks behave as for `service(gitea)`.
+retries, and the slots behave as for `service(gitea)`.
 
 **When a PR fires.** A PR is eligible when it carries **feedback newer than the bot's last
 word**: the newest of the bot's own comments (by when they were last edited) and reviews
@@ -330,7 +356,7 @@ after it is new feedback. A PR the bot has never spoken on counts all of its fee
 new. Claim markers never count, the bot's own or a rival's. It is the agent's reply,
 posted through the skill, that answers a round; until it does, the same feedback fires the
 PR again on a later poll. The loop ends when a human merges or closes the PR, which drops
-it from the open set — so there is no `gitea.close()` to call in `on_done`.
+it from the open set — so there is no `gitea.pr_close(pr)` to call in `on_done`.
 
 **The claim.** The same `[afkd-claim]` marker as `service(gitea)`, kept alive while the run
 is and taken off the thread when it ends. The plugin adds `afkd/claimed` when it wins a PR,
@@ -368,43 +394,76 @@ reviews :: service(gitea.pr) {
   token     "REPLACE_ME"
   author_me true
 
-  on_claim { gitea.assign_me() }
-  on_done { gitea.unassign() }
+  on_claim(run, pr) { gitea.pr_assign_me(pr) }
+  on_done(run, pr) { gitea.pr_unassign(pr) }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
 ```
 
-## Hooks and actions
+## Slots, handles and actions
 
-Both kinds' hooks are code slots ([lang-v2 §13.8](https://afkd.sh/docs/lang-v2/)):
-`on_claim` runs once an issue or PR is claimed, before the run; `on_done` and `on_fail`
-after the run, the one its outcome picks — and, on `service(gitea)` only, `on_park` when
-the run ended waiting on a human reply. afkd runs a hook's statements in the order they are
-written, and each action it calls is one request to the plugin, which does it on the claimed
-issue or PR through Gitea's native primitives:
+Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
+the run, the claimed item, and after the run its outcome — by position, so a slot names as
+many of them as it reads, in order:
 
-| Action                       | Effect                                  |
-|------------------------------|-----------------------------------------|
-| `gitea.assign_me()`          | add the bot to the assignees (a human's stay) |
-| `gitea.unassign()`           | remove the bot from the assignees (a human's stay) |
-| `gitea.label_add("<name>")`  | add a named label; the repository must define it |
-| `gitea.label_remove("<name>")` | remove a named label; a name the repository does not define has nothing to remove |
-| `gitea.close()`              | close the issue                         |
-| `gitea.comment("<text>")`    | post a comment, verbatim; in a post-run hook, `#{run.duration}`, `#{run.cost}` and `#{run.turns}` interpolate the run's facts (afkd rejects them in `on_claim`) |
+| Slot                              | `service(gitea)`                   | `service(gitea.pr)`             |
+|-----------------------------------|------------------------------------|---------------------------------|
+| `on_run(run, item)`               | the run itself                     | the run itself                  |
+| `on_claim(run, item)`             | once the issue is claimed, before the run | once the PR is claimed, before the run |
+| `on_done(run, item, outcome)`     | after a run that finished          | after a round that finished     |
+| `on_park(run, item, outcome)`     | after a run that ended waiting on a human reply | —                  |
+| `on_fail(run, item, outcome)`     | after a run that failed            | after a round that failed       |
 
-**`gitea.me`** is the login the `token` authenticates as — `autocoder`, say — for a hook to
+`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
+`duration`, `error`). The item is the plugin's handle for it — a **`gitea.Issue`** on
+`service(gitea)`, written `issue` in the examples here, and a **`gitea.Pull_Request`** on
+`service(gitea.pr)`, written `pr`:
+
+| Field    | Type           | `gitea.Issue` | `gitea.Pull_Request` | What it is                     |
+|----------|----------------|:-------------:|:--------------------:|--------------------------------|
+| `id`     | `string`       | ✓             | ✓                    | the number, `"7"`              |
+| `key`    | `string`       | ✓             | ✓                    | afkd's claim key for it        |
+| `title`  | `string`       | ✓             | ✓                    | its title                      |
+| `url`    | `string`       | ✓             | ✓                    | its page on the forge          |
+| `number` | `int`          | ✓             | ✓                    | its number in the repository   |
+| `labels` | `list[string]` | ✓             |                      | the names of its labels        |
+| `branch` | `string`       |               | ✓                    | the PR's head branch           |
+
+A config passes an item around and compares it, but never builds one. afkd carries `id` and
+`key` at run time today; reading another field type-checks, and fails the slot when it runs
+until afkd carries it too.
+
+afkd runs a slot's statements in the order they are written, and each action it calls is
+one request to the plugin, which does it on the item the action is passed first, through
+Gitea's native primitives. A config's types have no subtyping, so each kind has its own six:
+`service(gitea)`'s take a `gitea.Issue`, and `service(gitea.pr)`'s — the same six, named
+with a `pr_` in front — a `gitea.Pull_Request`:
+
+| Action (`service(gitea)`)             | Action (`service(gitea.pr)`)          | Effect                                  |
+|---------------------------------------|---------------------------------------|-----------------------------------------|
+| `gitea.assign_me(issue)`              | `gitea.pr_assign_me(pr)`              | add the bot to the assignees (a human's stay) |
+| `gitea.unassign(issue)`               | `gitea.pr_unassign(pr)`               | remove the bot from the assignees (a human's stay) |
+| `gitea.label_add(issue, "<name>")`    | `gitea.pr_label_add(pr, "<name>")`    | add a named label; the repository must define it |
+| `gitea.label_remove(issue, "<name>")` | `gitea.pr_label_remove(pr, "<name>")` | remove a named label; a name the repository does not define has nothing to remove |
+| `gitea.close(issue)`                  | `gitea.pr_close(pr)`                  | close the issue or PR                   |
+| `gitea.comment(issue, "<text>")`      | `gitea.pr_comment(pr, "<text>")`      | post a comment, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
+
+Passing the other kind's item — `gitea.comment(pr, "…")` in a `service(gitea.pr)` — or none
+at all is refused when the config loads.
+
+**`gitea.me`** is the login the `token` authenticates as — `autocoder`, say — for a slot to
 name the bot in a comment or a label. The plugin reads it off the forge when the service
 starts.
 
 Each action returns a result, like any call: one the forge refused — a label the repository
 does not define (Gitea silently ignores such a name rather than failing, and the plugin
 turns that into an error), a forge that is down — fails with the plugin's sentence. A
-failing `on_claim` gives the issue back and fails the run; a failing post-run hook is logged
-and changes nothing. afkd never retries a hook action.
+failing `on_claim` gives the issue back and fails the run; a failing post-run slot is logged
+and changes nothing. afkd never retries a slot's action.
 
 **Mind the spelling.** The label actions are written verb-last, `gitea.label_add` and
 `gitea.label_remove`; `@afkd/trello` writes the same two verb-first, `trello.add_label` and
@@ -415,17 +474,18 @@ and changes nothing. afkd never retries a hook action.
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
 few things. Each is deliberate, and none changes what a config means.
 
-- **afkd runs the hooks.** The built-in ran its lifecycle blocks itself, inside its own
-  claim and finish. Here a hook is code afkd runs in the order it is written, and each
-  action is one request to the plugin, sent once the plugin's own claim or finish has
-  landed: `on_claim` after the claim is won, and the post-run hook after the claim marker
-  is released and, on the `discuss_with` path, after the backstop — so a comment `on_done`
-  posts lands after `reviewed, nothing to add` rather than standing it down. afkd retries
-  no hook action, so a post-run `gitea.label_remove("afkd/claimed")` that fails leaves the
-  re-pick gate on the issue for a human.
+- **afkd runs the slots.** The built-in ran its lifecycle blocks itself, inside its own
+  claim and finish. Here a slot is code afkd runs in the order it is written, and each
+  action is one request to the plugin naming the item it acts on, sent once the plugin's
+  own claim or finish has landed: `on_claim` after the claim is won, and the post-run slot
+  after the claim marker is released and, on the `discuss_with` path, after the backstop —
+  so a comment `on_done` posts lands after `reviewed, nothing to add` rather than standing
+  it down. afkd retries no slot's action, so a post-run
+  `gitea.label_remove(issue, "afkd/claimed")` that fails leaves the re-pick gate on the
+  issue for a human.
 - **`gitea.me` is read when the service starts.** The plugin asks the forge who the token
   is when afkd greets it. If the forge cannot say then, the service starts anyway — the
-  first poll asks again before it claims — but a hook that reads `gitea.me` fails until the
+  first poll asks again before it claims — but a slot that reads `gitea.me` fails until the
   plugin is restarted.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot

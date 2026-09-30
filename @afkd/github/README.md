@@ -1,7 +1,7 @@
 # `@afkd/github`
 
 A **provider** plugin with two trigger kinds. [`service(github)`](#servicegithub-issues)
-turns open issues on a GitHub repository into afkd runs, and gives the service's hooks the
+turns open issues on a GitHub repository into afkd runs, and gives the service's slots the
 actions that reflect progress back through each issue's assignees, labels and state.
 [`service(github.pr)`](#servicegithubpr-pull-request-review) re-fires a run on a pull
 request each time a human leaves a comment or review newer than the bot's last word, for an
@@ -36,10 +36,11 @@ afkd copies the tree and runs `cargo build --release --locked` in it, so the hos
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
 the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
-Run it on **afkd 0.2.186 or newer**, the first to speak plugin protocol 2: this is a
-manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
-imports, and afkd runs its hooks, sending each action a hook calls as a `call`. An older
-afkd refuses the plugin at its `hello`.
+Run it on **afkd 0.2.197 or newer**, the first with handle types and slot signatures: this
+is a manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
+imports; afkd passes its slots the claimed issue as a `github.Issue`, or the pull request
+as a `github.Pull_Request`, and sends each action a slot calls on one as a `call`. An older
+afkd refuses the manifest when it is installed.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `github`:
 
@@ -60,26 +61,45 @@ develop :: service(github) {
   source_label  "afkd/ready"
   poll_interval 1m to 3m
 
-  on_claim {
-    github.assign_me()
-    github.label_add("afkd/working")
+  on_claim(run, issue) {
+    github.assign_me(issue)
+    github.label_add(issue, "afkd/working")
   }
-  on_done {
-    github.label_remove("afkd/working")
-    github.comment("Fixed in #{run.duration} by #{github.me}.")
-    github.close()
+  on_done(run, issue, outcome) {
+    github.label_remove(issue, "afkd/working")
+    github.comment(issue, "Fixed in #{outcome.duration} by #{github.me}.")
+    github.close(issue)
   }
-  on_fail {
-    github.label_remove("afkd/working")
-    github.unassign()
+  on_fail(run, issue, outcome) {
+    github.label_remove(issue, "afkd/working")
+    github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run { task() }
+  on_run() { task() }
+}
+
+reviews :: service(github.pr) {
+  repo          "acme/widgets"
+  token         GITHUB_TOKEN
+  author_me     true
+  poll_interval 2m to 4m
+
+  on_claim(run, pr) { github.pr_label_add(pr, "afkd/reviewing") }
+  on_done(run, pr, outcome) {
+    github.pr_label_remove(pr, "afkd/reviewing")
+    github.pr_comment(pr, "Round done in #{outcome.duration}.")
+  }
+  on_fail(run, pr, outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
+
+  work_dir "/srv/acme/widgets"
+  on_run() { task() }
 }
 ```
 
-The token comes from the daemon's environment, so it never sits in the file.
+The token comes from the daemon's environment, so it never sits in the file. Each action
+names the item it acts on — the `issue` or `pr` its slot is passed — so it reads the same
+wherever it is written, and a slot may act on another item than the one its run claimed.
 
 ## Name the skill
 
@@ -105,7 +125,7 @@ request's conversation the same way.
 
 ## `service(github)` (issues)
 
-Fires for open issues on a single GitHub repository, and its hooks reflect progress back
+Fires for open issues on a single GitHub repository, and its slots reflect progress back
 through the issue's assignees, labels, and state. Its token stays with the plugin and the
 run.
 
@@ -128,9 +148,9 @@ requests among a repo's issues; the plugin passes them over, so a pull request c
 source label is never claimed as an issue. With `source_label` unset every open issue of
 the repo is up for grabs; set, only the issues carrying it.
 
-The hooks only manage the issue's *status* — its assignees, labels, and state. The
+The slots only manage the issue's *status* — its assignees, labels, and state. The
 **claim** itself is a `[afkd-claim]` marker comment the plugin posts and releases on its
-own; no hook holds or releases it, and an issue a human is assigned to is still claimable
+own; no slot holds or releases it, and an issue a human is assigned to is still claimable
 (a person is not a competing claimant). afkd keeps that marker **alive while the run is**,
 asking the plugin to edit it every few minutes, so a run past an hour still holds its issue
 and a second instance loses the race rather than double-claiming it; only a marker nobody is
@@ -138,16 +158,16 @@ renewing any more ages out.
 
 **The claim label.** The plugin holds its re-pick gate in `afkd/claimed`: it adds the label
 itself when a claim is won, and an issue carrying it is never picked up again (a human, or
-a hook's `github.label_remove("afkd/claimed")`, removes it to retry). GitHub creates a label
-the first time it is added to an issue, so there is nothing to define up front.
+a slot's `github.label_remove(issue, "afkd/claimed")`, removes it to retry). GitHub creates
+a label the first time it is added to an issue, so there is nothing to define up front.
 
 **Cadence.** Polls the forge every `poll_interval` for open issues carrying `source_label`
 (if set); a service works **one issue at a time, to completion**, and `max_attempts` bounds
 the per-issue retries. There is no clarification gate and no `on_park`.
 
-**Saying what happened.** A `github.comment(…)` in `on_done`/`on_fail` can carry the run's
-own facts, which afkd interpolates before the plugin sees the text: `#{run.duration}`,
-`#{run.cost}` and `#{run.turns}`.
+**Saying what happened.** A `github.comment(issue, …)` in `on_done`/`on_fail` can carry
+the run's own facts, which afkd interpolates before the plugin sees the text: the
+outcome's `#{outcome.duration}` and `#{outcome.error}`, and the run's `#{run.id}`.
 
 ```conf
 package main
@@ -159,17 +179,17 @@ widgets :: service(github) {
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done {
-    github.comment("Fixed in #{run.duration} for #{run.cost}.")
-    github.close()
+  on_done(run, issue, outcome) {
+    github.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
+    github.close(issue)
   }
-  on_fail {
-    github.comment("Gave up after #{run.turns} turns.")
-    github.unassign()
+  on_fail(run, issue, outcome) {
+    github.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error}")
+    github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -194,7 +214,7 @@ widgets :: service(github) {
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -227,7 +247,7 @@ leaves feedback newer than the bot's last word, for an automated review loop.
 `source_label` is **not** a key here.
 
 **Cadence.** Polls the forge every `poll_interval` for the repo's open pull requests,
-optionally narrowed to the bot's own via `author_me`. Concurrency, retries, and the hooks
+optionally narrowed to the bot's own via `author_me`. Concurrency, retries, and the slots
 behave as for `service(github)`.
 
 **When a PR fires.** Feedback is read from the PR's conversation **comments** and its
@@ -237,9 +257,9 @@ was submitted) is the watermark, and any other author's comment touched after it
 submitted after it, is new feedback. A PR the bot has never spoken on counts all of it as
 new. Claim markers never count, the bot's own or a rival's. It is the agent's reply,
 posted through the skill, that answers a round; until it does, the same feedback fires the
-PR again on a later poll. A `github.comment(…)` in `on_done` or `on_fail` is the bot
+PR again on a later poll. A `github.pr_comment(pr, …)` in `on_done` or `on_fail` is the bot
 speaking too, so it answers the round as well. The loop ends when a human merges or closes
-the PR, which drops it from the open set — so there is no `github.close()` to call in
+the PR, which drops it from the open set — so there is no `github.pr_close(pr)` to call in
 `on_done`.
 
 **The claim.** The same `[afkd-claim]` marker as `service(github)` — GitHub treats a pull
@@ -279,50 +299,83 @@ reviews :: service(github.pr) {
   author_me       true
   follow_comments 60s
 
-  on_claim {
-    github.assign_me()
-    github.label_add("afkd/reviewing")
+  on_claim(run, pr) {
+    github.pr_assign_me(pr)
+    github.pr_label_add(pr, "afkd/reviewing")
   }
-  on_done { github.label_remove("afkd/reviewing") }
-  on_fail {
-    github.label_remove("afkd/reviewing")
-    github.unassign()
+  on_done(run, pr) { github.pr_label_remove(pr, "afkd/reviewing") }
+  on_fail(run, pr) {
+    github.pr_label_remove(pr, "afkd/reviewing")
+    github.pr_unassign(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
 ```
 
-## Hooks and actions
+## Slots, handles and actions
 
-Both kinds' hooks are code slots ([lang-v2 §13.8](https://afkd.sh/docs/lang-v2/)):
-`on_claim` runs once an issue or pull request is claimed, before the run; `on_done` and
-`on_fail` after the run, the one its outcome picks. afkd runs a hook's statements in the
-order they are written, and each action it calls is one request to the plugin, which does
-it on the claimed issue or pull request. GitHub assignment is additive, so `assign_me` and
-`unassign` add and remove only the bot; label removal is by name (never GitHub's
-all-clearing `…/labels` path):
+Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
+the run, the claimed item, and after the run its outcome — by position, so a slot names as
+many of them as it reads, in order. Neither kind parks, so neither has `on_park`:
 
-| Action                          | Effect                                          |
-|---------------------------------|-------------------------------------------------|
-| `github.assign_me()`            | add the bot to the assignees                    |
-| `github.unassign()`             | remove **only** the bot from the assignees (a human's stays) |
-| `github.label_add("<name>")`    | add a named label                               |
-| `github.label_remove("<name>")` | remove a named label (by name)                  |
-| `github.close()`                | close the issue (`state=closed`)                |
-| `github.comment("<text>")`      | post a comment, verbatim; in a post-run hook, `#{run.duration}`, `#{run.cost}` and `#{run.turns}` interpolate the run's facts (afkd rejects them in `on_claim`) |
+| Slot                          | Runs                                                      |
+|-------------------------------|-----------------------------------------------------------|
+| `on_run(run, item)`           | the run itself                                            |
+| `on_claim(run, item)`         | once the issue or pull request is claimed, before the run |
+| `on_done(run, item, outcome)` | after a run that finished                                 |
+| `on_fail(run, item, outcome)` | after a run that failed                                   |
+
+`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
+`duration`, `error`). The item is the plugin's handle for it — a **`github.Issue`** on
+`service(github)`, written `issue` in the examples here, and a **`github.Pull_Request`** on
+`service(github.pr)`, written `pr`:
+
+| Field    | Type           | `github.Issue` | `github.Pull_Request` | What it is                    |
+|----------|----------------|:--------------:|:---------------------:|-------------------------------|
+| `id`     | `string`       | ✓              | ✓                     | the number, `"7"`             |
+| `key`    | `string`       | ✓              | ✓                     | afkd's claim key for it       |
+| `title`  | `string`       | ✓              | ✓                     | its title                     |
+| `url`    | `string`       | ✓              | ✓                     | its page on GitHub            |
+| `number` | `int`          | ✓              | ✓                     | its number in the repository  |
+| `labels` | `list[string]` | ✓              |                       | the names of its labels       |
+| `branch` | `string`       |                | ✓                     | the pull request's head branch |
+
+A config passes an item around and compares it, but never builds one. afkd carries `id` and
+`key` at run time today; reading another field type-checks, and fails the slot when it runs
+until afkd carries it too.
+
+afkd runs a slot's statements in the order they are written, and each action it calls is
+one request to the plugin, which does it on the item the action is passed first. GitHub
+assignment is additive, so `assign_me` and `unassign` add and remove only the bot; label
+removal is by name (never GitHub's all-clearing `…/labels` path). A config's types have no
+subtyping, so each kind has its own six: `service(github)`'s take a `github.Issue`, and
+`service(github.pr)`'s — the same six, named with a `pr_` in front — a
+`github.Pull_Request`:
+
+| Action (`service(github)`)             | Action (`service(github.pr)`)          | Effect                                  |
+|----------------------------------------|----------------------------------------|-----------------------------------------|
+| `github.assign_me(issue)`              | `github.pr_assign_me(pr)`              | add the bot to the assignees            |
+| `github.unassign(issue)`               | `github.pr_unassign(pr)`               | remove **only** the bot from the assignees (a human's stays) |
+| `github.label_add(issue, "<name>")`    | `github.pr_label_add(pr, "<name>")`    | add a named label                       |
+| `github.label_remove(issue, "<name>")` | `github.pr_label_remove(pr, "<name>")` | remove a named label (by name)          |
+| `github.close(issue)`                  | `github.pr_close(pr)`                  | close the issue or pull request (`state=closed`) |
+| `github.comment(issue, "<text>")`      | `github.pr_comment(pr, "<text>")`      | post a comment, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
+
+Passing the other kind's item — `github.comment(pr, "…")` in a `service(github.pr)` — or
+none at all is refused when the config loads.
 
 **`github.me`** is the login the `token` authenticates as — `autocoder[bot]`, say — for a
-hook to name the bot in a comment or a label. The plugin reads it off the forge when the
+slot to name the bot in a comment or a label. The plugin reads it off the forge when the
 service starts.
 
 Each action returns a result, like any call: one the forge refused — a forge that is down,
 a token without the scope — fails with the plugin's sentence. A failing `on_claim` gives
-the issue back and fails the run; a failing post-run hook is logged and changes nothing.
-afkd never retries a hook action.
+the issue back and fails the run; a failing post-run slot is logged and changes nothing.
+afkd never retries a slot's action.
 
 **Mind the spelling.** The label actions are written verb-last, `github.label_add` and
 `github.label_remove`; `@afkd/trello` writes the same two verb-first, `trello.add_label`
@@ -333,16 +386,16 @@ and `trello.remove_label`.
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
 few things. Each is deliberate, and none changes what a config means.
 
-- **afkd runs the hooks.** The built-in ran its lifecycle blocks itself, inside its own
-  claim and finish. Here a hook is code afkd runs in the order it is written, and each
-  action is one request to the plugin, sent once the plugin's own claim or finish has
-  landed: `on_claim` after the claim is won, and the post-run hook after the claim marker
-  is released. afkd retries no hook action, so a post-run
-  `github.label_remove("afkd/claimed")` that fails leaves the re-pick gate on the issue for
-  a human.
+- **afkd runs the slots.** The built-in ran its lifecycle blocks itself, inside its own
+  claim and finish. Here a slot is code afkd runs in the order it is written, and each
+  action is one request to the plugin naming the item it acts on, sent once the plugin's
+  own claim or finish has landed: `on_claim` after the claim is won, and the post-run slot
+  after the claim marker is released. afkd retries no slot's action, so a post-run
+  `github.label_remove(issue, "afkd/claimed")` that fails leaves the re-pick gate on the
+  issue for a human.
 - **`github.me` is read when the service starts.** The plugin asks GitHub who the token is
   when afkd greets it. If GitHub cannot say then, the service starts anyway — the first
-  call that needs the identity asks again — but a hook that reads `github.me` fails until
+  call that needs the identity asks again — but a slot that reads `github.me` fails until
   the plugin is restarted.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot

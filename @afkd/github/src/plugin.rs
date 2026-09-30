@@ -3,11 +3,12 @@
 //! [`crate::pr`], behind [`crate::kind`]). Everything here is written once, against the
 //! seam, so both kinds share every rule below.
 //!
-//! **afkd runs the hooks.** `on_claim` after a `poll` hands a unit over, and `on_done` or
-//! `on_fail` after its `finish`; each action a hook calls is one `call`, naming the unit by
-//! its key, which this plugin does on that unit's issue or pull request. A finished unit is
-//! kept a while for that ([`FINISHED_MAX`]), since its post-run hook's calls arrive after
-//! `finish`.
+//! **afkd runs the slots.** `on_claim` after a `poll` hands a unit over, and `on_done` or
+//! `on_fail` after its `finish`; each action a slot calls is one `call`, naming the item it
+//! acts on by its handle — the id and key of a unit this plugin handed over, never an
+//! implied claim — which this plugin does on that unit's issue or pull request, under the
+//! armed kind's names ([`Units::VOCABULARY`]). A finished unit is kept a while for that
+//! ([`FINISHED_MAX`]), since its post-run slot's calls arrive after `finish`.
 //!
 //! Three things the wire forces that the built-in never had to do:
 //!
@@ -34,7 +35,7 @@ use crate::client::{Github, GithubClient};
 use crate::common::{Clock, Diag, CALL_BUDGET};
 use crate::issue::IssueUnits;
 use crate::kind::{ClaimedUnit, Units};
-use crate::lifecycle::from_call;
+use crate::lifecycle::{from_call, Call};
 use crate::pr::PrUnits;
 use crate::rfc3339::format_utc;
 use crate::settings::{issue_config, pr_review_config, GithubConfig};
@@ -88,13 +89,7 @@ trait Service {
     fn renew(&self, key: &str, renewal: u64, diag: &dyn Diag) -> Answer;
     fn comments(&mut self, key: &str, diag: &dyn Diag) -> Answer;
     fn finish(&mut self, key: &str, diag: &dyn Diag) -> Answer;
-    fn call(
-        &self,
-        action: &str,
-        args: &Map<String, Value>,
-        key: Option<&str>,
-        diag: &dyn Diag,
-    ) -> Answer;
+    fn call(&self, action: &str, args: &Map<String, Value>, diag: &dyn Diag) -> Answer;
 }
 
 /// One armed service of kind `K`.
@@ -181,9 +176,9 @@ impl Plugin {
             }
             Request::Comments { key } => on_armed(armed, clock, |a| a.comments(&key, diag)),
             Request::Finish { key } => on_armed(armed, clock, |a| a.finish(&key, diag)),
-            Request::Call { action, args, key } => on_armed(armed, clock, |a| {
-                a.call(&action, &args, key.as_deref(), diag)
-            }),
+            Request::Call { action, args } => {
+                on_armed(armed, clock, |a| a.call(&action, &args, diag))
+            }
             Request::Unknown => unlisted(diag),
         }
     }
@@ -436,35 +431,25 @@ impl<K: Units> Service for Armed<K> {
         ok
     }
 
-    /// Do one action a hook called, on the unit `key` names — a live one, or one finished
-    /// since. `{"ok":false}` with the sentence, diagnosed too, for an action afkd would not
-    /// have bound, a key naming no unit, or a forge that refused it.
-    fn call(
-        &self,
-        action: &str,
-        args: &Map<String, Value>,
-        key: Option<&str>,
-        diag: &dyn Diag,
-    ) -> Answer {
+    /// Do one action a slot called, on the unit its handle names — a live one, or one
+    /// finished since. `{"ok":false}` with the sentence, diagnosed too, for an action afkd
+    /// would not have bound under the armed kind's names, a handle naming no unit, or a
+    /// forge that refused it.
+    fn call(&self, action: &str, args: &Map<String, Value>, diag: &dyn Diag) -> Answer {
         let refuse = |error: String| {
             diag.err(&error);
             Answer::Reply(json!({"ok": false, "error": error}).to_string())
         };
-        let decoded = match from_call(action, args) {
-            Ok(decoded) => decoded,
+        let Call { key, action: act } = match from_call(&K::VOCABULARY, action, args) {
+            Ok(call) => call,
             Err(problem) => return refuse(problem),
         };
-        let Some(key) = key else {
-            return refuse(format!(
-                "{action} acts on a claimed unit, and this run has none"
-            ));
-        };
-        let Some(unit) = self.unit(key) else {
+        let Some(unit) = self.unit(&key) else {
             return refuse(format!(
                 "{action} for {key}, which this plugin holds no claim on"
             ));
         };
-        match self.units.act(unit, &decoded) {
+        match self.units.act(unit, &act) {
             Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
             Err(e) => refuse(e.to_string()),
         }
@@ -481,6 +466,7 @@ mod tests {
     use crate::claim::{claim_key, claim_text};
     use crate::client::{Action, MockClient, Repo};
     use crate::common::{CaptureDiag, FakeClock};
+    use crate::lifecycle::{Vocabulary, ISSUE_VOCABULARY, PR_VOCABULARY};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -511,6 +497,8 @@ mod tests {
         mock: Arc<MockClient>,
         diag: Arc<CaptureDiag>,
         clock: Arc<FakeClock>,
+        /// The armed kind's names, which [`act`](Self::act) sends a call under.
+        vocabulary: Vocabulary,
     }
 
     /// The token's login: non-ASCII and bracketed, as a GitHub App's bot login is.
@@ -536,6 +524,7 @@ mod tests {
                 mock,
                 diag,
                 clock,
+                vocabulary: ISSUE_VOCABULARY,
             }
         }
 
@@ -547,6 +536,9 @@ mod tests {
         /// The same, armed as `kind` over `settings`.
         fn armed_as(kind: &str, settings: serde_json::Value) -> Self {
             let mut f = Self::new();
+            if kind == PR_KIND {
+                f.vocabulary = PR_VOCABULARY;
+            }
             let hello = f.call(hello(kind, settings));
             assert_eq!(hello["ok"], true, "{:?}", f.diag.lines());
             f
@@ -577,16 +569,28 @@ mod tests {
             )
         }
 
-        /// One `call` of `action` with `args` on the unit `key` names, as afkd sends a
-        /// hook's action.
+        /// One `call` of `action` with `args` on the item of the unit `key` names, as afkd
+        /// sends a slot's action: the item's handle first, under the armed kind's names.
         fn act(
             &mut self,
             action: &str,
             args: serde_json::Value,
             key: &serde_json::Value,
         ) -> serde_json::Value {
-            self.call(json!({"call": "call", "action": action, "args": args, "key": key}))
+            let mut bound = json!({ self.vocabulary.handle: handle(key) });
+            bound
+                .as_object_mut()
+                .unwrap()
+                .extend(args.as_object().expect("an args object").clone());
+            self.call(json!({"call": "call", "action": action, "args": bound}))
         }
+    }
+
+    /// The handle afkd passes for the unit `key` names. The plugin reads only its key; the
+    /// id is the item's number, as `poll` handed it over.
+    fn handle(key: &serde_json::Value) -> serde_json::Value {
+        let key = key.as_str().expect("a unit key");
+        json!({"id": key.split('#').nth(1), "key": key})
     }
 
     /// The `hello` afkd writes for `kind` over `settings`.
@@ -1249,9 +1253,9 @@ mod tests {
     }
 
     /// Each call the plugin cannot do answers `ok:false` with its sentence — which afkd
-    /// fails the hook's `result` with — and says it on the diagnostic channel too: an
-    /// action afkd would not bind, a bare run's `null` key, a key naming no claim, and a
-    /// forge that never answered.
+    /// fails the slot's `result` with — and says it on the diagnostic channel too: an
+    /// action afkd would not bind, a handle naming no claim, and a forge that never
+    /// answered.
     #[test]
     fn a_call_the_plugin_cannot_do_answers_its_sentence() {
         let mut f = Fixture::armed(settings());
@@ -1272,12 +1276,6 @@ mod tests {
                 json!({"text": ["a", "b"]}),
                 key.clone(),
                 "comment: parameter text must be a string",
-            ),
-            (
-                "close",
-                json!({}),
-                json!(null),
-                "close acts on a claimed unit, and this run has none",
             ),
             (
                 "close",
@@ -1303,7 +1301,7 @@ mod tests {
         assert_eq!(f.mock.actions().len(), before, "nothing landed");
     }
 
-    /// The PR kind answers `call` too, on the claimed pull request.
+    /// The PR kind answers `call` too, under its own `pr_` names, on the claimed pull request.
     #[test]
     fn a_pr_call_acts_on_the_claimed_pull_request() {
         let mut f = Fixture::armed_as(PR_KIND, pr_settings());
@@ -1312,7 +1310,7 @@ mod tests {
         let key = f.poll()["unit"]["key"].clone();
         assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
         assert_eq!(
-            f.act("comment", json!({"text": "round done ✅"}), &key),
+            f.act("pr_comment", json!({"text": "round done ✅"}), &key),
             json!({"ok": true})
         );
         assert!(f
@@ -1322,13 +1320,100 @@ mod tests {
             .any(|a| matches!(a, Action::Comment { index: 7, body } if body == "round done ✅")));
     }
 
+    /// A call acts on the item its handle names, never on an implied claim: with one issue
+    /// finished and the next one claimed and live, an `on_done`'s comment on the finished
+    /// issue lands there — even beside a stray top-level `key` naming the live one, which
+    /// the request no longer carries and the plugin does not read.
+    #[test]
+    fn a_call_acts_on_the_item_its_handle_names() {
+        let mut f = Fixture::armed(settings());
+        f.mock
+            .add_issue(7, "修复 the retry storm 🚨", "do it", &["afkd/ready"]);
+        f.mock
+            .add_issue(8, "第二の課題 🚧", "and this", &["afkd/ready"]);
+        let first = f.poll()["unit"]["key"].clone();
+        assert_eq!(f.finish(&first, "clean"), json!({"ok": true}));
+        let second = f.poll()["unit"]["key"].clone();
+        assert_ne!(first, second, "the next issue is claimed");
+        let before = f.mock.actions().len();
+
+        let text = "afkd landed this issue in 3m 12s.\n\n— 完了 ✅";
+        assert_eq!(
+            f.call(json!({"call": "call", "action": "comment",
+                          "args": {"issue": handle(&first), "text": text},
+                          "key": second})),
+            json!({"ok": true})
+        );
+        let commented: Vec<u64> = f.mock.actions()[before..]
+            .iter()
+            .filter_map(|a| match a {
+                Action::Comment { index, body } if body == text => Some(*index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commented, [7], "the finished issue, not the live one");
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+    }
+
+    /// A call whose item handle is missing, is not a handle, names a key this plugin never
+    /// handed over, or is the other kind's answers `ok:false` with its sentence, diagnosed,
+    /// and touches nothing on the forge — even with a live claim it could have guessed at.
+    #[test]
+    fn a_call_without_a_usable_handle_is_refused() {
+        let mut f = Fixture::armed(settings());
+        f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
+        let key = f.poll()["unit"]["key"].clone();
+        let before = f.mock.actions().len();
+        let mut expect = Vec::new();
+        for (action, args, error) in [
+            (
+                "comment",
+                json!({"text": "hej"}),
+                "comment: parameter issue is required",
+            ),
+            (
+                "comment",
+                json!({"issue": key, "text": "hej"}),
+                "comment: parameter issue must be an item handle",
+            ),
+            (
+                "comment",
+                json!({"issue": {"id": "7"}, "text": "hej"}),
+                "comment: parameter issue must be an item handle",
+            ),
+            (
+                "comment",
+                json!({"issue": {"id": "9", "key": "acme/widgets#9#1"}, "text": "hej"}),
+                "comment for acme/widgets#9#1, which this plugin holds no claim on",
+            ),
+            (
+                "comment",
+                json!({"pr": handle(&key), "text": "hej"}),
+                "comment: parameter issue is required",
+            ),
+            (
+                "pr_comment",
+                json!({"pr": handle(&key), "text": "hej"}),
+                "no action `pr_comment`",
+            ),
+        ] {
+            assert_eq!(
+                f.call(json!({"call": "call", "action": action, "args": args, "key": key})),
+                json!({"ok": false, "error": error}),
+                "{action} {args}"
+            );
+            expect.push(error.to_string());
+        }
+        assert_eq!(f.diag.lines(), expect);
+        assert_eq!(f.mock.actions().len(), before, "nothing landed");
+    }
+
     /// A `call` before an accepted `hello` is afkd out of step, like any other call.
     #[test]
     fn a_call_before_hello_is_fatal() {
         let mut f = Fixture::new();
-        let request = serde_json::from_value(
-            json!({"call": "call", "action": "close", "args": {}, "key": "acme/widgets#7#1"}),
-        )
+        let request = serde_json::from_value(json!({"call": "call", "action": "close",
+                   "args": {"issue": {"id": "7", "key": "acme/widgets#7#1"}}}))
         .unwrap();
         assert!(matches!(
             f.plugin.answer(request),

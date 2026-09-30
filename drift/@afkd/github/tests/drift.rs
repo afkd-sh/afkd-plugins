@@ -4,9 +4,12 @@
 //! plugin is checked against the afkd it will meet ([`bin_path`]).
 //!
 //! - The **install** leg installs the tree the release tarball holds and runs one issue
-//!   through it on a real daemon, its hooks' actions crossing as `call`s.
+//!   through it on a real daemon, its slots' actions crossing as `call`s on the issue each
+//!   is passed.
 //! - The **both kinds** leg `afkd validate`s one file with a service of each kind, whose
-//!   hooks call every action the plugin provides and read its value `me`.
+//!   slots call every action the plugin provides on the item each is passed and read its
+//!   value `me`, and the **handle** leg holds `afkd validate` to refusing an action passed
+//!   the other kind's item.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
 //!   each a whole `package main` file, against the installed plugin.
 //!
@@ -120,10 +123,10 @@ const BODY: &str = "Retries pile up after a 502.\n\n> \"backoff\" — nobody\n\n
 const BUDGET: Duration = Duration::from_secs(30);
 
 /// The service that drives [`ISSUE`], `home` its work dir: a v2 file importing the plugin,
-/// whose hooks call its actions and whose `on_done` comment afkd interpolates — a run fact
-/// and the plugin's value `me` both. The run holds until the test creates `release` —
-/// bounded, so a test that never does cannot wedge it — which is what lets the test see the
-/// claim and the run mid-flight.
+/// whose slots call its actions on the issue they are passed and whose `on_done` comment
+/// afkd interpolates — the outcome's duration and the plugin's value `me` both. The run
+/// holds until the test creates `release` — bounded, so a test that never does cannot wedge
+/// it — which is what lets the test see the claim and the run mid-flight.
 fn service(home: &Path, host: &str) -> String {
     format!(
         r#"package main
@@ -138,15 +141,15 @@ widgets :: service(github) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim {{ github.assign_me() }}
-  on_done {{
-    github.label_remove("afkd/claimed")
-    github.comment("done in #{{run.duration}} by #{{github.me}}")
-    github.close()
+  on_claim(run, issue) {{ github.assign_me(issue) }}
+  on_done(run, issue, outcome) {{
+    github.label_remove(issue, "afkd/claimed")
+    github.comment(issue, "done in #{{outcome.duration}} by #{{github.me}}")
+    github.close(issue)
   }}
 
   work_dir "{home}"
-  on_run {{
+  on_run() {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
@@ -158,7 +161,7 @@ widgets :: service(github) {{
 
 /// Write `config` as `home`'s main config.
 fn write_config(home: &Path, config: &str) {
-    let conf = main_afkd(home);
+    let conf = daemon_afkd(home);
     std::fs::create_dir_all(conf.parent().expect("has parent")).expect("mk the config dir");
     std::fs::write(&conf, config).expect("write the config");
 }
@@ -326,8 +329,9 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
     drive_one_issue(home.path());
 }
 
-/// A service of each kind, whose hooks between them call every action the plugin provides
-/// and read its value `me`, in the argument shapes the manifest types: wide and scoped label
+/// A service of each kind, whose slots between them call every action the plugin provides —
+/// each kind's own six, on the item its slot is passed — and read its value `me`, the run
+/// and the outcome, in the argument shapes the manifest types: wide and scoped label
 /// names, and a multi-line comment.
 const BOTH_KINDS: &str = r##"package main
 
@@ -342,22 +346,22 @@ issues :: service(github) {
   max_attempts    2
   poll_interval   1m to 3m
 
-  on_claim {
-    github.assign_me()
-    github.label_add("afkd/working ⚙")
+  on_claim(run, issue) {
+    github.assign_me(issue)
+    github.label_add(issue, "afkd/working ⚙")
   }
-  on_done {
-    github.label_remove("afkd/working ⚙")
-    github.comment("done by #{github.me} in #{run.duration}:\n\n- cost #{run.cost}\n- 完了 ✅")
-    github.close()
+  on_done(run, issue, outcome) {
+    github.label_remove(issue, "afkd/working ⚙")
+    github.comment(issue, "done by #{github.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
+    github.close(issue)
   }
-  on_fail {
-    github.label_remove("afkd/working ⚙")
-    github.unassign()
+  on_fail(run, issue) {
+    github.label_remove(issue, "afkd/working ⚙")
+    github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -368,40 +372,110 @@ reviews :: service(github.pr) {
   author_me     true
   poll_interval 2m
 
-  on_claim { github.assign_me() }
-  on_done { github.comment("round answered by #{github.me}") }
-  on_fail { github.unassign() }
+  on_claim(run, pr) {
+    github.pr_assign_me(pr)
+    github.pr_label_add(pr, "afkd/reviewing 👀")
+  }
+  on_done(run, pr, outcome) {
+    github.pr_label_remove(pr, "afkd/reviewing 👀")
+    github.pr_comment(pr, "round answered by #{github.me} in #{outcome.duration}")
+  }
+  on_fail(run, pr) {
+    github.pr_unassign(pr)
+    github.pr_close(pr)
+  }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
 "##;
 
 /// Both kinds validate as v2 services against the installed plugin: every setting either
-/// writes is one its kind declares, of its type, every action its hooks call is one the
-/// plugin provides, with the parameters it declares, and `github.me` is a value it has.
+/// writes is one its kind declares, of its type, every action its slots call is one the
+/// plugin provides for that kind, with the item and the parameters it declares, and
+/// `github.me` is a value it has.
 #[test]
 fn every_kind_validates_as_a_v2_service() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
-    for action in [
-        "assign_me(",
-        "unassign(",
-        "label_add(",
-        "label_remove(",
-        "close(",
-        "comment(",
-        "github.me",
-    ] {
-        assert!(BOTH_KINDS.contains(action), "the file uses {action}");
+    let verbs = [
+        "assign_me",
+        "unassign",
+        "label_add",
+        "label_remove",
+        "close",
+        "comment",
+    ];
+    for verb in verbs {
+        for call in [
+            format!("github.{verb}(issue"),
+            format!("github.pr_{verb}(pr"),
+        ] {
+            assert!(BOTH_KINDS.contains(&call), "the file calls {call}");
+        }
+    }
+    for used in ["github.me", "outcome.duration", "run.id"] {
+        assert!(BOTH_KINDS.contains(used), "the file uses {used}");
     }
     write_config(home.path(), BOTH_KINDS);
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "both kinds validate:\n{report}");
     assert!(!report.contains("warning:"), "cleanly:\n{report}");
+}
+
+/// An action acts on the item it is passed, typed by kind, so an issue action passed the
+/// pull request a `service(github.pr)` slot is given — `github.comment(pr, "…")` — is a
+/// load error naming the handle types, not a call on whatever item it names.
+#[test]
+fn a_call_with_the_wrong_handle_is_a_load_error() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    let config = |call: &str| {
+        format!(
+            r#"package main
+
+import "@afkd/github"
+
+reviews :: service(github.pr) {{
+  repo  "acme/widgets"
+  token "REPLACE_ME"
+
+  on_done(run, pr) {{ {call} }}
+
+  work_dir "/srv/acme/widgets"
+  on_run() {{
+    $ true
+  }}
+}}
+"#
+        )
+    };
+    write_config(
+        home.path(),
+        &config(r#"github.comment(pr, "round answered — 完了 ✅")"#),
+    );
+    let (code, report) = validate(home.path());
+    assert_eq!(
+        code,
+        Some(1),
+        "an issue action on a pr is refused:\n{report}"
+    );
+    assert!(
+        report.contains("github.Issue") && report.contains("github.Pull_Request"),
+        "the refusal names both handle types:\n{report}"
+    );
+    // The same file calling the pr kind's own action is valid: the handle is all that was
+    // wrong.
+    write_config(
+        home.path(),
+        &config(r#"github.pr_comment(pr, "round answered — 完了 ✅")"#),
+    );
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "the pr action validates:\n{report}");
 }
 
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence

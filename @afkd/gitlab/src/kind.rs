@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::client::{GitlabError, Note, User};
 use crate::common::{Clock, Diag};
-use crate::lifecycle::LifecycleAction;
+use crate::lifecycle::{LifecycleAction, Vocabulary};
 use crate::wire::WireUnit;
 
 /// A claimed unit, as the plugin's bookkeeping reads it.
@@ -29,6 +29,10 @@ pub(crate) trait Units {
     /// The optional calls this kind answers, exactly as `hello` lists them. A call the
     /// kind does not list is refused before it reaches the kind.
     const CALLS: &'static [&'static str];
+
+    /// What this kind's services call its actions by, and the handle parameter naming the
+    /// item each acts on.
+    const VOCABULARY: Vocabulary;
 
     /// Set (or, with `None`, clear) the current call's deadline: kept for the poll's
     /// claim reserve, and handed to the client, which clips every request to it.
@@ -66,6 +70,6 @@ pub(crate) trait Units {
     /// release. Best-effort — a marker left behind ages out — so it cannot go undelivered.
     fn finish(&self, unit: &Self::Unit, diag: &dyn Diag);
 
-    /// Do one action a hook called on the unit, as the identity it was claimed as.
+    /// Do one action a slot called on the unit, as the identity it was claimed as.
     fn act(&self, unit: &Self::Unit, action: &LifecycleAction) -> Result<(), GitlabError>;
 }

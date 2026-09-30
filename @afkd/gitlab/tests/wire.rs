@@ -54,11 +54,18 @@ fn facts(signal: &str, reason: Option<&str>) -> Value {
            "turns": null, "tokens": null, "run_name": "260925-095800-unit-7-1"})
 }
 
-/// A hook afkd runs on `unit`: each of `actions` one `call`, in order, every one landing.
+/// A slot afkd runs on `unit`: each of `actions` one `call` on the unit's item, in order,
+/// every one landing — under the armed kind's names, so `comment` is `mr_comment` on the
+/// mr kind.
 fn hook(plugin: &mut Plugin, unit: &Value, actions: &[(&str, Value)]) {
-    for (action, args) in actions {
+    let prefix = match plugin.kind() {
+        "issue" => String::new(),
+        kind => format!("{kind}_"),
+    };
+    for (verb, args) in actions {
+        let action = format!("{prefix}{verb}");
         assert_eq!(
-            plugin.act(action, args.clone(), &unit["key"]),
+            plugin.act(&action, args.clone(), unit),
             json!({"ok": true}),
             "{action}: {}",
             plugin.stderr()
@@ -66,8 +73,9 @@ fn hook(plugin: &mut Plugin, unit: &Value, actions: &[(&str, Value)]) {
     }
 }
 
-/// The `on_claim` of a config that takes the issue — `gitlab.assign_me()` then
-/// `gitlab.label_add(working)` — as afkd runs it after the `poll`.
+/// The `on_claim` of a config that takes the item — `gitlab.assign_me(issue)` then
+/// `gitlab.label_add(issue, working)`, or the mr kind's `gitlab.mr_assign_me(mr)` and so on — as
+/// afkd runs it after the `poll`.
 fn on_claim(plugin: &mut Plugin, unit: &Value, working: &str) {
     hook(
         plugin,
@@ -686,19 +694,22 @@ fn every_action_over_call_lands_on_the_forge() {
     let key = &unit["key"];
     let markdown = "## 完了 ✅\n\n- took 3m 12s\n- literal: #{run.x}\n\n```\nok\n```";
 
-    assert_eq!(plugin.act("assign_me", json!({}), key), json!({"ok": true}));
+    assert_eq!(
+        plugin.act("assign_me", json!({}), &unit),
+        json!({"ok": true})
+    );
     assert_eq!(assignees(&fake, 7), [HUMAN, ME]);
     assert_eq!(
-        plugin.act("label_add", json!({"label": "afkd::reviewed ✅"}), key),
+        plugin.act("label_add", json!({"label": "afkd::reviewed ✅"}), &unit),
         json!({"ok": true})
     );
     assert_eq!(
-        plugin.act("label_remove", json!({"label": "afkd::ready"}), key),
+        plugin.act("label_remove", json!({"label": "afkd::ready"}), &unit),
         json!({"ok": true})
     );
     assert_eq!(labels(&fake, 7), ["afkd::claimed", "afkd::reviewed ✅"]);
     assert_eq!(
-        plugin.act("comment", json!({"text": markdown}), key),
+        plugin.act("comment", json!({"text": markdown}), &unit),
         json!({"ok": true})
     );
     let said: Vec<(String, String)> = fake
@@ -708,7 +719,10 @@ fn every_action_over_call_lands_on_the_forge() {
         .map(|n| (n.author, n.body))
         .collect();
     assert_eq!(said, [(ME.to_string(), markdown.to_string())]);
-    assert_eq!(plugin.act("unassign", json!({}), key), json!({"ok": true}));
+    assert_eq!(
+        plugin.act("unassign", json!({}), &unit),
+        json!({"ok": true})
+    );
     assert_eq!(assignees(&fake, 7), [HUMAN]);
 
     assert_eq!(
@@ -716,7 +730,7 @@ fn every_action_over_call_lands_on_the_forge() {
         json!({"ok": true})
     );
     assert_eq!(fake.issue_state(PROJECT, 7).state, "opened");
-    assert_eq!(plugin.act("close", json!({}), key), json!({"ok": true}));
+    assert_eq!(plugin.act("close", json!({}), &unit), json!({"ok": true}));
     assert_eq!(fake.issue_state(PROJECT, 7).state, "closed");
 
     assert_eq!(
@@ -728,7 +742,7 @@ fn every_action_over_call_lands_on_the_forge() {
         key.as_str().unwrap()
     );
     assert_eq!(
-        plugin.act("comment", json!({"text": "late"}), key),
+        plugin.act("comment", json!({"text": "late"}), &unit),
         json!({"ok": false, "error": refused})
     );
     let stderr = plugin.stderr_soon(&refused);
@@ -1268,7 +1282,7 @@ fn mr_a_refused_on_fail_action_is_the_calls_error_and_release_recovers_the_claim
     );
     fake.fail("set assignees", 500);
     assert_eq!(
-        plugin.act("unassign", json!({}), &unit["key"]),
+        plugin.act("mr_unassign", json!({}), &unit),
         json!({"ok": false, "error": "gitlab set assignees: forge returned status 500"})
     );
     assert!(fake
@@ -1302,5 +1316,72 @@ fn mr_a_refused_on_fail_action_is_the_calls_error_and_release_recovers_the_claim
     let again = plugin.poll()["unit"].clone();
     assert_eq!(again["id"], "7", "claimed afresh");
     assert_ne!(again["key"], unit["key"]);
+    plugin.finish();
+}
+
+// --- a call names its item ---
+
+/// A call acts on the item its handle names, never on a claim it implies: with issue #7
+/// finished and #8 claimed and live, #7's `on_done` — sent after `finish`, as afkd sends
+/// it — comments on and closes the finished issue over the real wire and leaves the live
+/// one open and silent. On a merge-request service the same holds under its own names: an
+/// `mr_comment` after `finish` lands on the merge request its handle names.
+#[test]
+fn a_post_run_call_acts_on_the_finished_item_its_handle_names() {
+    let fake = forge();
+    fake.issue(
+        PROJECT,
+        8,
+        "第二の課題 — the next one 🚧",
+        "And this.",
+        &["afkd::ready"],
+        &[],
+    );
+    let mut plugin = Plugin::armed(settings(&fake));
+    let first = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &first, "afkd::working");
+    assert_eq!(
+        finish(&mut plugin, &first, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    let second = plugin.poll()["unit"].clone();
+    assert_eq!(second["id"], "8", "{second}");
+
+    let landed = "afkd landed this issue in 2m48s.\n\n— 完了 ✅";
+    hook(
+        &mut plugin,
+        &first,
+        &[("comment", json!({ "text": landed })), ("close", json!({}))],
+    );
+    let said = |iid: u64| -> Vec<String> {
+        fake.notes(PROJECT, iid)
+            .into_iter()
+            .filter(|n| n.body == landed)
+            .map(|n| n.body)
+            .collect()
+    };
+    assert_eq!(said(7), [landed]);
+    assert_eq!(fake.issue_state(PROJECT, 7).state, "closed");
+    assert!(said(8).is_empty(), "the live issue got nothing");
+    assert_eq!(fake.issue_state(PROJECT, 8).state, "opened");
+    plugin.finish();
+
+    let (fake, _) = mr_forge();
+    let mut plugin = Plugin::armed_as("mr", mr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit, "afkd::reviewing");
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", mr_facts("proceed", None)),
+        json!({"ok": true})
+    );
+    let round = "Round done ✅ — see 4f2a9c1.";
+    assert_eq!(
+        plugin.act("mr_comment", json!({ "text": round }), &unit),
+        json!({"ok": true})
+    );
+    assert!(fake
+        .mr_notes(PROJECT, 7)
+        .iter()
+        .any(|n| n.author == ME && n.body == round));
     plugin.finish();
 }

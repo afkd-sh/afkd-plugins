@@ -116,10 +116,16 @@ impl Plugin {
                          "owner": OWNER, "settings": settings}))
     }
 
-    /// Call one action on the unit `key` names, as afkd sends each action a hook calls:
-    /// its arguments bound by parameter name, `key` `null` for a bare run.
-    pub fn act(&mut self, action: &str, args: Value, key: &Value) -> Value {
-        self.call(json!({"call": "call", "action": action, "args": args, "key": key}))
+    /// Call one action on the card of `unit`, as afkd sends each action a slot calls: its
+    /// arguments bound by parameter name, the card's handle — the unit's `id` and `key`,
+    /// as `poll` handed it over — first.
+    pub fn act(&mut self, action: &str, args: Value, unit: &Value) -> Value {
+        let mut bound = json!({"card": {"id": unit["id"], "key": unit["key"]}});
+        bound
+            .as_object_mut()
+            .unwrap()
+            .extend(args.as_object().expect("an args object").clone());
+        self.call(json!({"call": "call", "action": action, "args": bound}))
     }
 
     /// Write one request and read its reply line: under afkd's cap, newline-terminated,

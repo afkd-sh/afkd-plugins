@@ -79,8 +79,8 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/gitlab/afkd-plugin.toml')
           test -n "$version"
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
-          # the notes name the afkd it needs: 0.2.186 is the first with config language v2
-          # and plugin protocol 2, which this manifest declares.
-          printf '`afkd install @afkd/gitlab`, or `afkd update @afkd/gitlab` if you already have it.\n\nNeeds afkd 0.2.186 or newer (config language v2, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          # the notes name the afkd it needs: 0.2.197 is the first with the handle types and
+          # slot signatures this manifest declares.
+          printf '`afkd install @afkd/gitlab`, or `afkd update @afkd/gitlab` if you already have it.\n\nNeeds afkd 0.2.197 or newer (handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete gitlab --yes --cleanup-tag || true
           gh release create gitlab --target "$GITHUB_SHA" --title "@afkd/gitlab $version" --notes-file notes.md afkd-gitlab.tar.gz

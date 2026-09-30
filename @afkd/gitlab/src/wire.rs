@@ -41,15 +41,13 @@ pub(crate) enum Request {
     Renew { key: String, renewal: u64 },
     /// The mid-run watch's read of a unit's comments.
     Comments { key: String },
-    /// One action a hook of afkd's calls, by its own name, its arguments bound by
-    /// parameter name, on the unit `key` names — `null` for a bare run. Answered by every
-    /// proto 2 plugin, so it is never listed.
+    /// One action a slot of afkd's calls, by its own name, its arguments bound by
+    /// parameter name — the item it acts on among them, as the handle of a unit this
+    /// plugin handed over. Answered by every proto 2 plugin, so it is never listed.
     Call {
         action: String,
         #[serde(default)]
         args: serde_json::Map<String, serde_json::Value>,
-        #[serde(default)]
-        key: Option<String>,
     },
     /// A call this plugin does not know — `classify` and `attempt_failed`, which the kind
     /// does not list, or one from a later afkd.
@@ -264,29 +262,34 @@ mod tests {
         assert_eq!(settings["project"], "acme/sub.group/widgets");
     }
 
-    /// A `call` decodes with its arguments as afkd bound them, a bare run's `null` key
-    /// reads as none, and an action with no parameters may leave `args` out. It is
-    /// answered by every proto 2 plugin, so it is never one `hello` lists.
+    /// A `call` decodes with its arguments as afkd bound them, the item's handle among
+    /// them; a top-level `key` an older afkd sent is not read, and an action with no
+    /// parameters may leave `args` out.
     #[test]
-    fn a_call_decodes_with_its_args_and_key() {
+    fn a_call_decodes_with_its_args() {
         let call: Request = serde_json::from_str(
-            r#"{"call":"call","action":"label_add","args":{"label":"afkd/reviewed ✅"},
-                "key":"acme/sub.group/widgets#7#1000001","later":1}"#,
+            r#"{"call":"call","action":"label_add",
+                "args":{"issue":{"id":"7","key":"acme/widgets#7#1000001"},
+                        "label":"afkd/reviewed ✅"},
+                "key":"acme/widgets#8#1000002","later":1}"#,
         )
         .unwrap();
         assert_eq!(call.optional_call(), None);
-        let Request::Call { action, args, key } = call else {
+        let Request::Call { action, args } = call else {
             panic!("{call:?}");
         };
         assert_eq!(action, "label_add");
+        assert_eq!(args["issue"]["key"], "acme/widgets#7#1000001");
         assert_eq!(args["label"], "afkd/reviewed ✅");
-        assert_eq!(key.as_deref(), Some("acme/sub.group/widgets#7#1000001"));
+        assert!(
+            !args.contains_key("key"),
+            "the stray key is not an argument"
+        );
 
-        let bare: Request =
-            serde_json::from_str(r#"{"call":"call","action":"close","key":null}"#).unwrap();
+        let bare: Request = serde_json::from_str(r#"{"call":"call","action":"mr_close"}"#).unwrap();
         assert!(matches!(
             bare,
-            Request::Call { action, args, key: None } if action == "close" && args.is_empty()
+            Request::Call { action, args } if action == "mr_close" && args.is_empty()
         ));
     }
 

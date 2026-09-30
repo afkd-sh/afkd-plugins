@@ -64,15 +64,13 @@ pub(crate) enum Request {
         #[serde(default)]
         reason: Option<String>,
     },
-    /// One action a hook of afkd's calls, by its own name, its arguments bound by
-    /// parameter name, on the unit `key` names — `null` for a bare run. Answered by every
-    /// proto 2 plugin, so it is never listed.
+    /// One action a slot of afkd's calls, by its own name, its arguments bound by
+    /// parameter name — the item it acts on among them, as the handle of a unit this
+    /// plugin handed over. Answered by every proto 2 plugin, so it is never listed.
     Call {
         action: String,
         #[serde(default)]
         args: serde_json::Map<String, serde_json::Value>,
-        #[serde(default)]
-        key: Option<String>,
     },
     /// A call from a later afkd.
     #[serde(other)]
@@ -311,28 +309,34 @@ mod tests {
         ));
     }
 
-    /// A `call` decodes with its arguments as afkd bound them, a bare run's `null` key
-    /// reads as none, and an action with no parameters may leave `args` out.
+    /// A `call` decodes with its arguments as afkd bound them, the card's handle among
+    /// them; a top-level `key` an older afkd sent is not read, and a call that leaves
+    /// `args` out still decodes, for the plugin to refuse by name.
     #[test]
-    fn a_call_decodes_with_its_args_and_key() {
+    fn a_call_decodes_with_its_args() {
         let call: Request = serde_json::from_str(
-            r#"{"call":"call","action":"move_to","args":{"list":"Blockerat / Väntar","at":"bottom"},
-                "key":"c#m","later":1}"#,
+            r#"{"call":"call","action":"move_to",
+                "args":{"card":{"id":"1Rkelydw","key":"c#m"},"list":"Blockerat / Väntar",
+                        "at":"bottom"},
+                "key":"other#claim","later":1}"#,
         )
         .unwrap();
-        let Request::Call { action, args, key } = call else {
+        let Request::Call { action, args } = call else {
             panic!("{call:?}");
         };
         assert_eq!(action, "move_to");
+        assert_eq!(args["card"]["key"], "c#m");
         assert_eq!(args["list"], "Blockerat / Väntar");
         assert_eq!(args["at"], "bottom");
-        assert_eq!(key.as_deref(), Some("c#m"));
+        assert!(
+            !args.contains_key("key"),
+            "the stray key is not an argument"
+        );
 
-        let bare: Request =
-            serde_json::from_str(r#"{"call":"call","action":"archive","key":null}"#).unwrap();
+        let bare: Request = serde_json::from_str(r#"{"call":"call","action":"archive"}"#).unwrap();
         assert!(matches!(
             bare,
-            Request::Call { action, args, key: None } if action == "archive" && args.is_empty()
+            Request::Call { action, args } if action == "archive" && args.is_empty()
         ));
     }
 

@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use crate::client::{GiteaError, IssueComment};
 use crate::common::{ClaimFault, Clock, Diag};
-use crate::lifecycle::LifecycleAction;
+use crate::lifecycle::{LifecycleAction, Vocabulary};
 use crate::wire::{Facts, UnitOutcome, WireUnit};
 
 /// A claimed unit, as the plugin's bookkeeping reads it.
@@ -29,6 +29,10 @@ pub(crate) trait Units {
     /// The optional calls this kind answers, exactly as `hello` lists them. A call the
     /// kind does not list is refused before it reaches the kind.
     const CALLS: &'static [&'static str];
+
+    /// What this kind's services call its actions by, and the handle parameter naming the
+    /// item each acts on.
+    const VOCABULARY: Vocabulary;
 
     /// Set (or, with `None`, clear) the current call's deadline: kept for the poll's
     /// claim reserve, and handed to the client, which clips every request to it.
@@ -76,6 +80,6 @@ pub(crate) trait Units {
         diag: &dyn Diag,
     ) -> bool;
 
-    /// Do one action a hook called on the unit, as the login it was claimed as.
+    /// Do one action a slot called on the unit, as the login it was claimed as.
     fn act(&self, unit: &Self::Unit, action: &LifecycleAction) -> Result<(), GiteaError>;
 }

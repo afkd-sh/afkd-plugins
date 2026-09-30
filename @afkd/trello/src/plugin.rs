@@ -1,10 +1,11 @@
 //! The plugin's state across calls, and one handler per call: the thin layer between
 //! afkd's wire ([`crate::wire`]) and the `card` kind's vendor half ([`crate::card`]).
 //!
-//! **afkd runs the hooks.** `on_claim` after a `poll` hands a unit over, and `on_done`,
-//! `on_park` or `on_fail` after its `finish`; each action a hook calls is one `call`,
-//! naming the unit by its key, which this plugin does on that unit's card. A finished
-//! unit's card is kept a while for that ([`FINISHED_MAX`]), since its post-run hook's
+//! **afkd runs the slots.** `on_claim` after a `poll` hands a unit over, and `on_done`,
+//! `on_park` or `on_fail` after its `finish`; each action a slot calls is one `call`,
+//! naming the card it acts on by its handle — the id and key of a unit this plugin handed
+//! over, never an implied claim — which this plugin does on that unit's card. A finished
+//! unit's card is kept a while for that ([`FINISHED_MAX`]), since its post-run slot's
 //! calls arrive after `finish`.
 //!
 //! Five things the wire forces that the built-in never had to do:
@@ -34,7 +35,7 @@ use crate::board::{BoardClient, Card};
 use crate::card::{is_afkd, Identity, TrelloUnits, Unit};
 use crate::client::TrelloClient;
 use crate::common::{Clock, Diag, CALL_BUDGET};
-use crate::lifecycle::from_call;
+use crate::lifecycle::{from_call, Call};
 use crate::rfc3339::format_utc;
 use crate::settings::{board_config, BoardConfig, ME};
 use crate::wire::{
@@ -172,9 +173,9 @@ impl Plugin {
                 outcome,
                 facts,
             } => on_armed(armed, clock, |a| a.finish(&key, outcome, &facts, diag)),
-            Request::Call { action, args, key } => on_armed(armed, clock, |a| {
-                a.call(&action, &args, key.as_deref(), diag)
-            }),
+            Request::Call { action, args } => {
+                on_armed(armed, clock, |a| a.call(&action, &args, diag))
+            }
             Request::Unknown => {
                 diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
                 Answer::Reply(json!({"ok": false}).to_string())
@@ -415,30 +416,22 @@ impl Armed {
         Answer::Reply(reply.to_string())
     }
 
-    /// Do one action a hook called, on the card of the unit `key` names — a live one, or
-    /// one finished since. `{"ok":false}` with the sentence, diagnosed too, for an action
-    /// afkd would not have bound, a key naming no card, or a board that refused it.
-    fn call(
-        &self,
-        action: &str,
-        args: &Map<String, Value>,
-        key: Option<&str>,
-        diag: &dyn Diag,
-    ) -> Answer {
+    /// Do one action a slot called, on the card of the unit its handle names — a live one,
+    /// or one finished since. `{"ok":false}` with the sentence, diagnosed too, for an
+    /// action afkd would not have bound, a handle naming no card, or a board that refused
+    /// it.
+    fn call(&self, action: &str, args: &Map<String, Value>, diag: &dyn Diag) -> Answer {
         let refuse = |error: String| {
             diag.err(&error);
             Answer::Reply(json!({"ok": false, "error": error}).to_string())
         };
-        let decoded = match from_call(action, args) {
-            Ok(decoded) => decoded,
+        let Call { key, action: act } = match from_call(action, args) {
+            Ok(call) => call,
             Err(problem) => return refuse(problem),
         };
-        let Some(key) = key else {
-            return refuse(format!("{action} acts on a card, and this run has none"));
-        };
-        let card = match self.live.get(key) {
+        let card = match self.live.get(&key) {
             Some(live) => live.unit.card(),
-            None => match self.finished.iter().find(|(finished, _)| finished == key) {
+            None => match self.finished.iter().find(|(finished, _)| *finished == key) {
                 Some((_, card)) => card,
                 None => {
                     return refuse(format!(
@@ -447,7 +440,7 @@ impl Armed {
                 }
             },
         };
-        match self.units.act(card, &decoded, diag) {
+        match self.units.act(card, &act, diag) {
             Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
             Err(e) => refuse(e.to_string()),
         }
@@ -563,16 +556,28 @@ mod tests {
             )
         }
 
-        /// One `call` of `action` with `args` on the unit `key` names, as afkd sends a
-        /// hook's action.
+        /// One `call` of `action` with `args` on the card of the unit `key` names, as afkd
+        /// sends a slot's action: the card's handle first.
         fn act(
             &mut self,
             action: &str,
             args: serde_json::Value,
             key: &serde_json::Value,
         ) -> serde_json::Value {
-            self.call(json!({"call": "call", "action": action, "args": args, "key": key}))
+            let mut bound = json!({"card": handle(key)});
+            bound
+                .as_object_mut()
+                .unwrap()
+                .extend(args.as_object().expect("an args object").clone());
+            self.call(json!({"call": "call", "action": action, "args": bound}))
         }
+    }
+
+    /// The handle afkd passes for the unit `key` names. The plugin reads only its key; the
+    /// id is the card's, as `poll` handed it over.
+    fn handle(key: &serde_json::Value) -> serde_json::Value {
+        let key = key.as_str().expect("a unit key");
+        json!({"id": key.split('#').next(), "key": key})
     }
 
     /// The `hello` today's afkd writes, carrying `settings`.
@@ -1298,9 +1303,9 @@ mod tests {
     }
 
     /// Each call the plugin cannot do answers `ok:false` with its sentence — which afkd
-    /// fails the hook's `result` with — and says it on the diagnostic channel too: an
-    /// action afkd would not bind, a bare run's `null` key, a key naming no card, and a
-    /// board that refused or never answered.
+    /// fails the slot's `result` with — and says it on the diagnostic channel too: an
+    /// action afkd would not bind, a handle naming no card, and a board that refused or
+    /// never answered.
     #[test]
     fn a_call_the_plugin_cannot_do_answers_its_sentence() {
         let mut f = Fixture::armed(settings());
@@ -1321,12 +1326,6 @@ mod tests {
                 json!({}),
                 key.clone(),
                 "add_label: parameter label is required",
-            ),
-            (
-                "archive",
-                json!({}),
-                json!(null),
-                "archive acts on a card, and this run has none",
             ),
             (
                 "archive",
@@ -1363,13 +1362,93 @@ mod tests {
         );
     }
 
+    /// A call acts on the card its handle names, never on an implied claim: with one card
+    /// finished and the next one claimed and live, an `on_done`'s comment on the finished
+    /// card lands there — even beside a stray top-level `key` naming the live one, which
+    /// the request no longer carries and the plugin does not read.
+    #[test]
+    fn a_call_acts_on_the_item_its_handle_names() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        f.board
+            .add_card("Up for Grabs", "card2", "第二のカード 🚧", "");
+        let first = f.poll()["unit"]["key"].clone();
+        assert_eq!(f.finish(&first, "clean"), json!({"ok": true}));
+        assert_eq!(
+            f.act("move_to", json!({"list": "Review"}), &first),
+            json!({"ok": true})
+        );
+        let second = f.poll()["unit"]["key"].clone();
+        assert!(second.as_str().unwrap().starts_with("card2#"), "{second}");
+
+        let text = "afkd landed this card in 3m 12s.\n\n— 完了 ✅";
+        assert_eq!(
+            f.call(json!({"call": "call", "action": "comment",
+                          "args": {"card": handle(&first), "text": text},
+                          "key": second})),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            f.board.comments_on("card1").last().map(|c| c.text.clone()),
+            Some(text.to_string())
+        );
+        assert!(
+            f.board.comments_on("card2").iter().all(|c| c.text != text),
+            "the live card got nothing"
+        );
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+    }
+
+    /// A call whose card handle is missing, is not a handle, or names a key this plugin
+    /// never handed over answers `ok:false` with its sentence, diagnosed, and touches
+    /// nothing on the board — even with a live claim it could have guessed at.
+    #[test]
+    fn a_call_without_a_usable_handle_is_refused() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        let key = f.poll()["unit"]["key"].clone();
+        let before = (f.board.actions().len(), f.board.comments_on("card1").len());
+        let mut expect = Vec::new();
+        for (args, error) in [
+            (
+                json!({"text": "hej"}),
+                "comment: parameter card is required",
+            ),
+            (
+                json!({"card": key, "text": "hej"}),
+                "comment: parameter card must be an item handle",
+            ),
+            (
+                json!({"card": {"id": "card1"}, "text": "hej"}),
+                "comment: parameter card must be an item handle",
+            ),
+            (
+                json!({"card": {"id": "card9", "key": "card9#c9"}, "text": "hej"}),
+                "comment for card9#c9, which this plugin holds no card for",
+            ),
+        ] {
+            assert_eq!(
+                f.call(json!({"call": "call", "action": "comment", "args": args,
+                              "key": key})),
+                json!({"ok": false, "error": error}),
+                "{args}"
+            );
+            expect.push(error.to_string());
+        }
+        assert_eq!(f.diag.errs(), expect);
+        assert_eq!(
+            (f.board.actions().len(), f.board.comments_on("card1").len()),
+            before,
+            "nothing landed"
+        );
+    }
+
     /// A `call` before an accepted `hello` is afkd out of step, like any other call.
     #[test]
     fn a_call_before_hello_is_fatal() {
         let mut f = Fixture::new();
-        let request = serde_json::from_value(
-            json!({"call": "call", "action": "archive", "args": {}, "key": "card1#c1"}),
-        )
+        let request = serde_json::from_value(json!({"call": "call", "action": "archive",
+                   "args": {"card": {"id": "card1", "key": "card1#c1"}}}))
         .unwrap();
         assert!(matches!(
             f.plugin.answer(request),

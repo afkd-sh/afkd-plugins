@@ -1,7 +1,7 @@
 # `@afkd/gitlab`
 
 A **provider** plugin with two trigger kinds. [`service(gitlab)`](#servicegitlab-issues)
-turns open issues on a GitLab project into afkd runs, and gives the service's hooks the
+turns open issues on a GitLab project into afkd runs, and gives the service's slots the
 actions that reflect progress back through each issue's assignees, labels and state.
 [`service(gitlab.mr)`](#servicegitlabmr-merge-request-review) re-fires a run on a merge
 request each time a human leaves a note newer than the bot's last word, for an automated
@@ -36,10 +36,11 @@ afkd copies the tree and runs `cargo build --release --locked` in it, so the hos
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
 the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
-Run it on **afkd 0.2.186 or newer**, the first to speak plugin protocol 2: this is a
-manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
-imports, and afkd runs its hooks, sending each action a hook calls as a `call`. An older
-afkd refuses the plugin at its `hello`.
+Run it on **afkd 0.2.197 or newer**, the first with handle types and slot signatures: this
+is a manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
+imports; afkd passes its slots the claimed issue as a `gitlab.Issue`, or the merge request
+as a `gitlab.Merge_Request`, and sends each action a slot calls on one as a `call`. An
+older afkd refuses the manifest when it is installed.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `gitlab`:
 
@@ -61,26 +62,46 @@ develop :: service(gitlab) {
   source_label  "afkd::ready"
   poll_interval 1m to 3m
 
-  on_claim {
-    gitlab.assign_me()
-    gitlab.label_add("afkd::working")
+  on_claim(run, issue) {
+    gitlab.assign_me(issue)
+    gitlab.label_add(issue, "afkd::working")
   }
-  on_done {
-    gitlab.label_remove("afkd::working")
-    gitlab.comment("Fixed in #{run.duration} by #{gitlab.me}.")
-    gitlab.close()
+  on_done(run, issue, outcome) {
+    gitlab.label_remove(issue, "afkd::working")
+    gitlab.comment(issue, "Fixed in #{outcome.duration} by #{gitlab.me}.")
+    gitlab.close(issue)
   }
-  on_fail {
-    gitlab.label_remove("afkd::working")
-    gitlab.unassign()
+  on_fail(run, issue, outcome) {
+    gitlab.label_remove(issue, "afkd::working")
+    gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run { task() }
+  on_run() { task() }
+}
+
+reviews :: service(gitlab.mr) {
+  base_url      "https://gitlab.example.com"
+  project       "group/widgets"
+  token         GITLAB_TOKEN
+  author_me     true
+  poll_interval 2m to 4m
+
+  on_claim(run, mr) { gitlab.mr_label_add(mr, "afkd::reviewing") }
+  on_done(run, mr, outcome) {
+    gitlab.mr_label_remove(mr, "afkd::reviewing")
+    gitlab.mr_comment(mr, "Round done in #{outcome.duration}.")
+  }
+  on_fail(run, mr, outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
+
+  work_dir "/srv/acme/widgets"
+  on_run() { task() }
 }
 ```
 
-The token comes from the daemon's environment, so it never sits in the file.
+The token comes from the daemon's environment, so it never sits in the file. Each action
+names the item it acts on — the `issue` or `mr` its slot is passed — so it reads the same
+wherever it is written, and a slot may act on another item than the one its run claimed.
 
 ## Name the skill
 
@@ -104,7 +125,7 @@ issue number on a `service(gitlab.mr)` run — and falls back to the bare number
 
 ## `service(gitlab)` (issues)
 
-Fires for open issues on a single GitLab project, and its hooks reflect progress back
+Fires for open issues on a single GitLab project, and its slots reflect progress back
 through the issue's assignees, labels, and state. Its token stays with the plugin and the
 run.
 
@@ -125,9 +146,9 @@ non-empty). A path-with-namespace `project` is URL-encoded to its `:id`
 (`group/widgets` → `group%2Fwidgets`); a numeric id passes through. With `source_label`
 unset every open issue of the project is up for grabs; set, only the issues carrying it.
 
-The hooks only manage the issue's *status* — its assignees, labels, and state — through one
+The slots only manage the issue's *status* — its assignees, labels, and state — through one
 `PUT` per action. The **claim** itself is a `[afkd-claim]` marker note the plugin posts and
-releases on its own; no hook holds or releases it, and an issue a human is assigned to is
+releases on its own; no slot holds or releases it, and an issue a human is assigned to is
 still claimable (a person is not a competing claimant). afkd keeps that marker **alive
 while the run is**, asking the plugin to edit it every few minutes, so a run past an hour
 still holds its issue and a second instance loses the race rather than double-claiming it;
@@ -135,16 +156,16 @@ only a marker nobody is renewing any more ages out.
 
 **The claim label.** The plugin holds its re-pick gate in `afkd::claimed`: it adds the
 label itself when a claim is won, and an issue carrying it is never picked up again (a
-human, or a hook's `gitlab.label_remove("afkd::claimed")`, removes it to retry). GitLab
-creates a label the first time it is used, so there is nothing to define up front.
+human, or a slot's `gitlab.label_remove(issue, "afkd::claimed")`, removes it to retry).
+GitLab creates a label the first time it is used, so there is nothing to define up front.
 
 **Cadence.** Polls the forge every `poll_interval` for open issues carrying `source_label`
 (if set); a service works **one issue at a time, to completion**, and `max_attempts` bounds
 the per-issue retries. There is no clarification gate and no `on_park`.
 
-**Saying what happened.** A `gitlab.comment(…)` in `on_done`/`on_fail` can carry the run's
-own facts, which afkd interpolates before the plugin sees the text: `#{run.duration}`,
-`#{run.cost}` and `#{run.turns}`.
+**Saying what happened.** A `gitlab.comment(issue, …)` in `on_done`/`on_fail` can carry
+the run's own facts, which afkd interpolates before the plugin sees the text: the
+outcome's `#{outcome.duration}` and `#{outcome.error}`, and the run's `#{run.id}`.
 
 ```conf
 package main
@@ -155,17 +176,17 @@ widgets :: service(gitlab) {
   project "4242"
   token   "REPLACE_ME"
 
-  on_done {
-    gitlab.comment("Fixed in #{run.duration} for #{run.cost}.")
-    gitlab.close()
+  on_done(run, issue, outcome) {
+    gitlab.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
+    gitlab.close(issue)
   }
-  on_fail {
-    gitlab.comment("Gave up after #{run.turns} turns.")
-    gitlab.unassign()
+  on_fail(run, issue, outcome) {
+    gitlab.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error}")
+    gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -191,7 +212,7 @@ widgets :: service(gitlab) {
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -224,7 +245,7 @@ leaves a note newer than the bot's last word, for an automated review loop.
 `source_label` is **not** a key here.
 
 **Cadence.** Polls the forge every `poll_interval` for the project's open merge requests,
-optionally narrowed to the bot's own via `author_me`. Concurrency, retries, and the hooks
+optionally narrowed to the bot's own via `author_me`. Concurrency, retries, and the slots
 behave as for `service(gitlab)`.
 
 **When an MR fires.** Feedback is read from the MR's **notes** — GitLab has no separate
@@ -233,10 +254,10 @@ the newest of the bot's own notes, by when it was last edited, is the watermark,
 other author's note touched after it is new feedback. An MR the bot has never spoken on
 counts all of its notes as new. Claim markers never count, the bot's own or a rival's. It
 is the agent's reply, posted through the skill, that answers a round; until it does, the
-same feedback fires the MR again on a later poll. A `gitlab.comment(…)` in `on_done` or
-`on_fail` is the bot speaking too, so it answers the round as well. The loop ends when a
+same feedback fires the MR again on a later poll. A `gitlab.mr_comment(mr, …)` in `on_done`
+or `on_fail` is the bot speaking too, so it answers the round as well. The loop ends when a
 human merges or closes the MR, which drops it from the open set — so there is no
-`gitlab.close()` to call in `on_done`.
+`gitlab.mr_close(mr)` to call in `on_done`.
 
 **The claim.** The same `[afkd-claim]` marker as `service(gitlab)`, kept alive while the
 run is and taken off the thread when it ends. The plugin adds `afkd::claimed` when it wins
@@ -273,50 +294,83 @@ reviews :: service(gitlab.mr) {
   author_me       true
   follow_comments 60s
 
-  on_claim {
-    gitlab.assign_me()
-    gitlab.label_add("afkd::reviewing")
+  on_claim(run, mr) {
+    gitlab.mr_assign_me(mr)
+    gitlab.mr_label_add(mr, "afkd::reviewing")
   }
-  on_done { gitlab.label_remove("afkd::reviewing") }
-  on_fail {
-    gitlab.label_remove("afkd::reviewing")
-    gitlab.unassign()
+  on_done(run, mr) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
+  on_fail(run, mr) {
+    gitlab.mr_label_remove(mr, "afkd::reviewing")
+    gitlab.mr_unassign(mr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
 ```
 
-## Hooks and actions
+## Slots, handles and actions
 
-Both kinds' hooks are code slots ([lang-v2 §13.8](https://afkd.sh/docs/lang-v2/)):
-`on_claim` runs once an issue or merge request is claimed, before the run; `on_done` and
-`on_fail` after the run, the one its outcome picks. afkd runs a hook's statements in the
-order they are written, and each action it calls is one request to the plugin, which does
-it on the claimed issue or merge request. GitLab's assignee write replaces the whole set,
-so `assign_me` and `unassign` read it first and write it back changed by one row — neither
-touches an assignment afkd did not make:
+Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
+the run, the claimed item, and after the run its outcome — by position, so a slot names as
+many of them as it reads, in order. Neither kind parks, so neither has `on_park`:
 
-| Action                          | Effect                                          |
-|---------------------------------|-------------------------------------------------|
-| `gitlab.assign_me()`            | add the bot to the assignees (`assignee_ids`, unioned in) |
-| `gitlab.unassign()`             | remove **only** the bot from the assignees (a human's stays) |
-| `gitlab.label_add("<name>")`    | add a named label (`add_labels`)                |
-| `gitlab.label_remove("<name>")` | remove a named label (`remove_labels`, by name) |
-| `gitlab.close()`                | close the issue (`state_event=close`)           |
-| `gitlab.comment("<text>")`      | post a note, verbatim; in a post-run hook, `#{run.duration}`, `#{run.cost}` and `#{run.turns}` interpolate the run's facts (afkd rejects them in `on_claim`) |
+| Slot                          | Runs                                                       |
+|-------------------------------|------------------------------------------------------------|
+| `on_run(run, item)`           | the run itself                                             |
+| `on_claim(run, item)`         | once the issue or merge request is claimed, before the run |
+| `on_done(run, item, outcome)` | after a run that finished                                  |
+| `on_fail(run, item, outcome)` | after a run that failed                                    |
+
+`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
+`duration`, `error`). The item is the plugin's handle for it — a **`gitlab.Issue`** on
+`service(gitlab)`, written `issue` in the examples here, and a **`gitlab.Merge_Request`** on
+`service(gitlab.mr)`, written `mr`:
+
+| Field    | Type           | `gitlab.Issue` | `gitlab.Merge_Request` | What it is                  |
+|----------|----------------|:--------------:|:----------------------:|-----------------------------|
+| `id`     | `string`       | ✓              | ✓                      | the `iid`, `"7"`            |
+| `key`    | `string`       | ✓              | ✓                      | afkd's claim key for it     |
+| `title`  | `string`       | ✓              | ✓                      | its title                   |
+| `url`    | `string`       | ✓              | ✓                      | its page on GitLab          |
+| `number` | `int`          | ✓              | ✓                      | its `iid`, the number the project shows (`#7`, `!7`), not GitLab's global `id` |
+| `labels` | `list[string]` | ✓              |                        | the names of its labels     |
+| `branch` | `string`       |                | ✓                      | the merge request's source branch |
+
+A config passes an item around and compares it, but never builds one. afkd carries `id` and
+`key` at run time today; reading another field type-checks, and fails the slot when it runs
+until afkd carries it too.
+
+afkd runs a slot's statements in the order they are written, and each action it calls is
+one request to the plugin, which does it on the item the action is passed first. GitLab's
+assignee write replaces the whole set, so `assign_me` and `unassign` read it first and
+write it back changed by one row — neither touches an assignment afkd did not make. A
+config's types have no subtyping, so each kind has its own six: `service(gitlab)`'s take a
+`gitlab.Issue`, and `service(gitlab.mr)`'s — the same six, named with an `mr_` in front — a
+`gitlab.Merge_Request`:
+
+| Action (`service(gitlab)`)             | Action (`service(gitlab.mr)`)          | Effect                                  |
+|----------------------------------------|----------------------------------------|-----------------------------------------|
+| `gitlab.assign_me(issue)`              | `gitlab.mr_assign_me(mr)`              | add the bot to the assignees (`assignee_ids`, unioned in) |
+| `gitlab.unassign(issue)`               | `gitlab.mr_unassign(mr)`               | remove **only** the bot from the assignees (a human's stays) |
+| `gitlab.label_add(issue, "<name>")`    | `gitlab.mr_label_add(mr, "<name>")`    | add a named label (`add_labels`)        |
+| `gitlab.label_remove(issue, "<name>")` | `gitlab.mr_label_remove(mr, "<name>")` | remove a named label (`remove_labels`, by name) |
+| `gitlab.close(issue)`                  | `gitlab.mr_close(mr)`                  | close the issue or merge request (`state_event=close`) |
+| `gitlab.comment(issue, "<text>")`      | `gitlab.mr_comment(mr, "<text>")`      | post a note, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
+
+Passing the other kind's item — `gitlab.comment(mr, "…")` in a `service(gitlab.mr)` — or
+none at all is refused when the config loads.
 
 **`gitlab.me`** is the username the `token` authenticates as — `autocoder`, say — for a
-hook to name the bot in a note or a label. The plugin reads it off the forge when the
+slot to name the bot in a note or a label. The plugin reads it off the forge when the
 service starts.
 
 Each action returns a result, like any call: one the forge refused — a forge that is down,
 a token without the scope — fails with the plugin's sentence. A failing `on_claim` gives
-the issue back and fails the run; a failing post-run hook is logged and changes nothing.
-afkd never retries a hook action.
+the issue back and fails the run; a failing post-run slot is logged and changes nothing.
+afkd never retries a slot's action.
 
 **Mind the spelling.** The label actions are written verb-last, `gitlab.label_add` and
 `gitlab.label_remove`; `@afkd/trello` writes the same two verb-first, `trello.add_label`
@@ -327,16 +381,16 @@ and `trello.remove_label`.
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
 few things. Each is deliberate, and none changes what a config means.
 
-- **afkd runs the hooks.** The built-in ran its lifecycle blocks itself, inside its own
-  claim and finish. Here a hook is code afkd runs in the order it is written, and each
-  action is one request to the plugin, sent once the plugin's own claim or finish has
-  landed: `on_claim` after the claim is won, and the post-run hook after the claim marker
-  is released. afkd retries no hook action, so a post-run
-  `gitlab.label_remove("afkd::claimed")` that fails leaves the re-pick gate on the issue
-  for a human.
+- **afkd runs the slots.** The built-in ran its lifecycle blocks itself, inside its own
+  claim and finish. Here a slot is code afkd runs in the order it is written, and each
+  action is one request to the plugin naming the item it acts on, sent once the plugin's
+  own claim or finish has landed: `on_claim` after the claim is won, and the post-run slot
+  after the claim marker is released. afkd retries no slot's action, so a post-run
+  `gitlab.label_remove(issue, "afkd::claimed")` that fails leaves the re-pick gate on the
+  issue for a human.
 - **`gitlab.me` is read when the service starts.** The plugin asks GitLab who the token is
   when afkd greets it. If GitLab cannot say then, the service starts anyway — the first
-  call that needs the identity asks again — but a hook that reads `gitlab.me` fails until
+  call that needs the identity asks again — but a slot that reads `gitlab.me` fails until
   the plugin is restarted.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot

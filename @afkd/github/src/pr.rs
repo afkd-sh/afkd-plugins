@@ -31,7 +31,7 @@ use crate::common::{
 };
 use crate::feedback::{self, FeedbackItem};
 use crate::kind::{ClaimedUnit, Units};
-use crate::lifecycle::LifecycleAction;
+use crate::lifecycle::{LifecycleAction, Vocabulary, PR_VOCABULARY};
 use crate::settings::GithubConfig;
 use crate::wire::{WireFile, WireUnit};
 use crate::{NUMBER_FILE, PR_DIR, TASK_FILE};
@@ -112,6 +112,8 @@ impl Units for PrUnits {
     /// No `classify` — the built-in keeps the spine's default, so a PR never parks — and
     /// no `attempt_failed`.
     const CALLS: &'static [&'static str] = &["release", "renew", "comments"];
+
+    const VOCABULARY: Vocabulary = PR_VOCABULARY;
 
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         *lock(&self.call_deadline) = deadline;

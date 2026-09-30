@@ -1,10 +1,28 @@
 name = "@afkd/trello"
-version = "0.2.0"
+version = "0.3.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 build = "cargo build --release --locked"
 exec = "target/release/afkd-trello"
+
+# The item a run claims, `trello.Card` in a config: every slot is passed it, and every
+# action takes it first. afkd carries `id` (the short link) and `key` (afkd's claim key)
+# for every handle; the fields below are the rest of what the plugin knows about a card.
+[[handle]]
+name = "Card"
+
+  [[handle.field]]
+  name = "title"
+  type = "string"
+
+  [[handle.field]]
+  name = "url"
+  type = "string"
+
+  [[handle.field]]
+  name = "labels"
+  type = "list[string]"
 
 # The one kind, `service(trello)` in a config: a Trello board whose cards are claimed one
 # per run.
@@ -75,32 +93,103 @@ claims = true
   jitter = true
   default = "30s"
 
-  # afkd runs the hooks; each action one of them calls is one `call` to this plugin.
-  [[kind.hook]]
+  # The slots afkd runs, each passed the run and its card, and after the run its outcome;
+  # each action a slot calls is one `call` to this plugin.
+  [[kind.slot]]
+  name = "on_run"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+  [[kind.slot]]
   name = "on_claim"
   when = "pre"
 
-  [[kind.hook]]
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+  [[kind.slot]]
   name = "on_done"
   when = "post"
 
-  [[kind.hook]]
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
   name = "on_fail"
   when = "post"
 
-  [[kind.hook]]
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
   name = "on_park"
   when = "post"
 
-# The actions a hook calls, each on the claimed card.
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+# The actions a slot calls, each on the card it is passed first.
 [[action]]
 name = "mark_complete"
+
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
 
 [[action]]
 name = "archive"
 
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
+
 [[action]]
 name = "move_to"
+
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
 
   [[action.param]]
   name = "list"
@@ -118,12 +207,22 @@ name = "move_to"
 name = "add_label"
 
   [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
+
+  [[action.param]]
   name = "label"
   type = "string"
   required = true
 
 [[action]]
 name = "remove_label"
+
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
 
   [[action.param]]
   name = "label"
@@ -134,6 +233,11 @@ name = "remove_label"
 name = "add_member"
 
   [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
+
+  [[action.param]]
   name = "member"
   type = "string"
   required = true
@@ -142,12 +246,22 @@ name = "add_member"
 name = "remove_member"
 
   [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
+
+  [[action.param]]
   name = "member"
   type = "string"
   required = true
 
 [[action]]
 name = "comment"
+
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
 
   [[action.param]]
   name = "text"

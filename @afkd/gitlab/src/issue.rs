@@ -28,7 +28,7 @@ use crate::common::{
     ENV_ISSUE_NUMBER, ENV_PROJECT,
 };
 use crate::kind::{ClaimedUnit, Units};
-use crate::lifecycle::LifecycleAction;
+use crate::lifecycle::{LifecycleAction, Vocabulary, ISSUE_VOCABULARY};
 use crate::settings::GitlabConfig;
 use crate::wire::{WireFile, WireUnit};
 use crate::{ISSUE_DIR, NUMBER_FILE, TASK_FILE};
@@ -231,6 +231,8 @@ impl Units for IssueUnits {
     /// It neither classifies an attempt nor marks a failed one — the built-in keeps the
     /// spine's defaults for both — so `classify` and `attempt_failed` are not among them.
     const CALLS: &'static [&'static str] = &["release", "renew", "comments"];
+
+    const VOCABULARY: Vocabulary = ISSUE_VOCABULARY;
 
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         *lock(&self.call_deadline) = deadline;

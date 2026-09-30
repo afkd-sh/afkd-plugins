@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::lifecycle::ACTIONS;
+use crate::lifecycle::{Vocabulary, ACTIONS, ISSUE_VOCABULARY, PR_VOCABULARY};
 use crate::plugin::{ISSUE_KIND, PR_KIND};
 use crate::settings::{Declared, ISSUE_SETTINGS, PR_SETTINGS};
 
@@ -17,6 +17,9 @@ const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 /// One table of the manifest: its header (`""` for the top level) and its keys, each
 /// with its value as written (`"issue"`, `true`, `"30s"`).
 type Table = (String, BTreeMap<String, String>);
+
+/// A table and the tables written under it: a `[[kind.slot]]` and its `[[kind.slot.param]]`s.
+type Group = (BTreeMap<String, String>, Vec<BTreeMap<String, String>>);
 
 /// Scan the manifest into its tables, in order.
 fn tables(text: &str) -> Vec<Table> {
@@ -60,6 +63,31 @@ fn children(
             grouped.entry(owner.clone()).or_default();
         } else if header == child {
             grouped.entry(owner.clone()).or_default().push(t.clone());
+        }
+    }
+    grouped
+}
+
+/// Each `[[kind]]`'s `[[kind.slot]]`s, keyed by the kind's `name` as written, each with the
+/// `[[kind.slot.param]]`s written under it: a slot's name repeats across kinds, so the
+/// slots are grouped under their kind and the params under their slot, in order.
+fn slots(tables: &[Table]) -> BTreeMap<String, Vec<Group>> {
+    let mut grouped: BTreeMap<String, Vec<Group>> = BTreeMap::new();
+    let mut kind = String::new();
+    for (header, t) in tables {
+        match header.as_str() {
+            "kind" => kind = t["name"].clone(),
+            "kind.slot" => grouped
+                .entry(kind.clone())
+                .or_default()
+                .push((t.clone(), Vec::new())),
+            "kind.slot.param" => grouped
+                .get_mut(&kind)
+                .and_then(|slots| slots.last_mut())
+                .expect("a param under a slot")
+                .1
+                .push(t.clone()),
+            _ => {}
         }
     }
     grouped
@@ -112,14 +140,45 @@ fn the_manifest_names_the_plugin_and_how_it_builds() {
         top["exec"],
         quoted(&format!("target/release/{}", env!("CARGO_PKG_NAME")))
     );
-    // No proto 1 table survives: afkd refuses a v2 manifest carrying one.
-    for proto1 in ["trigger", "trigger.block", "worker", "command"] {
-        assert!(named(&tables, proto1).is_empty(), "{proto1}");
+    // No proto 1 table survives, nor the hooks slots replaced: afkd refuses a v2
+    // manifest carrying one.
+    for obsolete in ["trigger", "trigger.block", "worker", "command", "kind.hook"] {
+        assert!(named(&tables, obsolete).is_empty(), "{obsolete}");
     }
 }
 
+/// The two `[[handle]]`s are the items the two kinds claim, each with the fields the
+/// plugin knows about it beyond the `id` and `key` every handle has.
+#[test]
+fn the_handles_are_the_two_kinds_items_with_their_fields() {
+    let tables = tables(MANIFEST);
+    let field = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
+    let common = || {
+        vec![
+            field("title", "string"),
+            field("url", "string"),
+            field("number", "int"),
+        ]
+    };
+    let mut issue = common();
+    issue.push(field("labels", "list[string]"));
+    let mut pr = common();
+    pr.push(field("branch", "string"));
+    assert_eq!(
+        named(&tables, "handle"),
+        [
+            &table(&[("name", "\"Issue\"")]),
+            &table(&[("name", "\"Pull_Request\"")]),
+        ]
+    );
+    assert_eq!(
+        children(&tables, "handle", "handle.field"),
+        BTreeMap::from([(quoted("Issue"), issue), (quoted("Pull_Request"), pr),])
+    );
+}
+
 /// The two `[[kind]]`s are claiming triggers — the issue kind the main one — and each
-/// declares the settings the code reads, key for key and in order, and the three hooks
+/// declares the settings the code reads, key for key and in order, and the four slots
 /// afkd runs for it: neither kind parks, so neither has `on_park`.
 #[test]
 fn the_kinds_are_the_claiming_triggers_with_every_setting_typed() {
@@ -148,38 +207,69 @@ fn the_kinds_are_the_claiming_triggers_with_every_setting_typed() {
             (quoted(PR_KIND), setting_tables(PR_SETTINGS)),
         ])
     );
-    let hooks = |hooks: &[(&str, &str)]| -> Vec<BTreeMap<String, String>> {
-        hooks
-            .iter()
-            .map(|(name, when)| table(&[("name", &quoted(name)), ("when", &quoted(when))]))
-            .collect()
+    // `on_run` first and without `when`; each slot passed the run, the kind's item, and
+    // after the run the outcome, in that order.
+    let param = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
+    let kind_slots = |item: &str, handle: &str, park: bool| {
+        let mut names = vec![
+            ("on_run", None),
+            ("on_claim", Some("pre")),
+            ("on_done", Some("post")),
+            ("on_fail", Some("post")),
+        ];
+        if park {
+            names.push(("on_park", Some("post")));
+        }
+        names
+            .into_iter()
+            .map(|(name, when)| {
+                let mut t = table(&[("name", &quoted(name))]);
+                let mut params = vec![param("run", "afkd.Run"), param(item, handle)];
+                if let Some(when) = when {
+                    t.insert("when".into(), quoted(when));
+                    if when == "post" {
+                        params.push(param("outcome", "afkd.Outcome"));
+                    }
+                }
+                (t, params)
+            })
+            .collect::<Vec<_>>()
     };
-    let hooks = hooks(&[
-        ("on_claim", "pre"),
-        ("on_done", "post"),
-        ("on_fail", "post"),
-    ]);
     assert_eq!(
-        children(&tables, "kind", "kind.hook"),
+        slots(&tables),
         BTreeMap::from([
-            (quoted(ISSUE_KIND), hooks.clone()),
-            (quoted(PR_KIND), hooks),
+            (
+                quoted(ISSUE_KIND),
+                kind_slots(ISSUE_VOCABULARY.handle, "Issue", false)
+            ),
+            (
+                quoted(PR_KIND),
+                kind_slots(PR_VOCABULARY.handle, "Pull_Request", false)
+            ),
         ])
     );
 }
 
-/// The `[[action]]`s are the ones [`from_call`](crate::lifecycle::from_call) decodes, in
-/// its order, each with the parameters it reads; and the one `[[value]]` is `me`.
+/// The `[[action]]`s are the ones [`from_call`](crate::lifecycle::from_call) decodes: the
+/// issue kind's [`ACTIONS`], then the same under the pr kind's prefix, in its order. Each
+/// takes its kind's handle first, and then the parameters it reads — a prefixed action
+/// exactly its issue twin's — and the one `[[value]]` is `me`.
 #[test]
 fn the_actions_and_the_value_are_the_ones_the_code_answers() {
     let tables = tables(MANIFEST);
+    let names = |vocabulary: &Vocabulary| {
+        ACTIONS
+            .iter()
+            .map(|verb| quoted(&format!("{}{verb}", vocabulary.prefix)))
+            .collect::<Vec<_>>()
+    };
     let actions: Vec<String> = named(&tables, "action")
         .iter()
         .map(|t| t["name"].clone())
         .collect();
     assert_eq!(
         actions,
-        ACTIONS.iter().map(|a| quoted(a)).collect::<Vec<_>>()
+        [names(&ISSUE_VOCABULARY), names(&PR_VOCABULARY)].concat()
     );
 
     let required = |name: &str| {
@@ -190,17 +280,30 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
         ])]
     };
     let none = Vec::new;
-    assert_eq!(
-        children(&tables, "action", "action.param"),
-        BTreeMap::from([
-            (quoted("assign_me"), none()),
-            (quoted("unassign"), none()),
-            (quoted("label_add"), required("label")),
-            (quoted("label_remove"), required("label")),
-            (quoted("close"), none()),
-            (quoted("comment"), required("text")),
-        ])
-    );
+    let reads = BTreeMap::from([
+        ("assign_me", none()),
+        ("unassign", none()),
+        ("label_add", required("label")),
+        ("label_remove", required("label")),
+        ("close", none()),
+        ("comment", required("text")),
+    ]);
+    let params = children(&tables, "action", "action.param");
+    for (vocabulary, handle) in [(ISSUE_VOCABULARY, "Issue"), (PR_VOCABULARY, "Pull_Request")] {
+        let item = table(&[
+            ("name", &quoted(vocabulary.handle)),
+            ("type", &quoted(handle)),
+            ("required", "true"),
+        ]);
+        for verb in ACTIONS {
+            let name = format!("{}{verb}", vocabulary.prefix);
+            assert_eq!(
+                params[&quoted(&name)],
+                [vec![item.clone()], reads[verb].clone()].concat(),
+                "{name}"
+            );
+        }
+    }
 
     assert_eq!(
         named(&tables, "value"),
@@ -208,12 +311,13 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
     );
 }
 
-/// A plugin's kinds, actions and values share one namespace (lang-v2 §16.3), and afkd's
-/// install refuses a collision; so no name is declared twice across them.
+/// A plugin's kinds, actions, values and handle types share one namespace (lang-v2
+/// §16.3), and afkd's install refuses a collision; so no name is declared twice across
+/// them.
 #[test]
-fn no_kind_action_or_value_shares_a_name() {
+fn no_kind_action_value_or_handle_shares_a_name() {
     let tables = tables(MANIFEST);
-    let mut names: Vec<&str> = ["kind", "action", "value"]
+    let mut names: Vec<&str> = ["handle", "kind", "action", "value"]
         .iter()
         .flat_map(|header| named(&tables, header))
         .map(|t| t["name"].as_str())

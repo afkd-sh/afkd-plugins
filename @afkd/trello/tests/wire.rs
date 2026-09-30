@@ -89,15 +89,26 @@ fn settings(fake: &FakeTrello) -> Value {
     })
 }
 
-/// The selfdev service's hooks, as afkd runs them: each action one `call` on the unit's
-/// key, in written order, every reply `ok`. A comment arrives as afkd interpolated it.
+/// The selfdev service's slots, as afkd runs them: each action one `call` carrying the
+/// unit's card handle, in written order, every reply `ok`. A comment arrives as afkd
+/// interpolated it.
 ///
 /// ```text
-/// on_claim { trello.add_member(trello.me); trello.move_to("In Progress", at=top) }
-/// on_done  { trello.move_to("Review", at=top)
-///            trello.comment("afkd landed this card in #{run.duration} - …") }
-/// on_fail  { trello.move_to("Backlog", at=bottom); trello.add_label("Problem") }
-/// on_park  { trello.comment("parked after #{run.duration}, waiting on you") }
+/// on_claim(run, card) {
+///   trello.add_member(card, trello.me)
+///   trello.move_to(card, "In Progress", at=top)
+/// }
+/// on_done(run, card, outcome) {
+///   trello.move_to(card, "Review", at=top)
+///   trello.comment(card, "afkd landed this card in #{outcome.duration}.")
+/// }
+/// on_fail(run, card) {
+///   trello.move_to(card, "Backlog", at=bottom)
+///   trello.add_label(card, "Problem")
+/// }
+/// on_park(run, card, outcome) {
+///   trello.comment(card, "parked after #{outcome.duration}, waiting on you")
+/// }
 /// ```
 fn hook(plugin: &mut Plugin, name: &str, unit: &Value) {
     let calls: &[(&str, Value)] = match name {
@@ -120,7 +131,7 @@ fn hook(plugin: &mut Plugin, name: &str, unit: &Value) {
     };
     for (action, args) in calls {
         assert_eq!(
-            plugin.act(action, args.clone(), &unit["key"]),
+            plugin.act(action, args.clone(), unit),
             json!({"ok": true}),
             "{name}: {action}; stderr: {}",
             plugin.stderr()
@@ -128,9 +139,8 @@ fn hook(plugin: &mut Plugin, name: &str, unit: &Value) {
     }
 }
 
-/// The `on_done` comment, as afkd interpolates `#{run.duration}`, `#{run.cost}` and
-/// `#{run.turns}` into it.
-const LANDED: &str = "afkd landed this card in 2m48s - $0.42, 3 agent turns.";
+/// The `on_done` comment, as afkd interpolates `#{outcome.duration}` into it.
+const LANDED: &str = "afkd landed this card in 2m48s.";
 
 /// One beat that hands a unit over, and the `on_claim` afkd runs on it.
 fn claim_one(plugin: &mut Plugin) -> Value {
@@ -614,7 +624,7 @@ fn release_reverses_a_crashed_claim_and_reads_every_key_shape() {
         "a released unit is forgotten"
     );
     assert_eq!(
-        plugin.act("comment", json!({"text": "late"}), &unit["key"]),
+        plugin.act("comment", json!({"text": "late"}), &unit),
         json!({"ok": false, "error": format!(
             "comment for {}, which this plugin holds no card for",
             unit["key"].as_str().unwrap()
@@ -895,6 +905,33 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
 
 // --- call: every action, over the real wire ---
 
+/// A call acts on the card its handle names, never on a claim it implies: with the first
+/// card finished and the next one claimed and live, the first card's `on_done` — sent
+/// after `finish`, as afkd sends it — moves and comments on the finished card over the
+/// real wire and leaves the live one where its `on_claim` put it.
+#[test]
+fn a_post_run_call_acts_on_the_finished_card_its_handle_names() {
+    let b = board();
+    let next = b
+        .fake
+        .card("Up for Grabs", "N3xtC4rd", "次のカード — the next one", "");
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let first = claim_one(&mut plugin);
+    assert_eq!(
+        finish(&mut plugin, &first, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    let second = claim_one(&mut plugin);
+    assert_eq!(second["id"], "N3xtC4rd", "{second}");
+
+    hook(&mut plugin, "on_done", &first);
+    assert_eq!(b.fake.list_of(&b.card), "Review");
+    assert_eq!(said(&b.fake, &b.card, "afkd landed"), [LANDED]);
+    assert_eq!(b.fake.list_of(&next), "In Progress");
+    assert!(said(&b.fake, &next, "afkd landed").is_empty());
+    plugin.finish();
+}
+
 /// Every action afkd's hooks may call, one `call` each on a claimed card over the real
 /// wire and a real HTTP board: each answers `ok`, lands on the board and narrates one line
 /// naming the card. `me` resolves to the token's own member and a username to that
@@ -909,8 +946,7 @@ fn every_action_over_call_reaches_the_board() {
         .card("Discussion", "B0tt0m00", "Already discussed", "");
     let mut plugin = Plugin::armed(settings(&b.fake));
     let unit = plugin.poll()["unit"].clone();
-    let key = unit["key"].clone();
-    let mut act = |action: &str, args: Value| plugin.act(action, args, &key);
+    let mut act = |action: &str, args: Value| plugin.act(action, args, &unit);
     let ok = json!({"ok": true});
 
     assert_eq!(act("add_member", json!({"member": "me"})), ok);
@@ -958,11 +994,11 @@ fn every_action_over_call_reaches_the_board() {
         json!({"ok": true})
     );
     assert_eq!(
-        plugin.act("move_to", json!({"list": "Review", "at": "top"}), &key),
+        plugin.act("move_to", json!({"list": "Review", "at": "top"}), &unit),
         ok
     );
     assert_eq!(b.fake.list_of(&b.card), "Review");
-    assert_eq!(plugin.act("archive", json!({}), &key), ok);
+    assert_eq!(plugin.act("archive", json!({}), &unit), ok);
     assert!(b.fake.archived(&b.card));
 
     let stderr = plugin.stderr_soon("archiving");
@@ -990,34 +1026,30 @@ fn every_action_over_call_reaches_the_board() {
 
     // What cannot be done answers its sentence.
     b.fake.fail("add label", 503);
-    for (action, args, key, error) in [
+    for (action, args, error) in [
         (
             "add_label",
             json!({"label": "Problem"}),
-            key.clone(),
             "trello add label: board returned status 503".to_string(),
         ),
         (
             "archive",
-            json!({}),
-            Value::Null,
-            "archive acts on a card, and this run has none".to_string(),
+            json!({"card": SHORT_LINK}),
+            "archive: parameter card must be an item handle".to_string(),
         ),
         (
             "move_to",
             json!({"list": "Nirgendwo 🚫"}),
-            key.clone(),
             "trello resolve list: no list named 'Nirgendwo 🚫'".to_string(),
         ),
         (
             "rename",
             json!({"to": "x"}),
-            key.clone(),
             "no action `rename`".to_string(),
         ),
     ] {
         assert_eq!(
-            plugin.act(action, args, &key),
+            plugin.act(action, args, &unit),
             json!({"ok": false, "error": error}),
             "{action}"
         );

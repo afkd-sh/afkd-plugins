@@ -1,11 +1,12 @@
-//! The **action vocabulary** afkd's hooks call: the eight things a hook may do to the
-//! claimed card, and the decode of one `call` request into one of them.
+//! The **action vocabulary** afkd's slots call: the eight things a slot may do to a card,
+//! and the decode of one `call` request into one of them and the card it acts on.
 //!
-//! afkd runs the hooks (`on_claim`, `on_done`, `on_fail`, `on_park`) as code, in the
-//! order they are written, and each plugin action a hook calls — `trello.move_to("Review",
-//! at=top)` — crosses as one `call`, its arguments already bound and typed against the
-//! manifest and any `#{…}` in a comment already interpolated. What is left here is reading
-//! those arguments back, and refusing a shape only a hand-written wire could send.
+//! afkd runs the slots (`on_claim`, `on_done`, `on_fail`, `on_park`) as code, in the
+//! order they are written, and each plugin action a slot calls — `trello.move_to(card,
+//! "Review", at=top)` — crosses as one `call`, its arguments already bound and typed
+//! against the manifest and any `#{…}` in a comment already interpolated. The card is the
+//! handle the action takes first, never an implied current one. What is left here is
+//! reading those arguments back, and refusing a shape only a hand-written wire could send.
 
 use serde_json::{Map, Value};
 
@@ -54,9 +55,21 @@ pub(crate) enum LifecycleAction {
     Comment(String),
 }
 
+/// One decoded `call`: the card it acts on, by the key its handle carries, and what to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Call {
+    /// afkd's claim key for the card, the handle's `key`.
+    pub(crate) key: String,
+    /// What to do to it.
+    pub(crate) action: LifecycleAction,
+}
+
+/// The parameter every action takes first: the card it acts on, as a `trello.Card`
+/// handle.
+pub(crate) const HANDLE: &str = "card";
+
 /// The actions afkd may `call`, in the order the manifest declares them: what
 /// `manifest.rs`'s test holds `afkd-plugin.toml` to, and [`from_call`] decodes.
-#[cfg(test)]
 pub(crate) const ACTIONS: &[&str] = &[
     "mark_complete",
     "archive",
@@ -69,16 +82,35 @@ pub(crate) const ACTIONS: &[&str] = &[
 ];
 
 /// Decode one `call` — the action's name and its arguments by parameter name — into the
-/// action it asks for, or the sentence that refuses it.
+/// card it acts on and the action it asks for, or the sentence that refuses it.
 ///
 /// afkd binds every argument against the manifest before it sends the call, so a
 /// missing, mistyped or unknown-word argument only comes from a hand-written wire; it is
-/// refused rather than guessed at. An argument the action has no parameter for is
+/// refused rather than guessed at. The card is read off its handle's `key` alone, the key
+/// this plugin handed it over under. An argument the action has no parameter for is
 /// ignored, since the wire is additive.
-pub(crate) fn from_call(
-    action: &str,
-    args: &Map<String, Value>,
-) -> Result<LifecycleAction, String> {
+pub(crate) fn from_call(action: &str, args: &Map<String, Value>) -> Result<Call, String> {
+    if !ACTIONS.contains(&action) {
+        return Err(format!("no action `{action}`"));
+    }
+    let key = match args.get(HANDLE) {
+        Some(Value::Object(handle)) => handle.get("key").and_then(Value::as_str),
+        Some(_) => None,
+        None => return Err(format!("{action}: parameter {HANDLE} is required")),
+    };
+    let Some(key) = key else {
+        return Err(format!(
+            "{action}: parameter {HANDLE} must be an item handle"
+        ));
+    };
+    Ok(Call {
+        key: key.to_string(),
+        action: decode(action, args)?,
+    })
+}
+
+/// The action `action` asks for with `args`, its handle aside.
+fn decode(action: &str, args: &Map<String, Value>) -> Result<LifecycleAction, String> {
     let string = |param: &str| match args.get(param) {
         Some(Value::String(value)) => Ok(value.clone()),
         Some(_) => Err(format!("{action}: parameter {param} must be a string")),
@@ -117,11 +149,23 @@ mod tests {
     use crate::settings::ME;
     use serde_json::json;
 
+    /// The key a card's handle carries: its card and claim ObjectIds.
+    const KEY: &str = "6a4dd5de1234abcd5678ef90#6a4dd5ff1234abcd5678ef91";
+
+    /// Decode `action` over `args` as afkd binds them, the card's handle first, and hold
+    /// the call to the card the handle names.
     fn call(action: &str, args: Value) -> Result<LifecycleAction, String> {
-        from_call(action, args.as_object().expect("an args object"))
+        let mut bound =
+            Map::from_iter([(HANDLE.to_string(), json!({"id": "Qb7eLy2w", "key": KEY}))]);
+        bound.extend(args.as_object().expect("an args object").clone());
+        from_call(action, &bound).map(|call| {
+            assert_eq!(call.key, KEY, "{action}");
+            call.action
+        })
     }
 
-    /// Every action in [`ACTIONS`] decodes from the arguments afkd binds for it, each name
+    /// Every action in [`ACTIONS`] decodes from the arguments afkd binds for it, on the card
+    /// its handle names, each name
     /// and text byte for byte: a wide list name, an emoji label, a username with
     /// diacritics, the value `me`, and a multi-line markdown comment carrying CJK and a
     /// literal `@{run:x}` that afkd did not interpolate.
@@ -265,5 +309,51 @@ mod tests {
                 "{action} {args}"
             );
         }
+    }
+
+    /// The card is the handle afkd passes first, and a call without a usable one is
+    /// refused by name before its other parameters are read: none at all, the short link
+    /// alone, a handle with no key or a key that is no string. An unknown action is still
+    /// refused as one, whatever it carries.
+    #[test]
+    fn a_call_without_a_card_handle_is_refused_by_name() {
+        let required = "move_to: parameter card is required";
+        let malformed = "move_to: parameter card must be an item handle";
+        for (args, problem) in [
+            (json!({}), required),
+            (json!({"list": "Review"}), required),
+            (json!({"card": null}), malformed),
+            (json!({"card": "Qb7eLy2w", "list": "Review"}), malformed),
+            (json!({"card": {}, "list": "Review"}), malformed),
+            (json!({"card": {"id": "Qb7eLy2w"}}), malformed),
+            (json!({"card": {"id": "Qb7eLy2w", "key": 7}}), malformed),
+            (json!({"card": [KEY]}), malformed),
+        ] {
+            assert_eq!(
+                from_call("move_to", args.as_object().unwrap()),
+                Err(problem.to_string()),
+                "{args}"
+            );
+        }
+        assert_eq!(
+            from_call(
+                "rename",
+                json!({"card": {"id": "x", "key": KEY}})
+                    .as_object()
+                    .unwrap()
+            ),
+            Err("no action `rename`".to_string())
+        );
+        // The id is the plugin's own and not read: the key alone names the card.
+        assert_eq!(
+            from_call(
+                "archive",
+                json!({"card": {"key": KEY}}).as_object().unwrap()
+            ),
+            Ok(Call {
+                key: KEY.into(),
+                action: LifecycleAction::Archive,
+            })
+        );
     }
 }

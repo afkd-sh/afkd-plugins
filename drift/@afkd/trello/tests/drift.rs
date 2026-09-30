@@ -4,9 +4,11 @@
 //! against the afkd it will meet ([`bin_path`]).
 //!
 //! - The **install** leg installs the tree the release tarball holds and runs one card
-//!   through it on a real daemon, its hooks' actions crossing as `call`s.
+//!   through it on a real daemon, its slots' actions crossing as `call`s on the card each
+//!   is passed.
 //! - The **complete example** leg `afkd validate`s the selfdev pipeline of config language
-//!   v2's §24 against the installed plugin.
+//!   v2's §24 against the installed plugin, and the **handle** leg holds `afkd validate` to
+//!   refusing an action called without its card.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
 //!   each a whole `package main` file, against the installed plugin.
 //!
@@ -131,8 +133,8 @@ fn seed() -> (FakeTrello, String) {
 }
 
 /// The service that drives the seeded card, `home` its work dir: a v2 file importing the
-/// plugin, whose hooks call its actions — `trello.me` among them — and whose `on_done`
-/// comment afkd interpolates. The run holds until the test creates `release` — bounded, so
+/// plugin, whose slots call its actions on the card they are passed — `trello.me` among
+/// the arguments — and whose `on_done` comment afkd interpolates from the outcome. The run holds until the test creates `release` — bounded, so
 /// a test that never does cannot wedge it — which is what lets the test see the claim and
 /// the run mid-flight.
 fn service(home: &Path, base_url: &str) -> String {
@@ -150,17 +152,17 @@ widgets :: service(trello) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim {{
-    trello.add_member(trello.me)
-    trello.move_to("In Progress", at=top)
+  on_claim(run, card) {{
+    trello.add_member(card, trello.me)
+    trello.move_to(card, "In Progress", at=top)
   }}
-  on_done {{
-    trello.move_to("Review", at=top)
-    trello.comment("done in #{{run.duration}}")
+  on_done(run, card, outcome) {{
+    trello.move_to(card, "Review", at=top)
+    trello.comment(card, "done in #{{outcome.duration}}")
   }}
 
   work_dir "{home}"
-  on_run {{
+  on_run() {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
@@ -172,7 +174,7 @@ widgets :: service(trello) {{
 
 /// Write `config` as `home`'s main config.
 fn write_config(home: &Path, config: &str) {
-    let conf = main_afkd(home);
+    let conf = daemon_afkd(home);
     std::fs::create_dir_all(conf.parent().expect("has parent")).expect("mk the config dir");
     std::fs::write(&conf, config).expect("write the config");
 }
@@ -349,10 +351,10 @@ fn install_leg_places_the_plugin_and_runs_one_card_through_it() {
 // --- config language v2's complete example -------------------------------------------
 
 /// §24's entry file.
-const SECTION_24_MAIN: &str = r#"// main.afkd
+const SECTION_24_DAEMON: &str = r#"// daemon.afkd
 package main
 
-import "afkd"
+import "selfdev"
 "#;
 
 /// §24's shared queues.
@@ -363,15 +365,15 @@ develop :: queue { slots 1 }
 discuss :: queue { slots 2 }
 "#;
 
-/// §24's `afkd/selfdev.afkd`, copied from `docs/lang-v2.md` at afkd master, up to the
+/// §24's `selfdev/selfdev.afkd`, copied from `docs/lang-v2.md` at afkd master, up to the
 /// `develop` service's end. The `discuss` half after it is left out: it writes
 /// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
 /// `list[string]` and is written `[ "anyone" ]`.
-const SECTION_24_SELFDEV: &str = r##"// afkd/selfdev.afkd - Trello-driven pipeline: afkd develops itself.
+const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afkd - Trello-driven pipeline: afkd develops itself.
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
-// on exhaustion the card returns to Backlog. Markers live under $AFKD_SCRATCH_DIR.
+// on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
 
-package afkd
+package selfdev
 
 import "shared"
 import "@afkd/trello"
@@ -419,13 +421,13 @@ critic :: agent(claude) {
 }
 
 // Confine the pipeline to the repo plus its Rust/claude toolchain.
+// The run's scratch dir is bound automatically.
 repo_jail :: sandbox {
   network host
 
   read_write [
     REPO,
     PLUGINS,
-    run.scratch_dir,
     "#{env.HOME}/.config/afkd/",
     "#{env.HOME}/.cargo/",
     "#{env.HOME}/.cache/pnpm/",
@@ -463,7 +465,7 @@ prep :: proc() {
 }
 
 // Build, then critique, up to three times.
-gate :: proc(phase: string, build: string, critique: string) -> "blocked" | "approved" | "rejected" {
+gate :: proc(run: afkd.Run, phase: string, build: string, critique: string) -> "blocked" | "approved" | "rejected" {
   for _ in 0..<3 {
     builder <- fs.read("#{PROMPTS}/#{build}")
     if fs.is_file("#{run.scratch_dir}/#{phase}.blocked") { return "blocked" }
@@ -474,8 +476,8 @@ gate :: proc(phase: string, build: string, critique: string) -> "blocked" | "app
   return "rejected"
 }
 
-plan :: proc() {
-  verdict := gate("plan", "20-plan-build.md", "21-plan-critique.md")
+plan :: proc(run: afkd.Run) {
+  verdict := gate(run, "plan", "20-plan-build.md", "21-plan-critique.md")
   if verdict == "blocked" {
     fail "card unimplementable as written - see card comment"
   } else if verdict == "rejected" {
@@ -483,8 +485,8 @@ plan :: proc() {
   }
 }
 
-implement :: proc() {
-  verdict := gate("impl", "30-implement-build.md", "31-implement-critique.md")
+implement :: proc(run: afkd.Run) {
+  verdict := gate(run, "impl", "30-implement-build.md", "31-implement-critique.md")
   if verdict == "blocked" {
     fail "implementation blocked - see card comment"
   } else if verdict == "rejected" {
@@ -493,7 +495,7 @@ implement :: proc() {
 }
 
 // Commit the approved work, then check the fact rather than the agent's word.
-commit :: proc() {
+commit :: proc(run: afkd.Run) {
   builder <- fs.read("#{PROMPTS}/40-commit.md")
   if fs.is_file("#{run.scratch_dir}/commit.blocked") {
     fail "commit blocked: approval stale, real change needed - see card comment"
@@ -505,11 +507,11 @@ commit :: proc() {
   }
 }
 
-task :: proc() {
+task :: proc(run: afkd.Run) {
   prep()
-  plan()
-  implement()
-  commit()
+  plan(run)
+  implement(run)
+  commit(run)
 }
 
 develop :: service(trello) {
@@ -521,20 +523,20 @@ develop :: service(trello) {
   max_attempts  2
   poll_interval 1m to 3m
 
-  on_claim {
-    trello.add_member(trello.me)
-    trello.move_to("In Progress", at=top)
+  on_claim(run, card) {
+    trello.add_member(card, trello.me)
+    trello.move_to(card, "In Progress", at=top)
   }
-  on_done {
-    trello.move_to("Review", at=top)
-    trello.comment("afkd landed this card in #{run.duration} - #{run.cost}, #{run.turns} agent turns.")
+  on_done(run, card, outcome) {
+    trello.move_to(card, "Review", at=top)
+    trello.comment(card, "afkd landed this card in #{outcome.duration}.")
   }
-  on_park {
-    trello.comment("parked after #{run.duration}: waiting for a reply.")
+  on_park(run, card, outcome) {
+    trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail {
-    trello.move_to("Backlog", at=bottom)
-    trello.add_label("Problem")
+  on_fail(run, card, outcome) {
+    trello.move_to(card, "Backlog", at=bottom)
+    trello.add_label(card, "Problem")
   }
 
   work_dir    REPO
@@ -547,13 +549,14 @@ develop :: service(trello) {
     PNPM_CONFIG_STORE_DIR: PNPM_STORE,
   }
 
-  on_run { task() }
+  on_run(run) { task(run) }
 }
 "##;
 
 /// The selfdev pipeline of config language v2's §24, `develop` service and all, validates
 /// against the installed plugin: every setting it writes is one the manifest declares, of
-/// its type, and every action its hooks call is one the plugin provides.
+/// its type, and every action its slots call is one the plugin provides, on the card its
+/// slot is passed.
 #[test]
 fn the_lang_v2_complete_example_develop_service_validates() {
     let home = TempDir::new().expect("tempdir");
@@ -561,9 +564,9 @@ fn the_lang_v2_complete_example_develop_service_validates() {
     install(home.path(), &stage(stage_dir.path()));
     let config = config_dir(home.path());
     for (file, text) in [
-        ("main.afkd", SECTION_24_MAIN),
+        ("daemon.afkd", SECTION_24_DAEMON),
         ("shared/queues.afkd", SECTION_24_QUEUES),
-        ("afkd/selfdev.afkd", SECTION_24_SELFDEV),
+        ("selfdev/selfdev.afkd", SECTION_24_SELFDEV),
     ] {
         let path = config.join(file);
         std::fs::create_dir_all(path.parent().expect("has parent")).expect("mk the package");
@@ -572,9 +575,56 @@ fn the_lang_v2_complete_example_develop_service_validates() {
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "§24 validates:\n{report}");
     assert!(
-        report.contains("afkd/selfdev.afkd") && !report.contains("warning:"),
+        report.contains("selfdev/selfdev.afkd") && !report.contains("warning:"),
         "every file checked, cleanly:\n{report}"
     );
+}
+
+/// An action acts on the card it is passed, so one called without it — the pre-handle
+/// spelling, `trello.move_to("Review")` — is a load error naming the handle type, not a
+/// call on an implied card.
+#[test]
+fn a_call_with_the_wrong_handle_is_a_load_error() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    let config = |call: &str| {
+        format!(
+            r#"package main
+
+import "@afkd/trello"
+
+widgets :: service(trello) {{
+  board     "https://trello.com/b/BOARDID/afkd"
+  api_key   "REPLACE_ME"
+  token     "REPLACE_ME"
+  pick_from "Up for Grabs"
+
+  on_done(run, card) {{ {call} }}
+
+  work_dir "/srv/acme/widgets"
+  on_run() {{
+    $ true
+  }}
+}}
+"#
+        )
+    };
+    write_config(home.path(), &config(r#"trello.move_to("Review")"#));
+    let (code, report) = validate(home.path());
+    assert_eq!(
+        code,
+        Some(1),
+        "a call without its card is refused:\n{report}"
+    );
+    assert!(
+        report.contains("trello.Card"),
+        "the refusal names the handle type:\n{report}"
+    );
+    // The same file with the card passed is valid: the handle is all that was wrong.
+    write_config(home.path(), &config(r#"trello.move_to(card, "Review")"#));
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "the call with its card validates:\n{report}");
 }
 
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence

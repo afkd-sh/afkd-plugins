@@ -35,7 +35,7 @@ use crate::common::{
 };
 use crate::feedback::{render_feedback_section, FeedbackItem};
 use crate::kind::{ClaimedUnit, Units};
-use crate::lifecycle::LifecycleAction;
+use crate::lifecycle::{LifecycleAction, Vocabulary, ISSUE_VOCABULARY};
 use crate::settings::{DiscussWith, GiteaConfig};
 use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
 use crate::{ISSUE_DIR, NUMBER_FILE, PARK_FILE, TASK_FILE};
@@ -437,6 +437,8 @@ impl Units for IssueUnits {
     /// It marks no failed attempt — the built-in keeps the spine's no-op there — so
     /// `attempt_failed` is not among them.
     const CALLS: &'static [&'static str] = &["release", "renew", "comments", "classify"];
+
+    const VOCABULARY: Vocabulary = ISSUE_VOCABULARY;
 
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         *lock(&self.call_deadline) = deadline;
@@ -855,9 +857,9 @@ mod tests {
     }
 
     /// AC2 — the exclusive trap sprung by the user's own config: their `on_claim`
-    /// calls `gitea.label_add("afkd/inprogress")`, an **exclusive** label in the `afkd`
-    /// scope, which strips every other exclusive label in that scope off the issue. The
-    /// gate afkd created is not exclusive, so it survives — while the exclusive
+    /// calls `gitea.label_add(issue, "afkd/inprogress")`, an **exclusive** label in the
+    /// `afkd` scope, which strips every other exclusive label in that scope off the issue.
+    /// The gate afkd created is not exclusive, so it survives — while the exclusive
     /// `afkd/triage` sitting beside it does not, which is what makes this assertion mean
     /// something.
     #[test]

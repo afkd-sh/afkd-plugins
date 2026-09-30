@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::lifecycle::ACTIONS;
+use crate::lifecycle::{ACTIONS, HANDLE};
 use crate::plugin::TRELLO_KIND;
 use crate::settings::{ME, SETTINGS};
 
@@ -17,6 +17,9 @@ const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 /// One table of the manifest: its header (`""` for the top level) and its keys, each
 /// with its value as written (`"card"`, `true`, `["top", "bottom"]`).
 type Table = (String, BTreeMap<String, String>);
+
+/// A table and the tables written under it: a `[[kind.slot]]` and its `[[kind.slot.param]]`s.
+type Group = (BTreeMap<String, String>, Vec<BTreeMap<String, String>>);
 
 /// Scan the manifest into its tables, in order.
 fn tables(text: &str) -> Vec<Table> {
@@ -42,6 +45,25 @@ fn named<'a>(tables: &'a [Table], header: &str) -> Vec<&'a BTreeMap<String, Stri
         .filter(|(h, _)| h == header)
         .map(|(_, table)| table)
         .collect()
+}
+
+/// Each `parent` table with the `child` tables written under it, in order: a
+/// `[[kind.slot.param]]` belongs to the `[[kind.slot]]` above it. A `parent` table ends
+/// at the next table that is neither it nor its `child`.
+fn grouped(tables: &[Table], parent: &str, child: &str) -> Vec<Group> {
+    let mut groups: Vec<Group> = Vec::new();
+    let mut open = false;
+    for (header, t) in tables {
+        if header == parent {
+            groups.push((t.clone(), Vec::new()));
+            open = true;
+        } else if header == child && open {
+            groups.last_mut().unwrap().1.push(t.clone());
+        } else {
+            open = false;
+        }
+    }
+    groups
 }
 
 /// A table as written from `pairs`, each value already spelled as TOML.
@@ -78,14 +100,35 @@ fn the_manifest_names_the_plugin_and_how_it_builds() {
         top["exec"],
         quoted(&format!("target/release/{}", env!("CARGO_PKG_NAME")))
     );
-    // No proto 1 table survives: afkd refuses a v2 manifest carrying one.
-    for proto1 in ["trigger", "trigger.block", "worker", "command"] {
-        assert!(named(&tables, proto1).is_empty(), "{proto1}");
+    // No proto 1 table survives, nor the hooks slots replaced: afkd refuses a v2
+    // manifest carrying one.
+    for obsolete in ["trigger", "trigger.block", "worker", "command", "kind.hook"] {
+        assert!(named(&tables, obsolete).is_empty(), "{obsolete}");
     }
 }
 
+/// The one `[[handle]]` is the card every slot is passed and every action takes first,
+/// with the fields the plugin knows about a card beyond the `id` and `key` every handle
+/// has.
+#[test]
+fn the_handle_is_the_card_with_its_fields() {
+    let tables = tables(MANIFEST);
+    let field = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
+    assert_eq!(
+        grouped(&tables, "handle", "handle.field"),
+        [(
+            table(&[("name", "\"Card\"")]),
+            vec![
+                field("title", "string"),
+                field("url", "string"),
+                field("labels", "list[string]"),
+            ]
+        )]
+    );
+}
+
 /// The one `[[kind]]` is the main trigger, claiming one card per run, and declares the
-/// settings the code reads, key for key and in order, and the four hooks afkd runs.
+/// settings the code reads, key for key and in order, and the five slots afkd runs.
 #[test]
 fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
     let tables = tables(MANIFEST);
@@ -112,22 +155,35 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
         .cloned()
         .collect();
     assert_eq!(settings, want);
-    let hooks: Vec<BTreeMap<String, String>> =
-        named(&tables, "kind.hook").into_iter().cloned().collect();
+    // `on_run` first and without `when`; each slot passed the run, the card, and after the
+    // run the outcome, in that order.
+    let param = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
+    let slot = |name: &str, when: Option<&str>| {
+        let mut t = table(&[("name", &quoted(name))]);
+        let mut params = vec![param("run", "afkd.Run"), param(HANDLE, "Card")];
+        if let Some(when) = when {
+            t.insert("when".into(), quoted(when));
+            if when == "post" {
+                params.push(param("outcome", "afkd.Outcome"));
+            }
+        }
+        (t, params)
+    };
     assert_eq!(
-        hooks,
+        grouped(&tables, "kind.slot", "kind.slot.param"),
         [
-            ("on_claim", "pre"),
-            ("on_done", "post"),
-            ("on_fail", "post"),
-            ("on_park", "post"),
+            slot("on_run", None),
+            slot("on_claim", Some("pre")),
+            slot("on_done", Some("post")),
+            slot("on_fail", Some("post")),
+            slot("on_park", Some("post")),
         ]
-        .map(|(name, when)| table(&[("name", &quoted(name)), ("when", &quoted(when))]))
     );
 }
 
 /// The `[[action]]`s are the ones [`from_call`](crate::lifecycle::from_call) decodes, in
-/// its order, each with the parameters it reads; and the one `[[value]]` is `me`.
+/// its order, each taking the card's handle first and then the parameters it reads; and
+/// the one `[[value]]` is `me`.
 #[test]
 fn the_actions_and_the_value_are_the_ones_the_code_answers() {
     let tables = tables(MANIFEST);
@@ -157,6 +213,11 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
             ("required", "true"),
         ])]
     };
+    let card = table(&[
+        ("name", &quoted(HANDLE)),
+        ("type", "\"Card\""),
+        ("required", "true"),
+    ]);
     let mut want = BTreeMap::from([
         ("add_label".to_string(), required("label")),
         ("remove_label".to_string(), required("label")),
@@ -173,7 +234,15 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
         ("default", "\"top\""),
     ]));
     want.insert("move_to".to_string(), move_to);
-    assert_eq!(params, want, "mark_complete and archive take none");
+    for action in ACTIONS {
+        want.entry(action.to_string())
+            .or_default()
+            .insert(0, card.clone());
+    }
+    assert_eq!(
+        params, want,
+        "mark_complete and archive take the card alone"
+    );
 
     assert_eq!(
         named(&tables, "value"),
@@ -182,12 +251,13 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
     assert_eq!(ME, "me", "the value `hello` supplies is Trello's own alias");
 }
 
-/// A plugin's kinds, actions and values share one namespace (lang-v2 §16.3), and afkd's
-/// install refuses a collision; so no name is declared twice across them.
+/// A plugin's kinds, actions, values and handle types share one namespace (lang-v2
+/// §16.3), and afkd's install refuses a collision; so no name is declared twice across
+/// them.
 #[test]
-fn no_kind_action_or_value_shares_a_name() {
+fn no_kind_action_value_or_handle_shares_a_name() {
     let tables = tables(MANIFEST);
-    let mut names: Vec<&str> = ["kind", "action", "value"]
+    let mut names: Vec<&str> = ["handle", "kind", "action", "value"]
         .iter()
         .flat_map(|header| named(&tables, header))
         .map(|t| t["name"].as_str())

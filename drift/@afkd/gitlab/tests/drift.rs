@@ -4,9 +4,12 @@
 //! plugin is checked against the afkd it will meet ([`bin_path`]).
 //!
 //! - The **install** leg installs the tree the release tarball holds and runs one issue
-//!   through it on a real daemon, its hooks' actions crossing as `call`s.
+//!   through it on a real daemon, its slots' actions crossing as `call`s on the issue each
+//!   is passed.
 //! - The **both kinds** leg `afkd validate`s one file with a service of each kind, whose
-//!   hooks call every action the plugin provides and read its value `me`.
+//!   slots call every action the plugin provides on the item each is passed and read its
+//!   value `me`, and the **handle** leg holds `afkd validate` to refusing an action passed
+//!   the other kind's item.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
 //!   each a whole `package main` file, against the installed plugin.
 //!
@@ -121,10 +124,10 @@ const BODY: &str = "Retries pile up after a 502.\n\n> \"backoff\" — nobody\n\n
 const BUDGET: Duration = Duration::from_secs(30);
 
 /// The service that drives [`ISSUE`], `home` its work dir: a v2 file importing the plugin,
-/// whose hooks call its actions and whose `on_done` comment afkd interpolates — a run fact
-/// and the plugin's value `me` both. The run holds until the test creates `release` —
-/// bounded, so a test that never does cannot wedge it — which is what lets the test see the
-/// claim and the run mid-flight.
+/// whose slots call its actions on the issue they are passed and whose `on_done` comment
+/// afkd interpolates — the outcome's duration and the plugin's value `me` both. The run
+/// holds until the test creates `release` — bounded, so a test that never does cannot wedge
+/// it — which is what lets the test see the claim and the run mid-flight.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
         r#"package main
@@ -139,15 +142,15 @@ widgets :: service(gitlab) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim {{ gitlab.assign_me() }}
-  on_done {{
-    gitlab.label_remove("afkd::claimed")
-    gitlab.comment("done in #{{run.duration}} by #{{gitlab.me}}")
-    gitlab.close()
+  on_claim(run, issue) {{ gitlab.assign_me(issue) }}
+  on_done(run, issue, outcome) {{
+    gitlab.label_remove(issue, "afkd::claimed")
+    gitlab.comment(issue, "done in #{{outcome.duration}} by #{{gitlab.me}}")
+    gitlab.close(issue)
   }}
 
   work_dir "{home}"
-  on_run {{
+  on_run() {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
@@ -159,7 +162,7 @@ widgets :: service(gitlab) {{
 
 /// Write `config` as `home`'s main config.
 fn write_config(home: &Path, config: &str) {
-    let conf = main_afkd(home);
+    let conf = daemon_afkd(home);
     std::fs::create_dir_all(conf.parent().expect("has parent")).expect("mk the config dir");
     std::fs::write(&conf, config).expect("write the config");
 }
@@ -329,8 +332,9 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
     drive_one_issue(home.path());
 }
 
-/// A service of each kind, whose hooks between them call every action the plugin provides
-/// and read its value `me`, in the argument shapes the manifest types: wide and scoped label
+/// A service of each kind, whose slots between them call every action the plugin provides —
+/// each kind's own six, on the item its slot is passed — and read its value `me`, the run
+/// and the outcome, in the argument shapes the manifest types: wide and scoped label
 /// names, and a multi-line comment.
 const BOTH_KINDS: &str = r##"package main
 
@@ -345,22 +349,22 @@ issues :: service(gitlab) {
   max_attempts    2
   poll_interval   1m to 3m
 
-  on_claim {
-    gitlab.assign_me()
-    gitlab.label_add("afkd::working ⚙")
+  on_claim(run, issue) {
+    gitlab.assign_me(issue)
+    gitlab.label_add(issue, "afkd::working ⚙")
   }
-  on_done {
-    gitlab.label_remove("afkd::working ⚙")
-    gitlab.comment("done by #{gitlab.me} in #{run.duration}:\n\n- cost #{run.cost}\n- 完了 ✅")
-    gitlab.close()
+  on_done(run, issue, outcome) {
+    gitlab.label_remove(issue, "afkd::working ⚙")
+    gitlab.comment(issue, "done by #{gitlab.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
+    gitlab.close(issue)
   }
-  on_fail {
-    gitlab.label_remove("afkd::working ⚙")
-    gitlab.unassign()
+  on_fail(run, issue) {
+    gitlab.label_remove(issue, "afkd::working ⚙")
+    gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -371,40 +375,110 @@ reviews :: service(gitlab.mr) {
   author_me     true
   poll_interval 2m
 
-  on_claim { gitlab.assign_me() }
-  on_done { gitlab.comment("round answered by #{gitlab.me}") }
-  on_fail { gitlab.unassign() }
+  on_claim(run, mr) {
+    gitlab.mr_assign_me(mr)
+    gitlab.mr_label_add(mr, "afkd::reviewing 👀")
+  }
+  on_done(run, mr, outcome) {
+    gitlab.mr_label_remove(mr, "afkd::reviewing 👀")
+    gitlab.mr_comment(mr, "round answered by #{gitlab.me} in #{outcome.duration}")
+  }
+  on_fail(run, mr) {
+    gitlab.mr_unassign(mr)
+    gitlab.mr_close(mr)
+  }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
 "##;
 
 /// Both kinds validate as v2 services against the installed plugin: every setting either
-/// writes is one its kind declares, of its type, every action its hooks call is one the
-/// plugin provides, with the parameters it declares, and `gitlab.me` is a value it has.
+/// writes is one its kind declares, of its type, every action its slots call is one the
+/// plugin provides for that kind, with the item and the parameters it declares, and
+/// `gitlab.me` is a value it has.
 #[test]
 fn every_kind_validates_as_a_v2_service() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
-    for action in [
-        "assign_me(",
-        "unassign(",
-        "label_add(",
-        "label_remove(",
-        "close(",
-        "comment(",
-        "gitlab.me",
-    ] {
-        assert!(BOTH_KINDS.contains(action), "the file uses {action}");
+    let verbs = [
+        "assign_me",
+        "unassign",
+        "label_add",
+        "label_remove",
+        "close",
+        "comment",
+    ];
+    for verb in verbs {
+        for call in [
+            format!("gitlab.{verb}(issue"),
+            format!("gitlab.mr_{verb}(mr"),
+        ] {
+            assert!(BOTH_KINDS.contains(&call), "the file calls {call}");
+        }
+    }
+    for used in ["gitlab.me", "outcome.duration", "run.id"] {
+        assert!(BOTH_KINDS.contains(used), "the file uses {used}");
     }
     write_config(home.path(), BOTH_KINDS);
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "both kinds validate:\n{report}");
     assert!(!report.contains("warning:"), "cleanly:\n{report}");
+}
+
+/// An action acts on the item it is passed, typed by kind, so an issue action passed the
+/// merge request a `service(gitlab.mr)` slot is given — `gitlab.comment(mr, "…")` — is a
+/// load error naming the handle types, not a call on whatever item it names.
+#[test]
+fn a_call_with_the_wrong_handle_is_a_load_error() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    let config = |call: &str| {
+        format!(
+            r#"package main
+
+import "@afkd/gitlab"
+
+reviews :: service(gitlab.mr) {{
+  project "group/widgets"
+  token   "REPLACE_ME"
+
+  on_done(run, mr) {{ {call} }}
+
+  work_dir "/srv/acme/widgets"
+  on_run() {{
+    $ true
+  }}
+}}
+"#
+        )
+    };
+    write_config(
+        home.path(),
+        &config(r#"gitlab.comment(mr, "round answered — 完了 ✅")"#),
+    );
+    let (code, report) = validate(home.path());
+    assert_eq!(
+        code,
+        Some(1),
+        "an issue action on an mr is refused:\n{report}"
+    );
+    assert!(
+        report.contains("gitlab.Issue") && report.contains("gitlab.Merge_Request"),
+        "the refusal names both handle types:\n{report}"
+    );
+    // The same file calling the mr kind's own action is valid: the handle is all that was
+    // wrong.
+    write_config(
+        home.path(),
+        &config(r#"gitlab.mr_comment(mr, "round answered — 完了 ✅")"#),
+    );
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "the mr action validates:\n{report}");
 }
 
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence

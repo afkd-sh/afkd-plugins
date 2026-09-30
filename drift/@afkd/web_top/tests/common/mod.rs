@@ -83,9 +83,9 @@ pub(crate) fn main_conf(home: &Path) -> PathBuf {
     config_dir(home).join("afkd.conf")
 }
 
-/// The default v2 entry file under a temp `$HOME` — `<config dir>/main.afkd`.
-pub(crate) fn main_afkd(home: &Path) -> PathBuf {
-    config_dir(home).join("main.afkd")
+/// The daemon's v2 entry file under a temp `$HOME` — `<config dir>/daemon.afkd`.
+pub(crate) fn daemon_afkd(home: &Path) -> PathBuf {
+    config_dir(home).join("daemon.afkd")
 }
 
 /// The daemon log under a temp `$HOME` — `<state dir>/daemon.log` (ADR-0065).

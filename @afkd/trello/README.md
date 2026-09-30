@@ -1,7 +1,7 @@
 # `@afkd/trello`
 
 A **provider** plugin with one trigger kind, [`service(trello)`](#servicetrello-cards): it
-fires when a card lands in a watched list of a Trello board, and gives the service's hooks
+fires when a card lands in a watched list of a Trello board, and gives the service's slots
 the actions that move the card across the board as work starts, finishes, or fails. It also
 ships the `trello` skill an agent works the card through: read and post comments, fetch and
 attach files, tick checklist items, move and label the card, and ask a question that parks
@@ -34,10 +34,10 @@ afkd copies the tree and runs `cargo build --release --locked` in it, so the hos
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
 the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
-Run it on **afkd 0.2.186 or newer**, the first to speak plugin protocol 2: this is a
-manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
-imports, and afkd runs its hooks, sending each action a hook calls as a `call`. An older
-afkd refuses the plugin at its `hello`.
+Run it on **afkd 0.2.197 or newer**, the first with handle types and slot signatures: this
+is a manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
+imports; afkd passes its slots the claimed card as a `trello.Card`, and sends each action a
+slot calls on a card as a `call`. An older afkd refuses the manifest when it is installed.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `trello`:
 
@@ -59,21 +59,34 @@ develop :: service(trello) {
   api_key       TRELLO_API_KEY
   token         TRELLO_TOKEN
   pick_from     "Up for Grabs"
+  min_age       1m
+  max_attempts  2
   poll_interval 1m to 3m
 
-  on_claim {
-    trello.add_member(trello.me)
-    trello.move_to("In Progress", at=top)
+  on_claim(run, card) {
+    trello.add_member(card, trello.me)
+    trello.move_to(card, "In Progress", at=top)
   }
-  on_done {
-    trello.comment("landed in #{run.duration} - #{run.cost}, #{run.turns} turns.")
+  on_done(run, card, outcome) {
+    trello.move_to(card, "Review", at=top)
+    trello.comment(card, "afkd landed this card in #{outcome.duration}.")
+  }
+  on_park(run, card, outcome) {
+    trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
+  }
+  on_fail(run, card, outcome) {
+    trello.move_to(card, "Backlog", at=bottom)
+    trello.add_label(card, "Problem")
   }
 
-  on_run { task() }
+  work_dir "/srv/acme/widgets"
+  on_run() { task() }
 }
 ```
 
-The credentials come from the daemon's environment, so they never sit in the file.
+The credentials come from the daemon's environment, so they never sit in the file. Each
+action names the card it acts on — the `card` its slot is passed — so it reads the same
+wherever it is written, and a slot may act on another card than the one its run claimed.
 
 ## Name the skill
 
@@ -95,7 +108,7 @@ Nothing hands it to an agent on its own; a `skills` list has to name it. It read
 
 ## `service(trello)` (cards)
 
-Fires when a card lands in a watched list; its hooks move cards across the board as work
+Fires when a card lands in a watched list; its slots move cards across the board as work
 starts, finishes, or fails. Its secrets stay with the plugin and the run.
 
 | Key               | Type           | Notes                                  |
@@ -116,22 +129,49 @@ starts, finishes, or fails. Its secrets stay with the plugin and the run.
 
 The last three are afkd's own, read by afkd for every kind that claims its work.
 
-The service's four hooks are code slots ([lang-v2 §13.8](https://afkd.sh/docs/lang-v2/)):
-`on_claim` runs once a card is claimed, before the run; `on_done`, `on_fail` and `on_park`
-after the run, the one its outcome picks — `on_park` when it ended waiting on a human reply.
-afkd runs a hook's statements in the order they are written, and each action it calls is
-one request to the plugin, which does it on the claimed card:
+The service's slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each
+passed the run, the claimed card, and after the run its outcome — by position, so a slot
+names as many of them as it reads, in order:
+
+| Slot                            | Runs                                                        |
+|---------------------------------|-------------------------------------------------------------|
+| `on_run(run, card)`             | the run itself                                              |
+| `on_claim(run, card)`           | once the card is claimed, before the run                    |
+| `on_done(run, card, outcome)`   | after a run that finished                                   |
+| `on_park(run, card, outcome)`   | after a run that ended waiting on a human reply             |
+| `on_fail(run, card, outcome)`   | after a run that failed                                     |
+
+`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
+`duration`, `error`). `card` is a **`trello.Card`**, the plugin's handle for the card:
+
+| Field    | Type           | What it is                                         |
+|----------|----------------|----------------------------------------------------|
+| `id`     | `string`       | the card's short link, `Qb7eLy2w`                  |
+| `key`    | `string`       | afkd's claim key for the card                      |
+| `title`  | `string`       | the card's name                                    |
+| `url`    | `string`       | the card's address on trello.com                   |
+| `labels` | `list[string]` | the names of the labels on the card                |
+
+A config passes a card around and compares it, but never builds one. afkd carries `id` and
+`key` at run time today; reading `title`, `url` or `labels` type-checks, and fails the slot
+when it runs until afkd carries them too.
+
+afkd runs a slot's statements in the order they are written, and each action it calls is
+one request to the plugin, which does it on the card the action is passed first:
 
 | Action                                   | Effect                                  |
 |------------------------------------------|-----------------------------------------|
-| `trello.add_member(<member>)`            | add a member to the card; additive and idempotent |
-| `trello.remove_member(<member>)`         | remove a member from the card; idempotent (removing a member not on the card is a no-op) |
-| `trello.mark_complete()`                 | mark the card complete                  |
-| `trello.move_to("<list>", at=top)`       | move the card to a list, at `top` (the default) or `bottom` |
-| `trello.remove_label("<name>")`          | remove a named label from the card; idempotent (removing a label not on the card is a no-op) |
-| `trello.add_label("<name>")`             | add a named label to the card           |
-| `trello.comment("<text>")`               | post a comment on the card, verbatim; in a post-run hook, `#{run.duration}`, `#{run.cost}` and `#{run.turns}` interpolate the run's facts (afkd rejects them in `on_claim`) |
-| `trello.archive()`                       | archive the card                        |
+| `trello.add_member(card, <member>)`      | add a member to the card; additive and idempotent |
+| `trello.remove_member(card, <member>)`   | remove a member from the card; idempotent (removing a member not on the card is a no-op) |
+| `trello.mark_complete(card)`             | mark the card complete                  |
+| `trello.move_to(card, "<list>", at=top)` | move the card to a list, at `top` (the default) or `bottom` |
+| `trello.remove_label(card, "<name>")`    | remove a named label from the card; idempotent (removing a label not on the card is a no-op) |
+| `trello.add_label(card, "<name>")`       | add a named label to the card           |
+| `trello.comment(card, "<text>")`         | post a comment on the card, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
+| `trello.archive(card)`                   | archive the card                        |
+
+The card is a `trello.Card` and nothing else: `trello.move_to("Review")`, with no card, or
+passed another plugin's handle, is refused when the config loads.
 
 A `<member>` is a username, or **`trello.me`**, the member the plugin's credentials
 authenticate as. `trello.me` is Trello's own alias for that member, the string `"me"`, so a
@@ -140,11 +180,11 @@ member, since a Trello username is at least three characters long.
 
 Each action returns a result, like any call: one the board refused — a list the board does
 not have, a member not on it, a board that is down — fails with the plugin's sentence. A
-failing `on_claim` gives the card back and fails the run; a failing post-run hook is logged
-and changes nothing. afkd never retries a hook action.
+failing `on_claim` gives the card back and fails the run; a failing post-run slot is logged
+and changes nothing. afkd never retries a slot's action.
 
 **Repeating an action.** The label and member actions are all idempotent, so a retried card
-cannot fault on its own hooks: `add_label` and `add_member` are additive — attaching
+cannot fault on its own slots: `add_label` and `add_member` are additive — attaching
 what is already attached is a no-op — and `remove_label` and `remove_member` succeed
 against a card that never carried the label or the member. The asymmetry to know is
 board-level: `add_label` **creates** the named label on the board when it does not exist
@@ -155,7 +195,7 @@ target's `top` or `bottom` — so two `move_to`s leave the card wherever the las
 
 **Cadence.** **Polls** the board every `poll_interval` and fires for cards in `pick_from`;
 a service works **one card at a time, to completion**, and `max_attempts` bounds the
-retries per card. The hooks move, complete, or archive the card as work starts, finishes,
+retries per card. The slots move, complete, or archive the card as work starts, finishes,
 or fails.
 
 **Intake.** By default the poll claims the card at the head of `pick_from`. With
@@ -190,13 +230,13 @@ implement :: service(trello) {
   without_label  [ "blocked", "needs design — ask 陳大文" ]
   min_age        10m
 
-  on_claim {
-    trello.move_to("In Progress", at=top)
-    trello.remove_label("ready")
+  on_claim(run, card) {
+    trello.move_to(card, "In Progress", at=top)
+    trello.remove_label(card, "ready")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -236,10 +276,10 @@ groom :: service(trello) {
   pick_from    "Ideas"
   discuss_with [ "alice", "bob" ]
 
-  on_claim { trello.add_member(trello.me) }
+  on_claim(run, card) { trello.add_member(card, trello.me) }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -254,9 +294,9 @@ message on the card and writes the marker `park` into the run's scratch dir
 card instead of failing it: it adds the `Awaiting Reply` label, releases the claim, and
 **moves nothing** — the card keeps its place, its list, and its unspent attempts. `on_fail`
 does not run, no `[afkd-attempt]` marker goes up, and the poll goes on to the next card. The
-label is managed by the plugin itself, so the gate holds with no `on_park` hook; `on_park`
-is only for extras (`on_park { trello.move_to("Discussion") }` for a board that wants
-parked cards gathered somewhere).
+label is managed by the plugin itself, so the gate holds with no `on_park` slot; `on_park`
+is only for extras (`on_park(run, card) { trello.move_to(card, "Discussion") }` for a board
+that wants parked cards gathered somewhere).
 
 The badge is also how afkd **finds the card again**. Once a beat, before it reads
 `pick_from`, the plugin asks the board which of its open cards carry `Awaiting Reply`; a
@@ -297,10 +337,10 @@ widgets :: service(trello) {
   token     "REPLACE_ME"
   pick_from "To Do"
 
-  on_claim { trello.move_to("In Progress", at=top) }
+  on_claim(run, card) { trello.move_to(card, "In Progress", at=top) }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run(run) {
     builder <- "build the card; ask through the trello skill if unclear"
     if fs.is_file("#{run.scratch_dir}/park") { fail "parked: awaiting a human reply" }
     // reviewer / commit steps below never run when the agent asked
@@ -316,9 +356,9 @@ down and agent, gate, and plugin all name the same file.
 too, but only its holder takes it off. A service whose `on_claim` does not move the card out
 of `pick_from` will re-claim **its own** parked card on the next beat, exactly as an
 `on_done`-less config re-fires — drag it elsewhere, or give the service an
-`on_claim { trello.move_to(…) }`, as the example below does. A human who drags a badged
-card back into the parking service's own `pick_from` gets it claimed and unbadged there,
-answered or not.
+`on_claim(run, card) { trello.move_to(card, …) }`, as the example below does. A human who
+drags a badged card back into the parking service's own `pick_from` gets it claimed and
+unbadged there, answered or not.
 
 ```conf
 package main
@@ -331,13 +371,15 @@ widgets :: service(trello) {
   token     "REPLACE_ME"
   pick_from "To Do"
 
-  on_claim { trello.move_to("In Progress", at=top) }
-  on_done { trello.move_to("Review", at=top) }
-  on_fail { trello.move_to("Backlog", at=bottom) }
-  on_park { trello.comment("parked after #{run.duration} — waiting on you") }
+  on_claim(run, card) { trello.move_to(card, "In Progress", at=top) }
+  on_done(run, card) { trello.move_to(card, "Review", at=top) }
+  on_fail(run, card) { trello.move_to(card, "Backlog", at=bottom) }
+  on_park(run, card, outcome) {
+    trello.comment(card, "parked after #{outcome.duration} — waiting on you")
+  }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -363,15 +405,15 @@ widgets :: service(trello) {
   poll_interval   2m to 3m
   follow_comments 60s          // the agent hears you mid-run
 
-  on_claim { trello.move_to("In Progress", at=top) }
-  on_done {
-    trello.mark_complete()
-    trello.move_to("Done", at=bottom)
-    trello.archive()
+  on_claim(run, card) { trello.move_to(card, "In Progress", at=top) }
+  on_done(run, card) {
+    trello.mark_complete(card)
+    trello.move_to(card, "Done", at=bottom)
+    trello.archive(card)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run {
+  on_run() {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -390,14 +432,14 @@ flight. All of this is afkd's own mid-run watch; the plugin only reads the threa
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
 few things. Each is deliberate, and none changes what a config means.
 
-- **afkd runs the hooks.** The built-in ran its lifecycle blocks itself, in a fixed order
-  and inside its own claim and finish. Here a hook is code afkd runs in the order it is
-  written, and each action is one request to the plugin, sent once the plugin's own claim
-  or finish has landed: `on_claim` after the claim is won, and the post-run hook after the
-  claim is released — so a card moved by `on_done` is, for a moment, unclaimed in its old
-  list. afkd retries no hook action.
+- **afkd runs the slots.** The built-in ran its lifecycle blocks itself, in a fixed order
+  and inside its own claim and finish. Here a slot is code afkd runs in the order it is
+  written, and each action is one request to the plugin naming the card it acts on, sent
+  once the plugin's own claim or finish has landed: `on_claim` after the claim is won, and
+  the post-run slot after the claim is released — so a card moved by `on_done` is, for a
+  moment, unclaimed in its old list. afkd retries no slot's action.
 - **`me`, not `self`.** The member the credentials authenticate as is `trello.me` in a
-  hook and `"me"` in a setting — Trello's own alias for it — where the built-in reserved
+  slot and `"me"` in a setting — Trello's own alias for it — where the built-in reserved
   the word `self`.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot

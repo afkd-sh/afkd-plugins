@@ -833,18 +833,18 @@ fn the_verbs_accept_the_shipped_manifest() {
 
 // --- manifest v2 -------------------------------------------------------------------------
 
-/// A v2 `main.afkd` with two services and **no line about the companion**: under a v2
+/// A v2 `daemon.afkd` with two services and **no line about the companion**: under a v2
 /// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
 const V2_MAIN: &str = "package main\n\n\
-     tick :: service(interval) {\n  every 1h\n\n  on_run {\n    $ true\n  }\n}\n\n\
-     hello :: service(manual) {\n  on_run {\n    $ echo ライン one\n  }\n}\n";
+     tick :: service(interval) {\n  every 1h\n\n  on_run() {\n    $ true\n  }\n}\n\n\
+     hello :: service(manual) {\n  on_run() {\n    $ echo ライン one\n  }\n}\n";
 
 /// A home whose config directory holds [`V2_MAIN`] and nothing else — no `afkd.conf` for the
 /// daemon to read instead.
 fn v2_home() -> TempDir {
     let home = TempDir::new().expect("tempdir");
     std::fs::create_dir_all(config_dir(home.path())).expect("mk the config dir");
-    std::fs::write(main_afkd(home.path()), V2_MAIN).expect("write main.afkd");
+    std::fs::write(daemon_afkd(home.path()), V2_MAIN).expect("write daemon.afkd");
     home
 }
 

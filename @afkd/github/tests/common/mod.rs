@@ -31,6 +31,8 @@ pub struct Plugin {
     /// Requests written, and replies read — equal whenever no call is outstanding.
     asked: usize,
     answered: usize,
+    /// The kind the last `hello` armed, which names the handle parameter an action takes.
+    kind: String,
 }
 
 impl Plugin {
@@ -76,6 +78,7 @@ impl Plugin {
             stderr,
             asked: 0,
             answered: 0,
+            kind: String::new(),
         }
     }
 
@@ -95,15 +98,27 @@ impl Plugin {
     /// Greet as today's afkd does: the kind and its settings, and the service's name,
     /// roster and owner beside them.
     pub fn hello(&mut self, kind: &str, settings: Value) -> Value {
+        self.kind = kind.to_string();
         self.call(json!({"call": "hello", "proto": 2, "kind": kind,
                          "service": "監視::triage", "roster": ["監視::triage", "監視::nightly"],
                          "owner": "陳大文", "settings": settings}))
     }
 
-    /// Call one action on the unit `key` names, as afkd sends each action a hook calls:
-    /// its arguments bound by parameter name, `key` `null` for a bare run.
-    pub fn act(&mut self, action: &str, args: Value, key: &Value) -> Value {
-        self.call(json!({"call": "call", "action": action, "args": args, "key": key}))
+    /// The kind the last `hello` armed.
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Call one action on the item of `unit`, as afkd sends each action a slot calls: its
+    /// arguments bound by parameter name, the item's handle — the unit's `id` and `key`,
+    /// as `poll` handed it over — first, under the armed kind's name (`issue`, `pr`).
+    pub fn act(&mut self, action: &str, args: Value, unit: &Value) -> Value {
+        let mut bound = json!({ self.kind.as_str(): {"id": unit["id"], "key": unit["key"]} });
+        bound
+            .as_object_mut()
+            .unwrap()
+            .extend(args.as_object().expect("an args object").clone());
+        self.call(json!({"call": "call", "action": action, "args": bound}))
     }
 
     /// Write one request and read its reply line: under afkd's cap, newline-terminated,
