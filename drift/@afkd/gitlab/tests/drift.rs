@@ -140,15 +140,15 @@ widgets :: service(gitlab) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run, issue) {{ gitlab.assign_me(issue) }}
-  on_done(run, issue, outcome) {{
+  on_claim(run: afkd.Run, issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
+  on_done(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {{
     gitlab.label_remove(issue, "afkd::claimed")
     gitlab.comment(issue, "done in #{{outcome.duration}} by #{{gitlab.me}}")
     gitlab.close(issue)
   }}
 
   work_dir "{home}"
-  on_run() {{
+  on_run(run: afkd.Run, issue: gitlab.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
@@ -345,22 +345,22 @@ issues :: service(gitlab) {
   max_attempts    2
   poll_interval   1m to 3m
 
-  on_claim(run, issue) {
+  on_claim(run: afkd.Run, issue: gitlab.Issue) {
     gitlab.assign_me(issue)
     gitlab.label_add(issue, "afkd::working ⚙")
   }
-  on_done(run, issue, outcome) {
+  on_done(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
     gitlab.label_remove(issue, "afkd::working ⚙")
     gitlab.comment(issue, "done by #{gitlab.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     gitlab.close(issue)
   }
-  on_fail(run, issue) {
+  on_fail(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
     gitlab.label_remove(issue, "afkd::working ⚙")
     gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -371,21 +371,21 @@ reviews :: service(gitlab.mr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run, mr) {
+  on_claim(run: afkd.Run, mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)
     gitlab.mr_label_add(mr, "afkd::reviewing 👀")
   }
-  on_done(run, mr, outcome) {
+  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
     gitlab.mr_label_remove(mr, "afkd::reviewing 👀")
     gitlab.mr_comment(mr, "round answered by #{gitlab.me} in #{outcome.duration}")
   }
-  on_fail(run, mr) {
+  on_fail(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
     gitlab.mr_unassign(mr)
     gitlab.mr_close(mr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, mr: gitlab.Merge_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -441,10 +441,10 @@ reviews :: service(gitlab.mr) {{
   project "group/widgets"
   token   "REPLACE_ME"
 
-  on_done(run, mr) {{ {call} }}
+  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run() {{
+  on_run(run: afkd.Run, mr: gitlab.Merge_Request) {{
     $ true
   }}
 }}

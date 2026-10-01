@@ -153,17 +153,17 @@ widgets :: service(trello) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run, card) {{
+  on_claim(run: afkd.Run, card: trello.Card) {{
     trello.add_member(card, trello.me)
     trello.move_to(card, "In Progress", at=top)
   }}
-  on_done(run, card, outcome) {{
+  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
     trello.move_to(card, "Review", at=top)
     trello.comment(card, "done in #{{outcome.duration}}")
   }}
 
   work_dir "{home}"
-  on_run() {{
+  on_run(run: afkd.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
@@ -362,16 +362,16 @@ widgets :: service(trello) {{
   poll_interval 1s
   max_attempts  2
 
-  on_claim(run, card) {{
+  on_claim(run: afkd.Run, card: trello.Card) {{
     trello.move_to(card, "In Progress", at=top)
   }}
-  on_fail(run, card) {{
+  on_fail(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
     trello.move_to(card, "Backlog", at=bottom)
     trello.add_label(card, "Problem")
   }}
 
   work_dir "{home}"
-  on_run() {{
+  on_run(run: afkd.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail "{OUTAGE_FAULT}"
   }}
@@ -684,18 +684,18 @@ develop :: service(trello) {
   max_attempts  2
   poll_interval 1m to 3m
 
-  on_claim(run, card) {
+  on_claim(run: afkd.Run, card: trello.Card) {
     trello.add_member(card, trello.me)
     trello.move_to(card, "In Progress", at=top)
   }
-  on_done(run, card, outcome) {
+  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.move_to(card, "Review", at=top)
     trello.comment(card, "afkd landed this card in #{outcome.duration}.")
   }
-  on_park(run, card, outcome) {
+  on_park(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail(run, card, outcome) {
+  on_fail(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.move_to(card, "Backlog", at=bottom)
     trello.add_label(card, "Problem")
   }
@@ -710,7 +710,7 @@ develop :: service(trello) {
     PNPM_CONFIG_STORE_DIR: PNPM_STORE,
   }
 
-  on_run(run) { task(run) }
+  on_run(run: afkd.Run, card: trello.Card) { task(run) }
 }
 "##;
 
@@ -759,10 +759,10 @@ widgets :: service(trello) {{
   token     "REPLACE_ME"
   pick_from "Up for Grabs"
 
-  on_done(run, card) {{ {call} }}
+  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run() {{
+  on_run(run: afkd.Run, card: trello.Card) {{
     $ true
   }}
 }}

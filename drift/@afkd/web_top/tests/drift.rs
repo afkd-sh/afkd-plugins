@@ -836,8 +836,8 @@ fn the_verbs_accept_the_shipped_manifest() {
 /// A v2 `daemon.afkd` with two services and **no line about the companion**: under a v2
 /// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
 const V2_MAIN: &str = "\
-     tick :: service(interval) {\n  every 1h\n\n  on_run() {\n    $ true\n  }\n}\n\n\
-     hello :: service(manual) {\n  on_run() {\n    $ echo ライン one\n  }\n}\n";
+     tick :: service(interval) {\n  every 1h\n\n  on_run(run: afkd.Run) {\n    $ true\n  }\n}\n\n\
+     hello :: service(manual) {\n  on_run(run: afkd.Run) {\n    $ echo ライン one\n  }\n}\n";
 
 /// A home whose config directory holds [`V2_MAIN`] and nothing else — no `afkd.conf` for the
 /// daemon to read instead.

@@ -59,25 +59,25 @@ develop :: service(gitea) {
   token         GITEA_TOKEN
   poll_interval 1m to 3m
 
-  on_claim(run, issue) {
+  on_claim(run: afkd.Run, issue: gitea.Issue) {
     gitea.assign_me(issue)
     gitea.label_add(issue, "afkd/working")
   }
-  on_done(run, issue, outcome) {
+  on_done(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
     gitea.label_remove(issue, "afkd/working")
     gitea.comment(issue, "Fixed in #{outcome.duration} by #{gitea.me}.")
     gitea.close(issue)
   }
-  on_park(run, issue, outcome) {
+  on_park(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
     gitea.comment(issue, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail(run, issue, outcome) {
+  on_fail(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
     gitea.label_remove(issue, "afkd/working")
     gitea.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() { task() }
+  on_run(run: afkd.Run, issue: gitea.Issue) { task() }
 }
 
 reviews :: service(gitea.pr) {
@@ -87,15 +87,15 @@ reviews :: service(gitea.pr) {
   author_me     true
   poll_interval 2m to 4m
 
-  on_claim(run, pr) { gitea.pr_label_add(pr, "afkd/working") }
-  on_done(run, pr, outcome) {
+  on_claim(run: afkd.Run, pr: gitea.Pull_Request) { gitea.pr_label_add(pr, "afkd/working") }
+  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {
     gitea.pr_label_remove(pr, "afkd/working")
     gitea.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run, pr, outcome) { gitea.pr_label_remove(pr, "afkd/working") }
+  on_fail(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) { gitea.pr_label_remove(pr, "afkd/working") }
 
   work_dir "/srv/acme/widgets"
-  on_run() { task() }
+  on_run(run: afkd.Run, pr: gitea.Pull_Request) { task() }
 }
 ```
 
@@ -179,12 +179,12 @@ widgets :: service(gitea) {
   org      "acme"
   token    "REPLACE_ME"
 
-  on_claim(run, issue) { gitea.assign_me(issue) }
-  on_done(run, issue) { gitea.close(issue) }
-  on_fail(run, issue) { gitea.unassign(issue) }
+  on_claim(run: afkd.Run, issue: gitea.Issue) { gitea.assign_me(issue) }
+  on_done(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) { gitea.close(issue) }
+  on_fail(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) { gitea.unassign(issue) }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -225,12 +225,12 @@ requirement remains:
     repo     "acme/widgets"
     token    "REPLACE_ME"
 
-    on_park(run, issue, outcome) {
+    on_park(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
       gitea.comment(issue, "parked after #{outcome.duration} — waiting on you")
     }
 
     work_dir "/srv/acme/widgets"
-    on_run(run) {
+    on_run(run: afkd.Run, issue: gitea.Issue) {
       fixer <- "fix the issue; run the gitea skill's ask action if unclear"
       if fs.is_file("#{run.scratch_dir}/park") { fail "parked: awaiting a human reply" }
       // reviewer / commit / PR steps below never run when the agent asked
@@ -274,7 +274,7 @@ groom :: service(gitea) {
   discuss_with [ "alice", "bob" ]
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -298,7 +298,7 @@ widgets :: service(gitea) {
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -380,11 +380,11 @@ reviews :: service(gitea.pr) {
   token     "REPLACE_ME"
   author_me true
 
-  on_claim(run, pr) { gitea.pr_assign_me(pr) }
-  on_done(run, pr) { gitea.pr_unassign(pr) }
+  on_claim(run: afkd.Run, pr: gitea.Pull_Request) { gitea.pr_assign_me(pr) }
+  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) { gitea.pr_unassign(pr) }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, pr: gitea.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -393,16 +393,18 @@ reviews :: service(gitea.pr) {
 ## Slots, handles and actions
 
 Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
-the run, the claimed item, and after the run its outcome — by position, so a slot names as
-many of them as it reads, in order:
+the run, the claimed item, and after the run its outcome — by position, and a slot writes
+every one of them, in order, each with its type:
+`on_claim(run: afkd.Run, issue: gitea.Issue)` on `service(gitea)`, and
+`on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome)` on `service(gitea.pr)`.
 
-| Slot                              | `service(gitea)`                   | `service(gitea.pr)`             |
-|-----------------------------------|------------------------------------|---------------------------------|
-| `on_run(run, item)`               | the run itself                     | the run itself                  |
-| `on_claim(run, item)`             | once the issue is claimed, before the run | once the PR is claimed, before the run |
-| `on_done(run, item, outcome)`     | after a run that finished          | after a round that finished     |
-| `on_park(run, item, outcome)`     | after a run that ended waiting on a human reply | —                  |
-| `on_fail(run, item, outcome)`     | after a run that failed            | after a round that failed       |
+| Slot       | Passed               | `service(gitea)`                   | `service(gitea.pr)`             |
+|------------|----------------------|------------------------------------|---------------------------------|
+| `on_run`   | run, item            | the run itself                     | the run itself                  |
+| `on_claim` | run, item            | once the issue is claimed, before the run | once the PR is claimed, before the run |
+| `on_done`  | run, item, outcome   | after a run that finished          | after a round that finished     |
+| `on_park`  | run, item, outcome   | after a run that ended waiting on a human reply | —                  |
+| `on_fail`  | run, item, outcome   | after a run that failed            | after a round that failed       |
 
 `run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
 `duration`, `error`). The item is the plugin's handle for it — a **`gitea.Issue`** on

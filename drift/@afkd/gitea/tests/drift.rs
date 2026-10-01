@@ -131,15 +131,15 @@ widgets :: service(gitea) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run, issue) {{ gitea.assign_me(issue) }}
-  on_done(run, issue, outcome) {{
+  on_claim(run: afkd.Run, issue: gitea.Issue) {{ gitea.assign_me(issue) }}
+  on_done(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {{
     gitea.label_remove(issue, "afkd/claimed")
     gitea.comment(issue, "done in #{{outcome.duration}} by #{{gitea.me}}")
     gitea.close(issue)
   }}
 
   work_dir "{home}"
-  on_run() {{
+  on_run(run: afkd.Run, issue: gitea.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
@@ -335,23 +335,23 @@ issues :: service(gitea) {
   max_attempts    2
   poll_interval   1m to 3m
 
-  on_claim(run, issue) {
+  on_claim(run: afkd.Run, issue: gitea.Issue) {
     gitea.assign_me(issue)
     gitea.label_add(issue, "afkd/working ⚙")
   }
-  on_done(run, issue, outcome) {
+  on_done(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
     gitea.label_remove(issue, "afkd/working ⚙")
     gitea.comment(issue, "done by #{gitea.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     gitea.close(issue)
   }
-  on_fail(run, issue) {
+  on_fail(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
     gitea.label_remove(issue, "afkd/working ⚙")
     gitea.unassign(issue)
   }
-  on_park(run, issue) { gitea.label_add(issue, "needs/human") }
+  on_park(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) { gitea.label_add(issue, "needs/human") }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -363,21 +363,21 @@ reviews :: service(gitea.pr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run, pr) {
+  on_claim(run: afkd.Run, pr: gitea.Pull_Request) {
     gitea.pr_assign_me(pr)
     gitea.pr_label_add(pr, "afkd/reviewing 👀")
   }
-  on_done(run, pr, outcome) {
+  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {
     gitea.pr_label_remove(pr, "afkd/reviewing 👀")
     gitea.pr_comment(pr, "round answered by #{gitea.me} in #{outcome.duration}")
   }
-  on_fail(run, pr) {
+  on_fail(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {
     gitea.pr_unassign(pr)
     gitea.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, pr: gitea.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -430,10 +430,10 @@ reviews :: service(gitea.pr) {{
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run, pr) {{ {call} }}
+  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run() {{
+  on_run(run: afkd.Run, pr: gitea.Pull_Request) {{
     $ true
   }}
 }}

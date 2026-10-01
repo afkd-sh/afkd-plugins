@@ -59,22 +59,22 @@ develop :: service(github) {
   source_label  "afkd/ready"
   poll_interval 1m to 3m
 
-  on_claim(run, issue) {
+  on_claim(run: afkd.Run, issue: github.Issue) {
     github.assign_me(issue)
     github.label_add(issue, "afkd/working")
   }
-  on_done(run, issue, outcome) {
+  on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.label_remove(issue, "afkd/working")
     github.comment(issue, "Fixed in #{outcome.duration} by #{github.me}.")
     github.close(issue)
   }
-  on_fail(run, issue, outcome) {
+  on_fail(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.label_remove(issue, "afkd/working")
     github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() { task() }
+  on_run(run: afkd.Run, issue: github.Issue) { task() }
 }
 
 reviews :: service(github.pr) {
@@ -83,15 +83,15 @@ reviews :: service(github.pr) {
   author_me     true
   poll_interval 2m to 4m
 
-  on_claim(run, pr) { github.pr_label_add(pr, "afkd/reviewing") }
-  on_done(run, pr, outcome) {
+  on_claim(run: afkd.Run, pr: github.Pull_Request) { github.pr_label_add(pr, "afkd/reviewing") }
+  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
     github.pr_label_remove(pr, "afkd/reviewing")
     github.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run, pr, outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
+  on_fail(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
 
   work_dir "/srv/acme/widgets"
-  on_run() { task() }
+  on_run(run: afkd.Run, pr: github.Pull_Request) { task() }
 }
 ```
 
@@ -173,17 +173,17 @@ widgets :: service(github) {
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run, issue, outcome) {
+  on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
     github.close(issue)
   }
-  on_fail(run, issue, outcome) {
+  on_fail(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error}")
     github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -206,7 +206,7 @@ widgets :: service(github) {
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -289,18 +289,18 @@ reviews :: service(github.pr) {
   author_me       true
   follow_comments 60s
 
-  on_claim(run, pr) {
+  on_claim(run: afkd.Run, pr: github.Pull_Request) {
     github.pr_assign_me(pr)
     github.pr_label_add(pr, "afkd/reviewing")
   }
-  on_done(run, pr) { github.pr_label_remove(pr, "afkd/reviewing") }
-  on_fail(run, pr) {
+  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
+  on_fail(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
     github.pr_label_remove(pr, "afkd/reviewing")
     github.pr_unassign(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, pr: github.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -309,15 +309,18 @@ reviews :: service(github.pr) {
 ## Slots, handles and actions
 
 Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
-the run, the claimed item, and after the run its outcome — by position, so a slot names as
-many of them as it reads, in order. Neither kind parks, so neither has `on_park`:
+the run, the claimed item, and after the run its outcome — by position, and a slot writes
+every one of them, in order, each with its type:
+`on_claim(run: afkd.Run, issue: github.Issue)` on `service(github)`, and
+`on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome)` on `service(github.pr)`.
+Neither kind parks, so neither has `on_park`:
 
-| Slot                          | Runs                                                      |
-|-------------------------------|-----------------------------------------------------------|
-| `on_run(run, item)`           | the run itself                                            |
-| `on_claim(run, item)`         | once the issue or pull request is claimed, before the run |
-| `on_done(run, item, outcome)` | after a run that finished                                 |
-| `on_fail(run, item, outcome)` | after a run that failed                                   |
+| Slot       | Passed             | Runs                                                       |
+|------------|--------------------|------------------------------------------------------------|
+| `on_run`   | run, item          | the run itself                                             |
+| `on_claim` | run, item          | once the issue or pull request is claimed, before the run  |
+| `on_done`  | run, item, outcome | after a run that finished                                  |
+| `on_fail`  | run, item, outcome | after a run that failed                                    |
 
 `run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
 `duration`, `error`). The item is the plugin's handle for it — a **`github.Issue`** on

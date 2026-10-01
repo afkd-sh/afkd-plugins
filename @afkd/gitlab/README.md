@@ -60,22 +60,22 @@ develop :: service(gitlab) {
   source_label  "afkd::ready"
   poll_interval 1m to 3m
 
-  on_claim(run, issue) {
+  on_claim(run: afkd.Run, issue: gitlab.Issue) {
     gitlab.assign_me(issue)
     gitlab.label_add(issue, "afkd::working")
   }
-  on_done(run, issue, outcome) {
+  on_done(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
     gitlab.label_remove(issue, "afkd::working")
     gitlab.comment(issue, "Fixed in #{outcome.duration} by #{gitlab.me}.")
     gitlab.close(issue)
   }
-  on_fail(run, issue, outcome) {
+  on_fail(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
     gitlab.label_remove(issue, "afkd::working")
     gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() { task() }
+  on_run(run: afkd.Run, issue: gitlab.Issue) { task() }
 }
 
 reviews :: service(gitlab.mr) {
@@ -85,15 +85,15 @@ reviews :: service(gitlab.mr) {
   author_me     true
   poll_interval 2m to 4m
 
-  on_claim(run, mr) { gitlab.mr_label_add(mr, "afkd::reviewing") }
-  on_done(run, mr, outcome) {
+  on_claim(run: afkd.Run, mr: gitlab.Merge_Request) { gitlab.mr_label_add(mr, "afkd::reviewing") }
+  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
     gitlab.mr_label_remove(mr, "afkd::reviewing")
     gitlab.mr_comment(mr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run, mr, outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
+  on_fail(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
 
   work_dir "/srv/acme/widgets"
-  on_run() { task() }
+  on_run(run: afkd.Run, mr: gitlab.Merge_Request) { task() }
 }
 ```
 
@@ -170,17 +170,17 @@ widgets :: service(gitlab) {
   project "4242"
   token   "REPLACE_ME"
 
-  on_done(run, issue, outcome) {
+  on_done(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
     gitlab.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
     gitlab.close(issue)
   }
-  on_fail(run, issue, outcome) {
+  on_fail(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
     gitlab.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error}")
     gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -204,7 +204,7 @@ widgets :: service(gitlab) {
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -284,18 +284,18 @@ reviews :: service(gitlab.mr) {
   author_me       true
   follow_comments 60s
 
-  on_claim(run, mr) {
+  on_claim(run: afkd.Run, mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)
     gitlab.mr_label_add(mr, "afkd::reviewing")
   }
-  on_done(run, mr) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
-  on_fail(run, mr) {
+  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
+  on_fail(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
     gitlab.mr_label_remove(mr, "afkd::reviewing")
     gitlab.mr_unassign(mr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, mr: gitlab.Merge_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -304,15 +304,18 @@ reviews :: service(gitlab.mr) {
 ## Slots, handles and actions
 
 Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
-the run, the claimed item, and after the run its outcome — by position, so a slot names as
-many of them as it reads, in order. Neither kind parks, so neither has `on_park`:
+the run, the claimed item, and after the run its outcome — by position, and a slot writes
+every one of them, in order, each with its type:
+`on_claim(run: afkd.Run, issue: gitlab.Issue)` on `service(gitlab)`, and
+`on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome)` on `service(gitlab.mr)`.
+Neither kind parks, so neither has `on_park`:
 
-| Slot                          | Runs                                                       |
-|-------------------------------|------------------------------------------------------------|
-| `on_run(run, item)`           | the run itself                                             |
-| `on_claim(run, item)`         | once the issue or merge request is claimed, before the run |
-| `on_done(run, item, outcome)` | after a run that finished                                  |
-| `on_fail(run, item, outcome)` | after a run that failed                                    |
+| Slot       | Passed             | Runs                                                       |
+|------------|--------------------|------------------------------------------------------------|
+| `on_run`   | run, item          | the run itself                                             |
+| `on_claim` | run, item          | once the issue or merge request is claimed, before the run |
+| `on_done`  | run, item, outcome | after a run that finished                                  |
+| `on_fail`  | run, item, outcome | after a run that failed                                    |
 
 `run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
 `duration`, `error`). The item is the plugin's handle for it — a **`gitlab.Issue`** on

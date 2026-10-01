@@ -139,15 +139,15 @@ widgets :: service(github) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run, issue) {{ github.assign_me(issue) }}
-  on_done(run, issue, outcome) {{
+  on_claim(run: afkd.Run, issue: github.Issue) {{ github.assign_me(issue) }}
+  on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {{
     github.label_remove(issue, "afkd/claimed")
     github.comment(issue, "done in #{{outcome.duration}} by #{{github.me}}")
     github.close(issue)
   }}
 
   work_dir "{home}"
-  on_run() {{
+  on_run(run: afkd.Run, issue: github.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
@@ -342,22 +342,22 @@ issues :: service(github) {
   max_attempts    2
   poll_interval   1m to 3m
 
-  on_claim(run, issue) {
+  on_claim(run: afkd.Run, issue: github.Issue) {
     github.assign_me(issue)
     github.label_add(issue, "afkd/working ⚙")
   }
-  on_done(run, issue, outcome) {
+  on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.label_remove(issue, "afkd/working ⚙")
     github.comment(issue, "done by #{github.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     github.close(issue)
   }
-  on_fail(run, issue) {
+  on_fail(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.label_remove(issue, "afkd/working ⚙")
     github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -368,21 +368,21 @@ reviews :: service(github.pr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run, pr) {
+  on_claim(run: afkd.Run, pr: github.Pull_Request) {
     github.pr_assign_me(pr)
     github.pr_label_add(pr, "afkd/reviewing 👀")
   }
-  on_done(run, pr, outcome) {
+  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
     github.pr_label_remove(pr, "afkd/reviewing 👀")
     github.pr_comment(pr, "round answered by #{github.me} in #{outcome.duration}")
   }
-  on_fail(run, pr) {
+  on_fail(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
     github.pr_unassign(pr)
     github.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run() {
+  on_run(run: afkd.Run, pr: github.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -438,10 +438,10 @@ reviews :: service(github.pr) {{
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run, pr) {{ {call} }}
+  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run() {{
+  on_run(run: afkd.Run, pr: github.Pull_Request) {{
     $ true
   }}
 }}
