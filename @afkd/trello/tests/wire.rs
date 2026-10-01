@@ -730,6 +730,122 @@ fn a_failed_finish_then_on_fail_moves_the_card_to_the_bottom_of_the_backlog() {
     plugin.finish();
 }
 
+/// Poll `done` for up to `budget`, every 50 ms.
+fn within(budget: std::time::Duration, mut done: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    done()
+}
+
+/// Trello out of reach while `on_fail` runs: each action still answers `ok`, so the slot
+/// runs to its last statement, and each is said queued. Once Trello is back the
+/// plugin's own worker lands both — the first retry is due 5 s after the failure — in
+/// the order the slot asked for them, with their ordinary success lines.
+#[test]
+fn a_call_during_an_outage_answers_ok_and_lands_when_trello_returns() {
+    let b = board();
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let seen_before = b.fake.seen().len();
+
+    b.fake.outage();
+    hook(&mut plugin, "on_fail", &unit);
+    assert!(
+        b.fake.dropped().iter().any(|r| r.path.ends_with("/lists")),
+        "the move tried the board: {:?}",
+        b.fake.dropped()
+    );
+    let stderr = plugin.stderr_soon("queued behind them");
+    let named = format!("card \"{TITLE}\" ({SHORT_LINK})");
+    assert!(
+        stderr.contains(&format!(
+            "trello is unreachable for {named}: trello resolve list: "
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("moving it to \"Backlog\" is queued and retried for up to 1h"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "trello still owes {named} earlier writes; adding the label \"Problem\" is queued \
+             behind them"
+        )),
+        "{stderr}"
+    );
+    b.fake.restore();
+
+    assert!(
+        within(std::time::Duration::from_secs(15), || {
+            b.fake.labels(&b.card) == ["Problem"] && b.fake.list_of(&b.card) == "Backlog"
+        }),
+        "the outbox never delivered; stderr: {}",
+        plugin.stderr()
+    );
+    let landed: Vec<String> = b.fake.seen()[seen_before..]
+        .iter()
+        .filter(|r| r.method != "GET")
+        .map(|r| {
+            format!(
+                "{} {}",
+                r.method,
+                r.path.rsplit('/').next().unwrap_or_default()
+            )
+        })
+        .collect();
+    assert_eq!(
+        landed,
+        [
+            format!("PUT {}", b.card),
+            "POST labels".to_string(),
+            "POST idLabels".to_string()
+        ],
+        "the move, then the label (created on the board first)"
+    );
+    let stderr = plugin.stderr_soon("adding label");
+    assert!(
+        stderr.contains(&format!(
+            "[trello] moving card \"{TITLE}\" to list \"Backlog\" (at bottom)\n"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "[trello] adding label \"Problem\" to card \"{TITLE}\"\n"
+        )),
+        "{stderr}"
+    );
+    plugin.finish();
+}
+
+/// afkd closing the pipe with writes still owed ends the process cleanly, and names each
+/// write it takes with it.
+#[test]
+fn closing_stdin_with_writes_owed_names_them() {
+    let b = board();
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    b.fake.outage();
+    assert_eq!(
+        plugin.act("add_label", json!({"label": "Problem"}), &unit),
+        json!({"ok": true})
+    );
+    let stderr = plugin.finish();
+    assert!(
+        stderr.contains(&format!(
+            "afkd-trello: afkd ended the plugin with adding the label \"Problem\" for card \
+             \"{TITLE}\" ({SHORT_LINK}) still owed\n"
+        )),
+        "{stderr}"
+    );
+}
+
 /// A park badges the card itself, posts the owner marker naming the configured service,
 /// and only then releases the claim — leaving the card where `on_claim` put it; the
 /// `on_park` comment afkd sends after the finish lands after all of that.
@@ -1025,12 +1141,12 @@ fn every_action_over_call_reaches_the_board() {
     );
 
     // What cannot be done answers its sentence.
-    b.fake.fail("add label", 503);
+    b.fake.fail("add label", 400);
     for (action, args, error) in [
         (
             "add_label",
             json!({"label": "Problem"}),
-            "trello add label: board returned status 503".to_string(),
+            "trello add label: board returned status 400".to_string(),
         ),
         (
             "archive",

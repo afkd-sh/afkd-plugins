@@ -13,7 +13,7 @@
 //! `fields=name,labels`; a card move lands at the top or bottom of its list; adding a
 //! member already on the card is Trello's `400`; a comment or card that does not exist is
 //! a `404`. Every request is recorded, and any route can be made to answer a status
-//! instead.
+//! instead — or the whole fake taken out of reach, every connection closed unanswered.
 
 #![allow(dead_code)]
 
@@ -120,6 +120,10 @@ struct State {
     /// Cards on which the next claim post is raced by a rival.
     races: HashSet<String>,
     seen: Vec<Seen>,
+    /// Whether the fake is out of reach: every request is read, recorded in `dropped`,
+    /// and its connection closed with no reply.
+    down: bool,
+    dropped: Vec<Seen>,
 }
 
 /// The current wall-clock second.
@@ -389,6 +393,23 @@ impl FakeTrello {
         s.post_faults.clear();
     }
 
+    /// Take the fake out of reach, as a network outage does: every request from now on is
+    /// read and its connection closed with no reply, so the client sees no response at
+    /// all. Nothing is answered, and nothing changes, until [`restore`](Self::restore).
+    pub fn outage(&self) {
+        lock(&self.state).down = true;
+    }
+
+    /// Bring the fake back after an [`outage`](Self::outage).
+    pub fn restore(&self) {
+        lock(&self.state).down = false;
+    }
+
+    /// The requests an outage dropped, in order.
+    pub fn dropped(&self) -> Vec<Seen> {
+        lock(&self.state).dropped.clone()
+    }
+
     /// On the next `[afkd-claim]` posted to `card`, a rival's claim lands first: posted a
     /// second earlier by another member, so it out-orders ours.
     pub fn race_on_next_claim(&self, card: &str) {
@@ -589,12 +610,18 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
 
     let (status, reply) = {
         let mut s = lock(state);
-        s.seen.push(Seen {
+        let seen = Seen {
             method: method.clone(),
             path: path.clone(),
             query: query.clone(),
             body: body.clone(),
-        });
+        };
+        if s.down {
+            // Out of reach: the stream drops here, closed with no reply.
+            s.dropped.push(seen);
+            return;
+        }
+        s.seen.push(seen);
         let param = |key: &str| {
             query
                 .iter()

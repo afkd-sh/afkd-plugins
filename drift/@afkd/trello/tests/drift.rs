@@ -6,6 +6,9 @@
 //! - The **install** leg installs the tree the release tarball holds and runs one card
 //!   through it on a real daemon, its slots' actions crossing as `call`s on the card each
 //!   is passed.
+//! - The **outage** leg fails a card through both its attempts while Trello is out of
+//!   reach, and holds the card to its failed state once Trello is back: both attempt notes
+//!   on it, in Backlog with the Problem label, its claim released.
 //! - The **complete example** leg `afkd validate`s the selfdev pipeline of config language
 //!   v2's §24 against the installed plugin, and the **handle** leg holds `afkd validate` to
 //!   refusing an action called without its card.
@@ -241,11 +244,24 @@ fn wait_for(
     what: &str,
     ready: impl Fn() -> bool,
 ) {
-    let deadline = Instant::now() + BUDGET;
+    wait_for_within(BUDGET, home, fake, card, daemon, what, ready);
+}
+
+/// Poll `ready` to `budget`, failing with `what` and the [`dump`] when it never holds.
+fn wait_for_within(
+    budget: Duration,
+    home: &Path,
+    fake: &FakeTrello,
+    card: &str,
+    daemon: &StreamingDaemon,
+    what: &str,
+    ready: impl Fn() -> bool,
+) {
+    let deadline = Instant::now() + budget;
     while !ready() {
         assert!(
             Instant::now() < deadline,
-            "{what} within {BUDGET:?}\n{}",
+            "{what} within {budget:?}\n{}",
             dump(home, fake, card, daemon)
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -329,6 +345,153 @@ fn drive_one_card(home: &Path) {
     );
 }
 
+/// Why both attempts of the failing service fail: the outage's own sentence.
+const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network went away 🚨";
+
+/// The selfdev service's failure path, cut down: two attempts, and the live config's
+/// `on_fail` — to the bottom of Backlog, with the Problem label. Each attempt holds until
+/// the test creates `release`, then fails.
+fn failing_service(home: &Path, base_url: &str) -> String {
+    format!(
+        r#"package main
+
+import "@afkd/trello"
+
+widgets :: service(trello) {{
+  board         "https://trello.com/b/{BOARD}/afkd-drift"
+  base_url      "{base_url}"
+  api_key       "{KEY}"
+  token         "{TOKEN}"
+  pick_from     "Up for Grabs"
+  poll_interval 1s
+  max_attempts  2
+
+  on_claim(run, card) {{
+    trello.move_to(card, "In Progress", at=top)
+  }}
+  on_fail(run, card) {{
+    trello.move_to(card, "Backlog", at=bottom)
+    trello.add_label(card, "Problem")
+  }}
+
+  work_dir "{home}"
+  on_run() {{
+    $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    fail "{OUTAGE_FAULT}"
+  }}
+}}
+"#,
+        home = home.display()
+    )
+}
+
+/// The 2026-10-01 incident, replayed on a real daemon: Trello goes out of reach once the
+/// card is claimed and stays out through both failed attempts, the finish and every action
+/// `on_fail` calls, and past the first retry. The plugin queues each write it cannot
+/// deliver, and once Trello is back
+/// the card ends in its failed state — both attempt notes and the watermark on it, in
+/// Backlog with the Problem label, its claim released — with nothing given up.
+fn fail_one_card_through_an_outage(home: &Path) {
+    let (fake, card) = seed();
+    fake.list("Backlog");
+    write_config(home, &failing_service(home, fake.base_url()));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    wait_for(home, &fake, &card, &daemon, "the card is claimed", || {
+        claimed(&fake, &card) && fake.list_of(&card) == "In Progress"
+    });
+
+    let outage_start = Instant::now();
+    fake.outage();
+    std::fs::write(home.join("release"), "").expect("release the run");
+    // `on_fail`'s last action, queued behind everything before it: the attempt notes, the
+    // watermark and the move. Seeing it means the slot ran to its end during the outage.
+    let queued_last = "adding the label \"Problem\" is queued behind them";
+    wait_for(
+        home,
+        &fake,
+        &card,
+        &daemon,
+        "on_fail runs through the outage",
+        || daemon.stderr_so_far().contains(queued_last),
+    );
+    // And the outage outlasts the first retry, 5 s after the first failure.
+    wait_for(
+        home,
+        &fake,
+        &card,
+        &daemon,
+        "a retry fails in the outage",
+        || {
+            daemon
+                .stderr_so_far()
+                .contains("is tried again in 10s (try 3)")
+        },
+    );
+    fake.restore();
+    let outage_for = outage_start.elapsed();
+    assert!(!fake.dropped().is_empty(), "the outage dropped requests");
+
+    // The head write (attempt note 1, queued as the outage began) is next tried at most
+    // the outage's length plus the first gap after it failed — the gap doubles from 5 s
+    // and its tries fall at +5, +15, +35 s… — and one pass then lands the card's whole
+    // backlog.
+    let me = fake.me();
+    let notes = || -> Vec<String> {
+        fake.comments(&card)
+            .into_iter()
+            .filter(|c| c.author == me && c.text.starts_with("[afkd-attempt]"))
+            .map(|c| c.text)
+            .collect()
+    };
+    let ran = || {
+        fake.comments(&card)
+            .iter()
+            .filter(|c| c.author == me && c.text.starts_with("[afkd-ran]"))
+            .count()
+    };
+    wait_for_within(
+        outage_for + Duration::from_secs(5) + BUDGET,
+        home,
+        &fake,
+        &card,
+        &daemon,
+        "the card reaches its failed state",
+        || {
+            fake.list_of(&card) == "Backlog"
+                && fake.labels(&card).contains(&"Problem".to_string())
+                && notes().len() == 2
+                && ran() == 1
+                && !claimed(&fake, &card)
+        },
+    );
+    let notes = notes();
+    assert!(
+        notes[0].starts_with("[afkd-attempt] 1/2: ") && notes[0].contains(OUTAGE_FAULT),
+        "{notes:?}"
+    );
+    assert!(
+        notes[1].starts_with("[afkd-attempt] 2/2: ") && notes[1].contains(OUTAGE_FAULT),
+        "{notes:?}"
+    );
+    let stderr = daemon.stderr_so_far();
+    assert!(
+        !stderr.contains("gave up") && !stderr.contains("giving up"),
+        "nothing was given up:\n{stderr}"
+    );
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // --- the legs ----------------------------------------------------------------------
 
 #[test]
@@ -346,6 +509,14 @@ fn install_leg_places_the_plugin_and_runs_one_card_through_it() {
         .mode();
     assert!(mode & 0o111 != 0, "{} is executable", exec.display());
     drive_one_card(home.path());
+}
+
+#[test]
+fn outage_leg_a_failed_card_still_reaches_backlog_with_its_attempt_notes() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    fail_one_card_through_an_outage(home.path());
 }
 
 // --- config language v2's complete example -------------------------------------------

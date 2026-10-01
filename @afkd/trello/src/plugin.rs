@@ -8,7 +8,7 @@
 //! unit's card is kept a while for that ([`FINISHED_MAX`]), since its post-run slot's
 //! calls arrive after `finish`.
 //!
-//! Five things the wire forces that the built-in never had to do:
+//! Six things the wire forces that the built-in never had to do:
 //!
 //! - **Who is asking arrives in `hello`.** The built-in read its service, roster and
 //!   claim owner off afkd's config; here `hello` carries them, and a `hello` without them
@@ -25,17 +25,25 @@
 //! - **Every call answers within 45 seconds.** afkd ends the service on a missed reply,
 //!   so each armed call runs under [`CALL_BUDGET`], and a board too slow for it reads as
 //!   a board that is down.
+//! - **A write the board could not take is retried after the reply.** afkd retries no
+//!   action and its deadline leaves no room for a retry inside the call, so an action, an
+//!   attempt note or the run-end watermark that could not reach Trello is queued
+//!   ([`crate::outbox`]), the call answers `ok`, and a worker thread delivers it — each
+//!   card's writes in order — once Trello is back, for up to an hour.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
 use crate::board::{BoardClient, Card};
 use crate::card::{is_afkd, Identity, TrelloUnits, Unit};
 use crate::client::TrelloClient;
-use crate::common::{Clock, Diag, CALL_BUDGET};
+use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
 use crate::lifecycle::{from_call, Call};
+use crate::outbox::{Outbox, Write};
 use crate::rfc3339::format_utc;
 use crate::settings::{board_config, BoardConfig, ME};
 use crate::wire::{
@@ -65,8 +73,8 @@ pub(crate) enum Answer {
 }
 
 /// Builds the board client a `hello` arms with — the real one in the running plugin, a
-/// mock in the tests.
-pub(crate) type Connect = Box<dyn Fn(&BoardConfig) -> Box<dyn BoardClient>>;
+/// mock in the tests. `Send`, since the outbox's worker gets one of its own.
+pub(crate) type Connect = Box<dyn Fn(&BoardConfig) -> Box<dyn BoardClient + Send>>;
 
 /// The plugin across its whole life: unarmed until `hello`, then armed.
 pub(crate) struct Plugin {
@@ -74,6 +82,9 @@ pub(crate) struct Plugin {
     clock: Box<dyn Clock>,
     diag: Box<dyn Diag>,
     armed: Option<Armed>,
+    /// Whether arming starts the outbox's worker thread. The tests deliver the outbox
+    /// themselves, on their own clock.
+    worker: bool,
 }
 
 /// The armed service: the kind's vendor half, and the units afkd is running.
@@ -102,12 +113,16 @@ impl Plugin {
                 &cfg.base_url,
                 &cfg.api_key,
                 &cfg.token,
-            )) as Box<dyn BoardClient>
+            )) as Box<dyn BoardClient + Send>
         });
-        Self::with_connect(connect, clock, diag)
+        Self {
+            worker: true,
+            ..Self::with_connect(connect, clock, diag)
+        }
     }
 
-    /// A plugin that arms through `connect`.
+    /// A plugin that arms through `connect`, and starts no worker: what its outbox owes
+    /// waits for the caller to deliver it.
     pub(crate) fn with_connect(
         connect: Connect,
         clock: Box<dyn Clock>,
@@ -118,6 +133,14 @@ impl Plugin {
             clock,
             diag,
             armed: None,
+            worker: false,
+        }
+    }
+
+    /// Say what the outbox still owes: afkd has closed the pipe, and the process ends.
+    pub(crate) fn close(&self) {
+        if let Some(armed) = &self.armed {
+            armed.units.outbox().abandon(&*self.diag);
         }
     }
 
@@ -138,9 +161,15 @@ impl Plugin {
                     service,
                     roster,
                 };
-                *armed = arm(&self.connect, proto, &kind, &settings, id)
+                let arming = arm(&self.connect, proto, &kind, &settings, id)
                     .map_err(|problem| diag.err(&problem))
                     .ok();
+                *armed = arming.map(|(units, cfg)| {
+                    if self.worker {
+                        start_worker(&self.connect, Arc::clone(units.units.outbox()), &cfg);
+                    }
+                    units
+                });
                 Answer::Reply(
                     match armed {
                         Some(_) => json!({"ok": true, "proto": PROTO, "calls": CALLS,
@@ -151,7 +180,9 @@ impl Plugin {
                 )
             }
             Request::Poll => on_armed(armed, clock, |a| a.poll(clock, diag)),
-            Request::Release { key } => on_armed(armed, clock, |a| a.release(&key, diag)),
+            Request::Release { key } => {
+                on_armed(armed, clock, |a| a.release(&key, clock.now(), diag))
+            }
             Request::Renew { key, renewal } => {
                 on_armed(armed, clock, |a| a.renew(&key, renewal, diag))
             }
@@ -166,15 +197,17 @@ impl Plugin {
                 max,
                 reason,
             } => on_armed(armed, clock, |a| {
-                a.attempt_failed(&key, n, max, reason.as_deref(), diag)
+                a.attempt_failed(&key, n, max, reason.as_deref(), clock.now(), diag)
             }),
             Request::Finish {
                 key,
                 outcome,
                 facts,
-            } => on_armed(armed, clock, |a| a.finish(&key, outcome, &facts, diag)),
+            } => on_armed(armed, clock, |a| {
+                a.finish(&key, outcome, &facts, clock.now(), diag)
+            }),
             Request::Call { action, args } => {
-                on_armed(armed, clock, |a| a.call(&action, &args, diag))
+                on_armed(armed, clock, |a| a.call(&action, &args, clock.now(), diag))
             }
             Request::Unknown => {
                 diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
@@ -205,16 +238,17 @@ fn on_armed(
     }
 }
 
-/// Arm the kind `hello` names over its settings, as `id`, or say why not. afkd has
-/// already held the block to the manifest, so what can be wrong here is the protocol,
-/// the kind, a missing identity, or a rule the manifest cannot express.
+/// Arm the kind `hello` names over its settings, as `id`, or say why not; the settings
+/// it armed with come back too, for the outbox's worker. afkd has already held the block
+/// to the manifest, so what can be wrong here is the protocol, the kind, a missing
+/// identity, or a rule the manifest cannot express.
 fn arm(
     connect: &Connect,
     proto: u32,
     kind: &str,
     settings: &serde_json::Value,
     id: Identity,
-) -> Result<Armed, String> {
+) -> Result<(Armed, BoardConfig), String> {
     if proto != PROTO {
         return Err(format!(
             "afkd speaks plugin protocol {proto}, and this plugin speaks {PROTO}"
@@ -231,11 +265,20 @@ fn arm(
         );
     }
     let cfg = board_config(settings).map_err(|e| format!("trigger {kind}: {e}"))?;
-    Ok(Armed {
+    let armed = Armed {
         units: TrelloUnits::new(connect(&cfg), &cfg, id),
         live: BTreeMap::new(),
         finished: VecDeque::new(),
-    })
+    };
+    Ok((armed, cfg))
+}
+
+/// Start the worker that delivers `outbox` for the life of the process, on a board client
+/// of its own, which no call's deadline reaches.
+fn start_worker(connect: &Connect, outbox: Arc<Outbox>, cfg: &BoardConfig) {
+    let board = connect(cfg);
+    let board_id = cfg.board_id.clone();
+    std::thread::spawn(move || outbox.run(&*board, &board_id, &SystemClock, &StderrDiag));
 }
 
 /// The `poll` reply that hands nothing over.
@@ -269,7 +312,7 @@ impl Armed {
             // Only a unit whose fields besides the brief overflow the line reaches this:
             // nothing can be handed over, so the claim is taken back before the service
             // ends.
-            self.units.release_stale(&wire.key, diag);
+            self.units.release_stale(&wire.key, clock.now(), diag);
             return Answer::Fatal(format!(
                 "{} cannot be handed to afkd: even with its brief cut away, the unit is over \
                  afkd's 64 KiB plugin line",
@@ -283,10 +326,10 @@ impl Armed {
 
     /// Release a journal key — a crashed run's, a `held` finish's, a unit afkd handed
     /// straight back, or one whose `on_claim` failed — and forget it.
-    fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer {
+    fn release(&mut self, key: &str, now: Instant, diag: &dyn Diag) -> Answer {
         self.live.remove(key);
         self.finished.retain(|(finished, _)| finished != key);
-        let released = self.units.release_stale(key, diag);
+        let released = self.units.release_stale(key, now, diag);
         Answer::Reply(json!({ "released": released }).to_string())
     }
 
@@ -366,11 +409,13 @@ impl Armed {
         n: u32,
         max: u32,
         reason: Option<&str>,
+        now: Instant,
         diag: &dyn Diag,
     ) -> Answer {
         let ok = match self.live.get(key) {
             Some(live) => {
-                self.units.attempt_failed(&live.unit, n, max, reason, diag);
+                self.units
+                    .attempt_failed(&live.unit, n, max, reason, now, diag);
                 true
             }
             None => {
@@ -391,6 +436,7 @@ impl Armed {
         key: &str,
         outcome: UnitOutcome,
         facts: &Facts,
+        now: Instant,
         diag: &dyn Diag,
     ) -> Answer {
         let Some(live) = self.live.remove(key) else {
@@ -399,7 +445,7 @@ impl Armed {
             ));
             return Answer::Reply(json!({"ok": true}).to_string());
         };
-        let reply = if self.units.finish(&live.unit, outcome, facts, diag) {
+        let reply = if self.units.finish(&live.unit, outcome, facts, now, diag) {
             json!({"ok": true})
         } else {
             diag.err(&format_args!(
@@ -419,8 +465,15 @@ impl Armed {
     /// Do one action a slot called, on the card of the unit its handle names — a live one,
     /// or one finished since. `{"ok":false}` with the sentence, diagnosed too, for an
     /// action afkd would not have bound, a handle naming no card, or a board that refused
-    /// it.
-    fn call(&self, action: &str, args: &Map<String, Value>, diag: &dyn Diag) -> Answer {
+    /// it. An action the board could not be reached for is taken for delivery and `ok`:
+    /// the outbox retries it, and the slot's next action queues behind it.
+    fn call(
+        &self,
+        action: &str,
+        args: &Map<String, Value>,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Answer {
         let refuse = |error: String| {
             diag.err(&error);
             Answer::Reply(json!({"ok": false, "error": error}).to_string())
@@ -440,8 +493,8 @@ impl Armed {
                 }
             },
         };
-        match self.units.act(card, &act, diag) {
-            Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
+        match self.units.deliver(card, Write::Act(act), now, diag) {
+            Ok(_) => Answer::Reply(json!({"ok": true}).to_string()),
             Err(e) => refuse(e.to_string()),
         }
     }
@@ -458,6 +511,7 @@ mod tests {
     use crate::claim::{claim_text, is_claim};
     use crate::common::{CaptureDiag, FakeClock, TempDir};
     use crate::lifecycle::ListPosition;
+    use crate::outbox::RETRY_FIRST;
     use crate::settings::MemberRef;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -509,7 +563,7 @@ mod tests {
             let clock = Arc::new(FakeClock::new());
             let shared = Arc::clone(&board);
             let connect: Connect =
-                Box::new(move |_| Box::new(Arc::clone(&shared)) as Box<dyn BoardClient>);
+                Box::new(move |_| Box::new(Arc::clone(&shared)) as Box<dyn BoardClient + Send>);
             let plugin = Plugin::with_connect(
                 connect,
                 Box::new(SharedClock(Arc::clone(&clock))),
@@ -545,6 +599,16 @@ mod tests {
 
         fn poll(&mut self) -> serde_json::Value {
             self.call(json!({"call": "poll"}))
+        }
+
+        /// One pass of the outbox's worker, on the fixture's board and clock: when the
+        /// earliest write left is due.
+        fn deliver(&self) -> Option<Instant> {
+            let armed = self.plugin.armed.as_ref().expect("an armed plugin");
+            armed
+                .units
+                .outbox()
+                .deliver_due(&*self.board, "BID", &*self.clock, &*self.diag)
         }
 
         fn finish(&mut self, key: &serde_json::Value, outcome: &str) -> serde_json::Value {
@@ -1304,8 +1368,7 @@ mod tests {
 
     /// Each call the plugin cannot do answers `ok:false` with its sentence — which afkd
     /// fails the slot's `result` with — and says it on the diagnostic channel too: an
-    /// action afkd would not bind, a handle naming no card, and a board that refused or
-    /// never answered.
+    /// action afkd would not bind, a handle naming no card, and a board that refused it.
     #[test]
     fn a_call_the_plugin_cannot_do_answers_its_sentence() {
         let mut f = Fixture::armed(settings());
@@ -1347,13 +1410,14 @@ mod tests {
             );
             expect.push(error.to_string());
         }
-        f.board.fail("add member");
+        f.board.fail_status("add member", 400);
         assert_eq!(
             f.act("add_member", json!({"member": "me"}), &key),
-            json!({"ok": false, "error": "trello add member: no response (mock failure)"})
+            json!({"ok": false, "error": "trello add member: board returned status 400"})
         );
-        expect.push("trello add member: no response (mock failure)".into());
+        expect.push("trello add member: board returned status 400".into());
         assert_eq!(f.diag.errs(), expect);
+        assert!(f.deliver().is_none(), "a refusal is not queued");
         assert_eq!(f.board.actions().len(), before, "nothing landed");
         assert_eq!(
             f.diag.narrated(),
@@ -1440,6 +1504,187 @@ mod tests {
             (f.board.actions().len(), f.board.comments_on("card1").len()),
             before,
             "nothing landed"
+        );
+    }
+
+    /// An action the board cannot be reached for is taken for delivery: the call answers
+    /// `ok`, so the slot's next action still runs, and is queued behind it, each said on
+    /// the diagnostic channel. Once the board is back, the first retry lands both, in
+    /// order, narrated as if they had landed inline.
+    #[test]
+    fn a_call_the_board_cannot_be_reached_for_answers_ok_and_lands_later() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        let key = f.poll()["unit"]["key"].clone();
+        let before = f.board.actions().len();
+        f.board.go_down();
+        assert_eq!(
+            f.act("move_to", json!({"list": "Review", "at": "bottom"}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            f.act("add_label", json!({"label": "Problem"}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            f.diag.errs(),
+            [
+                format!(
+                    "trello is unreachable for card \"{TITLE}\" (card1): trello resolve list: no \
+                     response (mock failure); moving it to \"Review\" is queued and retried for \
+                     up to 1h"
+                ),
+                format!(
+                    "trello still owes card \"{TITLE}\" (card1) earlier writes; adding the label \
+                     \"Problem\" is queued behind them"
+                ),
+            ]
+        );
+        assert_eq!(f.board.actions().len(), before, "nothing landed yet");
+
+        f.board.clear_failure();
+        assert_eq!(
+            f.deliver(),
+            Some(f.clock.now() + RETRY_FIRST),
+            "not due yet"
+        );
+        assert_eq!(f.board.actions().len(), before);
+        f.clock.advance(RETRY_FIRST);
+        assert_eq!(f.deliver(), None, "all delivered");
+        assert_eq!(
+            f.board.actions()[before..],
+            [
+                Action::Move {
+                    card: "card1".into(),
+                    list: "Review".into(),
+                    position: ListPosition::Bottom,
+                },
+                Action::AddLabel {
+                    card: "card1".into(),
+                    label: "Problem".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            f.diag.narrated()[1..],
+            [
+                format!("[trello] moving card \"{TITLE}\" to list \"Review\" (at bottom)"),
+                format!("[trello] adding label \"Problem\" to card \"{TITLE}\""),
+            ]
+        );
+    }
+
+    /// The incident of 2026-10-01, replayed: Trello goes out of reach after the claim,
+    /// and stays out through both failed attempts, the finish and every action `on_fail`
+    /// calls. Each call still answers as afkd expects, and once Trello is back the card
+    /// ends in its failed state — both attempt notes and the watermark on it in order, in
+    /// Backlog with the Problem label, its claim released.
+    #[test]
+    fn a_trello_outage_through_the_failure_path_still_lands_the_failed_state() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        f.board.add_list("Backlog");
+        let key = f.poll()["unit"]["key"].clone();
+        assert_eq!(
+            f.act("move_to", json!({"list": "In Progress"}), &key),
+            json!({"ok": true})
+        );
+
+        f.board.go_down();
+        let reason = "git fetch origin main: could not resolve host: github.com\n\n\
+                      ssh: 修复 🚨 — exit 128";
+        for n in 1..=2 {
+            f.clock.advance(Duration::from_secs(1));
+            assert_eq!(
+                f.call(
+                    json!({"call": "attempt_failed", "key": key, "n": n, "max": 2,
+                              "reason": reason})
+                ),
+                json!({"ok": true})
+            );
+        }
+        assert_eq!(f.finish(&key, "failed"), json!({"ok": true, "held": true}));
+        assert_eq!(
+            f.act("move_to", json!({"list": "Backlog", "at": "bottom"}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            f.act("add_label", json!({"label": "Problem"}), &key),
+            json!({"ok": true})
+        );
+        // The outage outlasts a few retries, and a beat's release of the held finish.
+        for _ in 0..3 {
+            let due = f.deliver().expect("still owed");
+            f.clock.advance(due - f.clock.now());
+        }
+        assert_eq!(
+            f.call(json!({"call": "release", "key": key})),
+            json!({"released": false})
+        );
+
+        // Trello is back; the next retry falls due, and one pass lands it all.
+        f.board.clear_failure();
+        assert_eq!(f.deliver(), None, "everything owed has landed");
+        assert_eq!(
+            f.call(json!({"call": "release", "key": key})),
+            json!({"released": true})
+        );
+
+        let in_backlog: Vec<String> = f
+            .board
+            .list_cards("Backlog")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(in_backlog, ["card1"]);
+        let card = f.board.list_cards("Backlog").unwrap().remove(0);
+        assert_eq!(card.labels, ["Problem"]);
+        let thread: Vec<String> = f
+            .board
+            .comments_on("card1")
+            .into_iter()
+            .map(|c| c.text)
+            .collect();
+        assert_eq!(thread.len(), 3, "{thread:?}");
+        assert_eq!(thread[0], format!("[afkd-attempt] 1/2: {reason}"));
+        assert_eq!(thread[1], format!("[afkd-attempt] 2/2: {reason}"));
+        assert!(thread[2].starts_with("[afkd-ran] "), "{}", thread[2]);
+        assert_eq!(claims_on(&f.board, "card1"), 0);
+        assert!(
+            !f.diag.errs().iter().any(|l| l.contains("gave up")),
+            "{:?}",
+            f.diag.errs()
+        );
+    }
+
+    /// Ending the plugin with writes still owed names each of them.
+    #[test]
+    fn closing_with_writes_owed_names_them() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        let key = f.poll()["unit"]["key"].clone();
+        f.board.go_down();
+        f.act("add_label", json!({"label": "Problem"}), &key);
+        f.act(
+            "comment",
+            json!({"text": "ran out of time\nsee the log"}),
+            &key,
+        );
+        let before = f.diag.errs().len();
+        f.plugin.close();
+        assert_eq!(
+            f.diag.errs()[before..],
+            [
+                format!(
+                    "afkd ended the plugin with adding the label \"Problem\" for card \
+                     \"{TITLE}\" (card1) still owed"
+                ),
+                format!(
+                    "afkd ended the plugin with the comment \"ran out of time…\" for card \
+                     \"{TITLE}\" (card1) still owed"
+                ),
+            ]
         );
     }
 

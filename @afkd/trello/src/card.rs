@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::board::{BoardClient, BoardError, Card, Checklist, Comment};
@@ -39,6 +39,9 @@ use crate::common::{
     lock, Clock, Diag, ScanBudget, ENV_API_KEY, ENV_BOARD_ID, ENV_CARD_ID, ENV_TOKEN,
 };
 use crate::lifecycle::{LifecycleAction, ListPosition};
+use crate::outbox::{
+    self, lost_line, named, queued_behind_line, queued_line, transient, Outbox, Write, RETRY_FOR,
+};
 use crate::settings::{BoardConfig, DiscussWith, MemberRef, ME};
 use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
 use crate::{PARK_FILE, TASK_FILE};
@@ -46,13 +49,16 @@ use crate::{PARK_FILE, TASK_FILE};
 /// Marker prefix on a failed-attempt comment.
 const ATTEMPT_MARKER: &str = "[afkd-attempt]";
 
-/// How many beats an owed finish is retried before the card is handed back to
-/// `pick_from` for a human.
-const PENDING_FINISH_TRIES: u32 = 5;
-
 /// The bound on remembered undelivered finishes. Empty in the steady state — every
 /// `release` drains its entry — so this only bites where afkd never asks.
 const PENDING_MAX: usize = 64;
+
+/// Trello's limit on a comment's length, in UTF-16 code units: what a JavaScript string's
+/// `length` counts, and never fewer than its characters.
+const COMMENT_MAX: usize = 16_384;
+
+/// What an attempt note whose reason was cut to [`COMMENT_MAX`] ends with.
+const CUT_MARK: &str = "… (cut; see run.log)";
 
 /// Marker prefix on the durable high-water-mark comment posted at run end.
 const RAN_MARKER: &str = "[afkd-ran]";
@@ -82,7 +88,7 @@ const AWAITING_LABEL: &str = "Awaiting Reply";
 const PARK_SCAN_MAX: usize = 16;
 
 /// The tag every success line wears, naming the vendor family.
-const ACTION_TAG: &str = "[trello]";
+pub(crate) const ACTION_TAG: &str = "[trello]";
 
 /// One card taken on as a unit of work.
 pub(crate) struct Unit {
@@ -141,8 +147,23 @@ struct PendingFinish {
     park_priors: Vec<String>,
     /// Whether the claim comment is still on the card, so the lease is still owed.
     release: bool,
-    /// How many releases have tried this entry, bounded by [`PENDING_FINISH_TRIES`].
-    tries: u32,
+    /// When the finish first failed to land: the start of its [`RETRY_FOR`].
+    since: Instant,
+}
+
+impl PendingFinish {
+    /// What of the finish is still owed, for the line that gives up on it.
+    fn what(&self) -> String {
+        [
+            (self.park, "the park badge"),
+            (self.park_marker, "the park owner marker"),
+            (self.release, "the claim release"),
+        ]
+        .into_iter()
+        .filter_map(|(owed, what)| owed.then_some(what))
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
 }
 
 /// The `discuss_with` gate resolved for one poll: afkd's own member id (the tail
@@ -190,6 +211,16 @@ pub(crate) struct Identity {
     pub(crate) roster: Vec<String>,
 }
 
+/// Where a write [`deliver`](TrelloUnits::deliver)ed went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// The board took it.
+    Landed,
+    /// The board could not be reached, or the card still owes earlier writes: the
+    /// [`Outbox`] has it, and said so.
+    Queued,
+}
+
 /// The `card` kind's vendor half: the board seam, the intake gates, the comment-lock claim,
 /// the brief, and the actions a hook calls.
 pub(crate) struct TrelloUnits {
@@ -226,6 +257,8 @@ pub(crate) struct TrelloUnits {
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
     /// its claim reserve.
     call_deadline: Mutex<Option<Instant>>,
+    /// The writes the board could not take, which the plugin's worker retries.
+    outbox: Arc<Outbox>,
 }
 
 impl TrelloUnits {
@@ -250,6 +283,48 @@ impl TrelloUnits {
             park_cursor: Mutex::new(0),
             pending: Mutex::new(Vec::new()),
             call_deadline: Mutex::new(None),
+            outbox: Arc::default(),
+        }
+    }
+
+    /// The writes this kind owes the board, for the worker that delivers them.
+    pub(crate) fn outbox(&self) -> &Arc<Outbox> {
+        &self.outbox
+    }
+
+    /// Do `write` on `card`, or queue it: behind the card's earlier writes while any is
+    /// still owed, so one card's writes land in the order they were asked for; and for a
+    /// retry when the board cannot be reached. Every write queued is said, one line. A
+    /// refusal no retry can fix is the caller's error, and nothing is queued.
+    ///
+    /// An action that lands is narrated, as [`act`](Self::act) does; a comment of the
+    /// kind's own is not.
+    pub(crate) fn deliver(
+        &self,
+        card: &Card,
+        write: Write,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Result<Delivery, BoardError> {
+        if self.outbox.owes(&card.id) {
+            diag.err(&queued_behind_line(card, &write));
+            self.outbox.queue_behind(card, write, now);
+            return Ok(Delivery::Queued);
+        }
+        let tried = match &write {
+            Write::Act(action) => self.act(card, action, diag),
+            Write::Note(_) | Write::Watermark { .. } => {
+                outbox::perform(&*self.board, &self.board_id, card, &write)
+            }
+        };
+        match tried {
+            Ok(()) => Ok(Delivery::Landed),
+            Err(e) if transient(&e) => {
+                diag.err(&queued_line(card, &write, &e));
+                self.outbox.queue_retry(card, write, now);
+                Ok(Delivery::Queued)
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -608,11 +683,13 @@ impl TrelloUnits {
     /// post one backstop comment. The diff keys on comment id + author, so an attempt
     /// marker afkd posted *does* count as speaking and a human straggler does *not*. If
     /// the re-read fails, post anyway — a rare redundant comment beats the re-fire loop.
+    /// A board that cannot be reached gets it from the [`Outbox`].
     fn post_backstop_if_silent(
         &self,
         unit: &Unit,
         outcome: UnitOutcome,
         facts: &Facts,
+        now: Instant,
         diag: &dyn Diag,
     ) {
         let spoke = match self.board.card_comments(&unit.card.id) {
@@ -629,11 +706,9 @@ impl TrelloUnits {
             }
         };
         if !spoke {
-            if let Err(e) = self
-                .board
-                .post_comment(&unit.card.id, &backstop_text(outcome, facts))
-            {
-                diag.err(&e);
+            let backstop = Write::Note(backstop_text(outcome, facts));
+            if let Err(e) = self.deliver(&unit.card, backstop.clone(), now, diag) {
+                diag.err(&lost_line(&unit.card, &backstop, &e, None));
             }
         }
     }
@@ -658,17 +733,27 @@ impl TrelloUnits {
 
     /// One beat's attempt at an owed finish: the park badge, then the owner marker, then
     /// the lease release — `finish`'s order, so a partial delivery resumes rather than
-    /// restarts. `Some(true)` when everything
-    /// landed, `Some(false)` when something is still owed and kept for the next beat, and
-    /// `None` once [`PENDING_FINISH_TRIES`] beats have failed — the entry is dropped and
-    /// the caller falls through to the crash-victim reversal.
+    /// restarts. `Some(true)` when everything landed, `Some(false)` when something is
+    /// still owed and kept for the next beat, and `None` once the board has refused what
+    /// is owed, or not taken it for [`RETRY_FOR`] — the entry is dropped and the caller
+    /// falls through to the crash-victim reversal.
+    ///
+    /// A claim the board says is already gone (404) is released: a release whose reply
+    /// was lost may well have landed, and reversing the card for it would undo the moves
+    /// its post-run slot asked for.
     fn retry_pending(
         &self,
         mut owed: PendingFinish,
         claim_id: &str,
+        now: Instant,
         diag: &dyn Diag,
     ) -> Option<bool> {
-        owed.tries += 1;
+        // This beat's last failure: what a give-up names, and whether a retry can help.
+        let mut failed: Option<BoardError> = None;
+        let mut fail = |e: BoardError| {
+            diag.err(&e);
+            failed = Some(e);
+        };
         if owed.park {
             match self
                 .board
@@ -678,7 +763,7 @@ impl TrelloUnits {
                     diag.narrate(&parked_line(&owed.card));
                     owed.park = false;
                 }
-                Err(e) => diag.err(&e),
+                Err(e) => fail(e),
             }
         }
         // The owner marker, before the release and not gated on the badge — `finish`'s
@@ -692,27 +777,32 @@ impl TrelloUnits {
                     owed.park_marker = false;
                     self.prune_park_priors(&owed.card.id, &mut owed.park_priors, diag);
                 }
-                Err(e) => diag.err(&e),
+                Err(e) => fail(e),
             }
         }
         let owed_before_release = owed.park || owed.park_marker;
         if !owed_before_release && owed.release {
             match self.board.delete_comment(&owed.card.id, claim_id) {
-                Ok(()) => {
+                Ok(()) | Err(BoardError::Status { status: 404, .. }) => {
                     diag.narrate(&released_line(&owed.card));
                     owed.release = false;
                 }
-                Err(e) => diag.err(&e),
+                Err(e) => fail(e),
             }
         }
         if !owed_before_release && !owed.release {
             return Some(true);
         }
-        if owed.tries >= PENDING_FINISH_TRIES {
+        let refused = failed.as_ref().is_some_and(|e| !transient(e));
+        if refused || now >= owed.since + RETRY_FOR {
+            let why = failed.map_or_else(String::new, |e| format!(" — {e}"));
             diag.err(&format_args!(
-                "giving up on the finish for card \"{}\" after \
-                 {PENDING_FINISH_TRIES} tries; returning it to \"{}\"",
-                owed.card.title, self.pick_from
+                "giving up on the finish for {} after {}: {} still owed{why}; returning it to \
+                 \"{}\"",
+                named(&owed.card),
+                outbox::span(now.saturating_duration_since(owed.since)),
+                owed.what(),
+                self.pick_from
             ));
             return None;
         }
@@ -742,30 +832,7 @@ impl TrelloUnits {
         action: &LifecycleAction,
         diag: &dyn Diag,
     ) -> Result<(), BoardError> {
-        match action {
-            LifecycleAction::MarkComplete => self.board.complete_card(&card.id)?,
-            LifecycleAction::Archive => self.board.archive_card(&card.id)?,
-            LifecycleAction::MoveTo { list, position } => {
-                let list_id = self.board.resolve_list(&self.board_id, list)?;
-                self.board.move_card(&card.id, &list_id, *position)?;
-            }
-            LifecycleAction::AddLabel { name } => {
-                self.board.add_label(&self.board_id, &card.id, name)?;
-            }
-            LifecycleAction::RemoveLabel { name } => {
-                self.board.remove_label(&self.board_id, &card.id, name)?;
-            }
-            LifecycleAction::AddMember(member) => {
-                self.board.add_member(&self.board_id, &card.id, member)?;
-            }
-            LifecycleAction::RemoveMember(member) => {
-                self.board.remove_member(&self.board_id, &card.id, member)?;
-            }
-            // Verbatim: afkd has already interpolated whatever `#{…}` the hook wrote.
-            LifecycleAction::Comment(text) => {
-                self.board.post_comment(&card.id, text)?;
-            }
-        }
+        perform_action(&*self.board, &self.board_id, card, action)?;
         diag.narrate(&action_line(action, card));
         Ok(())
     }
@@ -774,8 +841,8 @@ impl TrelloUnits {
     ///
     /// **The finish is still owed** (a `held` finish): replay it — an owed park badge,
     /// the owner marker, the lease release. Full success is
-    /// `Some(true)`; anything left is kept and `Some(false)`, up to
-    /// [`PENDING_FINISH_TRIES`] — after which the card takes the reversal below.
+    /// `Some(true)`; anything left is kept and `Some(false)`, until the board refuses it
+    /// or [`RETRY_FOR`] has gone by — after which the card takes the reversal below.
     ///
     /// **Otherwise it is a crash victim**, or a unit afkd handed back unrun: prune the
     /// `[afkd-claim]` comment and move the card back to the **bottom** of `pick_from`, so
@@ -784,10 +851,10 @@ impl TrelloUnits {
     /// cannot loop the reap.
     ///
     /// `None` for a key with no `#`, which names nothing releasable.
-    pub(crate) fn release_stale(&self, key: &str, diag: &dyn Diag) -> Option<bool> {
+    pub(crate) fn release_stale(&self, key: &str, now: Instant, diag: &dyn Diag) -> Option<bool> {
         let (card_id, claim_id) = split_card_key(key)?;
         if let Some(owed) = self.take_pending(key) {
-            if let Some(verdict) = self.retry_pending(owed, claim_id, diag) {
+            if let Some(verdict) = self.retry_pending(owed, claim_id, now, diag) {
                 return Some(verdict);
             }
         }
@@ -863,23 +930,22 @@ impl TrelloUnits {
 
     /// A faulting attempt leaves a marked comment on the card, so the budget spent on it
     /// is legible from the board itself. afkd sends the fault's sentence; with none there
-    /// is nothing to mark.
+    /// is nothing to mark. A board that cannot be reached gets it from the [`Outbox`].
     pub(crate) fn attempt_failed(
         &self,
         unit: &Unit,
         n: u32,
         max: u32,
         reason: Option<&str>,
+        now: Instant,
         diag: &dyn Diag,
     ) {
         let Some(reason) = reason else {
             return;
         };
-        if let Err(e) = self
-            .board
-            .post_comment(&unit.card.id, &attempt_text(n, max, reason))
-        {
-            diag.err(&e);
+        let note = Write::Note(attempt_text(n, max, reason));
+        if let Err(e) = self.deliver(&unit.card, note.clone(), now, diag) {
+            diag.err(&lost_line(&unit.card, &note, &e, None));
         }
     }
 
@@ -899,12 +965,14 @@ impl TrelloUnits {
     ///
     /// Returns whether the finish was delivered. Anything short of "the badge and owner
     /// marker are up, and the claim comment is gone" is remembered, and a later `release`
-    /// of the key finishes it.
+    /// of the key finishes it. The watermark or backstop is not part of that: one the
+    /// board cannot take goes to the [`Outbox`].
     pub(crate) fn finish(
         &self,
         unit: &Unit,
         outcome: UnitOutcome,
         facts: &Facts,
+        now: Instant,
         diag: &dyn Diag,
     ) -> bool {
         // The badge, owned by the kind itself, so the gate holds with an empty `on_park`.
@@ -925,25 +993,30 @@ impl TrelloUnits {
         match &self.discuss_with {
             // Default path: post the durable high-water mark carrying `delivered_upto`
             // — the boundary fixed at the claim read — then prune the priors out of the
-            // claim-read snapshot. Best-effort: a re-delivered comment is safe.
+            // claim-read snapshot, once it has landed. Best-effort: a re-delivered comment
+            // is safe.
             None => {
-                match self
-                    .board
-                    .post_comment(&unit.card.id, &ran_text(&self.owner, unit.delivered_upto))
-                {
-                    Ok(_) => {
-                        for prior in unit.comments.iter().filter(|c| is_ran(&c.text)) {
-                            if let Err(e) = self.board.delete_comment(&unit.card.id, &prior.id) {
-                                diag.err(&e);
-                            }
-                        }
+                let priors: Vec<String> = unit
+                    .comments
+                    .iter()
+                    .filter(|c| is_ran(&c.text))
+                    .map(|c| c.id.clone())
+                    .collect();
+                let watermark = Write::Watermark {
+                    text: ran_text(&self.owner, unit.delivered_upto),
+                    priors: priors.clone(),
+                };
+                match self.deliver(&unit.card, watermark.clone(), now, diag) {
+                    Ok(Delivery::Landed) => {
+                        outbox::prune(&*self.board, &unit.card.id, &priors, diag);
                     }
-                    Err(e) => diag.err(&e),
+                    Ok(Delivery::Queued) => {}
+                    Err(e) => diag.err(&lost_line(&unit.card, &watermark, &e, None)),
                 }
             }
             // Grooming path: afkd's own last comment IS the tail boundary, so the
             // backstop guarantees afkd is the last speaker.
-            Some(_) => self.post_backstop_if_silent(unit, outcome, facts, diag),
+            Some(_) => self.post_backstop_if_silent(unit, outcome, facts, now, diag),
         }
         // The park owner marker: AFTER the watermark/backstop branch (posted before it,
         // it would count as afkd speaking and suppress the backstop) and BEFORE the
@@ -990,7 +1063,7 @@ impl TrelloUnits {
                 park_marker: marker_owed,
                 park_priors,
                 release: true,
-                tries: 0,
+                since: now,
             });
         }
         delivered
@@ -1056,15 +1129,62 @@ fn claim_markers(comments: &[Comment]) -> Vec<ClaimMarker> {
         .collect()
 }
 
-/// The text of a failed-attempt marker comment (`n/max: reason`).
+/// The text of a failed-attempt marker comment (`n/max: reason`), the reason cut so the
+/// whole comment fits [`COMMENT_MAX`]: a note the board refuses as too long would mark
+/// nothing at all.
 fn attempt_text(n: u32, max: u32, reason: &str) -> String {
-    format!("{ATTEMPT_MARKER} {n}/{max}: {reason}")
+    let head = format!("{ATTEMPT_MARKER} {n}/{max}: ");
+    let units = |s: &str| s.encode_utf16().count();
+    let room = COMMENT_MAX - units(&head);
+    if units(reason) <= room {
+        return format!("{head}{reason}");
+    }
+    let mut left = room - units(CUT_MARK);
+    let kept: String = reason
+        .chars()
+        .take_while(|c| {
+            let fits = c.len_utf16() <= left;
+            left = left.saturating_sub(c.len_utf16());
+            fits
+        })
+        .collect();
+    format!("{head}{kept}{CUT_MARK}")
+}
+
+/// One Trello action, done on `card` with no narration: the one board operation (a move,
+/// two) each action comes to. [`TrelloUnits::act`] does it inline and the [`Outbox`]
+/// again from the queue. Each board call is `?`-propagated, so a failure stops it there.
+pub(crate) fn perform_action(
+    board: &dyn BoardClient,
+    board_id: &str,
+    card: &Card,
+    action: &LifecycleAction,
+) -> Result<(), BoardError> {
+    match action {
+        LifecycleAction::MarkComplete => board.complete_card(&card.id)?,
+        LifecycleAction::Archive => board.archive_card(&card.id)?,
+        LifecycleAction::MoveTo { list, position } => {
+            let list_id = board.resolve_list(board_id, list)?;
+            board.move_card(&card.id, &list_id, *position)?;
+        }
+        LifecycleAction::AddLabel { name } => board.add_label(board_id, &card.id, name)?,
+        LifecycleAction::RemoveLabel { name } => board.remove_label(board_id, &card.id, name)?,
+        LifecycleAction::AddMember(member) => board.add_member(board_id, &card.id, member)?,
+        LifecycleAction::RemoveMember(member) => {
+            board.remove_member(board_id, &card.id, member)?;
+        }
+        // Verbatim: afkd has already interpolated whatever `#{…}` the hook wrote.
+        LifecycleAction::Comment(text) => {
+            board.post_comment(&card.id, text)?;
+        }
+    }
+    Ok(())
 }
 
 /// The human-readable success line for a completed `action` on `card`. Names
 /// the card's title (never its id) and, for a move, the *configured* list name and the
 /// effective placement.
-fn action_line(action: &LifecycleAction, card: &Card) -> String {
+pub(crate) fn action_line(action: &LifecycleAction, card: &Card) -> String {
     let title = &card.title;
     match action {
         LifecycleAction::MarkComplete => format!("{ACTION_TAG} marking card \"{title}\" complete"),
@@ -1104,7 +1224,7 @@ fn position_word(position: ListPosition) -> &'static str {
 
 /// The member word logged for a member action: the **configured** operand, never the
 /// board id or username it resolves to.
-fn member_word(member: &MemberRef) -> &str {
+pub(crate) fn member_word(member: &MemberRef) -> &str {
     match member {
         MemberRef::SelfMember => ME,
         MemberRef::Username(username) => username,
@@ -1420,6 +1540,7 @@ mod tests {
     use crate::board::{Action, MockBoard, SELF_ID};
     use crate::claim::CLAIM_MARKER;
     use crate::common::{CaptureDiag, FakeClock, TempDir, CALL_BUDGET, CLAIM_RESERVE};
+    use crate::outbox::RETRY_FIRST;
     use std::sync::Arc;
 
     fn move_to(list: &str) -> LifecycleAction {
@@ -1649,10 +1770,18 @@ mod tests {
                 if outcome != UnitOutcome::Failed {
                     break;
                 }
-                self.units
-                    .attempt_failed(unit, n, max, facts.fault(), &self.diag);
+                self.units.attempt_failed(
+                    unit,
+                    n,
+                    max,
+                    facts.fault(),
+                    self.clock.now(),
+                    &self.diag,
+                );
             }
-            let delivered = self.units.finish(unit, outcome, &facts, &self.diag);
+            let delivered = self
+                .units
+                .finish(unit, outcome, &facts, self.clock.now(), &self.diag);
             let hook = match outcome {
                 UnitOutcome::Clean => &self.hooks.on_done,
                 UnitOutcome::Park => &self.hooks.on_park,
@@ -1684,7 +1813,7 @@ mod tests {
 
         /// afkd's `release` of one journal key.
         fn release(&self, key: &str) -> Option<bool> {
-            self.units.release_stale(key, &self.diag)
+            self.units.release_stale(key, self.clock.now(), &self.diag)
         }
     }
 
@@ -2563,20 +2692,23 @@ mod tests {
         );
     }
 
+    /// The board that cannot be reached is asked again beat after beat for the retry
+    /// window, however many beats that is; past it the card is handed back to the source
+    /// list for a human, and its claim — still out of reach — ages out on its own
+    /// lifetime.
     #[test]
-    fn five_failed_deliveries_return_the_card_to_the_source_list() {
-        // The board refuses the claim's release beat after beat; after the fifth, the
-        // card is handed back to the source list for a human, and its claim — still
-        // refused — ages out on its own lifetime.
+    fn a_finish_owed_past_the_retry_window_returns_the_card_to_the_source_list() {
         let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
         h.board.fail("delete comment");
         let held = h.beat(1, |_| fault("boom")).expect("held");
 
-        let verdicts: Vec<Option<bool>> = (0..PENDING_FINISH_TRIES)
-            .map(|_| h.release(&held))
-            .collect();
+        let mut verdicts = Vec::new();
+        for gap in [0, 60, 25 * 60, 34 * 60 - 1, 1] {
+            h.clock.advance(Duration::from_secs(gap));
+            verdicts.push(h.release(&held));
+        }
         assert_eq!(
             verdicts,
             [
@@ -2586,7 +2718,7 @@ mod tests {
                 Some(false),
                 Some(true)
             ],
-            "kept four beats, then handed back"
+            "kept for the hour, then handed back"
         );
 
         let give_ups: Vec<String> = h
@@ -2598,7 +2730,8 @@ mod tests {
         assert_eq!(
             give_ups,
             vec![
-                "giving up on the finish for card \"Title\" after 5 tries; returning it to \
+                "giving up on the finish for card \"Title\" (card1) after 1h: the claim release \
+                 still owed — trello delete comment: no response (mock failure); returning it to \
                  \"Up for Grabs\""
             ],
         );
@@ -2610,6 +2743,56 @@ mod tests {
                 position: ListPosition::Bottom,
             }),
         );
+    }
+
+    /// A board that answers and refuses what is owed is not asked again: the first beat
+    /// that hears the refusal hands the card back.
+    #[test]
+    fn a_finish_the_board_refuses_returns_the_card_on_the_first_beat() {
+        let h = Harness::new(cfg(), "me");
+        seed_source_card(&h.board, "card1");
+        h.board.set_clock(1000);
+        h.board.fail("delete comment");
+        let held = h.beat(1, |_| fault("boom")).expect("held");
+
+        h.board.fail_status("delete comment", 403);
+        h.clock.advance(Duration::from_secs(60));
+        assert_eq!(h.release(&held), Some(true));
+        assert!(h.diag.errs().contains(
+            &"giving up on the finish for card \"Title\" (card1) after 1m: the claim release \
+              still owed — trello delete comment: board returned status 403; returning it to \
+              \"Up for Grabs\""
+                .to_string()
+        ));
+        assert!(has_move_to(&h.board, "Up for Grabs"));
+    }
+
+    /// A claim the board says is already gone is released, not reversed: the release
+    /// whose reply was lost had landed, and the card stays where its slot put it.
+    #[test]
+    fn a_claim_already_gone_is_released_and_the_card_stays_put() {
+        let h =
+            Harness::new(cfg(), "me").with_hooks(hooks(vec![], vec![], vec![move_to("Review")]));
+        seed_source_card(&h.board, "card1");
+        h.board.set_clock(1000);
+        h.board.fail("delete comment");
+        let held = h.beat(1, |_| fault("boom")).expect("held");
+        assert!(has_move_to(&h.board, "Review"));
+
+        h.board.clear_failure();
+        h.board
+            .delete_comment("card1", "c1000")
+            .expect("the lost release lands after all");
+        let moves = h.board.actions().len();
+        assert_eq!(h.release(&held), Some(true));
+        assert!(
+            !h.board.actions()[moves..]
+                .iter()
+                .any(|a| matches!(a, Action::Move { .. })),
+            "no reversal: {:?}",
+            h.board.actions()
+        );
+        assert!(!h.diag.errs().iter().any(|l| l.contains("giving up")));
     }
 
     /// `finish` reports an undelivered finish, and the board sees exactly the calls the
@@ -2627,6 +2810,7 @@ mod tests {
             &claimed_unit("card1"),
             UnitOutcome::Clean,
             &Facts::none(),
+            h.clock.now(),
             &h.diag,
         ));
         assert_eq!(h.board.calls(), vec!["post comment", "delete comment"]);
@@ -4055,6 +4239,142 @@ mod tests {
         );
     }
 
+    /// Every write [`deliver`](TrelloUnits::deliver) queues says so, one line each: the
+    /// first because the board could not be reached, the rest because the card already
+    /// owes it.
+    #[test]
+    fn every_queued_write_logs_one_line() {
+        let h = Harness::new(cfg(), "me");
+        seed_source_card(&h.board, "card1");
+        let card = narrated_card(NARRATED_TITLE);
+        h.board.go_down();
+        let now = h.clock.now();
+        for write in [
+            Write::Note(attempt_text(1, 2, "cargo test: 3 failed\n\nsee run.log")),
+            Write::Act(move_to("Backlog")),
+            Write::Act(LifecycleAction::AddLabel {
+                name: "Problem".into(),
+            }),
+        ] {
+            assert_eq!(
+                h.units.deliver(&card, write, now, &h.diag).unwrap(),
+                Delivery::Queued
+            );
+        }
+        let named = format!("card \"{NARRATED_TITLE}\" (sl-card1)");
+        assert_eq!(
+            h.diag.errs(),
+            [
+                format!(
+                    "trello is unreachable for {named}: trello post comment: no response (mock \
+                     failure); the comment \"[afkd-attempt] 1/2: cargo test: 3 failed…\" is \
+                     queued and retried for up to 1h"
+                ),
+                format!(
+                    "trello still owes {named} earlier writes; moving it to \"Backlog\" is queued \
+                     behind them"
+                ),
+                format!(
+                    "trello still owes {named} earlier writes; adding the label \"Problem\" is \
+                     queued behind them"
+                ),
+            ]
+        );
+        assert!(h.diag.narrated().is_empty());
+        assert_eq!(h.board.calls(), ["post comment"], "one try, then queued");
+    }
+
+    /// A reply that cannot be read, inline, is the caller's error as it always was —
+    /// the call's `ok:false` — and nothing is queued.
+    #[test]
+    fn a_decode_inline_still_answers_err() {
+        let h = Harness::new(cfg(), "me");
+        seed_source_card(&h.board, "card1");
+        h.board.fail_decode("resolve list");
+        let e = h
+            .units
+            .deliver(
+                &card("card1", "T", "B"),
+                Write::Act(move_to("Backlog")),
+                h.clock.now(),
+                &h.diag,
+            )
+            .unwrap_err();
+        assert!(matches!(e, BoardError::Decode { .. }), "{e}");
+        assert!(!h.units.outbox().owes("card1"));
+        assert!(h.diag.errs().is_empty(), "the caller says it");
+    }
+
+    /// The attempt note fits Trello's comment limit whatever the reason: a long one is cut
+    /// on a character boundary, measured as Trello measures, and says so; a short one is
+    /// left whole.
+    #[test]
+    fn attempt_text_is_cut_to_trellos_comment_limit() {
+        let reason = "cargo test: 修复 the retry 🚨 storm\n\n```\npanicked at src/a.rs:1\n```\n"
+            .repeat(1_000);
+        assert!(reason.chars().count() > 40_000);
+        let text = attempt_text(2, 2, &reason);
+        assert!(text.encode_utf16().count() <= COMMENT_MAX);
+        assert!(
+            text.encode_utf16().count() > COMMENT_MAX - 2,
+            "cut no shorter than it must"
+        );
+        assert!(text.starts_with("[afkd-attempt] 2/2: cargo test: 修复"));
+        assert!(text.ends_with(CUT_MARK), "{}", &text[text.len() - 60..]);
+        let kept = &text["[afkd-attempt] 2/2: ".len()..text.len() - CUT_MARK.len()];
+        assert!(
+            reason.starts_with(kept),
+            "a prefix of the reason, whole characters"
+        );
+
+        let short = "run_cmd `make test` failed: 2\n\n修复 🚨";
+        assert_eq!(
+            attempt_text(1, 2, short),
+            format!("[afkd-attempt] 1/2: {short}")
+        );
+    }
+
+    /// An attempt note the board cannot take while it is out of reach lands from the
+    /// queue once it is back; one the board refuses is said lost, naming the card.
+    #[test]
+    fn an_attempt_note_is_queued_through_an_outage_and_lost_only_on_a_refusal() {
+        let h = Harness::new(cfg(), "me");
+        seed_source_card(&h.board, "card1");
+        let unit = claimed_unit("card1");
+        h.board.go_down();
+        h.units.attempt_failed(
+            &unit,
+            1,
+            2,
+            Some("the network went away"),
+            h.clock.now(),
+            &h.diag,
+        );
+        h.board.clear_failure();
+        h.clock.advance(RETRY_FIRST);
+        let outbox = h.units.outbox();
+        assert_eq!(
+            outbox.deliver_due(&*h.board, "BID", &h.clock, &h.diag),
+            None
+        );
+        assert_eq!(
+            texts(&h.board.comments_on("card1")),
+            ["[afkd-attempt] 1/2: the network went away"]
+        );
+
+        h.board.fail_status("post comment", 400);
+        h.units
+            .attempt_failed(&unit, 2, 2, Some("again"), h.clock.now(), &h.diag);
+        assert_eq!(
+            h.diag.errs().last().map(String::as_str),
+            Some(
+                "card \"T\" (sl-card1): the comment \"[afkd-attempt] 2/2: again\" is lost — \
+                 trello post comment: board returned status 400"
+            )
+        );
+        assert!(!outbox.owes("card1"));
+    }
+
     /// afkd sends `attempt_failed` with the fault's sentence; with none there is nothing
     /// to mark, as the built-in returned early on a non-fault signal.
     #[test]
@@ -4062,13 +4382,14 @@ mod tests {
         let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.units
-            .attempt_failed(&claimed_unit("card1"), 1, 2, None, &h.diag);
+            .attempt_failed(&claimed_unit("card1"), 1, 2, None, h.clock.now(), &h.diag);
         assert!(h.board.calls().is_empty());
         h.units.attempt_failed(
             &claimed_unit("card1"),
             2,
             2,
             Some("run_cmd `make test` failed: 2\n\n修复 🚨"),
+            h.clock.now(),
             &h.diag,
         );
         assert_eq!(
@@ -5662,11 +5983,11 @@ mod tests {
     }
 
     #[test]
-    fn a_park_owed_five_beats_returns_the_card_to_pick_from_with_the_question_on_it() {
+    fn a_park_owed_past_the_retry_window_returns_the_card_to_pick_from_with_the_question_on_it() {
         let (h, held) = a_park_whose_badge_cannot_land();
-        for _ in 0..PENDING_FINISH_TRIES {
-            h.release(&held);
-        }
+        assert_eq!(h.release(&held), Some(false));
+        h.clock.advance(RETRY_FOR);
+        assert_eq!(h.release(&held), Some(true));
         assert!(h
             .diag
             .errs()

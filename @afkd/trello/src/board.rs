@@ -400,6 +400,17 @@ mod mock {
         cards: Vec<String>,
     }
 
+    /// How a failing stage fails.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Failure {
+        /// No response: the network, or a board that is down.
+        Transport,
+        /// The board answered with this status.
+        Status(u16),
+        /// The board answered 2xx with a body that cannot be read.
+        Decode,
+    }
+
     /// The mutable state of one card on the mock board.
     struct CardState {
         title: String,
@@ -528,8 +539,10 @@ mod mock {
         actions: Mutex<Vec<Action>>,
         /// The board's membership, username → member id, as `resolve_member` reads it.
         members: Mutex<HashMap<String, String>>,
-        /// A stage name that should fail with a transport error, if any.
-        fail_stage: Mutex<Option<&'static str>>,
+        /// A stage name that should fail, and how, if any.
+        fail_stage: Mutex<Option<(&'static str, Failure)>>,
+        /// Whether every stage fails with a transport error: the board out of reach.
+        down: std::sync::atomic::AtomicBool,
         /// A substring that makes a *comment post* fail with a transport error, if
         /// any — the finer-grained sibling of [`fail_stage`](Self::fail_stage), for
         /// the several posts that share one stage name.
@@ -774,9 +787,28 @@ mod mock {
             }
         }
 
-        /// Make every call belonging to `stage` fail until cleared.
+        /// Make every call belonging to `stage` fail with a transport error until
+        /// cleared.
         pub(crate) fn fail(&self, stage: &'static str) {
-            *lock(&self.fail_stage) = Some(stage);
+            *lock(&self.fail_stage) = Some((stage, Failure::Transport));
+        }
+
+        /// Make every call belonging to `stage` fail with the board answering `status`
+        /// until cleared.
+        pub(crate) fn fail_status(&self, stage: &'static str, status: u16) {
+            *lock(&self.fail_stage) = Some((stage, Failure::Status(status)));
+        }
+
+        /// Make every call belonging to `stage` fail with a reply that cannot be read
+        /// until cleared.
+        pub(crate) fn fail_decode(&self, stage: &'static str) {
+            *lock(&self.fail_stage) = Some((stage, Failure::Decode));
+        }
+
+        /// Make every call fail with a transport error until cleared: the board out of
+        /// reach, as in a network outage.
+        pub(crate) fn go_down(&self) {
+            self.down.store(true, Ordering::SeqCst);
         }
 
         /// Make every `post_comment` whose text contains `needle` fail until cleared,
@@ -796,6 +828,7 @@ mod mock {
         pub(crate) fn clear_failure(&self) {
             *lock(&self.fail_stage) = None;
             *lock(&self.fail_post_needle) = None;
+            self.down.store(false, Ordering::SeqCst);
         }
 
         /// Set the wall-clock base (seconds since epoch) the next posted comment
@@ -819,14 +852,22 @@ mod mock {
 
         fn guard(&self, stage: &'static str) -> Result<(), BoardError> {
             lock(&self.calls).push(stage);
-            if *lock(&self.fail_stage) == Some(stage) {
-                Err(BoardError::Transport {
+            let failure = match *lock(&self.fail_stage) {
+                _ if self.down.load(Ordering::SeqCst) => Failure::Transport,
+                Some((failing, failure)) if failing == stage => failure,
+                _ => return Ok(()),
+            };
+            Err(match failure {
+                Failure::Transport => BoardError::Transport {
                     stage,
                     reason: "mock failure".into(),
-                })
-            } else {
-                Ok(())
-            }
+                },
+                Failure::Status(status) => BoardError::Status { stage, status },
+                Failure::Decode => BoardError::Decode {
+                    stage,
+                    reason: "mock failure".into(),
+                },
+            })
         }
     }
 

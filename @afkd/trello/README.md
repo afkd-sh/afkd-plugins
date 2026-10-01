@@ -179,9 +179,18 @@ setting, which afkd reads before the plugin runs, spells it `"me"`; it cannot na
 member, since a Trello username is at least three characters long.
 
 Each action returns a result, like any call: one the board refused — a list the board does
-not have, a member not on it, a board that is down — fails with the plugin's sentence. A
-failing `on_claim` gives the card back and fails the run; a failing post-run slot is logged
-and changes nothing. afkd never retries a slot's action.
+not have, a member not on it — fails with the plugin's sentence. A failing `on_claim` gives
+the card back and fails the run; a failing post-run slot is logged and changes nothing.
+afkd never retries a slot's action; the plugin retries what Trello could not take.
+
+**When Trello cannot be reached.** An action Trello could not be reached for, or answered
+with a 429 or a 5xx, is queued and the call answers ok, so the slot's next action still runs
+and is queued behind it. The plugin retries the queue in the background, each card's writes
+in the order they were asked for: the first retry 5 seconds after the failure, the gap
+doubling to 5 minutes, for up to an hour. The `[afkd-attempt]` notes and the run-end
+`[afkd-ran]` watermark are retried the same way. Every write queued is one line in the
+service log; one given up is a loud line naming the card and what was lost. The queue is
+held in memory, so a plugin afkd ends names each write it still owes.
 
 **Repeating an action.** The label and member actions are all idempotent, so a retried card
 cannot fault on its own slots: `add_label` and `add_member` are additive — attaching
