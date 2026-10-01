@@ -45,8 +45,6 @@ afkd refuses the manifest when it is installed.
 A config file uses the plugin by importing it, and then names it by its leaf, `github`:
 
 ```conf
-package main
-
 import "@afkd/github"
 
 GITHUB_TOKEN :: env.GITHUB_TOKEN
@@ -106,8 +104,6 @@ wherever it is written, and a slot may act on another item than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-package main
-
 // The agent a `service(github)` runs: the skill is what lets it answer the issue.
 fixer :: agent(claude) {
   model  "sonnet"
@@ -170,8 +166,6 @@ the run's own facts, which afkd interpolates before the plugin sees the text: th
 outcome's `#{outcome.duration}` and `#{outcome.error}`, and the run's `#{run.id}`.
 
 ```conf
-package main
-
 import "@afkd/github"
 
 widgets :: service(github) {
@@ -203,8 +197,6 @@ interval for the extent of the run and hands any new one to the agent **that is 
 working**, as another turn in the same conversation:
 
 ```conf
-package main
-
 import "@afkd/github"
 
 widgets :: service(github) {
@@ -288,8 +280,6 @@ comments while a round runs. The comments the brief was built from are never del
 again.
 
 ```conf
-package main
-
 import "@afkd/github"
 
 reviews :: service(github.pr) {

@@ -11,7 +11,7 @@
 //!   value `me`, and the **handle** leg holds `afkd validate` to refusing an action passed
 //!   the other kind's item.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
-//!   each a whole `package main` file, against the installed plugin.
+//!   each a whole entry file, against the installed plugin.
 //!
 //! The GitHub is the plugin's own loopback fake ([`fake`]), reached through a loopback `host`
 //! the client resolves to the GHES `…/api/v3` base, so no leg touches a network; and every
@@ -129,9 +129,7 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// it — which is what lets the test see the claim and the run mid-flight.
 fn service(home: &Path, host: &str) -> String {
     format!(
-        r#"package main
-
-import "@afkd/github"
+        r#"import "@afkd/github"
 
 widgets :: service(github) {{
   host          "{host}"
@@ -333,9 +331,7 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
 /// each kind's own six, on the item its slot is passed — and read its value `me`, the run
 /// and the outcome, in the argument shapes the manifest types: wide and scoped label
 /// names, and a multi-line comment.
-const BOTH_KINDS: &str = r##"package main
-
-import "@afkd/github"
+const BOTH_KINDS: &str = r##"import "@afkd/github"
 
 issues :: service(github) {
   host            "ghe.example.com"
@@ -436,9 +432,7 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"package main
-
-import "@afkd/github"
+            r#"import "@afkd/github"
 
 reviews :: service(github.pr) {{
   repo  "acme/widgets"

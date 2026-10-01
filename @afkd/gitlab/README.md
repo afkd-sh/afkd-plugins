@@ -45,8 +45,6 @@ older afkd refuses the manifest when it is installed.
 A config file uses the plugin by importing it, and then names it by its leaf, `gitlab`:
 
 ```conf
-package main
-
 import "@afkd/gitlab"
 
 GITLAB_TOKEN :: env.GITLAB_TOKEN
@@ -108,8 +106,6 @@ wherever it is written, and a slot may act on another item than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-package main
-
 // The agent a `service(gitlab)` runs: the skill is what lets it answer the issue.
 fixer :: agent(claude) {
   model  "sonnet"
@@ -168,8 +164,6 @@ the run's own facts, which afkd interpolates before the plugin sees the text: th
 outcome's `#{outcome.duration}` and `#{outcome.error}`, and the run's `#{run.id}`.
 
 ```conf
-package main
-
 import "@afkd/gitlab"
 
 widgets :: service(gitlab) {
@@ -200,8 +194,6 @@ interval for the extent of the run and hands any new one to the agent **that is 
 working**, as another turn in the same conversation:
 
 ```conf
-package main
-
 import "@afkd/gitlab"
 
 widgets :: service(gitlab) {
@@ -283,8 +275,6 @@ Address review feedback on MR !7.
 while a round runs. The notes the brief was built from are never delivered again.
 
 ```conf
-package main
-
 import "@afkd/gitlab"
 
 reviews :: service(gitlab.mr) {

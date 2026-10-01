@@ -11,7 +11,7 @@
 //!   value `me`, and the **handle** leg holds `afkd validate` to refusing an action passed
 //!   the other kind's item.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
-//!   each a whole `package main` file, against the installed plugin.
+//!   each a whole entry file, against the installed plugin.
 //!
 //! The Gitea is the plugin's own loopback fake ([`fake`]), so no leg touches a network, and
 //! every wait is bounded and every spawn held in a [`Daemon`]: a claim that never lands must
@@ -121,9 +121,7 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// it — which is what lets the test see the claim and the run mid-flight.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"package main
-
-import "@afkd/gitea"
+        r#"import "@afkd/gitea"
 
 widgets :: service(gitea) {{
   base_url      "{base_url}"
@@ -325,9 +323,7 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
 /// each kind's own six, on the item its slot is passed — and read its value `me`, the run
 /// and the outcome — the issue kind's `on_park` among them — in the argument shapes the
 /// manifest types: wide and slashed label names, and a multi-line comment.
-const BOTH_KINDS: &str = r##"package main
-
-import "@afkd/gitea"
+const BOTH_KINDS: &str = r##"import "@afkd/gitea"
 
 issues :: service(gitea) {
   base_url        "https://gitea.example.com"
@@ -428,9 +424,7 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"package main
-
-import "@afkd/gitea"
+            r#"import "@afkd/gitea"
 
 reviews :: service(gitea.pr) {{
   repo  "acme/widgets"

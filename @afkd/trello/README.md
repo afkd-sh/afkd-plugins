@@ -42,8 +42,6 @@ slot calls on a card as a `call`. An older afkd refuses the manifest when it is 
 A config file uses the plugin by importing it, and then names it by its leaf, `trello`:
 
 ```conf
-package main
-
 import "@afkd/trello"
 
 TRELLO_BOARD   :: "https://trello.com/b/REPLACE_ME/board"
@@ -93,8 +91,6 @@ wherever it is written, and a slot may act on another card than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-package main
-
 // The agent a `service(trello)` runs: the skill is what lets it work the card.
 builder :: agent(claude) {
   model  "sonnet"
@@ -225,8 +221,6 @@ top does not hold up the settled ones under it. Age is measured from the card's
 it is not the claim lock.
 
 ```conf
-package main
-
 import "@afkd/trello"
 
 implement :: service(trello) {
@@ -274,8 +268,6 @@ nothing, the plugin posts one terse backstop comment so the card does not re-fir
 next poll.
 
 ```conf
-package main
-
 import "@afkd/trello"
 
 groom :: service(trello) {
@@ -330,8 +322,6 @@ gate — the run ends at the ask. A **multi-step** one must gate the rest on the
 nothing runs past the question:
 
 ```conf
-package main
-
 import "@afkd/trello"
 
 // The agent the service below calls. Minimal, so this snippet validates on its own.
@@ -370,8 +360,6 @@ drags a badged card back into the parking service's own `pick_from` gets it clai
 unbadged there, answered or not.
 
 ```conf
-package main
-
 import "@afkd/trello"
 
 widgets :: service(trello) {
@@ -402,8 +390,6 @@ the claimed card's comments on that interval for the extent of the run and hands
 to the agent **that is already working**, as another turn in the same conversation:
 
 ```conf
-package main
-
 import "@afkd/trello"
 
 widgets :: service(trello) {

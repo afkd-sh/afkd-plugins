@@ -13,7 +13,7 @@
 //!   v2's §24 against the installed plugin, and the **handle** leg holds `afkd validate` to
 //!   refusing an action called without its card.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
-//!   each a whole `package main` file, against the installed plugin.
+//!   each a whole entry file, against the installed plugin.
 //!
 //! The Trello is the plugin's own loopback fake ([`fake`]), so no leg touches a network, and
 //! every wait is bounded and every spawn held in a [`Daemon`]: a claim that never lands must
@@ -142,9 +142,7 @@ fn seed() -> (FakeTrello, String) {
 /// the run mid-flight.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"package main
-
-import "@afkd/trello"
+        r#"import "@afkd/trello"
 
 widgets :: service(trello) {{
   board         "https://trello.com/b/{BOARD}/afkd-drift"
@@ -353,9 +351,7 @@ const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network we
 /// the test creates `release`, then fails.
 fn failing_service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"package main
-
-import "@afkd/trello"
+        r#"import "@afkd/trello"
 
 widgets :: service(trello) {{
   board         "https://trello.com/b/{BOARD}/afkd-drift"
@@ -523,15 +519,11 @@ fn outage_leg_a_failed_card_still_reaches_backlog_with_its_attempt_notes() {
 
 /// §24's entry file.
 const SECTION_24_DAEMON: &str = r#"// daemon.afkd
-package main
-
 import "selfdev"
 "#;
 
 /// §24's shared queues.
 const SECTION_24_QUEUES: &str = r#"// shared/queues.afkd
-package shared
-
 develop :: queue { slots 1 }
 discuss :: queue { slots 2 }
 "#;
@@ -543,8 +535,6 @@ discuss :: queue { slots 2 }
 const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afkd - Trello-driven pipeline: afkd develops itself.
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
 // on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
-
-package selfdev
 
 import "shared"
 import "@afkd/trello"
@@ -761,9 +751,7 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"package main
-
-import "@afkd/trello"
+            r#"import "@afkd/trello"
 
 widgets :: service(trello) {{
   board     "https://trello.com/b/BOARDID/afkd"

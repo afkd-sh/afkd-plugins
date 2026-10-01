@@ -45,8 +45,6 @@ refuses the manifest when it is installed.
 A config file uses the plugin by importing it, and then names it by its leaf, `gitea`:
 
 ```conf
-package main
-
 import "@afkd/gitea"
 
 GITEA_TOKEN :: env.GITEA_TOKEN
@@ -110,8 +108,6 @@ wherever it is written, and a slot may act on another item than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-package main
-
 // The agent a `service(gitea)` runs: the skill is what lets it answer the issue.
 fixer :: agent(claude) {
   model  "sonnet"
@@ -176,8 +172,6 @@ service works **one issue at a time, to completion**, and `max_attempts` bounds 
 per-issue retries.
 
 ```conf
-package main
-
 import "@afkd/gitea"
 
 widgets :: service(gitea) {
@@ -218,8 +212,6 @@ requirement remains:
   so nothing runs after the ask:
 
   ```conf
-  package main
-
   import "@afkd/gitea"
 
   // The agent the service below calls. Minimal, so this snippet validates on its own.
@@ -273,8 +265,6 @@ unchanged — no comments are read at all outside the `afkd/awaiting-reply` re-a
 `[ "anyone" ]` is an explicit value, not the same as omitting it.
 
 ```conf
-package main
-
 import "@afkd/gitea"
 
 groom :: service(gitea) {
@@ -298,8 +288,6 @@ for the claimed issue's comments on that interval for the extent of the run and 
 new one to the agent **that is already working**, as another turn in the same conversation:
 
 ```conf
-package main
-
 import "@afkd/gitea"
 
 widgets :: service(gitea) {
@@ -384,8 +372,6 @@ Address review feedback on PR #7.
 while a round runs, and the comments the brief was built from are never delivered again.
 
 ```conf
-package main
-
 import "@afkd/gitea"
 
 reviews :: service(gitea.pr) {
