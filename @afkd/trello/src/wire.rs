@@ -125,12 +125,24 @@ impl Facts {
 pub(crate) struct WireUnit {
     pub(crate) id: String,
     pub(crate) key: String,
+    /// The claimed card's handle fields, every one the manifest's `Card` declares.
+    pub(crate) fields: CardFields,
     pub(crate) thread: String,
     pub(crate) seen: Vec<String>,
     #[serde(rename = "self")]
     pub(crate) me: String,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) files: Vec<WireFile>,
+}
+
+/// The fields of a `trello.Card` handle, in the manifest's order, as the claiming read saw
+/// the card. Each is always sent — a card the board gave no url or label has `""` or `[]`
+/// — so afkd never finds one of them missing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct CardFields {
+    pub(crate) title: String,
+    pub(crate) url: String,
+    pub(crate) labels: Vec<String>,
 }
 
 /// One file of the attempt's scratch layout, as data: afkd writes it.
@@ -241,6 +253,11 @@ mod tests {
         WireUnit {
             id: "1Rkelydw".into(),
             key: "6a4dd5de1234abcd5678ef90#6a4dd5ff1234abcd5678ef91".into(),
+            fields: CardFields {
+                title: "修复 the retry storm 🚨".into(),
+                url: "https://trello.com/c/1Rkelydw/12-retry-storm".into(),
+                labels: vec!["afkd/ready".into(), "Väntar på svar".into()],
+            },
             thread: "1Rkelydw".into(),
             seen: vec!["6a4dd5e01234abcd5678ef92".into()],
             me: "5f4d1c2b9a0000000000cc03".into(),

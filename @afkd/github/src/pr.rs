@@ -33,7 +33,7 @@ use crate::feedback::{self, FeedbackItem};
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{LifecycleAction, Vocabulary, PR_VOCABULARY};
 use crate::settings::GithubConfig;
-use crate::wire::{WireFile, WireUnit};
+use crate::wire::{Fields, PrFields, WireFile, WireUnit};
 use crate::{NUMBER_FILE, PR_DIR, TASK_FILE};
 
 /// One PR taken on as a unit of work.
@@ -45,6 +45,10 @@ pub(crate) struct Unit {
     /// released at run end, and the tail of the claim-journal key so a crashed run's
     /// marker is reaped.
     pub(crate) claim_id: u64,
+    /// The PR title, the handle's `title`.
+    pub(crate) title: String,
+    /// The PR's page on GitHub, the handle's `url`.
+    pub(crate) url: String,
     /// The PR's head branch, threaded into the run's env.
     pub(crate) head_branch: String,
     /// The human-feedback delta delivered in this run's brief (oldest-first), each item
@@ -168,6 +172,8 @@ impl Units for PrUnits {
                         repo: repo.clone(),
                         number: pr.number,
                         claim_id,
+                        title: pr.title,
+                        url: pr.url,
                         head_branch: pr.head_branch,
                         feedback: feedback::delta(&comments, &reviews, me),
                         before_comments: comments.iter().map(|c| c.id).collect(),
@@ -183,9 +189,9 @@ impl Units for PrUnits {
 
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim-time comment ids as
-    /// `seen` and the claim identity as `self`. The PR number and head branch ride the
-    /// env so a prompted `git fetch`/checkout reconstructs the branch. The brief is
-    /// unframed — afkd frames `task.md` itself.
+    /// `seen`, the claim identity as `self` and the PR's handle fields. The PR number and
+    /// head branch ride the env so a prompted `git fetch`/checkout reconstructs the
+    /// branch. The brief is unframed — afkd frames `task.md` itself.
     fn wire_unit(&self, unit: &Unit) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
@@ -194,6 +200,12 @@ impl Units for PrUnits {
         WireUnit {
             id: unit.number.to_string(),
             key: unit.key(),
+            fields: Fields::Pr(PrFields {
+                title: unit.title.clone(),
+                url: unit.url.clone(),
+                number: unit.number,
+                branch: unit.head_branch.clone(),
+            }),
             thread: unit.thread(),
             seen: unit.before_comments.iter().map(u64::to_string).collect(),
             me: unit.claimed_as.clone(),
@@ -355,6 +367,8 @@ mod tests {
             repo: repo(),
             number: 7,
             claim_id,
+            title: "PR 7".into(),
+            url: "https://github.com/acme/widgets/pull/7".into(),
             head_branch: "feature/x".into(),
             feedback,
             before_comments: Vec::new(),
@@ -755,14 +769,15 @@ mod tests {
 
     // --- The wire unit + the end of a round ---
 
-    /// The whole wire unit: the number as `id`, the claim-journal key, the stable
-    /// thread, the claim-time comments as `seen`, the claim identity as `self`, the PR
-    /// number and head branch merged over the credentials, and the brief beside the
-    /// bare number under `pr/number`.
+    /// The whole wire unit: the number as `id`, the claim-journal key, the PR's handle
+    /// fields, the stable thread, the claim-time comments as `seen`, the claim identity
+    /// as `self`, the PR number and head branch merged over the credentials, and the
+    /// brief beside the bare number under `pr/number`.
     #[test]
     fn the_wire_unit_carries_pr_number_branch_thread_and_layout() {
         let h = Harness::new(cfg("acme/widgets"));
         let unit = Unit {
+            title: "Cap the retry backoff — \"重试\" 上限 🚦".into(),
             head_branch: "feature/重试-backoff".into(),
             before_comments: vec![41, 42],
             ..unit(
@@ -784,6 +799,12 @@ mod tests {
             WireUnit {
                 id: "7".into(),
                 key: "acme/widgets#7#1000001".into(),
+                fields: Fields::Pr(PrFields {
+                    title: "Cap the retry backoff — \"重试\" 上限 🚦".into(),
+                    url: "https://github.com/acme/widgets/pull/7".into(),
+                    number: 7,
+                    branch: "feature/重试-backoff".into(),
+                }),
                 thread: "acme/widgets#7".into(),
                 seen: vec!["41".into(), "42".into()],
                 me: "me".into(),

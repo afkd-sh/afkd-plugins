@@ -191,11 +191,20 @@ fn hello_refuses_what_it_cannot_arm_with() {
 
 /// The won race hands over exactly the unit the built-in would have run: its journal key
 /// and session thread, no `seen`, its identity, the four env names the skill reads, and
-/// the scratch layout with the brief unframed. The forge then holds the claim — the marker
-/// and the gate, and nothing a hook does until `on_claim`'s calls land.
+/// the scratch layout with the brief unframed — with every field the manifest's `Issue`
+/// declares, its labels by name as the poll read them. The forge then holds the claim —
+/// the marker and the gate, and nothing a hook does until `on_claim`'s calls land.
 #[test]
 fn a_won_race_hands_over_the_built_ins_unit() {
     let fake = forge();
+    fake.issue(
+        PROJECT,
+        7,
+        TITLE,
+        BODY,
+        &["afkd::ready", "優先::high"],
+        &[HUMAN],
+    );
     let mut plugin = Plugin::armed(settings(&fake));
     let reply = plugin.poll();
     assert_eq!(reply["fire"], true, "{}", plugin.stderr());
@@ -206,6 +215,12 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         json!({
             "id": "7",
             "key": format!("acme/sub.group/widgets#7#{}", marker[0]),
+            "fields": {
+                "title": TITLE,
+                "url": fake.issue_url(PROJECT, 7),
+                "number": 7,
+                "labels": ["afkd::ready", "優先::high"],
+            },
             "thread": "acme/sub.group/widgets#7",
             "seen": [],
             "self": ME,
@@ -225,12 +240,20 @@ fn a_won_race_hands_over_the_built_ins_unit() {
     let notes = fake.notes(PROJECT, 7);
     assert_eq!(notes[0].body, "[afkd-claim] owner=björn-öst[bot]");
     assert_eq!(notes[0].author, ME);
-    assert_eq!(labels(&fake, 7), ["afkd::ready", "afkd::claimed"]);
+    assert_eq!(
+        labels(&fake, 7),
+        ["afkd::ready", "優先::high", "afkd::claimed"]
+    );
     assert_eq!(assignees(&fake, 7), [HUMAN], "the claim assigns no one");
     on_claim(&mut plugin, &reply["unit"], "afkd::working");
     assert_eq!(
         labels(&fake, 7),
-        ["afkd::ready", "afkd::claimed", "afkd::working"]
+        [
+            "afkd::ready",
+            "優先::high",
+            "afkd::claimed",
+            "afkd::working"
+        ]
     );
     assert_eq!(assignees(&fake, 7), [HUMAN, ME], "the human was kept");
     // The race is post → settle → re-read: the marker went up before the thread read.
@@ -839,17 +862,20 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
 
 /// The MR's source branch: non-ASCII, and crossing to the run verbatim.
 const BRANCH: &str = "feature/重试-backoff";
+/// The MR's title: the quotes a log line wraps it in, wide CJK and an emoji.
+const MR_TITLE: &str = "Cap the retry backoff — \"重试\" 上限 🚦";
 /// The human's review note on MR !7: multi-line, with an indented code line and a trailing
 /// newline the brief trims.
 const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max_backoff = 0\n";
 
-/// A project with the bot's own MR !7 on [`BRANCH`], a human assigned to it, and the
-/// human's review note two minutes old — new feedback, since the bot has not spoken.
-/// Returns the fake and the note's id.
+/// A project with the bot's own MR !7 on [`BRANCH`], titled [`MR_TITLE`], a human assigned
+/// to it, and the human's review note two minutes old — new feedback, since the bot has not
+/// spoken. Returns the fake and the note's id.
 fn mr_forge() -> (FakeGitlab, u64) {
     let fake = FakeGitlab::start(ME_ID, ME);
     fake.user(99, HUMAN);
     fake.mr(PROJECT, 7, ME, BRANCH, &[HUMAN]);
+    fake.retitle(PROJECT, 7, MR_TITLE);
     let review = fake.mr_note(PROJECT, 7, HUMAN, REVIEW, 120);
     (fake, review)
 }
@@ -905,8 +931,9 @@ fn mr_hello_lists_release_renew_comments() {
 }
 
 /// The won race over an MR with new human feedback hands over exactly the unit the
-/// built-in would have run: its journal key and session thread, the claim-time thread as
-/// `seen`, its identity, the five env names the skill reads with the branch verbatim, and
+/// built-in would have run: its journal key and session thread, every field the
+/// manifest's `Merge_Request` declares, the claim-time thread as `seen`, its identity, the
+/// five env names the skill reads with the branch verbatim, and
 /// the scratch layout with the review brief unframed. Every write went to the MR's own
 /// paths. A second poll, the claim still live, hands over nothing: our own older marker
 /// out-orders the new one, which is taken straight back.
@@ -923,6 +950,12 @@ fn mr_a_won_race_hands_over_the_built_ins_unit() {
         json!({
             "id": "7",
             "key": format!("acme/sub.group/widgets#7#{}", marker[0]),
+            "fields": {
+                "title": MR_TITLE,
+                "url": fake.mr_url(PROJECT, 7),
+                "number": 7,
+                "branch": BRANCH,
+            },
             "thread": "acme/sub.group/widgets#7",
             "seen": [review.to_string()],
             "self": ME,

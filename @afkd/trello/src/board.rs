@@ -27,6 +27,9 @@ pub(crate) struct Card {
     pub(crate) short_link: String,
     /// The card's short title (the first line of the task text).
     pub(crate) title: String,
+    /// The card's address on trello.com (`https://trello.com/c/<shortLink>/<slug>`),
+    /// handed to afkd as the handle's `url`. Empty when the board sent none.
+    pub(crate) url: String,
     /// The card's longer description (the task-text body; empty when absent).
     pub(crate) description: String,
     /// The card's checklists (its acceptance contract), in board order. Empty
@@ -37,7 +40,7 @@ pub(crate) struct Card {
     /// `require_member` intake gate and by nothing else.
     pub(crate) members: Vec<String>,
     /// The card's label names, in board order. Read by the `require_label` intake
-    /// gate and by nothing else.
+    /// gate, and handed to afkd as the handle's `labels`.
     pub(crate) labels: Vec<String>,
     /// When the card was created, when the board said so for free: decoded from the
     /// card's own id, the same way [`Comment::posted_at`] is. `None` when the id
@@ -566,6 +569,11 @@ mod mock {
         call_deadlines: Mutex<Vec<Option<Instant>>>,
     }
 
+    /// The address a mock card reports, as Trello's default card fields carry one.
+    pub(crate) fn card_url(id: &str) -> String {
+        format!("https://trello.com/c/{id}")
+    }
+
     impl MockBoard {
         /// A fresh, empty board.
         pub(crate) fn new() -> Self {
@@ -900,6 +908,7 @@ mod mock {
                         // Mirrors the parser's fallback: a mock card's short link is its id.
                         short_link: id.clone(),
                         title: c.title.clone(),
+                        url: card_url(id),
                         description: c.description.clone(),
                         checklists: c.checklists.clone(),
                         members: c.members.clone(),
@@ -926,9 +935,10 @@ mod mock {
                         short_link: id.clone(),
                         title: c.title.clone(),
                         labels: c.labels.clone(),
+                        url: String::new(),
                         // The narrow `fields=name,labels` projection, spelled out:
-                        // a caller reading a description, a checklist, a member or a
-                        // thread off the board-wide read finds nothing here rather
+                        // a caller reading a url, a description, a checklist, a member or
+                        // a thread off the board-wide read finds nothing here rather
                         // than passing on the mock's generosity.
                         description: String::new(),
                         checklists: Vec::new(),
@@ -957,6 +967,7 @@ mod mock {
                 id: card_id.to_string(),
                 short_link: card_id.to_string(),
                 title: c.title.clone(),
+                url: card_url(card_id),
                 description: c.description.clone(),
                 checklists: c.checklists.clone(),
                 members: c.members.clone(),

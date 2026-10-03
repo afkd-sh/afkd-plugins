@@ -36,11 +36,13 @@ afkd copies the tree and runs `cargo build --release --locked` in it, so the hos
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
 the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
-Run it on **afkd 0.2.197 or newer**, the first with handle types and slot signatures: this
-is a manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
-imports; afkd passes its slots the claimed issue as a `gitea.Issue`, or the pull request as
-a `gitea.Pull_Request`, and sends each action a slot calls on one as a `call`. An older afkd
-refuses the manifest when it is installed.
+Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
+sends with a claim: this is a manifest v2 plugin, which a
+[config language v2](https://afkd.sh/docs/lang-v2/) file imports; afkd passes its slots the
+claimed issue as a `gitea.Issue`, or the pull request as a `gitea.Pull_Request`, and sends
+each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and run it too,
+but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
+manifest when it is installed.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `gitea`:
 
@@ -421,9 +423,10 @@ every one of them, in order, each with its type:
 | `labels` | `list[string]` | ✓             |                      | the names of its labels        |
 | `branch` | `string`       |               | ✓                    | the PR's head branch           |
 
-A config passes an item around and compares it, but never builds one. afkd carries `id` and
-`key` at run time today; reading another field type-checks, and fails the slot when it runs
-until afkd carries it too.
+A config passes an item around and compares it, but never builds one. The plugin sends every
+field with the claim, as the claiming poll read the item, and they hold for the whole run:
+`labels` shows the issue's labels before the claim's own changes, so never the
+`afkd/claimed` the claim adds.
 
 afkd runs a slot's statements in the order they are written, and each action it calls is
 one request to the plugin, which does it on the item the action is passed first, through

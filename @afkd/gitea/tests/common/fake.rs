@@ -207,6 +207,11 @@ impl FakeGitea {
         );
     }
 
+    /// The page the fake serves as an issue's or pull request's `html_url`.
+    pub fn url(&self, repo: &str, number: u64) -> String {
+        page(&lock(&self.state), repo, number)
+    }
+
     /// Seed a review by `author` on a pull request, submitted `ago` seconds before now;
     /// returns its id.
     pub fn review(&self, repo: &str, number: u64, author: &str, ago: u64) -> u64 {
@@ -374,11 +379,24 @@ fn label_json(l: &Label) -> Value {
     json!({ "id": l.id, "name": l.name, "exclusive": l.exclusive, "color": "7057ff" })
 }
 
+/// The page Gitea names as an issue's or pull request's `html_url`: a pull request's
+/// under `pulls/`, an issue's under `issues/`.
+fn page(s: &State, repo: &str, number: u64) -> String {
+    let kind = if s.pulls.contains_key(&(repo.to_string(), number)) {
+        "pulls"
+    } else {
+        "issues"
+    };
+    format!("https://gitea.example.com/{repo}/{kind}/{number}")
+}
+
 fn issue_json(s: &State, repo: &str, number: u64, issue: &Issue) -> Value {
     let defined = s.labels.get(repo).cloned().unwrap_or_default();
     json!({
         "number": number,
         "title": issue.title,
+        "url": format!("https://gitea.example.com/api/v1/repos/{repo}/issues/{number}"),
+        "html_url": page(s, repo, number),
         "body": issue.body,
         "state": issue.state,
         "labels": issue.labels.iter()
@@ -587,6 +605,8 @@ fn route(s: &mut State, method: &str, path: &str, body: &str) -> (u16, Value) {
                     json!({
                         "number": n,
                         "title": issue.title,
+                        "url": format!("https://gitea.example.com/api/v1/repos/{repo}/pulls/{n}"),
+                        "html_url": page(s, &repo, *n),
                         "body": issue.body,
                         "state": issue.state,
                         "head": { "ref": p.head },

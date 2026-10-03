@@ -36,7 +36,7 @@ use crate::common::{
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{LifecycleAction, Vocabulary, MR_VOCABULARY};
 use crate::settings::GitlabConfig;
-use crate::wire::{WireFile, WireUnit};
+use crate::wire::{Fields, MrFields, WireFile, WireUnit};
 use crate::{MR_DIR, NUMBER_FILE, TASK_FILE};
 
 /// One MR taken on as a unit of work.
@@ -47,6 +47,10 @@ pub(crate) struct Unit {
     /// The note id of the `[afkd-claim]` marker this claim holds the MR with — released at
     /// run end, and the tail of the claim-journal key so a crashed run's marker is reaped.
     pub(crate) claim_id: u64,
+    /// The MR title, the handle's `title`.
+    pub(crate) title: String,
+    /// The MR's page on GitLab, the handle's `url`.
+    pub(crate) url: String,
     /// The MR's source branch, threaded into the run's env so a prompted `git fetch` /
     /// checkout reconstructs it.
     pub(crate) source_branch: String,
@@ -163,6 +167,8 @@ impl MrUnits {
                         project: self.project.clone(),
                         iid: mr.iid,
                         claim_id,
+                        title: mr.title,
+                        url: mr.url,
                         source_branch: mr.source_branch,
                         feedback: mr_feedback_delta(&notes, &me.username),
                         before_notes: notes.iter().map(|n| n.id).collect(),
@@ -178,8 +184,8 @@ impl MrUnits {
 
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim identity's username as
-    /// `self` and the claim-time note ids as `seen`. The brief is unframed — afkd frames
-    /// `task.md` itself.
+    /// `self`, the claim-time note ids as `seen` and the MR's handle fields. The brief is
+    /// unframed — afkd frames `task.md` itself.
     pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_PROJECT.to_string(), unit.project.raw().to_string());
@@ -188,6 +194,12 @@ impl MrUnits {
         WireUnit {
             id: unit.iid.to_string(),
             key: unit.key(),
+            fields: Fields::Mr(MrFields {
+                title: unit.title.clone(),
+                url: unit.url.clone(),
+                number: unit.iid,
+                branch: unit.source_branch.clone(),
+            }),
             thread: unit.thread(),
             seen: unit.before_notes.iter().map(u64::to_string).collect(),
             me: unit.claimed_as.username.clone(),
@@ -745,6 +757,8 @@ mod tests {
             project: Project::new("group/widgets"),
             iid: 7,
             claim_id: 1,
+            title: "MR !7".into(),
+            url: "https://gitlab.example.com/group/widgets/-/merge_requests/7".into(),
             source_branch: "feature/x".into(),
             feedback: vec![
                 FeedbackItem {
@@ -780,7 +794,8 @@ mod tests {
     }
 
     /// The unit a real claim hands over: the built-in's journal key (which round-trips to
-    /// the coordinate and the marker), the per-MR thread, the claim-time note ids as
+    /// the coordinate and the marker), the MR's handle fields as the poll listed it, the
+    /// per-MR thread, the claim-time note ids as
     /// `seen`, the claim identity as `self`, exactly the five env names the skill reads —
     /// the branch verbatim, however non-ASCII — and the scratch layout.
     #[test]
@@ -812,6 +827,15 @@ mod tests {
         assert_eq!(
             split_claim_key(&wire.key),
             Some(("group/widgets", 7, unit.claim_id))
+        );
+        assert_eq!(
+            wire.fields,
+            Fields::Mr(MrFields {
+                title: "MR !7".into(),
+                url: "https://gitlab.example.com/group/widgets/-/merge_requests/7".into(),
+                number: 7,
+                branch: "feature/重试-backoff".into(),
+            })
         );
         assert_eq!(wire.thread, "group/widgets#7");
         assert_eq!(
@@ -1285,6 +1309,8 @@ mod tests {
             project: Project::new("group/widgets"),
             iid: 7,
             claim_id: 9,
+            title: "MR !7".into(),
+            url: "https://gitlab.example.com/group/widgets/-/merge_requests/7".into(),
             source_branch: "feature/x".into(),
             feedback: Vec::new(),
             before_notes: Vec::new(),

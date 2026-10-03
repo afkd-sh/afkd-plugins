@@ -43,7 +43,7 @@ use crate::outbox::{
     self, lost_line, named, queued_behind_line, queued_line, transient, Outbox, Write, RETRY_FOR,
 };
 use crate::settings::{BoardConfig, DiscussWith, MemberRef, ME};
-use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
+use crate::wire::{CardFields, Facts, UnitOutcome, WireFile, WireUnit};
 use crate::{PARK_FILE, TASK_FILE};
 
 /// Marker prefix on a failed-attempt comment.
@@ -892,6 +892,7 @@ impl TrelloUnits {
     ///
     /// - `id`: the sanitized short link (the run-name component);
     /// - `key`: `<card_id>#<claim_id>` (the claim-journal key);
+    /// - `fields`: the card's title, url and label names, as the claiming read saw them;
     /// - `thread`: the raw short link, stable across every claim (ADR-0067);
     /// - `seen`: the claim-read comment ids, which the brief already carries;
     /// - `self`: afkd's own member id;
@@ -901,6 +902,11 @@ impl TrelloUnits {
         WireUnit {
             id: sanitize(&unit.card.short_link),
             key: card_key(&unit.card.id, &unit.claim_id),
+            fields: CardFields {
+                title: unit.card.title.clone(),
+                url: unit.card.url.clone(),
+                labels: unit.card.labels.clone(),
+            },
             thread: unit.card.short_link.clone(),
             seen: unit.comments.iter().map(|c| c.id.clone()).collect(),
             me: unit.self_author.clone(),
@@ -1838,6 +1844,7 @@ mod tests {
             id: id.into(),
             short_link: format!("sl-{id}"),
             title: title.into(),
+            url: format!("https://trello.com/c/sl-{id}"),
             description: description.into(),
             checklists: Vec::new(),
             members: Vec::new(),

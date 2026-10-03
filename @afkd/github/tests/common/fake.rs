@@ -100,11 +100,20 @@ struct State {
     seen: Vec<Seen>,
 }
 
+/// The page GitHub names as an issue's or pull request's `html_url`: a pull request's
+/// under `pull/`, an issue's under `issues/`.
+fn page(repo: &str, number: u64, issue: &Issue) -> String {
+    let kind = if issue.pull { "pull" } else { "issues" };
+    format!("https://github.com/{repo}/{kind}/{number}")
+}
+
 impl State {
-    fn issue_json(&self, number: u64, issue: &Issue) -> Value {
+    fn issue_json(&self, repo: &str, number: u64, issue: &Issue) -> Value {
         let mut value = json!({
             "number": number,
             "title": issue.title,
+            "url": format!("https://api.github.com/repos/{repo}/issues/{number}"),
+            "html_url": page(repo, number, issue),
             "body": issue.body,
             "state": issue.state,
             "labels": issue.labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>(),
@@ -116,10 +125,12 @@ impl State {
         value
     }
 
-    fn pull_json(&self, number: u64, issue: &Issue) -> Value {
+    fn pull_json(&self, repo: &str, number: u64, issue: &Issue) -> Value {
         json!({
             "number": number,
             "title": issue.title,
+            "url": format!("https://api.github.com/repos/{repo}/pulls/{number}"),
+            "html_url": page(repo, number, issue),
             "body": issue.body,
             "state": issue.state,
             "user": {"login": issue.author},
@@ -242,6 +253,21 @@ impl FakeGithub {
                 ..open(labels, assignees)
             },
         );
+    }
+
+    /// Give a seeded issue or pull request a new title, as its author edits one.
+    pub fn retitle(&self, repo: &str, number: u64, title: &str) {
+        lock(&self.state)
+            .issues
+            .get_mut(&(repo.to_string(), number))
+            .expect("a seeded issue")
+            .title = title.to_string();
+    }
+
+    /// The page the fake serves as an issue's or pull request's `html_url`.
+    pub fn url(&self, repo: &str, number: u64) -> String {
+        let s = lock(&self.state);
+        page(repo, number, &s.issues[&(repo.to_string(), number)])
     }
 
     fn seed(&self, repo: &str, number: u64, issue: Issue) {
@@ -586,7 +612,7 @@ fn route(
                         && (state == "all" || i.state == state)
                         && wanted.iter().all(|w| i.labels.contains(w))
                 })
-                .map(|((_, n), i)| s.issue_json(*n, i))
+                .map(|((r, n), i)| s.issue_json(r, *n, i))
                 .collect();
             (200, Value::Array(list))
         }
@@ -596,7 +622,7 @@ fn route(
                 .issues
                 .iter()
                 .filter(|((r, _), i)| *r == repo && i.pull && (state == "all" || i.state == state))
-                .map(|((_, n), i)| s.pull_json(*n, i))
+                .map(|((r, n), i)| s.pull_json(r, *n, i))
                 .collect();
             (200, Value::Array(list))
         }
@@ -657,7 +683,7 @@ fn route(
             }
             let status = if name == "add assignees" { 201 } else { 200 };
             let issue = &s.issues[&key];
-            (status, s.issue_json(key.1, issue))
+            (status, s.issue_json(&key.0, key.1, issue))
         }
         "list comments" => {
             let n = number(4);

@@ -434,6 +434,7 @@ mod tests {
             id: id.into(),
             short_link: format!("sl-{id}"),
             title: TITLE.into(),
+            url: format!("https://trello.com/c/sl-{id}"),
             description: String::new(),
             checklists: Vec::new(),
             members: Vec::new(),

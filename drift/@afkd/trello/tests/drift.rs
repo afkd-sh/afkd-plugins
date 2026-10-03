@@ -5,7 +5,7 @@
 //!
 //! - The **install** leg installs the tree the release tarball holds and runs one card
 //!   through it on a real daemon, its slots' actions crossing as `call`s on the card each
-//!   is passed.
+//!   is passed and its slots reading every field the card's handle declares.
 //! - The **outage** leg fails a card through both its attempts while Trello is out of
 //!   reach, and holds the card to its failed state once Trello is back: both attempt notes
 //!   on it, in Backlog with the Problem label, its claim released.
@@ -114,6 +114,13 @@ const TITLE: &str = "修复 the retry storm 🚨 — \"backoff\" resets";
 const BODY: &str = "Retries pile up after a 502.\n\n> \"backoff\" — nobody\n\n\
                     ```rust\nlet backoff = Duration::ZERO;\n```\n\n— reported by 陳大文";
 
+/// The card's labels as the board holds them: a slashed one, a colour-only one (no name,
+/// so not a label the card's handle carries) and a wide one.
+const LABELS: &[&str] = &["afkd/ready", "", "Väntar på svar"];
+
+/// The file, under the service's work dir, its `on_run` writes the card's handle fields to.
+const FIELDS: &str = "fields.txt";
+
 /// A human's question on the card before afkd ever looked, which the brief must carry.
 const ASK: &str = "看起来不对 🚨 — it resets on every 401:\n\n```\nGET /1/members/me 401\n```";
 
@@ -122,8 +129,8 @@ const ASK: &str = "看起来不对 🚨 — it resets on every 401:\n\n```\nGET 
 const BUDGET: Duration = Duration::from_secs(30);
 
 /// The board the service picks from: the selfdev lists, and one card up for grabs — created
-/// a week ago, so no age gate holds it — with Chen's question on it. The fake and the card's
-/// id.
+/// a week ago, so no age gate holds it — with [`LABELS`] and Chen's question on it. The fake
+/// and the card's id.
 fn seed() -> (FakeTrello, String) {
     let fake = FakeTrello::start();
     for list in ["Up for Grabs", "In Progress", "Review"] {
@@ -131,15 +138,19 @@ fn seed() -> (FakeTrello, String) {
     }
     let chen = fake.member("chen", "陳大文");
     let card = fake.card("Up for Grabs", SHORT_LINK, TITLE, BODY);
+    for label in LABELS {
+        fake.label(&card, label);
+    }
     fake.comment(&card, &chen, ASK, 1800);
     (fake, card)
 }
 
 /// The service that drives the seeded card, `home` its work dir: a v2 file importing the
 /// plugin, whose slots call its actions on the card they are passed — `trello.me` among
-/// the arguments — and whose `on_done` comment afkd interpolates from the outcome. The run holds until the test creates `release` — bounded, so
-/// a test that never does cannot wedge it — which is what lets the test see the claim and
-/// the run mid-flight.
+/// the arguments — and whose `on_done` comment afkd interpolates from the outcome and the
+/// card's title. The run holds until the test creates `release` — bounded, so a test that
+/// never does cannot wedge it — which is what lets the test see the claim and the run
+/// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
         r#"import "@afkd/trello"
@@ -159,12 +170,17 @@ widgets :: service(trello) {{
   }}
   on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
     trello.move_to(card, "Review", at=top)
-    trello.comment(card, "done in #{{outcome.duration}}")
+    trello.comment(card, "done in #{{outcome.duration}}: #{{card.title}}")
   }}
 
   work_dir "{home}"
   on_run(run: afkd.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    $ echo title #{{card.title}} >> {FIELDS}
+    $ echo url #{{card.url}} >> {FIELDS}
+    for label in card.labels {{
+      $ echo label #{{label}} >> {FIELDS}
+    }}
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
 }}
@@ -281,9 +297,10 @@ fn read(path: &Path) -> String {
 
 /// Drive one card through the plugin, installed in `home`, on a real daemon: it is
 /// **claimed** (the claim comment, and `on_claim`'s calls added the token's own member and
-/// moved it), **run** (its run dir is named for the card, and its task carries the card and
-/// its thread whole) and **finished** (the claim released, and `on_done`'s calls moved it
-/// and commented), and the daemon then drains clean.
+/// moved it), **run** (its run dir is named for the card, its task carries the card and its
+/// thread whole, and `on_run` read every field of its handle as the plugin sent it) and
+/// **finished** (the claim released, and `on_done`'s calls moved it and commented with its
+/// title), and the daemon then drains clean.
 fn drive_one_card(home: &Path) {
     let (fake, card) = seed();
     write_config(home, &service(home, fake.base_url()));
@@ -326,11 +343,21 @@ fn drive_one_card(home: &Path) {
     });
     let me = fake.me();
     assert!(
-        fake.comments(&card)
-            .iter()
-            .any(|c| c.author == me && c.text.starts_with("done in ") && !c.text.contains("#{")),
-        "on_done's comment landed with its run fact filled in:\n{}",
+        fake.comments(&card).iter().any(|c| c.author == me
+            && c.text.starts_with("done in ")
+            && c.text.ends_with(&format!(": {TITLE}"))
+            && !c.text.contains("#{")),
+        "on_done's comment landed with its run fact and the title filled in:\n{}",
         dump(home, &fake, &card, &daemon)
+    );
+    // Every field verbatim — the `$` lines shell-quote what they interpolate — and the
+    // labels by name, the colour-only one left out.
+    assert_eq!(
+        read(&home.join(FIELDS)),
+        format!(
+            "title {TITLE}\nurl {}\nlabel afkd/ready\nlabel Väntar på svar\n",
+            fake.url(&card)
+        )
     );
 
     daemon.signal(libc::SIGINT);

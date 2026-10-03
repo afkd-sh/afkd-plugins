@@ -1,6 +1,6 @@
 [package]
 name = "afkd-trello"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 publish = false
 description = "The @afkd/trello trigger plugin: Trello cards as afkd units, over the plugin wire"

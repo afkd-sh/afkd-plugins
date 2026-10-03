@@ -108,6 +108,12 @@ struct State {
     seen: Vec<Seen>,
 }
 
+/// The page GitLab names as an item's `web_url`: `kind` is [`ISSUES`] or [`MRS`], which
+/// GitLab's own paths spell as the API's do.
+fn page(project: &str, kind: &str, iid: u64) -> String {
+    format!("https://gitlab.example.com/{project}/-/{kind}/{iid}")
+}
+
 impl State {
     /// The id of `username`, registering a user for a name the fake has not seen.
     fn user_id(&mut self, username: &str) -> u64 {
@@ -133,10 +139,11 @@ impl State {
         }
     }
 
-    fn issue_json(&self, iid: u64, issue: &Stored) -> Value {
+    fn issue_json(&self, project: &str, iid: u64, issue: &Stored) -> Value {
         json!({
             "iid": iid,
             "title": issue.title,
+            "web_url": page(project, ISSUES, iid),
             "description": issue.body,
             "state": issue.state,
             "labels": issue.labels,
@@ -144,10 +151,11 @@ impl State {
         })
     }
 
-    fn mr_json(&self, iid: u64, mr: &Stored) -> Value {
+    fn mr_json(&self, project: &str, iid: u64, mr: &Stored) -> Value {
         json!({
             "iid": iid,
             "title": mr.title,
+            "web_url": page(project, MRS, iid),
             "description": mr.body,
             "source_branch": mr.source_branch,
             "author": self.user_json(mr.author),
@@ -160,9 +168,9 @@ impl State {
     /// The item `key` of `kind`, as its own route answers it.
     fn item_json(&self, kind: &str, key: &(String, u64)) -> Value {
         if kind == MRS {
-            self.mr_json(key.1, &self.mrs[key])
+            self.mr_json(&key.0, key.1, &self.mrs[key])
         } else {
-            self.issue_json(key.1, &self.issues[key])
+            self.issue_json(&key.0, key.1, &self.issues[key])
         }
     }
 
@@ -290,6 +298,25 @@ impl FakeGitlab {
                 source_branch: source_branch.to_string(),
             },
         );
+    }
+
+    /// Give a seeded merge request a new title, as its author edits one.
+    pub fn retitle(&self, project: &str, iid: u64, title: &str) {
+        lock(&self.state)
+            .mrs
+            .get_mut(&(project.to_string(), iid))
+            .expect("a seeded merge request")
+            .title = title.to_string();
+    }
+
+    /// The page the fake serves as an issue's `web_url`.
+    pub fn issue_url(&self, project: &str, iid: u64) -> String {
+        page(project, ISSUES, iid)
+    }
+
+    /// The page the fake serves as a merge request's `web_url`.
+    pub fn mr_url(&self, project: &str, iid: u64) -> String {
+        page(project, MRS, iid)
     }
 
     /// Merge a merge request, as a human does: it leaves the open set.
@@ -655,7 +682,7 @@ fn route(
                         && (state == "all" || i.state == state)
                         && wanted.iter().all(|w| i.labels.contains(w))
                 })
-                .map(|((_, iid), i)| s.issue_json(*iid, i))
+                .map(|((p, iid), i)| s.issue_json(p, *iid, i))
                 .collect();
             (200, Value::Array(list))
         }
@@ -665,7 +692,7 @@ fn route(
                 .mrs
                 .iter()
                 .filter(|((p, _), m)| *p == project && (state == "all" || m.state == state))
-                .map(|((_, iid), m)| s.mr_json(*iid, m))
+                .map(|((p, iid), m)| s.mr_json(p, *iid, m))
                 .collect();
             (200, Value::Array(list))
         }

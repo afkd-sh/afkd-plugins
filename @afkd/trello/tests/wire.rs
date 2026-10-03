@@ -269,12 +269,16 @@ fn hello_refuses_what_it_cannot_arm_with() {
 
 /// The won race hands over exactly the unit the built-in would have run — its journal
 /// key and session thread, the claim-read thread as `seen`, afkd's member id, the four
-/// env names the skill reads, and the brief unframed — and the board holds the claim as
-/// the built-in leaves it. The `poll` moves nothing itself: `on_claim`'s calls, sent
-/// after it, do, and every line is narrated on stderr.
+/// env names the skill reads, and the brief unframed — with every field the manifest's
+/// `Card` declares, its labels by name and a colour-only one left out, and the board
+/// holds the claim as the built-in leaves it. The `poll` moves nothing itself:
+/// `on_claim`'s calls, sent after it, do, and every line is narrated on stderr.
 #[test]
 fn a_won_race_hands_over_the_built_ins_unit() {
     let b = board();
+    for label in ["afkd/ready", "", "Väntar på svar"] {
+        b.fake.label(&b.card, label);
+    }
     let mut plugin = Plugin::armed(settings(&b.fake));
     let reply = plugin.poll();
     assert_eq!(reply["fire"], true, "{}", plugin.stderr());
@@ -288,6 +292,11 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         json!({
             "id": SHORT_LINK,
             "key": format!("{}#{}", b.card, claim.id),
+            "fields": {
+                "title": TITLE,
+                "url": b.fake.url(&b.card),
+                "labels": ["afkd/ready", "Väntar på svar"],
+            },
             "thread": SHORT_LINK,
             "seen": [claim.id, b.asked[1], b.asked[0]],
             "self": b.fake.me(),
@@ -341,6 +350,21 @@ fn a_won_race_hands_over_the_built_ins_unit() {
     );
     // And the claimed card, now out of `pick_from`, is not claimed again.
     assert_eq!(plugin.poll(), json!({"fire": false}));
+    plugin.finish();
+}
+
+/// A card with no label still sends its `labels`, empty, beside the title and url: afkd
+/// finds every declared field there whatever the board holds.
+#[test]
+fn an_unlabelled_card_hands_over_its_labels_empty() {
+    let b = board();
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    assert_eq!(
+        reply["unit"]["fields"],
+        json!({"title": TITLE, "url": b.fake.url(&b.card), "labels": []})
+    );
     plugin.finish();
 }
 

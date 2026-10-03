@@ -168,12 +168,14 @@ fn hello_refuses_what_it_cannot_arm_with() {
 
 /// The won race hands over exactly the unit the built-in would have run: its journal key
 /// and session thread, the claim-time comment ids, its identity, the four env names the
-/// skill reads, and the scratch layout with the brief unframed. The forge then holds the
-/// claim — the marker and the gate, and nothing a hook does — until `on_claim`'s calls
-/// land.
+/// skill reads, and the scratch layout with the brief unframed — with every field the
+/// manifest's `Issue` declares, its labels by name as the poll read them. The forge then
+/// holds the claim — the marker and the gate, and nothing a hook does — until
+/// `on_claim`'s calls land.
 #[test]
 fn a_won_race_hands_over_the_built_ins_unit() {
     let fake = forge();
+    fake.issue(REPO, 7, TITLE, BODY, &["afkd/ready", "優先/high"], &[]);
     let mut plugin = Plugin::armed(settings(&fake));
     let reply = plugin.poll();
     assert_eq!(reply["fire"], true);
@@ -184,6 +186,12 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         json!({
             "id": "7",
             "key": format!("acme/widgets#7#{}", marker[0]),
+            "fields": {
+                "title": TITLE,
+                "url": fake.url(REPO, 7),
+                "number": 7,
+                "labels": ["afkd/ready", "優先/high"],
+            },
             "thread": "acme/widgets#7",
             "seen": [],
             "self": ME,
@@ -204,11 +212,14 @@ fn a_won_race_hands_over_the_built_ins_unit() {
     assert_eq!(comments[0].body, "[afkd-claim] owner=björn-öst[bot]");
     assert_eq!(comments[0].author, ME);
     let issue = fake.issue_state(REPO, 7);
-    assert_eq!(issue.labels, ["afkd/ready", "afkd/claimed"]);
+    assert_eq!(issue.labels, ["afkd/ready", "優先/high", "afkd/claimed"]);
     assert!(issue.assignees.is_empty(), "the claim assigns no one");
     on_claim(&mut plugin, &reply["unit"]);
     let issue = fake.issue_state(REPO, 7);
-    assert_eq!(issue.labels, ["afkd/ready", "afkd/claimed", "afkd/working"]);
+    assert_eq!(
+        issue.labels,
+        ["afkd/ready", "優先/high", "afkd/claimed", "afkd/working"]
+    );
     assert_eq!(issue.assignees, [ME]);
     // Both managed labels were created, plain, before the claim.
     let managed: Vec<(String, bool)> = fake
@@ -870,6 +881,8 @@ fn a_label_add_gitea_drops_is_refused_over_call() {
 
 const PR_KIND: &str = "pr";
 const HEAD: &str = "feature/retry-backoff";
+/// The PR's title: the quotes a log line wraps it in, wide CJK and an emoji.
+const PR_TITLE: &str = "Cap the retry backoff — \"重试\" 上限 🚦";
 /// A review comment as a human writes one: wide text, an emoji, a fenced block, and a
 /// trailing newline the brief trims.
 const ASK: &str =
@@ -880,7 +893,7 @@ const ASK: &str =
 fn pr_forge() -> (FakeGitea, u64) {
     let fake = FakeGitea::start(ME);
     fake.define_label(REPO, "afkd/working", false);
-    fake.pull(REPO, 7, "Cap the retry backoff", ME, HEAD);
+    fake.pull(REPO, 7, PR_TITLE, ME, HEAD);
     fake.comment(REPO, 7, ME, "Pushed a fix.", 600);
     fake.comment(REPO, 7, "陳大文", ASK, 300);
     let review = fake.review(REPO, 7, "carol", 200);
@@ -919,8 +932,9 @@ fn a_pr_hello_arms_and_lists_release_renew_comments() {
 }
 
 /// The won race over a PR with new human feedback hands over exactly the unit the
-/// built-in would have run: its journal key and session thread, the claim-time comment
-/// ids, its identity, the five env names, and the review brief beside `pr/number`. The
+/// built-in would have run: its journal key and session thread, every field the
+/// manifest's `Pull_Request` declares, the claim-time comment ids, its identity, the five
+/// env names, and the review brief beside `pr/number`. The
 /// forge then carries the claim's status — only `afkd/claimed` is created, since a PR
 /// never parks — and a second poll does not claim the same PR again.
 #[test]
@@ -937,6 +951,12 @@ fn a_won_pr_race_hands_over_the_built_ins_unit() {
         json!({
             "id": "7",
             "key": format!("acme/widgets#7#{}", marker[0]),
+            "fields": {
+                "title": PR_TITLE,
+                "url": fake.url(REPO, 7),
+                "number": 7,
+                "branch": HEAD,
+            },
             "thread": "acme/widgets#7",
             "seen": [thread[0].id.to_string(), thread[1].id.to_string()],
             "self": ME,
@@ -1021,7 +1041,7 @@ fn a_lost_pr_race_hands_over_nothing() {
 #[test]
 fn a_pr_with_no_new_feedback_does_not_fire() {
     let fake = FakeGitea::start(ME);
-    fake.pull(REPO, 7, "Cap the retry backoff", ME, HEAD);
+    fake.pull(REPO, 7, PR_TITLE, ME, HEAD);
     fake.comment(REPO, 7, "陳大文", ASK, 300);
     fake.review(REPO, 7, "carol", 200);
     fake.comment(REPO, 7, ME, "Capped at 30s — see the new commit.", 100);

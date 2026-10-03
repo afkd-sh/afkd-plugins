@@ -34,10 +34,12 @@ afkd copies the tree and runs `cargo build --release --locked` in it, so the hos
 Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
 the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
-Run it on **afkd 0.2.197 or newer**, the first with handle types and slot signatures: this
-is a manifest v2 plugin, which a [config language v2](https://afkd.sh/docs/lang-v2/) file
-imports; afkd passes its slots the claimed card as a `trello.Card`, and sends each action a
-slot calls on a card as a `call`. An older afkd refuses the manifest when it is installed.
+Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
+sends with a claim: this is a manifest v2 plugin, which a
+[config language v2](https://afkd.sh/docs/lang-v2/) file imports; afkd passes its slots the
+claimed card as a `trello.Card`, and sends each action a slot calls on a card as a `call`.
+afkd 0.2.197 to 0.2.240 install and run it too, but there a slot reading any field beyond
+`id` and `key` fails; an older afkd refuses the manifest when it is installed.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `trello`:
 
@@ -148,9 +150,10 @@ writes every one of them, in order, each with its type:
 | `url`    | `string`       | the card's address on trello.com                   |
 | `labels` | `list[string]` | the names of the labels on the card                |
 
-A config passes a card around and compares it, but never builds one. afkd carries `id` and
-`key` at run time today; reading `title`, `url` or `labels` type-checks, and fails the slot
-when it runs until afkd carries them too.
+A config passes a card around and compares it, but never builds one. The plugin sends every
+field with the claim, as the claiming poll read the card, and they hold for the whole run:
+`labels` leaves out a colour-only label, which has no name, and shows the card's labels
+before the claim takes a parked card's `Awaiting Reply` off.
 
 afkd runs a slot's statements in the order they are written, and each action it calls is
 one request to the plugin, which does it on the card the action is passed first:

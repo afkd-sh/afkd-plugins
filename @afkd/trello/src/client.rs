@@ -627,6 +627,11 @@ pub(crate) fn card_from_value(c: &Value) -> Option<Card> {
         created_at: object_id_timestamp(&id),
         id,
         title: c.get("name")?.as_str().unwrap_or("").to_string(),
+        url: c
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         description: c
             .get("desc")
             .and_then(Value::as_str)
@@ -2565,6 +2570,24 @@ mod tests {
         assert!(cards[2].labels.is_empty());
         // The nameless and empty-name labels are skipped; only the named one survives.
         assert_eq!(cards[3].labels, vec!["Kept".to_string()]);
+    }
+
+    #[test]
+    fn parse_cards_lifts_url() {
+        // `url` becomes `Card.url` — the handle's `url` — kept as the board wrote it,
+        // wide slug and all. A key that is absent (the narrow `fields=name,labels`
+        // projection) or not a string reads as empty, never a panic.
+        let body = r#"[{"id":"c1","name":"修复 🚨",
+                        "url":"https://trello.com/c/1Rkelydw/12-%E4%BF%AE%E5%A4%8D"},
+                       {"id":"c2","name":"Absent"},
+                       {"id":"c3","name":"Junk","url":7}]"#;
+        let cards = parse_cards("list cards", body).unwrap();
+        assert_eq!(
+            cards[0].url,
+            "https://trello.com/c/1Rkelydw/12-%E4%BF%AE%E5%A4%8D"
+        );
+        assert_eq!(cards[1].url, "");
+        assert_eq!(cards[2].url, "");
     }
 
     #[test]

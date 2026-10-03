@@ -72,6 +72,8 @@ pub(crate) struct Issue {
     pub(crate) number: u64,
     /// The issue title (the first line of the task brief).
     pub(crate) title: String,
+    /// The issue's page on GitHub (`html_url`); empty when GitHub sent none.
+    pub(crate) url: String,
     /// The issue body (the task brief; empty when absent).
     pub(crate) body: String,
     /// The issue state (`open`/`closed`).
@@ -93,6 +95,10 @@ impl Issue {
 pub(crate) struct PullRequest {
     /// The per-repo PR number (GitHub numbers PRs and issues from one sequence).
     pub(crate) number: u64,
+    /// The PR title; empty when GitHub sent none.
+    pub(crate) title: String,
+    /// The PR's page on GitHub (`html_url`); empty when GitHub sent none.
+    pub(crate) url: String,
     /// The PR's head branch (the pushed branch the iteration run checks out).
     pub(crate) head_branch: String,
     /// The PR author (matched against the bot's own login for `author_me`).
@@ -716,6 +722,11 @@ fn value_to_issue(v: &Value) -> Option<Issue> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        url: v
+            .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         body: v
             .get("body")
             .and_then(Value::as_str)
@@ -743,6 +754,16 @@ fn value_to_pull(v: &Value) -> Option<PullRequest> {
     });
     Some(PullRequest {
         number,
+        title: v
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        url: v
+            .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         head_branch,
         user,
     })
@@ -948,6 +969,7 @@ mod mock {
                 issue: Issue {
                     number,
                     title: title.to_string(),
+                    url: format!("https://github.com/acme/widgets/issues/{number}"),
                     body: body.to_string(),
                     state: "open".to_string(),
                     labels: labels.iter().map(|s| s.to_string()).collect(),
@@ -964,6 +986,8 @@ mod mock {
         pub(crate) fn add_pull(&self, number: u64, author: &str, head: &str) {
             lock(&self.pulls).push(PullRequest {
                 number,
+                title: format!("PR {number}"),
+                url: format!("https://github.com/acme/widgets/pull/{number}"),
                 head_branch: head.to_string(),
                 user: User {
                     login: author.to_string(),
@@ -973,6 +997,7 @@ mod mock {
                 issue: Issue {
                     number,
                     title: format!("PR {number}"),
+                    url: format!("https://github.com/acme/widgets/pull/{number}"),
                     body: String::new(),
                     state: "open".to_string(),
                     labels: Vec::new(),
@@ -1598,6 +1623,8 @@ mod parse_tests {
     fn parse_issues_reads_number_state_title_and_labels() {
         let body = r#"[
             {"number":4,"title":"Fix","body":"do it","state":"open",
+             "url":"https://api.github.com/repos/acme/widgets/issues/4",
+             "html_url":"https://github.com/acme/widgets/issues/4",
              "labels":[{"id":9,"name":"afkd/ready"}],
              "assignees":[{"login":"bot"}]}
         ]"#;
@@ -1607,6 +1634,7 @@ mod parse_tests {
             [Issue {
                 number: 4,
                 title: "Fix".into(),
+                url: "https://github.com/acme/widgets/issues/4".into(),
                 body: "do it".into(),
                 state: "open".into(),
                 labels: vec!["afkd/ready".into()],
@@ -1614,8 +1642,8 @@ mod parse_tests {
         );
     }
 
-    /// An absent title, body or state degrades to the built-in's defaults rather than
-    /// dropping the issue; one with no number is no issue at all.
+    /// An absent title, url, body, state or label list degrades to the built-in's
+    /// defaults rather than dropping the issue; one with no number is no issue at all.
     #[test]
     fn parse_issues_defaults_the_absent_fields() {
         let issues = parse_issues(
@@ -1628,6 +1656,7 @@ mod parse_tests {
             [Issue {
                 number: 4,
                 title: String::new(),
+                url: String::new(),
                 body: String::new(),
                 state: "open".into(),
                 labels: Vec::new(),
@@ -1768,8 +1797,10 @@ mod parse_tests {
     }
 
     #[test]
-    fn parse_pulls_reads_head_branch_and_author() {
+    fn parse_pulls_reads_title_url_head_branch_and_author() {
         let body = r#"[{"number":12,"title":"PR","body":"","head":{"ref":"feature/x"},
+                        "url":"https://api.github.com/repos/acme/widgets/pulls/12",
+                        "html_url":"https://github.com/acme/widgets/pull/12",
                         "user":{"login":"bot"}},
                        {"number":13,"title":"Rätta 🐛","state":"open",
                         "head":{"ref":"fix/åäö","sha":"abc"},"user":{"login":"björn-öst[bot]"}},
@@ -1780,6 +1811,8 @@ mod parse_tests {
             [
                 PullRequest {
                     number: 12,
+                    title: "PR".into(),
+                    url: "https://github.com/acme/widgets/pull/12".into(),
                     head_branch: "feature/x".into(),
                     user: User {
                         login: "bot".into()
@@ -1787,14 +1820,19 @@ mod parse_tests {
                 },
                 PullRequest {
                     number: 13,
+                    title: "Rätta 🐛".into(),
+                    url: String::new(),
                     head_branch: "fix/åäö".into(),
                     user: User {
                         login: "björn-öst[bot]".into()
                     },
                 },
-                // An absent head and a deleted author degrade to empty, not a dropped PR.
+                // An absent title, url and head and a deleted author degrade to empty,
+                // not a dropped PR.
                 PullRequest {
                     number: 14,
+                    title: String::new(),
+                    url: String::new(),
                     head_branch: String::new(),
                     user: User {
                         login: String::new()

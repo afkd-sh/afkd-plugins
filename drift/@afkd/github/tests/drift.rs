@@ -5,7 +5,8 @@
 //!
 //! - The **install** leg installs the tree the release tarball holds and runs one issue
 //!   through it on a real daemon, its slots' actions crossing as `call`s on the issue each
-//!   is passed.
+//!   is passed and its slots reading every field the issue's handle declares — then one
+//!   pull request the same way, through a `service(github.pr)`.
 //! - The **both kinds** leg `afkd validate`s one file with a service of each kind, whose
 //!   slots call every action the plugin provides on the item each is passed and read its
 //!   value `me`, and the **handle** leg holds `afkd validate` to refusing an action passed
@@ -117,6 +118,11 @@ const REPO: &str = "acme/widgets";
 const ISSUE: u64 = 7;
 const TITLE: &str = "修复 the retry storm 🚨";
 const BODY: &str = "Retries pile up after a 502.\n\n> \"backoff\" — nobody\n\n```\nretry: 0\n```\n";
+/// The issue's labels: the source label, and a wide, scoped one beside it.
+const LABELS: &[&str] = &["afkd/ready", "優先/high"];
+
+/// The file, under a service's work dir, its `on_run` writes the item's handle fields to.
+const FIELDS: &str = "fields.txt";
 
 /// How long a claim, a run or a finish may take. Generous, because it bounds a failure
 /// rather than timing a success: the service polls every second.
@@ -124,9 +130,10 @@ const BUDGET: Duration = Duration::from_secs(30);
 
 /// The service that drives [`ISSUE`], `home` its work dir: a v2 file importing the plugin,
 /// whose slots call its actions on the issue they are passed and whose `on_done` comment
-/// afkd interpolates — the outcome's duration and the plugin's value `me` both. The run
-/// holds until the test creates `release` — bounded, so a test that never does cannot wedge
-/// it — which is what lets the test see the claim and the run mid-flight.
+/// afkd interpolates — the outcome's duration, the plugin's value `me` and the issue's
+/// title. The run holds until the test creates `release` — bounded, so a test that never
+/// does cannot wedge it — which is what lets the test see the claim and the run mid-flight;
+/// then it writes every field of the issue's handle to [`FIELDS`], a line each.
 fn service(home: &Path, host: &str) -> String {
     format!(
         r#"import "@afkd/github"
@@ -142,13 +149,19 @@ widgets :: service(github) {{
   on_claim(run: afkd.Run, issue: github.Issue) {{ github.assign_me(issue) }}
   on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {{
     github.label_remove(issue, "afkd/claimed")
-    github.comment(issue, "done in #{{outcome.duration}} by #{{github.me}}")
+    github.comment(issue, "done in #{{outcome.duration}} by #{{github.me}}: #{{issue.title}}")
     github.close(issue)
   }}
 
   work_dir "{home}"
   on_run(run: afkd.Run, issue: github.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    $ echo title #{{issue.title}} >> {FIELDS}
+    $ echo url #{{issue.url}} >> {FIELDS}
+    $ echo number #{{issue.number}} >> {FIELDS}
+    for label in issue.labels {{
+      $ echo label #{{label}} >> {FIELDS}
+    }}
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
 }}
@@ -182,9 +195,9 @@ fn validate(home: &Path) -> (Option<i32>, String) {
     )
 }
 
-/// The service's run dirs, by name.
-fn run_dirs(home: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(runs_root(home).join("widgets"))
+/// `service`'s run dirs, by name.
+fn run_dirs(home: &Path, service: &str) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(runs_root(home).join(service))
         .into_iter()
         .flatten()
         .flatten()
@@ -207,7 +220,7 @@ fn dump(home: &Path, fake: &FakeGithub, daemon: &StreamingDaemon) -> String {
         "issue: {:?}\ncomments:\n{}\nrun dirs: {:?}\ndaemon.log:\n{}\ndaemon stderr:\n{}",
         fake.issue_state(REPO, ISSUE),
         comments.join("\n"),
-        run_dirs(home),
+        run_dirs(home, "widgets"),
         std::fs::read_to_string(daemon_log(home)).unwrap_or_default(),
         daemon.stderr_so_far()
     )
@@ -221,20 +234,25 @@ fn wait_for(
     what: &str,
     ready: impl Fn() -> bool,
 ) {
+    wait_until(what, ready, || dump(home, fake, daemon));
+}
+
+/// Poll `ready` to [`BUDGET`], failing with `what` and `dump`'s report when it never holds.
+fn wait_until(what: &str, ready: impl Fn() -> bool, dump: impl Fn() -> String) {
     let deadline = Instant::now() + BUDGET;
     while !ready() {
         assert!(
             Instant::now() < deadline,
             "{what} within {BUDGET:?}\n{}",
-            dump(home, fake, daemon)
+            dump()
         );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
-/// Whether `fake`'s thread on [`ISSUE`] holds a claim marker.
-fn marked(fake: &FakeGithub) -> bool {
-    fake.comments(REPO, ISSUE)
+/// Whether `fake`'s thread on issue `number` holds a claim marker.
+fn marked(fake: &FakeGithub, number: u64) -> bool {
+    fake.comments(REPO, number)
         .iter()
         .any(|c| c.author == ME && c.body.starts_with("[afkd-claim]"))
 }
@@ -246,12 +264,13 @@ fn read(path: &Path) -> String {
 
 /// Drive one issue through the plugin, installed in `home`, on a real daemon: it is
 /// **claimed** (the marker and `afkd/claimed`, and `on_claim`'s call assigned the token's
-/// own user), **run** (its run dir is named for the issue, and its task carries the issue
-/// whole) and **finished** (the marker deleted, and `on_done`'s calls took the gate off,
-/// commented and closed it), and the daemon then drains clean.
+/// own user), **run** (its run dir is named for the issue, its task carries the issue whole,
+/// and `on_run` read every field of its handle as the plugin sent it) and **finished** (the
+/// marker deleted, and `on_done`'s calls took the gate off, commented with the issue's
+/// title and closed it), and the daemon then drains clean.
 fn drive_one_issue(home: &Path) {
     let fake = FakeGithub::start(ME);
-    fake.issue(REPO, ISSUE, TITLE, BODY, &["afkd/ready"], &[]);
+    fake.issue(REPO, ISSUE, TITLE, BODY, LABELS, &[]);
     write_config(home, &service(home, fake.host()));
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
@@ -260,13 +279,15 @@ fn drive_one_issue(home: &Path) {
 
     wait_for(home, &fake, &daemon, "the issue is claimed", || {
         let issue = fake.issue_state(REPO, ISSUE);
-        marked(&fake) && issue.labels.iter().any(|l| l == "afkd/claimed") && issue.assignees == [ME]
+        marked(&fake, ISSUE)
+            && issue.labels.iter().any(|l| l == "afkd/claimed")
+            && issue.assignees == [ME]
     });
     // The run dir is made before the spine lays the unit's files into it, so the wait is
     // for a written brief, not the bare dir.
     let run_suffix = format!("-unit-{ISSUE}-1");
     let brief = || {
-        run_dirs(home)
+        run_dirs(home, "widgets")
             .into_iter()
             .find(|name| name.ends_with(&run_suffix))
             .map(|run| runs_root(home).join("widgets").join(run).join("task.md"))
@@ -282,7 +303,7 @@ fn drive_one_issue(home: &Path) {
 
     std::fs::write(home.join("release"), "").expect("release the run");
     wait_for(home, &fake, &daemon, "the issue is finished", || {
-        fake.issue_state(REPO, ISSUE).state == "closed" && !marked(&fake)
+        fake.issue_state(REPO, ISSUE).state == "closed" && !marked(&fake, ISSUE)
     });
     let issue = fake.issue_state(REPO, ISSUE);
     assert!(
@@ -292,10 +313,130 @@ fn drive_one_issue(home: &Path) {
     assert!(
         fake.comments(REPO, ISSUE).iter().any(|c| c.author == ME
             && c.body.starts_with("done in ")
-            && c.body.ends_with(&format!(" by {ME}"))
+            && c.body.ends_with(&format!(" by {ME}: {TITLE}"))
             && !c.body.contains("#{")),
-        "on_done's comment landed with its run fact and `github.me` filled in:\n{}",
+        "on_done's comment landed with its run fact, `github.me` and the title filled in:\n{}",
         dump(home, &fake, &daemon)
+    );
+    // Every field verbatim — the `$` lines shell-quote what they interpolate — and the
+    // labels by name, as the poll read them before the claim's own.
+    assert_eq!(
+        read(&home.join(FIELDS)),
+        format!(
+            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd/ready\nlabel 優先/high\n",
+            fake.url(REPO, ISSUE)
+        )
+    );
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The pull request the review service claims: the bot's own, on a wide, slashed branch,
+/// titled with the quotes a log line wraps it in, wide CJK and an emoji, as the wire
+/// suite's is.
+const PR: u64 = 7;
+const PR_TITLE: &str = "Cap the retry backoff — \"重试\" 上限 🚦";
+const BRANCH: &str = "fix/重试-retry-cap";
+/// The human on the pull request, and their review comment: multi-line, with an indented
+/// code line.
+const HUMAN: &str = "陳大文";
+const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max_backoff = 0\n";
+
+/// The review service that drives [`PR`], `work` its work dir: its `on_run` writes every
+/// field of the pull request's handle to [`FIELDS`], a line each, and its `on_done` answers
+/// the round with a comment naming the pull request's title — the bot's reply, newer than
+/// the feedback, so the next poll does not claim the pull request again.
+fn pr_service(work: &Path, host: &str) -> String {
+    format!(
+        r#"import "@afkd/github"
+
+reviews :: service(github.pr) {{
+  host          "{host}"
+  repo          "{REPO}"
+  token         "{TOKEN}"
+  author_me     true
+  poll_interval 1s
+  max_attempts  1
+
+  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {{
+    github.pr_comment(pr, "round answered: #{{pr.title}}")
+  }}
+
+  work_dir "{work}"
+  on_run(run: afkd.Run, pr: github.Pull_Request) {{
+    $ echo title #{{pr.title}} >> {FIELDS}
+    $ echo url #{{pr.url}} >> {FIELDS}
+    $ echo number #{{pr.number}} >> {FIELDS}
+    $ echo branch #{{pr.branch}} >> {FIELDS}
+  }}
+}}
+"#,
+        work = work.display()
+    )
+}
+
+/// Drive one pull request through the plugin, installed in `home`, on a fresh daemon: the
+/// bot's own PR, a human assigned to it and the human's review comment two minutes old —
+/// new feedback, seeded as the wire suite seeds it — is **claimed**, **run** (`on_run` read
+/// every field of its handle as the plugin sent it) and **finished** (the marker deleted,
+/// and `on_done`'s reply landed with the title filled in), and the daemon then drains
+/// clean.
+fn drive_one_pr(home: &Path) {
+    let fake = FakeGithub::start(ME);
+    fake.pull(REPO, PR, ME, BRANCH, &[], &[HUMAN]);
+    fake.retitle(REPO, PR, PR_TITLE);
+    fake.comment(REPO, PR, HUMAN, REVIEW, 120);
+    let work = home.join("reviews");
+    std::fs::create_dir_all(&work).expect("mk the review work dir");
+    write_config(home, &pr_service(&work, fake.host()));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the review service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    let fields = work.join(FIELDS);
+    let answer = format!("round answered: {PR_TITLE}");
+    let answered = || {
+        fake.comments(REPO, PR)
+            .iter()
+            .any(|c| c.author == ME && c.body == answer)
+    };
+    let report = || {
+        let thread: Vec<String> = fake
+            .comments(REPO, PR)
+            .iter()
+            .map(|c| format!("  {}: {:?}", c.author, c.body))
+            .collect();
+        format!(
+            "pr: {:?}\nthread:\n{}\n{FIELDS}: {:?}\nrun dirs: {:?}\ndaemon.log:\n{}\n\
+             daemon stderr:\n{}",
+            fake.issue_state(REPO, PR),
+            thread.join("\n"),
+            std::fs::read_to_string(&fields).unwrap_or_default(),
+            run_dirs(home, "reviews"),
+            std::fs::read_to_string(daemon_log(home)).unwrap_or_default(),
+            daemon.stderr_so_far()
+        )
+    };
+    wait_until(
+        "the pull request is claimed, run and answered",
+        || answered() && !marked(&fake, PR),
+        report,
+    );
+    assert_eq!(
+        read(&fields),
+        format!(
+            "title {PR_TITLE}\nurl {}\nnumber {PR}\nbranch {BRANCH}\n",
+            fake.url(REPO, PR)
+        ),
+        "{}",
+        report()
     );
 
     daemon.signal(libc::SIGINT);
@@ -311,7 +452,7 @@ fn drive_one_issue(home: &Path) {
 // --- the legs ----------------------------------------------------------------------
 
 #[test]
-fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
+fn install_leg_places_the_plugin_and_runs_one_issue_and_one_pr_through_it() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     let staged = stage(stage_dir.path());
@@ -325,6 +466,7 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
         .mode();
     assert!(mode & 0o111 != 0, "{} is executable", exec.display());
     drive_one_issue(home.path());
+    drive_one_pr(home.path());
 }
 
 /// A service of each kind, whose slots between them call every action the plugin provides —

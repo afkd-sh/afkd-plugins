@@ -189,6 +189,7 @@ impl State {
             "id": card.id,
             "shortLink": card.short_link,
             "name": card.name,
+            "url": card_url(card),
             "desc": card.desc,
             "idList": card.list,
             "idMembers": card.members,
@@ -210,6 +211,24 @@ impl State {
         }
         value
     }
+}
+
+/// A card's address as Trello's default card fields carry it: the short link, then a slug
+/// of the name — lowercased ASCII letters and digits, every other run a single `-`.
+fn card_url(card: &Card) -> String {
+    let mut slug = String::new();
+    for c in card.name.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    format!(
+        "https://trello.com/c/{}/{}",
+        card.short_link,
+        slug.trim_end_matches('-')
+    )
 }
 
 /// The fake. Dropping it leaves the listener thread parked on `accept`; the process ends
@@ -334,7 +353,19 @@ impl FakeTrello {
         ids
     }
 
-    /// Label a card with the board label named `name`, creating it if need be.
+    /// The address the fake serves as the card's `url`.
+    pub fn url(&self, card: &str) -> String {
+        let s = lock(&self.state);
+        card_url(
+            s.cards
+                .iter()
+                .find(|c| c.id == card)
+                .expect("a seeded card"),
+        )
+    }
+
+    /// Label a card with the board label named `name`, creating it if need be. An empty
+    /// `name` is a colour-only label, as Trello sends one.
     pub fn label(&self, card: &str, name: &str) {
         let mut s = lock(&self.state);
         let label = match s.labels.iter().find(|l| l.name == name) {

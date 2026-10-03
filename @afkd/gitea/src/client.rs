@@ -67,6 +67,8 @@ pub(crate) struct Issue {
     pub(crate) number: u64,
     /// The issue title (the first line of the task brief).
     pub(crate) title: String,
+    /// The issue's page on the forge (`html_url`); empty when Gitea sent none.
+    pub(crate) url: String,
     /// The issue body (the task brief; empty when absent).
     pub(crate) body: String,
     /// The issue state (`open`/`closed`).
@@ -115,6 +117,10 @@ pub(crate) struct IssueComment {
 pub(crate) struct PullRequest {
     /// The per-repo PR number.
     pub(crate) number: u64,
+    /// The PR title; empty when Gitea sent none.
+    pub(crate) title: String,
+    /// The PR's page on the forge (`html_url`); empty when Gitea sent none.
+    pub(crate) url: String,
     /// The PR's head branch (the pushed branch the iteration run checks out).
     pub(crate) head_branch: String,
     /// The PR author (matched against the bot's own login for `author_me`).
@@ -826,6 +832,11 @@ fn value_to_issue(v: &Value) -> Option<Issue> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        url: v
+            .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         body: v
             .get("body")
             .and_then(Value::as_str)
@@ -854,6 +865,16 @@ fn value_to_pull(v: &Value) -> Option<PullRequest> {
     });
     Some(PullRequest {
         number,
+        title: v
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        url: v
+            .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         head_branch,
         user,
     })
@@ -1064,6 +1085,7 @@ mod mock {
             lock(&self.issues).push(Issue {
                 number,
                 title: title.to_string(),
+                url: format!("https://gitea.example.com/acme/widgets/issues/{number}"),
                 body: body.to_string(),
                 state: "open".to_string(),
                 labels,
@@ -1077,6 +1099,8 @@ mod mock {
         pub(crate) fn add_pull(&self, number: u64, author: &str, head: &str) {
             lock(&self.pulls).push(PullRequest {
                 number,
+                title: format!("PR {number}"),
+                url: format!("https://gitea.example.com/acme/widgets/pulls/{number}"),
                 head_branch: head.to_string(),
                 user: User {
                     login: author.to_string(),
@@ -1085,6 +1109,7 @@ mod mock {
             lock(&self.issues).push(Issue {
                 number,
                 title: format!("PR {number}"),
+                url: format!("https://gitea.example.com/acme/widgets/issues/{number}"),
                 body: String::new(),
                 state: "open".to_string(),
                 labels: Vec::new(),
@@ -1889,6 +1914,7 @@ mod parse_tests {
         let issue = Issue {
             number: 42,
             title: "Küchenspüle leaks".into(),
+            url: String::new(),
             body: String::new(),
             state: "open".into(),
             labels: vec!["afkd/ready".into(), "afkd/ready-soon".into(), "P1".into()],
@@ -1932,15 +1958,47 @@ mod parse_tests {
         assert_eq!(issues[0].assignees[0].login, "bot");
     }
 
+    /// The handle's fields decode off the issue object: the page from `html_url` (never
+    /// the API `url`), and each label object down to its name. An issue without any of
+    /// them decodes to the empty value, never a skipped issue.
     #[test]
-    fn parse_pulls_reads_head_branch_and_author() {
-        let body = r#"[{"number":12,"title":"PR","body":"","head":{"ref":"feature/x"},
-                        "user":{"login":"bot"}}]"#;
+    fn parse_issues_reads_the_handle_fields_and_defaults_the_absent_ones() {
+        let body = r#"[
+            {"number":4,"title":"修复 \"backoff\" 🚨",
+             "url":"https://gitea.example.com/api/v1/repos/acme/widgets/issues/4",
+             "html_url":"https://gitea.example.com/acme/widgets/issues/4",
+             "labels":[{"id":9,"name":"afkd/ready","color":"00aabb"},
+                       {"id":10,"name":"優先/high","exclusive":true}]},
+            {"number":5}
+        ]"#;
+        let issues = parse_issues("list issues", body).unwrap();
+        assert_eq!(issues[0].title, "修复 \"backoff\" 🚨");
+        assert_eq!(
+            issues[0].url,
+            "https://gitea.example.com/acme/widgets/issues/4"
+        );
+        assert_eq!(issues[0].labels, ["afkd/ready", "優先/high"]);
+        assert_eq!((issues[1].title.as_str(), issues[1].url.as_str()), ("", ""));
+        assert!(issues[1].labels.is_empty());
+    }
+
+    #[test]
+    fn parse_pulls_reads_title_url_head_branch_and_author() {
+        let body = r#"[{"number":12,"title":"Cap the retry backoff — 🚦","body":"",
+                        "html_url":"https://gitea.example.com/acme/widgets/pulls/12",
+                        "head":{"ref":"feature/x"},"user":{"login":"bot"}},
+                       {"number":13}]"#;
         let pulls = parse_pulls("list pulls", body).unwrap();
-        assert_eq!(pulls.len(), 1);
+        assert_eq!(pulls.len(), 2);
         assert_eq!(pulls[0].number, 12);
+        assert_eq!(pulls[0].title, "Cap the retry backoff — 🚦");
+        assert_eq!(
+            pulls[0].url,
+            "https://gitea.example.com/acme/widgets/pulls/12"
+        );
         assert_eq!(pulls[0].head_branch, "feature/x");
         assert_eq!(pulls[0].user.login, "bot");
+        assert_eq!((pulls[1].title.as_str(), pulls[1].url.as_str()), ("", ""));
     }
 
     #[test]

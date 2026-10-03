@@ -6,11 +6,14 @@
 //! no TOML dependency, so the scan below reads exactly the shape the manifest is written
 //! in: `[[table]]` headers, and `key = value` lines, each value kept as written.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::Value;
 
 use crate::lifecycle::{Vocabulary, ACTIONS, ISSUE_VOCABULARY, PR_VOCABULARY};
 use crate::plugin::{ISSUE_KIND, PR_KIND};
 use crate::settings::{Declared, ISSUE_SETTINGS, PR_SETTINGS};
+use crate::wire::{Fields, IssueFields, PrFields};
 
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 
@@ -175,6 +178,87 @@ fn the_handles_are_the_two_kinds_items_with_their_fields() {
         children(&tables, "handle", "handle.field"),
         BTreeMap::from([(quoted("Issue"), issue), (quoted("Pull_Request"), pr),])
     );
+}
+
+/// Whether `value` has the JSON shape afkd reads a handle field of type `ty` from.
+fn shaped(value: &Value, ty: &str) -> bool {
+    match ty {
+        "string" => value.is_string(),
+        "int" => value.is_i64(),
+        "list[string]" => value
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string)),
+        _ => false,
+    }
+}
+
+/// The fields a claim sends for each handle are exactly the ones its `[[handle]]`
+/// declares, each in the JSON shape of its declared type — a rich item's and a bare
+/// one's alike. afkd refuses a unit carrying a field undeclared or mistyped, and a
+/// declared one never sent faults the slot that reads it, so a field added to either
+/// side alone fails here.
+#[test]
+fn every_declared_handle_field_is_sent_with_its_declared_type() {
+    let tables = tables(MANIFEST);
+    let sent = [
+        (
+            "Issue",
+            Fields::Issue(IssueFields {
+                title: "修复 the retry storm 🚨 — \"backoff\" resets".into(),
+                url: "https://github.com/acme/widgets/issues/7".into(),
+                number: 7,
+                labels: vec!["afkd/ready".into(), "優先/high".into()],
+            }),
+        ),
+        (
+            "Issue",
+            Fields::Issue(IssueFields {
+                title: String::new(),
+                url: String::new(),
+                number: 1,
+                labels: Vec::new(),
+            }),
+        ),
+        (
+            "Pull_Request",
+            Fields::Pr(PrFields {
+                title: "Cap the retry backoff — \"重试\" 上限 🚦".into(),
+                url: "https://github.com/acme/widgets/pull/12".into(),
+                number: 12,
+                branch: "feature/重试-backoff".into(),
+            }),
+        ),
+    ];
+    let declared = children(&tables, "handle", "handle.field");
+    assert_eq!(
+        declared.keys().cloned().collect::<BTreeSet<_>>(),
+        sent.iter().map(|(handle, _)| quoted(handle)).collect(),
+        "every handle is sent"
+    );
+    for (handle, fields) in sent {
+        let fields = serde_json::to_value(fields).unwrap();
+        let fields = fields.as_object().expect("the fields are an object");
+        let declared = &declared[&quoted(handle)];
+        assert_eq!(
+            fields.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            declared
+                .iter()
+                .map(|f| f["name"].trim_matches('"'))
+                .collect(),
+            "{handle}"
+        );
+        for field in declared {
+            let (name, ty) = (
+                field["name"].trim_matches('"'),
+                field["type"].trim_matches('"'),
+            );
+            assert!(
+                shaped(&fields[name], ty),
+                "{handle}.{name} is not a {ty}: {}",
+                fields[name]
+            );
+        }
+    }
 }
 
 /// The two `[[kind]]`s are claiming triggers — the issue kind the main one — and each

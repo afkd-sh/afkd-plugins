@@ -6,11 +6,14 @@
 //! no TOML dependency, so the scan below reads exactly the shape the manifest is written
 //! in: `[[table]]` headers, and `key = value` lines, each value kept as written.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::Value;
 
 use crate::lifecycle::{ACTIONS, HANDLE};
 use crate::plugin::TRELLO_KIND;
 use crate::settings::{ME, SETTINGS};
+use crate::wire::CardFields;
 
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 
@@ -125,6 +128,61 @@ fn the_handle_is_the_card_with_its_fields() {
             ]
         )]
     );
+}
+
+/// Whether `value` has the JSON shape afkd reads a handle field of type `ty` from.
+fn shaped(value: &Value, ty: &str) -> bool {
+    match ty {
+        "string" => value.is_string(),
+        "int" => value.is_i64(),
+        "list[string]" => value
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string)),
+        _ => false,
+    }
+}
+
+/// The fields a claim sends are exactly the ones the `[[handle]]` declares, each in the
+/// JSON shape of its declared type — a rich card's and a bare one's alike. afkd refuses a
+/// unit carrying a field undeclared or mistyped, and a declared one never sent faults the
+/// slot that reads it, so a field added to either side alone fails here.
+#[test]
+fn every_declared_handle_field_is_sent_with_its_declared_type() {
+    let tables = tables(MANIFEST);
+    let rich = CardFields {
+        title: "修复 the retry storm 🚨 — \"backoff\" resets".into(),
+        url: "https://trello.com/c/Rk7eLy5w/12-the-retry-storm".into(),
+        labels: vec!["afkd/ready".into(), "Väntar på svar".into()],
+    };
+    let bare = CardFields {
+        title: String::new(),
+        url: String::new(),
+        labels: Vec::new(),
+    };
+    let handles = grouped(&tables, "handle", "handle.field");
+    assert_eq!(handles.len(), 1, "one handle, the card");
+    let (handle, fields) = &handles[0];
+    assert_eq!(handle["name"], quoted("Card"));
+    let declared: BTreeSet<&str> = fields.iter().map(|f| f["name"].trim_matches('"')).collect();
+    for sent in [rich, bare] {
+        let sent = serde_json::to_value(sent).unwrap();
+        let sent = sent.as_object().expect("the fields are an object");
+        assert_eq!(
+            sent.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            declared
+        );
+        for field in fields {
+            let (name, ty) = (
+                field["name"].trim_matches('"'),
+                field["type"].trim_matches('"'),
+            );
+            assert!(
+                shaped(&sent[name], ty),
+                "`{name}` is not a {ty}: {}",
+                sent[name]
+            );
+        }
+    }
 }
 
 /// The one `[[kind]]` is the main trigger, claiming one card per run, and declares the

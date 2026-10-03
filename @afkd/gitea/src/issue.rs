@@ -37,7 +37,7 @@ use crate::feedback::{render_feedback_section, FeedbackItem};
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{LifecycleAction, Vocabulary, ISSUE_VOCABULARY};
 use crate::settings::{DiscussWith, GiteaConfig};
-use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
+use crate::wire::{Facts, Fields, IssueFields, UnitOutcome, WireFile, WireUnit};
 use crate::{ISSUE_DIR, NUMBER_FILE, PARK_FILE, TASK_FILE};
 
 /// One issue taken on as a unit of work.
@@ -49,6 +49,11 @@ pub(crate) struct Unit {
     /// end, and the tail of the claim-journal key so a crashed run's marker is reaped.
     pub(crate) claim_id: u64,
     pub(crate) title: String,
+    /// The issue's page on the forge, the handle's `url`.
+    pub(crate) url: String,
+    /// The issue's label names as the claiming poll read them — before the claim's own
+    /// `afkd/claimed` — the handle's `labels`.
+    pub(crate) labels: Vec<String>,
     pub(crate) body: String,
     /// The comments that unparked this issue (oldest-first, each authored), so the
     /// regenerated brief shows the answer to the question the run parked on.
@@ -262,6 +267,8 @@ impl IssueUnits {
                             number: issue.number,
                             claim_id,
                             title: issue.title,
+                            url: issue.url,
+                            labels: issue.labels,
                             body: issue.body,
                             feedback,
                             before_comments,
@@ -403,8 +410,8 @@ impl IssueUnits {
 
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim-time comment ids as
-    /// `seen` and the claim identity as `self`. The brief is unframed — afkd frames
-    /// `task.md` itself (ADR-0081).
+    /// `seen`, the claim identity as `self` and the issue's handle fields. The brief is
+    /// unframed — afkd frames `task.md` itself (ADR-0081).
     pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
@@ -412,6 +419,12 @@ impl IssueUnits {
         WireUnit {
             id: unit.number.to_string(),
             key: unit.key(),
+            fields: Fields::Issue(IssueFields {
+                title: unit.title.clone(),
+                url: unit.url.clone(),
+                number: unit.number,
+                labels: unit.labels.clone(),
+            }),
             thread: unit.thread(),
             seen: unit.before_comments.iter().map(u64::to_string).collect(),
             me: unit.claimed_as.clone(),
@@ -673,6 +686,8 @@ mod tests {
             number,
             claim_id: 1,
             title: "T".into(),
+            url: String::new(),
+            labels: Vec::new(),
             body: "B".into(),
             feedback: Vec::new(),
             before_comments: Vec::new(),
@@ -1978,6 +1993,34 @@ mod tests {
     }
 
     // --- Env + scratch threading ---
+
+    /// The handle fields come off the issue as the claiming poll listed it — its title,
+    /// page and number, and its label names before the claim's own `afkd/claimed` — and
+    /// a bare issue still sends its `url` and `labels`, empty, never leaving one out.
+    #[test]
+    fn the_wire_unit_carries_the_issues_fields_as_the_poll_read_them() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        h.client.add_issue(
+            4,
+            "修复 the retry storm 🚨",
+            "B",
+            &["afkd/ready", "優先/high"],
+        );
+        let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
+        assert_eq!(
+            serde_json::to_value(h.units.wire_unit(&unit).fields).unwrap(),
+            serde_json::json!({
+                "title": "修复 the retry storm 🚨",
+                "url": "https://gitea.example.com/acme/widgets/issues/4",
+                "number": 4,
+                "labels": ["afkd/ready", "優先/high"],
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(h.units.wire_unit(&self::unit(9)).fields).unwrap(),
+            serde_json::json!({"title": "T", "url": "", "number": 9, "labels": []})
+        );
+    }
 
     #[test]
     fn the_wire_unit_carries_the_built_ins_key_thread_env_and_layout() {

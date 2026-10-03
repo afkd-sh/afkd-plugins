@@ -79,8 +79,9 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/github/afkd-plugin.toml')
           test -n "$version"
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
-          # the notes name the afkd it needs: 0.2.197 is the first with the handle types and
-          # slot signatures this manifest declares.
-          printf '`afkd install @afkd/github`, or `afkd update @afkd/github` if you already have it.\n\nNeeds afkd 0.2.197 or newer (handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          # the notes name the afkd it needs: 0.2.241 is the first that hands a slot the
+          # handle fields this plugin sends with a claim (0.2.197 brought the handle types
+          # and slot signatures this manifest declares).
+          printf '`afkd install @afkd/github`, or `afkd update @afkd/github` if you already have it.\n\nNeeds afkd 0.2.241 or newer (the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete github --yes --cleanup-tag || true
           gh release create github --target "$GITHUB_SHA" --title "@afkd/github $version" --notes-file notes.md afkd-github.tar.gz

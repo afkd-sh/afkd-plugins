@@ -126,12 +126,44 @@ impl Facts {
 pub(crate) struct WireUnit {
     pub(crate) id: String,
     pub(crate) key: String,
+    /// The claimed item's handle fields, every one the manifest declares for its kind.
+    pub(crate) fields: Fields,
     pub(crate) thread: String,
     pub(crate) seen: Vec<String>,
     #[serde(rename = "self")]
     pub(crate) me: String,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) files: Vec<WireFile>,
+}
+
+/// A claimed item's handle fields, as the kind that claimed it declares them: each kind's
+/// struct serializes alone, with no tag, as the `fields` object afkd types.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum Fields {
+    Issue(IssueFields),
+    Pr(PrFields),
+}
+
+/// The fields of a `gitea.Issue` handle, in the manifest's order, as the claiming poll read
+/// the issue. Each is always sent — an issue with no label has `[]` — so afkd never finds
+/// one of them missing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct IssueFields {
+    pub(crate) title: String,
+    pub(crate) url: String,
+    pub(crate) number: u64,
+    pub(crate) labels: Vec<String>,
+}
+
+/// The fields of a `gitea.Pull_Request` handle, in the manifest's order, as the claiming
+/// poll read the pull request.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct PrFields {
+    pub(crate) title: String,
+    pub(crate) url: String,
+    pub(crate) number: u64,
+    pub(crate) branch: String,
 }
 
 /// One file of the attempt's scratch layout, as data: afkd writes it.
@@ -240,6 +272,12 @@ mod tests {
         WireUnit {
             id: "7".into(),
             key: "acme/widgets#7#1000001".into(),
+            fields: Fields::Issue(IssueFields {
+                title: "修复 the retry storm 🚨".into(),
+                url: "https://gitea.example.com/acme/widgets/issues/7".into(),
+                number: 7,
+                labels: vec!["afkd/ready".into(), "優先/high".into()],
+            }),
             thread: "acme/widgets#7".into(),
             seen: vec!["41".into(), "42".into()],
             me: "björn-öst[bot]".into(),

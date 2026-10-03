@@ -98,6 +98,8 @@ pub(crate) struct Issue {
     pub(crate) iid: u64,
     /// The issue title (the first line of the task brief).
     pub(crate) title: String,
+    /// The issue's page on GitLab (`web_url`); empty when GitLab sent none.
+    pub(crate) url: String,
     /// The issue description/body (the task brief; empty when absent).
     pub(crate) body: String,
     /// The issue state (`opened`/`closed`).
@@ -120,6 +122,10 @@ impl Issue {
 pub(crate) struct MergeRequest {
     /// The project-scoped MR id (`iid`).
     pub(crate) iid: u64,
+    /// The MR title; empty when GitLab sent none.
+    pub(crate) title: String,
+    /// The MR's page on GitLab (`web_url`); empty when GitLab sent none.
+    pub(crate) url: String,
     /// The MR's source branch (the pushed branch the review run checks out).
     pub(crate) source_branch: String,
     /// The MR author (matched by username against the bot for `author_me`).
@@ -776,6 +782,11 @@ fn value_to_issue(v: &Value) -> Option<Issue> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        url: v
+            .get("web_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         body: v
             .get("description")
             .and_then(Value::as_str)
@@ -794,6 +805,16 @@ fn value_to_mr(v: &Value) -> Option<MergeRequest> {
     let iid = v.get("iid")?.as_u64()?;
     Some(MergeRequest {
         iid,
+        title: v
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        url: v
+            .get("web_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         source_branch: v
             .get("source_branch")
             .and_then(Value::as_str)
@@ -1006,6 +1027,7 @@ mod mock {
                 issue: Issue {
                     iid,
                     title: title.to_string(),
+                    url: format!("https://gitlab.example.com/group/widgets/-/issues/{iid}"),
                     body: body.to_string(),
                     state: "opened".to_string(),
                     labels: labels.iter().map(|s| s.to_string()).collect(),
@@ -1039,6 +1061,8 @@ mod mock {
             lock(&self.mrs).push(SeededMr {
                 mr: MergeRequest {
                     iid,
+                    title: format!("MR !{iid}"),
+                    url: format!("https://gitlab.example.com/group/widgets/-/merge_requests/{iid}"),
                     source_branch: source_branch.to_string(),
                     author: User {
                         id: author_id,
@@ -1600,6 +1624,8 @@ mod mock {
             c.list_open_mrs(&project()).unwrap(),
             [MergeRequest {
                 iid: 7,
+                title: "MR !7".into(),
+                url: "https://gitlab.example.com/group/widgets/-/merge_requests/7".into(),
                 source_branch: "feature/重试-backoff".into(),
                 author: User {
                     id: 1,
@@ -1726,24 +1752,30 @@ mod parse_tests {
     }
 
     #[test]
-    fn parse_issues_reads_iid_state_title_and_labels() {
+    fn parse_issues_reads_iid_state_title_url_and_labels() {
         let body = r#"[
             {"iid":4,"title":"修复 the retry storm 🚨","description":"do it\n\n```\nx\n```",
-             "state":"opened","labels":["afkd::ready"],
+             "web_url":"https://gitlab.example.com/acme/sub.group/widgets/-/issues/4",
+             "state":"opened","labels":["afkd::ready", "優先::high"],
              "assignees":[{"id":8,"username":"bot"}]}
         ]"#;
         let issues = parse_issues("list issues", body).unwrap();
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].iid, 4);
         assert_eq!(issues[0].title, "修复 the retry storm 🚨");
+        assert_eq!(
+            issues[0].url,
+            "https://gitlab.example.com/acme/sub.group/widgets/-/issues/4"
+        );
         assert_eq!(issues[0].body, "do it\n\n```\nx\n```");
         assert_eq!(issues[0].state, "opened");
-        assert!(issues[0].has_label("afkd::ready"));
+        assert_eq!(issues[0].labels, ["afkd::ready", "優先::high"]);
     }
 
-    /// An issue with no description, no state and no labels still parses — the brief is
-    /// the title alone, and the state defaults to open as the built-in reads it — and an
-    /// entry with no `iid` is skipped rather than faulting the whole list.
+    /// An issue with no description, no state, no `web_url` and no labels still parses —
+    /// the brief is the title alone, the state defaults to open as the built-in reads it,
+    /// and the url and labels are empty — and an entry with no `iid` is skipped rather
+    /// than faulting the whole list.
     #[test]
     fn parse_issues_defaults_the_absent_fields() {
         let body = r#"[{"iid":5,"title":"Bare","description":null},{"title":"no iid"}]"#;
@@ -1753,6 +1785,7 @@ mod parse_tests {
             [Issue {
                 iid: 5,
                 title: "Bare".into(),
+                url: String::new(),
                 body: String::new(),
                 state: "opened".into(),
                 labels: Vec::new(),
@@ -1777,9 +1810,10 @@ mod parse_tests {
     }
 
     #[test]
-    fn parse_mrs_reads_source_branch_and_author() {
+    fn parse_mrs_reads_title_url_source_branch_and_author() {
         let body = r#"[
             {"iid":12,"title":"修复 the retry storm 🚨","description":"","source_branch":"feature/重试-backoff",
+             "web_url":"https://gitlab.example.com/acme/sub.group/widgets/-/merge_requests/12",
              "author":{"id":8,"username":"björn-öst[bot]"},"state":"opened","labels":["afkd::claimed"]},
             {"iid":13,"source_branch":"fix/y"},
             {"title":"no iid"}
@@ -1790,6 +1824,9 @@ mod parse_tests {
             [
                 MergeRequest {
                     iid: 12,
+                    title: "修复 the retry storm 🚨".into(),
+                    url: "https://gitlab.example.com/acme/sub.group/widgets/-/merge_requests/12"
+                        .into(),
                     source_branch: "feature/重试-backoff".into(),
                     author: User {
                         id: 8,
@@ -1797,10 +1834,12 @@ mod parse_tests {
                     },
                 },
                 // A missing author is nobody (id 0, no username), as the built-in reads it
-                // — never `me`, so `author_me` skips it — and an entry with no `iid` is
-                // dropped rather than faulting the list.
+                // — never `me`, so `author_me` skips it — a missing title or url is empty,
+                // and an entry with no `iid` is dropped rather than faulting the list.
                 MergeRequest {
                     iid: 13,
+                    title: String::new(),
+                    url: String::new(),
                     source_branch: "fix/y".into(),
                     author: User::default(),
                 },

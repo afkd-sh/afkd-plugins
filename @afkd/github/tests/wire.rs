@@ -186,13 +186,15 @@ fn hello_refuses_what_it_cannot_arm_with() {
 // --- poll ---
 
 /// The won race hands over exactly the unit the built-in would have run: its journal key
-/// and session thread, no `seen`, its identity, the four env names the skill reads, and
-/// the scratch layout with the brief unframed. The forge then holds the claim — the marker
-/// and the gate, and nothing a hook does until `on_claim`'s calls land — and every request
-/// went to the GHES root with the token as a `Bearer`.
+/// and session thread, no `seen`, its identity, the four env names the skill reads, and the
+/// scratch layout with the brief unframed — with every field the manifest's `Issue`
+/// declares, its labels by name as the poll read them. The forge then holds the claim — the
+/// marker and the gate, and nothing a hook does until `on_claim`'s calls land — and every
+/// request went to the GHES root with the token as a `Bearer`.
 #[test]
 fn a_won_race_hands_over_the_built_ins_unit() {
     let fake = forge();
+    fake.issue(REPO, 7, TITLE, BODY, &["afkd/ready", "優先/high"], &[HUMAN]);
     let mut plugin = Plugin::armed(settings(&fake));
     let reply = plugin.poll();
     assert_eq!(reply["fire"], true, "{}", plugin.stderr());
@@ -203,6 +205,12 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         json!({
             "id": "7",
             "key": format!("acme/widgets#7#{}", marker[0]),
+            "fields": {
+                "title": TITLE,
+                "url": fake.url(REPO, 7),
+                "number": 7,
+                "labels": ["afkd/ready", "優先/high"],
+            },
             "thread": "acme/widgets#7",
             "seen": [],
             "self": ME,
@@ -222,12 +230,15 @@ fn a_won_race_hands_over_the_built_ins_unit() {
     let comments = fake.comments(REPO, 7);
     assert_eq!(comments[0].body, "[afkd-claim] owner=björn-öst[bot]");
     assert_eq!(comments[0].author, ME);
-    assert_eq!(labels(&fake, 7), ["afkd/ready", "afkd/claimed"]);
+    assert_eq!(
+        labels(&fake, 7),
+        ["afkd/ready", "優先/high", "afkd/claimed"]
+    );
     assert_eq!(assignees(&fake, 7), [HUMAN], "the claim assigns no one");
     on_claim(&mut plugin, &reply["unit"], "afkd/working");
     assert_eq!(
         labels(&fake, 7),
-        ["afkd/ready", "afkd/claimed", "afkd/working"]
+        ["afkd/ready", "優先/high", "afkd/claimed", "afkd/working"]
     );
     assert_eq!(assignees(&fake, 7), [HUMAN, ME], "the human was kept");
     // The race is post → settle → re-read: the marker went up before the thread read.
@@ -897,16 +908,19 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
 
 /// The PR's head branch: non-ASCII, and crossing to the run verbatim.
 const BRANCH: &str = "fix/重试-retry-cap";
+/// The PR's title: the quotes a log line wraps it in, wide CJK and an emoji.
+const PR_TITLE: &str = "Cap the retry backoff — \"重试\" 上限 🚦";
 /// The human's review comment on PR #7: multi-line, with an indented code line and a
 /// trailing newline the brief trims.
 const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max_backoff = 0\n";
 
-/// A repo with the bot's own PR #7 on [`BRANCH`], a human assigned to it, and the human's
-/// review comment two minutes old — new feedback, since the bot has not spoken. Returns
-/// the fake and the comment's id.
+/// A repo with the bot's own PR #7 on [`BRANCH`], titled [`PR_TITLE`], a human assigned to
+/// it, and the human's review comment two minutes old — new feedback, since the bot has not
+/// spoken. Returns the fake and the comment's id.
 fn pr_forge() -> (FakeGithub, u64) {
     let fake = FakeGithub::start(ME);
     fake.pull(REPO, 7, ME, BRANCH, &[], &[HUMAN]);
+    fake.retitle(REPO, 7, PR_TITLE);
     let review = fake.comment(REPO, 7, HUMAN, REVIEW, 120);
     (fake, review)
 }
@@ -953,13 +967,13 @@ fn pr_hello_lists_release_renew_comments() {
 }
 
 /// The won race over a PR with a human's new comment hands over exactly the unit the
-/// built-in would have run: its journal key and session thread, the claim-time thread as
-/// `seen`, its identity, the five env names the skill reads with the branch verbatim, and
-/// the scratch layout with the review brief unframed. The open pulls were listed as the
-/// built-in lists them, the PR's reviews were read, and every write went to the PR's
-/// issue paths — a PR is an issue — at the GHES root with the token as a `Bearer`. A
-/// second poll, the claim still live, hands over nothing: our own older marker out-orders
-/// the new one, which is taken straight back.
+/// built-in would have run: its journal key and session thread, every field the manifest's
+/// `Pull_Request` declares, the claim-time thread as `seen`, its identity, the five env
+/// names the skill reads with the branch verbatim, and the scratch layout with the review
+/// brief unframed. The open pulls were listed as the built-in lists them, the PR's reviews
+/// were read, and every write went to the PR's issue paths — a PR is an issue — at the GHES
+/// root with the token as a `Bearer`. A second poll, the claim still live, hands over
+/// nothing: our own older marker out-orders the new one, which is taken straight back.
 #[test]
 fn pr_a_won_race_hands_over_the_built_ins_unit() {
     let (fake, review) = pr_forge();
@@ -973,6 +987,12 @@ fn pr_a_won_race_hands_over_the_built_ins_unit() {
         json!({
             "id": "7",
             "key": format!("acme/widgets#7#{}", marker[0]),
+            "fields": {
+                "title": PR_TITLE,
+                "url": fake.url(REPO, 7),
+                "number": 7,
+                "branch": BRANCH,
+            },
             "thread": "acme/widgets#7",
             "seen": [review.to_string()],
             "self": ME,
