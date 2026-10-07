@@ -44,12 +44,17 @@ sends each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 insta
 it too, but there a slot reading any field beyond `id` and `key` fails; an older afkd
 refuses the manifest when it is installed.
 
+The configs below are written in the config language of **afkd 0.2.273 or newer**; an
+older afkd still runs the plugin, but refuses the examples when they load.
+
 A config file uses the plugin by importing it, and then names it by its leaf, `gitlab`:
 
 ```conf
+import "core"
+import "core:env"
 import "@afkd/gitlab"
 
-GITLAB_TOKEN :: env.GITLAB_TOKEN
+GITLAB_TOKEN :: env.get("GITLAB_TOKEN") ?? ""
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md
@@ -60,24 +65,24 @@ develop :: service(gitlab) {
   project       "group/widgets"
   token         GITLAB_TOKEN
   source_label  "afkd::ready"
-  poll_interval 1m to 3m
+  poll_interval 1m~3m
 
-  on_claim(run: afkd.Run, issue: gitlab.Issue) {
+  on_claim(run: core.Run, issue: gitlab.Issue) {
     gitlab.assign_me(issue)
     gitlab.label_add(issue, "afkd::working")
   }
-  on_done(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
+  on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.label_remove(issue, "afkd::working")
     gitlab.comment(issue, "Fixed in #{outcome.duration} by #{gitlab.me}.")
     gitlab.close(issue)
   }
-  on_fail(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.label_remove(issue, "afkd::working")
     gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitlab.Issue) { task() }
+  on_run(run: core.Run, issue: gitlab.Issue) { task() }
 }
 
 reviews :: service(gitlab.mr) {
@@ -85,17 +90,17 @@ reviews :: service(gitlab.mr) {
   project       "group/widgets"
   token         GITLAB_TOKEN
   author_me     true
-  poll_interval 2m to 4m
+  poll_interval 2m~4m
 
-  on_claim(run: afkd.Run, mr: gitlab.Merge_Request) { gitlab.mr_label_add(mr, "afkd::reviewing") }
-  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
+  on_claim(run: core.Run, mr: gitlab.Merge_Request) { gitlab.mr_label_add(mr, "afkd::reviewing") }
+  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     gitlab.mr_label_remove(mr, "afkd::reviewing")
     gitlab.mr_comment(mr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
+  on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, mr: gitlab.Merge_Request) { task() }
+  on_run(run: core.Run, mr: gitlab.Merge_Request) { task() }
 }
 ```
 
@@ -108,6 +113,8 @@ wherever it is written, and a slot may act on another item than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
+import "vendor:claude"
+
 // The agent a `service(gitlab)` runs: the skill is what lets it answer the issue.
 fixer :: agent(claude) {
   model  "sonnet"
@@ -133,9 +140,9 @@ run.
 | `project`         | `string`   | **required**: a numeric id or a path-with-namespace (`group/widgets`) |
 | `token`           | `string`   | personal/project access token (`PRIVATE-TOKEN`); required |
 | `source_label`    | `string`   | optional; restrict to issues carrying this label   |
-| `follow_comments` | `duration` | re-read the issue this often **while its run is in flight**, delivering new notes to the working agent; a range `30s to 90s` jitters; default unset (no mid-run watch) |
+| `follow_comments` | `duration` | re-read the issue this often **while its run is in flight**, delivering new notes to the working agent; a range `30s~90s` jitters; default unset (no mid-run watch) |
 | `max_attempts`    | `int`      | retries per issue; default `1`                     |
-| `poll_interval`   | `duration` | default `30s`; a range `2m to 3m` jitters          |
+| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters             |
 
 The last three are afkd's own, read by afkd for every kind that claims its work.
 
@@ -166,23 +173,24 @@ the run's own facts, which afkd interpolates before the plugin sees the text: th
 outcome's `#{outcome.duration}` and `#{outcome.error}`, and the run's `#{run.id}`.
 
 ```conf
+import "core"
 import "@afkd/gitlab"
 
 widgets :: service(gitlab) {
   project "4242"
   token   "REPLACE_ME"
 
-  on_done(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
+  on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
     gitlab.close(issue)
   }
-  on_fail(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error}")
     gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitlab.Issue) {
+  on_run(run: core.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -196,17 +204,18 @@ interval for the extent of the run and hands any new one to the agent **that is 
 working**, as another turn in the same conversation:
 
 ```conf
+import "core"
 import "@afkd/gitlab"
 
 widgets :: service(gitlab) {
   base_url        "https://gitlab.example.com"
   project         "group/sub.group/widgets"
   token           "REPLACE_ME"
-  poll_interval   4m to 6m
+  poll_interval   4m~6m
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitlab.Issue) {
+  on_run(run: core.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -234,7 +243,7 @@ leaves a note newer than the bot's last word, for an automated review loop.
 | `author_me`       | `bool`     | restrict to the bot's own MRs; default `false`     |
 | `follow_comments` | `duration` | as for `service(gitlab)`                           |
 | `max_attempts`    | `int`      | retries per round; default `1`                     |
-| `poll_interval`   | `duration` | default `30s`; a range `2m to 3m` jitters          |
+| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters             |
 
 `source_label` is **not** a key here.
 
@@ -277,6 +286,7 @@ Address review feedback on MR !7.
 while a round runs. The notes the brief was built from are never delivered again.
 
 ```conf
+import "core"
 import "@afkd/gitlab"
 
 reviews :: service(gitlab.mr) {
@@ -286,18 +296,18 @@ reviews :: service(gitlab.mr) {
   author_me       true
   follow_comments 60s
 
-  on_claim(run: afkd.Run, mr: gitlab.Merge_Request) {
+  on_claim(run: core.Run, mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)
     gitlab.mr_label_add(mr, "afkd::reviewing")
   }
-  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
-  on_fail(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
+  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
+  on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     gitlab.mr_label_remove(mr, "afkd::reviewing")
     gitlab.mr_unassign(mr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, mr: gitlab.Merge_Request) {
+  on_run(run: core.Run, mr: gitlab.Merge_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -308,8 +318,8 @@ reviews :: service(gitlab.mr) {
 Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
 the run, the claimed item, and after the run its outcome — by position, and a slot writes
 every one of them, in order, each with its type:
-`on_claim(run: afkd.Run, issue: gitlab.Issue)` on `service(gitlab)`, and
-`on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome)` on `service(gitlab.mr)`.
+`on_claim(run: core.Run, issue: gitlab.Issue)` on `service(gitlab)`, and
+`on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome)` on `service(gitlab.mr)`.
 Neither kind parks, so neither has `on_park`:
 
 | Slot       | Passed             | Runs                                                       |
@@ -319,7 +329,7 @@ Neither kind parks, so neither has `on_park`:
 | `on_done`  | run, item, outcome | after a run that finished                                  |
 | `on_fail`  | run, item, outcome | after a run that failed                                    |
 
-`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
+`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`ok`,
 `duration`, `error`). The item is the plugin's handle for it — a **`gitlab.Issue`** on
 `service(gitlab)`, written `issue` in the examples here, and a **`gitlab.Merge_Request`** on
 `service(gitlab.mr)`, written `mr`:

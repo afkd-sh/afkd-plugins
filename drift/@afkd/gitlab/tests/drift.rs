@@ -137,7 +137,8 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// then it writes every field of the issue's handle to [`FIELDS`], a line each.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "@afkd/gitlab"
+        r#"import "core"
+import "@afkd/gitlab"
 
 widgets :: service(gitlab) {{
   base_url      "{base_url}"
@@ -147,15 +148,15 @@ widgets :: service(gitlab) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run: afkd.Run, issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
-  on_done(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {{
+  on_claim(run: core.Run, issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
+  on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
     gitlab.label_remove(issue, "afkd::claimed")
     gitlab.comment(issue, "done in #{{outcome.duration}} by #{{gitlab.me}}: #{{issue.title}}")
     gitlab.close(issue)
   }}
 
   work_dir "{home}"
-  on_run(run: afkd.Run, issue: gitlab.Issue) {{
+  on_run(run: core.Run, issue: gitlab.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -178,8 +179,8 @@ fn write_config(home: &Path, config: &str) {
     std::fs::write(&conf, config).expect("write the config");
 }
 
-/// The credential a config reads from the daemon's environment (`env.GITLAB_TOKEN`), as
-/// the README's lead example does.
+/// The credential a config reads from the daemon's environment
+/// (`env.get("GITLAB_TOKEN")`), as the README's lead example does.
 const CONFIG_ENV: &[(&str, &str)] = &[("GITLAB_TOKEN", TOKEN)];
 
 /// `afkd validate` over `home`'s config, with [`CONFIG_ENV`] set: the exit code and the
@@ -356,7 +357,8 @@ const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max
 /// the feedback, so the next poll does not claim the merge request again.
 fn mr_service(work: &Path, base_url: &str) -> String {
     format!(
-        r#"import "@afkd/gitlab"
+        r#"import "core"
+import "@afkd/gitlab"
 
 reviews :: service(gitlab.mr) {{
   base_url      "{base_url}"
@@ -366,12 +368,12 @@ reviews :: service(gitlab.mr) {{
   poll_interval 1s
   max_attempts  1
 
-  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {{
+  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{
     gitlab.mr_comment(mr, "round answered: #{{mr.title}}")
   }}
 
   work_dir "{work}"
-  on_run(run: afkd.Run, mr: gitlab.Merge_Request) {{
+  on_run(run: core.Run, mr: gitlab.Merge_Request) {{
     $ echo title #{{mr.title}} >> {FIELDS}
     $ echo url #{{mr.url}} >> {FIELDS}
     $ echo number #{{mr.number}} >> {FIELDS}
@@ -480,33 +482,34 @@ fn install_leg_places_the_plugin_and_runs_one_issue_and_one_mr_through_it() {
 /// each kind's own six, on the item its slot is passed — and read its value `me`, the run
 /// and the outcome, in the argument shapes the manifest types: wide and scoped label
 /// names, and a multi-line comment.
-const BOTH_KINDS: &str = r##"import "@afkd/gitlab"
+const BOTH_KINDS: &str = r##"import "core"
+import "@afkd/gitlab"
 
 issues :: service(gitlab) {
   base_url        "https://gitlab.example.com"
   project         "acme/sub.group/widgets"
   token           "REPLACE_ME"
   source_label    "afkd::ready"
-  follow_comments 30s to 90s
+  follow_comments 30s~90s
   max_attempts    2
-  poll_interval   1m to 3m
+  poll_interval   1m~3m
 
-  on_claim(run: afkd.Run, issue: gitlab.Issue) {
+  on_claim(run: core.Run, issue: gitlab.Issue) {
     gitlab.assign_me(issue)
     gitlab.label_add(issue, "afkd::working ⚙")
   }
-  on_done(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
+  on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.label_remove(issue, "afkd::working ⚙")
     gitlab.comment(issue, "done by #{gitlab.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     gitlab.close(issue)
   }
-  on_fail(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.label_remove(issue, "afkd::working ⚙")
     gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitlab.Issue) {
+  on_run(run: core.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -517,21 +520,21 @@ reviews :: service(gitlab.mr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run: afkd.Run, mr: gitlab.Merge_Request) {
+  on_claim(run: core.Run, mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)
     gitlab.mr_label_add(mr, "afkd::reviewing 👀")
   }
-  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
+  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     gitlab.mr_label_remove(mr, "afkd::reviewing 👀")
     gitlab.mr_comment(mr, "round answered by #{gitlab.me} in #{outcome.duration}")
   }
-  on_fail(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     gitlab.mr_unassign(mr)
     gitlab.mr_close(mr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, mr: gitlab.Merge_Request) {
+  on_run(run: core.Run, mr: gitlab.Merge_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -581,16 +584,17 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"import "@afkd/gitlab"
+            r#"import "core"
+import "@afkd/gitlab"
 
 reviews :: service(gitlab.mr) {{
   project "group/widgets"
   token   "REPLACE_ME"
 
-  on_done(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {{ {call} }}
+  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, mr: gitlab.Merge_Request) {{
+  on_run(run: core.Run, mr: gitlab.Merge_Request) {{
     $ true
   }}
 }}

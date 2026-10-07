@@ -3,7 +3,7 @@
 //!
 //! afkd runs the slots (`on_claim`, `on_done`, `on_fail`, `on_park`) as code, in the
 //! order they are written, and each plugin action a slot calls — `trello.move_to(card,
-//! "Review", at=top)` — crosses as one `call`, its arguments already bound and typed
+//! "Review", at=.top)` — crosses as one `call`, its arguments already bound and typed
 //! against the manifest and any `#{…}` in a comment already interpolated. The card is the
 //! handle the action takes first, never an implied current one. What is left here is
 //! reading those arguments back, and refusing a shape only a hand-written wire could send.

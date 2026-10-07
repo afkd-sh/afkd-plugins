@@ -128,7 +128,8 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// then it writes every field of the issue's handle to [`FIELDS`], a line each.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "@afkd/gitea"
+        r#"import "core"
+import "@afkd/gitea"
 
 widgets :: service(gitea) {{
   base_url      "{base_url}"
@@ -138,15 +139,15 @@ widgets :: service(gitea) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run: afkd.Run, issue: gitea.Issue) {{ gitea.assign_me(issue) }}
-  on_done(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {{
+  on_claim(run: core.Run, issue: gitea.Issue) {{ gitea.assign_me(issue) }}
+  on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {{
     gitea.label_remove(issue, "afkd/claimed")
     gitea.comment(issue, "done in #{{outcome.duration}} by #{{gitea.me}}: #{{issue.title}}")
     gitea.close(issue)
   }}
 
   work_dir "{home}"
-  on_run(run: afkd.Run, issue: gitea.Issue) {{
+  on_run(run: core.Run, issue: gitea.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -169,8 +170,8 @@ fn write_config(home: &Path, config: &str) {
     std::fs::write(&conf, config).expect("write the config");
 }
 
-/// The credential a config reads from the daemon's environment (`env.GITEA_TOKEN`), as
-/// the README's lead example does.
+/// The credential a config reads from the daemon's environment
+/// (`env.get("GITEA_TOKEN")`), as the README's lead example does.
 const CONFIG_ENV: &[(&str, &str)] = &[("GITEA_TOKEN", TOKEN)];
 
 /// `afkd validate` over `home`'s config, with [`CONFIG_ENV`] set: the exit code and the
@@ -342,7 +343,8 @@ const HEAD: &str = "feature/retry-backoff";
 /// the feedback, so the next poll does not claim the pull request again.
 fn pr_service(work: &Path, base_url: &str) -> String {
     format!(
-        r#"import "@afkd/gitea"
+        r#"import "core"
+import "@afkd/gitea"
 
 reviews :: service(gitea.pr) {{
   base_url      "{base_url}"
@@ -352,12 +354,12 @@ reviews :: service(gitea.pr) {{
   poll_interval 1s
   max_attempts  1
 
-  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {{
+  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {{
     gitea.pr_comment(pr, "round answered: #{{pr.title}}")
   }}
 
   work_dir "{work}"
-  on_run(run: afkd.Run, pr: gitea.Pull_Request) {{
+  on_run(run: core.Run, pr: gitea.Pull_Request) {{
     $ echo title #{{pr.title}} >> {FIELDS}
     $ echo url #{{pr.url}} >> {FIELDS}
     $ echo number #{{pr.number}} >> {FIELDS}
@@ -466,7 +468,8 @@ fn install_leg_places_the_plugin_and_runs_one_issue_and_one_pr_through_it() {
 /// each kind's own six, on the item its slot is passed — and read its value `me`, the run
 /// and the outcome — the issue kind's `on_park` among them — in the argument shapes the
 /// manifest types: wide and slashed label names, and a multi-line comment.
-const BOTH_KINDS: &str = r##"import "@afkd/gitea"
+const BOTH_KINDS: &str = r##"import "core"
+import "@afkd/gitea"
 
 issues :: service(gitea) {
   base_url        "https://gitea.example.com"
@@ -474,27 +477,27 @@ issues :: service(gitea) {
   token           "REPLACE_ME"
   source_label    "afkd/ready"
   discuss_with    [ "alice", "陳大文" ]
-  follow_comments 30s to 90s
+  follow_comments 30s~90s
   max_attempts    2
-  poll_interval   1m to 3m
+  poll_interval   1m~3m
 
-  on_claim(run: afkd.Run, issue: gitea.Issue) {
+  on_claim(run: core.Run, issue: gitea.Issue) {
     gitea.assign_me(issue)
     gitea.label_add(issue, "afkd/working ⚙")
   }
-  on_done(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
+  on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.label_remove(issue, "afkd/working ⚙")
     gitea.comment(issue, "done by #{gitea.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     gitea.close(issue)
   }
-  on_fail(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.label_remove(issue, "afkd/working ⚙")
     gitea.unassign(issue)
   }
-  on_park(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) { gitea.label_add(issue, "needs/human") }
+  on_park(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.label_add(issue, "needs/human") }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitea.Issue) {
+  on_run(run: core.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -506,21 +509,21 @@ reviews :: service(gitea.pr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run: afkd.Run, pr: gitea.Pull_Request) {
+  on_claim(run: core.Run, pr: gitea.Pull_Request) {
     gitea.pr_assign_me(pr)
     gitea.pr_label_add(pr, "afkd/reviewing 👀")
   }
-  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {
+  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
     gitea.pr_label_remove(pr, "afkd/reviewing 👀")
     gitea.pr_comment(pr, "round answered by #{gitea.me} in #{outcome.duration}")
   }
-  on_fail(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
     gitea.pr_unassign(pr)
     gitea.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, pr: gitea.Pull_Request) {
+  on_run(run: core.Run, pr: gitea.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -567,16 +570,17 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"import "@afkd/gitea"
+            r#"import "core"
+import "@afkd/gitea"
 
 reviews :: service(gitea.pr) {{
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {{ {call} }}
+  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, pr: gitea.Pull_Request) {{
+  on_run(run: core.Run, pr: gitea.Pull_Request) {{
     $ true
   }}
 }}

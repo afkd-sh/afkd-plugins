@@ -41,14 +41,19 @@ claimed card as a `trello.Card`, and sends each action a slot calls on a card as
 afkd 0.2.197 to 0.2.240 install and run it too, but there a slot reading any field beyond
 `id` and `key` fails; an older afkd refuses the manifest when it is installed.
 
+The configs below are written in the config language of **afkd 0.2.273 or newer**; an
+older afkd still runs the plugin, but refuses the examples when they load.
+
 A config file uses the plugin by importing it, and then names it by its leaf, `trello`:
 
 ```conf
+import "core"
+import "core:env"
 import "@afkd/trello"
 
 TRELLO_BOARD   :: "https://trello.com/b/REPLACE_ME/board"
-TRELLO_API_KEY :: env.TRELLO_API_KEY
-TRELLO_TOKEN   :: env.TRELLO_TOKEN
+TRELLO_API_KEY :: env.get("TRELLO_API_KEY") ?? ""
+TRELLO_TOKEN   :: env.get("TRELLO_TOKEN") ?? ""
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md
@@ -61,26 +66,26 @@ develop :: service(trello) {
   pick_from     "Up for Grabs"
   min_age       1m
   max_attempts  2
-  poll_interval 1m to 3m
+  poll_interval 1m~3m
 
-  on_claim(run: afkd.Run, card: trello.Card) {
+  on_claim(run: core.Run, card: trello.Card) {
     trello.add_member(card, trello.me)
-    trello.move_to(card, "In Progress", at=top)
+    trello.move_to(card, "In Progress", at=.top)
   }
-  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
-    trello.move_to(card, "Review", at=top)
+  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+    trello.move_to(card, "Review", at=.top)
     trello.comment(card, "afkd landed this card in #{outcome.duration}.")
   }
-  on_park(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_park(run: core.Run, card: trello.Card, outcome: core.Outcome) {
     trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
-    trello.move_to(card, "Backlog", at=bottom)
+  on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+    trello.move_to(card, "Backlog", at=.bottom)
     trello.add_label(card, "Problem")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, card: trello.Card) { task() }
+  on_run(run: core.Run, card: trello.Card) { task() }
 }
 ```
 
@@ -93,6 +98,8 @@ wherever it is written, and a slot may act on another card than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
+import "vendor:claude"
+
 // The agent a `service(trello)` runs: the skill is what lets it work the card.
 builder :: agent(claude) {
   model  "sonnet"
@@ -121,9 +128,9 @@ starts, finishes, or fails. Its secrets stay with the plugin and the run.
 | `without_label`   | `list[string]` | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
 | `discuss_with`    | `list[string]` | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
 | `min_age`         | `duration`     | don't claim a card younger than this, measured from card creation; default `0` (no filter) |
-| `follow_comments` | `duration`     | re-read the card this often **while its run is in flight**, delivering new comments to the working agent; a range `30s to 90s` jitters; default unset (no mid-run watch) |
+| `follow_comments` | `duration`     | re-read the card this often **while its run is in flight**, delivering new comments to the working agent; a range `30s~90s` jitters; default unset (no mid-run watch) |
 | `max_attempts`    | `int`          | retries per card; default `1`          |
-| `poll_interval`   | `duration`     | default `30s`; a range `2m to 3m` jitters |
+| `poll_interval`   | `duration`     | default `30s`; a range `2m~3m` jitters |
 
 The last three are afkd's own, read by afkd for every kind that claims its work.
 
@@ -133,13 +140,13 @@ writes every one of them, in order, each with its type:
 
 | Slot                                                                | Runs                                            |
 |---------------------------------------------------------------------|-------------------------------------------------|
-| `on_run(run: afkd.Run, card: trello.Card)`                          | the run itself                                  |
-| `on_claim(run: afkd.Run, card: trello.Card)`                        | once the card is claimed, before the run        |
-| `on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)`  | after a run that finished                       |
-| `on_park(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)`  | after a run that ended waiting on a human reply |
-| `on_fail(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)`  | after a run that failed                         |
+| `on_run(run: core.Run, card: trello.Card)`                          | the run itself                                  |
+| `on_claim(run: core.Run, card: trello.Card)`                        | once the card is claimed, before the run        |
+| `on_done(run: core.Run, card: trello.Card, outcome: core.Outcome)`  | after a run that finished                       |
+| `on_park(run: core.Run, card: trello.Card, outcome: core.Outcome)`  | after a run that ended waiting on a human reply |
+| `on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome)`  | after a run that failed                         |
 
-`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
+`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`ok`,
 `duration`, `error`). `card` is a **`trello.Card`**, the plugin's handle for the card:
 
 | Field    | Type           | What it is                                         |
@@ -158,16 +165,16 @@ before the claim takes a parked card's `Awaiting Reply` off.
 afkd runs a slot's statements in the order they are written, and each action it calls is
 one request to the plugin, which does it on the card the action is passed first:
 
-| Action                                   | Effect                                  |
-|------------------------------------------|-----------------------------------------|
-| `trello.add_member(card, <member>)`      | add a member to the card; additive and idempotent |
-| `trello.remove_member(card, <member>)`   | remove a member from the card; idempotent (removing a member not on the card is a no-op) |
-| `trello.mark_complete(card)`             | mark the card complete                  |
-| `trello.move_to(card, "<list>", at=top)` | move the card to a list, at `top` (the default) or `bottom` |
-| `trello.remove_label(card, "<name>")`    | remove a named label from the card; idempotent (removing a label not on the card is a no-op) |
-| `trello.add_label(card, "<name>")`       | add a named label to the card           |
-| `trello.comment(card, "<text>")`         | post a comment on the card, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
-| `trello.archive(card)`                   | archive the card                        |
+| Action                                    | Effect                                  |
+|-------------------------------------------|-----------------------------------------|
+| `trello.add_member(card, <member>)`       | add a member to the card; additive and idempotent |
+| `trello.remove_member(card, <member>)`    | remove a member from the card; idempotent (removing a member not on the card is a no-op) |
+| `trello.mark_complete(card)`              | mark the card complete                  |
+| `trello.move_to(card, "<list>", at=.top)` | move the card to a list, at `.top` (the default) or `.bottom` |
+| `trello.remove_label(card, "<name>")`     | remove a named label from the card; idempotent (removing a label not on the card is a no-op) |
+| `trello.add_label(card, "<name>")`        | add a named label to the card           |
+| `trello.comment(card, "<text>")`          | post a comment on the card, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
+| `trello.archive(card)`                    | archive the card                        |
 
 The card is a `trello.Card` and nothing else: `trello.move_to("Review")`, with no card, or
 passed another plugin's handle, is refused when the config loads.
@@ -224,6 +231,7 @@ top does not hold up the settled ones under it. Age is measured from the card's
 it is not the claim lock.
 
 ```conf
+import "core"
 import "@afkd/trello"
 
 implement :: service(trello) {
@@ -236,13 +244,13 @@ implement :: service(trello) {
   without_label  [ "blocked", "needs design — ask 陳大文" ]
   min_age        10m
 
-  on_claim(run: afkd.Run, card: trello.Card) {
-    trello.move_to(card, "In Progress", at=top)
+  on_claim(run: core.Run, card: trello.Card) {
+    trello.move_to(card, "In Progress", at=.top)
     trello.remove_label(card, "ready")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, card: trello.Card) {
+  on_run(run: core.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -271,6 +279,7 @@ nothing, the plugin posts one terse backstop comment so the card does not re-fir
 next poll.
 
 ```conf
+import "core"
 import "@afkd/trello"
 
 groom :: service(trello) {
@@ -280,10 +289,10 @@ groom :: service(trello) {
   pick_from    "Ideas"
   discuss_with [ "alice", "bob" ]
 
-  on_claim(run: afkd.Run, card: trello.Card) { trello.add_member(card, trello.me) }
+  on_claim(run: core.Run, card: trello.Card) { trello.add_member(card, trello.me) }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, card: trello.Card) {
+  on_run(run: core.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -299,7 +308,7 @@ card instead of failing it: it adds the `Awaiting Reply` label, releases the cla
 **moves nothing** — the card keeps its place, its list, and its unspent attempts. `on_fail`
 does not run, no `[afkd-attempt]` marker goes up, and the poll goes on to the next card. The
 label is managed by the plugin itself, so the gate holds with no `on_park` slot; `on_park`
-is only for extras (`on_park(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Discussion") }` for a board
+is only for extras (`on_park(run: core.Run, card: trello.Card, outcome: core.Outcome) { trello.move_to(card, "Discussion") }` for a board
 that wants parked cards gathered somewhere).
 
 The badge is also how afkd **finds the card again**. Once a beat, before it reads
@@ -325,6 +334,9 @@ gate — the run ends at the ask. A **multi-step** one must gate the rest on the
 nothing runs past the question:
 
 ```conf
+import "core"
+import "core:fs"
+import "vendor:claude"
 import "@afkd/trello"
 
 // The agent the service below calls. Minimal, so this snippet validates on its own.
@@ -339,12 +351,12 @@ widgets :: service(trello) {
   token     "REPLACE_ME"
   pick_from "To Do"
 
-  on_claim(run: afkd.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=top) }
+  on_claim(run: core.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, card: trello.Card) {
+  on_run(run: core.Run, card: trello.Card) {
     builder <- "build the card; ask through the trello skill if unclear"
-    if fs.is_file("#{run.scratch_dir}/park") { fail "parked: awaiting a human reply" }
+    if fs.is_file("#{run.scratch_dir}/park") { fail("parked: awaiting a human reply") }
     // reviewer / commit steps below never run when the agent asked
   }
 }
@@ -358,11 +370,12 @@ down and agent, gate, and plugin all name the same file.
 too, but only its holder takes it off. A service whose `on_claim` does not move the card out
 of `pick_from` will re-claim **its own** parked card on the next beat, exactly as an
 `on_done`-less config re-fires — drag it elsewhere, or give the service an
-`on_claim(run: afkd.Run, card: trello.Card) { trello.move_to(card, …) }`, as the example below does. A human who
+`on_claim(run: core.Run, card: trello.Card) { trello.move_to(card, …) }`, as the example below does. A human who
 drags a badged card back into the parking service's own `pick_from` gets it claimed and
 unbadged there, answered or not.
 
 ```conf
+import "core"
 import "@afkd/trello"
 
 widgets :: service(trello) {
@@ -371,15 +384,15 @@ widgets :: service(trello) {
   token     "REPLACE_ME"
   pick_from "To Do"
 
-  on_claim(run: afkd.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=top) }
-  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Review", at=top) }
-  on_fail(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Backlog", at=bottom) }
-  on_park(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_claim(run: core.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) { trello.move_to(card, "Review", at=.top) }
+  on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) { trello.move_to(card, "Backlog", at=.bottom) }
+  on_park(run: core.Run, card: trello.Card, outcome: core.Outcome) {
     trello.comment(card, "parked after #{outcome.duration} — waiting on you")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, card: trello.Card) {
+  on_run(run: core.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -393,6 +406,7 @@ the claimed card's comments on that interval for the extent of the run and hands
 to the agent **that is already working**, as another turn in the same conversation:
 
 ```conf
+import "core"
 import "@afkd/trello"
 
 widgets :: service(trello) {
@@ -400,18 +414,18 @@ widgets :: service(trello) {
   api_key         "REPLACE_ME"
   token           "REPLACE_ME"
   pick_from       "To Do"
-  poll_interval   2m to 3m
+  poll_interval   2m~3m
   follow_comments 60s          // the agent hears you mid-run
 
-  on_claim(run: afkd.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=top) }
-  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_claim(run: core.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
     trello.mark_complete(card)
-    trello.move_to(card, "Done", at=bottom)
+    trello.move_to(card, "Done", at=.bottom)
     trello.archive(card)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, card: trello.Card) {
+  on_run(run: core.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }

@@ -94,19 +94,19 @@ fn settings(fake: &FakeTrello) -> Value {
 /// interpolated it.
 ///
 /// ```text
-/// on_claim(run: afkd.Run, card: trello.Card) {
+/// on_claim(run: core.Run, card: trello.Card) {
 ///   trello.add_member(card, trello.me)
-///   trello.move_to(card, "In Progress", at=top)
+///   trello.move_to(card, "In Progress", at=.top)
 /// }
-/// on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
-///   trello.move_to(card, "Review", at=top)
+/// on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+///   trello.move_to(card, "Review", at=.top)
 ///   trello.comment(card, "afkd landed this card in #{outcome.duration}.")
 /// }
-/// on_fail(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
-///   trello.move_to(card, "Backlog", at=bottom)
+/// on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+///   trello.move_to(card, "Backlog", at=.bottom)
 ///   trello.add_label(card, "Problem")
 /// }
-/// on_park(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+/// on_park(run: core.Run, card: trello.Card, outcome: core.Outcome) {
 ///   trello.comment(card, "parked after #{outcome.duration}, waiting on you")
 /// }
 /// ```

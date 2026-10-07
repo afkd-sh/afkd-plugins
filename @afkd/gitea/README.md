@@ -44,12 +44,17 @@ each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and
 but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
 manifest when it is installed.
 
+The configs below are written in the config language of **afkd 0.2.273 or newer**; an
+older afkd still runs the plugin, but refuses the examples when they load.
+
 A config file uses the plugin by importing it, and then names it by its leaf, `gitea`:
 
 ```conf
+import "core"
+import "core:env"
 import "@afkd/gitea"
 
-GITEA_TOKEN :: env.GITEA_TOKEN
+GITEA_TOKEN :: env.get("GITEA_TOKEN") ?? ""
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md
@@ -59,27 +64,27 @@ develop :: service(gitea) {
   base_url      "https://gitea.example.com"
   repo          "acme/widgets"
   token         GITEA_TOKEN
-  poll_interval 1m to 3m
+  poll_interval 1m~3m
 
-  on_claim(run: afkd.Run, issue: gitea.Issue) {
+  on_claim(run: core.Run, issue: gitea.Issue) {
     gitea.assign_me(issue)
     gitea.label_add(issue, "afkd/working")
   }
-  on_done(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
+  on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.label_remove(issue, "afkd/working")
     gitea.comment(issue, "Fixed in #{outcome.duration} by #{gitea.me}.")
     gitea.close(issue)
   }
-  on_park(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
+  on_park(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.comment(issue, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.label_remove(issue, "afkd/working")
     gitea.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitea.Issue) { task() }
+  on_run(run: core.Run, issue: gitea.Issue) { task() }
 }
 
 reviews :: service(gitea.pr) {
@@ -87,17 +92,17 @@ reviews :: service(gitea.pr) {
   repo          "acme/widgets"
   token         GITEA_TOKEN
   author_me     true
-  poll_interval 2m to 4m
+  poll_interval 2m~4m
 
-  on_claim(run: afkd.Run, pr: gitea.Pull_Request) { gitea.pr_label_add(pr, "afkd/working") }
-  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {
+  on_claim(run: core.Run, pr: gitea.Pull_Request) { gitea.pr_label_add(pr, "afkd/working") }
+  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
     gitea.pr_label_remove(pr, "afkd/working")
     gitea.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) { gitea.pr_label_remove(pr, "afkd/working") }
+  on_fail(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_label_remove(pr, "afkd/working") }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, pr: gitea.Pull_Request) { task() }
+  on_run(run: core.Run, pr: gitea.Pull_Request) { task() }
 }
 ```
 
@@ -110,6 +115,8 @@ wherever it is written, and a slot may act on another item than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
+import "vendor:claude"
+
 // The agent a `service(gitea)` runs: the skill is what lets it answer the issue.
 fixer :: agent(claude) {
   model  "sonnet"
@@ -143,9 +150,9 @@ gate for those who want it; either signal suffices.
 | `token`           | `string`       | personal access token; required                    |
 | `source_label`    | `string`       | optional label gate; alternative to assigning bot  |
 | `discuss_with`    | `list[string]` | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
-| `follow_comments` | `duration`     | re-read the issue this often **while its run is in flight**, delivering new comments to the working agent; a range `30s to 90s` jitters; default unset (no mid-run watch) |
+| `follow_comments` | `duration`     | re-read the issue this often **while its run is in flight**, delivering new comments to the working agent; a range `30s~90s` jitters; default unset (no mid-run watch) |
 | `max_attempts`    | `int`          | retries per issue; default `1`                     |
-| `poll_interval`   | `duration`     | default `30s`; a range `2m to 3m` jitters          |
+| `poll_interval`   | `duration`     | default `30s`; a range `2m~3m` jitters             |
 
 The last three are afkd's own, read by afkd for every kind that claims its work.
 
@@ -174,6 +181,7 @@ service works **one issue at a time, to completion**, and `max_attempts` bounds 
 per-issue retries.
 
 ```conf
+import "core"
 import "@afkd/gitea"
 
 widgets :: service(gitea) {
@@ -181,12 +189,12 @@ widgets :: service(gitea) {
   org      "acme"
   token    "REPLACE_ME"
 
-  on_claim(run: afkd.Run, issue: gitea.Issue) { gitea.assign_me(issue) }
-  on_done(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) { gitea.close(issue) }
-  on_fail(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) { gitea.unassign(issue) }
+  on_claim(run: core.Run, issue: gitea.Issue) { gitea.assign_me(issue) }
+  on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.close(issue) }
+  on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.unassign(issue) }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitea.Issue) {
+  on_run(run: core.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -214,6 +222,9 @@ requirement remains:
   so nothing runs after the ask:
 
   ```conf
+  import "core"
+  import "core:fs"
+  import "vendor:claude"
   import "@afkd/gitea"
 
   // The agent the service below calls. Minimal, so this snippet validates on its own.
@@ -227,14 +238,14 @@ requirement remains:
     repo     "acme/widgets"
     token    "REPLACE_ME"
 
-    on_park(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
+    on_park(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
       gitea.comment(issue, "parked after #{outcome.duration} — waiting on you")
     }
 
     work_dir "/srv/acme/widgets"
-    on_run(run: afkd.Run, issue: gitea.Issue) {
+    on_run(run: core.Run, issue: gitea.Issue) {
       fixer <- "fix the issue; run the gitea skill's ask action if unclear"
-      if fs.is_file("#{run.scratch_dir}/park") { fail "parked: awaiting a human reply" }
+      if fs.is_file("#{run.scratch_dir}/park") { fail("parked: awaiting a human reply") }
       // reviewer / commit / PR steps below never run when the agent asked
     }
   }
@@ -267,6 +278,7 @@ unchanged — no comments are read at all outside the `afkd/awaiting-reply` re-a
 `[ "anyone" ]` is an explicit value, not the same as omitting it.
 
 ```conf
+import "core"
 import "@afkd/gitea"
 
 groom :: service(gitea) {
@@ -276,7 +288,7 @@ groom :: service(gitea) {
   discuss_with [ "alice", "bob" ]
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitea.Issue) {
+  on_run(run: core.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -290,17 +302,18 @@ for the claimed issue's comments on that interval for the extent of the run and 
 new one to the agent **that is already working**, as another turn in the same conversation:
 
 ```conf
+import "core"
 import "@afkd/gitea"
 
 widgets :: service(gitea) {
   base_url        "https://git.example.com"
   repo            "acme/widgets"
   token           "REPLACE_ME"
-  poll_interval   4m to 6m
+  poll_interval   4m~6m
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: gitea.Issue) {
+  on_run(run: core.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -331,7 +344,7 @@ leaves feedback newer than the bot's last word, for an automated review loop.
 | `author_me`       | `bool`     | restrict to the bot's own PRs; default `false`         |
 | `follow_comments` | `duration` | as for `service(gitea)`                                |
 | `max_attempts`    | `int`      | retries per round; default `1`                         |
-| `poll_interval`   | `duration` | default `30s`; a range `2m to 3m` jitters              |
+| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters                 |
 
 `source_label` and `discuss_with` are not keys here, and the kind has no `on_park` slot.
 
@@ -374,6 +387,7 @@ Address review feedback on PR #7.
 while a round runs, and the comments the brief was built from are never delivered again.
 
 ```conf
+import "core"
 import "@afkd/gitea"
 
 reviews :: service(gitea.pr) {
@@ -382,11 +396,11 @@ reviews :: service(gitea.pr) {
   token     "REPLACE_ME"
   author_me true
 
-  on_claim(run: afkd.Run, pr: gitea.Pull_Request) { gitea.pr_assign_me(pr) }
-  on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) { gitea.pr_unassign(pr) }
+  on_claim(run: core.Run, pr: gitea.Pull_Request) { gitea.pr_assign_me(pr) }
+  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_unassign(pr) }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, pr: gitea.Pull_Request) {
+  on_run(run: core.Run, pr: gitea.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -397,8 +411,8 @@ reviews :: service(gitea.pr) {
 Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
 the run, the claimed item, and after the run its outcome — by position, and a slot writes
 every one of them, in order, each with its type:
-`on_claim(run: afkd.Run, issue: gitea.Issue)` on `service(gitea)`, and
-`on_done(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome)` on `service(gitea.pr)`.
+`on_claim(run: core.Run, issue: gitea.Issue)` on `service(gitea)`, and
+`on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome)` on `service(gitea.pr)`.
 
 | Slot       | Passed               | `service(gitea)`                   | `service(gitea.pr)`             |
 |------------|----------------------|------------------------------------|---------------------------------|
@@ -408,7 +422,7 @@ every one of them, in order, each with its type:
 | `on_park`  | run, item, outcome   | after a run that ended waiting on a human reply | —                  |
 | `on_fail`  | run, item, outcome   | after a run that failed            | after a round that failed       |
 
-`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
+`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`ok`,
 `duration`, `error`). The item is the plugin's handle for it — a **`gitea.Issue`** on
 `service(gitea)`, written `issue` in the examples here, and a **`gitea.Pull_Request`** on
 `service(gitea.pr)`, written `pr`:

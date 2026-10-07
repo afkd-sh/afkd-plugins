@@ -44,12 +44,17 @@ each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and
 but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
 manifest when it is installed.
 
+The configs below are written in the config language of **afkd 0.2.273 or newer**; an
+older afkd still runs the plugin, but refuses the examples when they load.
+
 A config file uses the plugin by importing it, and then names it by its leaf, `github`:
 
 ```conf
+import "core"
+import "core:env"
 import "@afkd/github"
 
-GITHUB_TOKEN :: env.GITHUB_TOKEN
+GITHUB_TOKEN :: env.get("GITHUB_TOKEN") ?? ""
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md
@@ -59,41 +64,41 @@ develop :: service(github) {
   repo          "acme/widgets"
   token         GITHUB_TOKEN
   source_label  "afkd/ready"
-  poll_interval 1m to 3m
+  poll_interval 1m~3m
 
-  on_claim(run: afkd.Run, issue: github.Issue) {
+  on_claim(run: core.Run, issue: github.Issue) {
     github.assign_me(issue)
     github.label_add(issue, "afkd/working")
   }
-  on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
+  on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.label_remove(issue, "afkd/working")
     github.comment(issue, "Fixed in #{outcome.duration} by #{github.me}.")
     github.close(issue)
   }
-  on_fail(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.label_remove(issue, "afkd/working")
     github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: github.Issue) { task() }
+  on_run(run: core.Run, issue: github.Issue) { task() }
 }
 
 reviews :: service(github.pr) {
   repo          "acme/widgets"
   token         GITHUB_TOKEN
   author_me     true
-  poll_interval 2m to 4m
+  poll_interval 2m~4m
 
-  on_claim(run: afkd.Run, pr: github.Pull_Request) { github.pr_label_add(pr, "afkd/reviewing") }
-  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
+  on_claim(run: core.Run, pr: github.Pull_Request) { github.pr_label_add(pr, "afkd/reviewing") }
+  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     github.pr_label_remove(pr, "afkd/reviewing")
     github.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
+  on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, pr: github.Pull_Request) { task() }
+  on_run(run: core.Run, pr: github.Pull_Request) { task() }
 }
 ```
 
@@ -106,6 +111,8 @@ wherever it is written, and a slot may act on another item than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
+import "vendor:claude"
+
 // The agent a `service(github)` runs: the skill is what lets it answer the issue.
 fixer :: agent(claude) {
   model  "sonnet"
@@ -133,9 +140,9 @@ run.
 | `repo`            | `string`   | **required**: a single repository, `"owner/name"`  |
 | `token`           | `string`   | personal access token (`Authorization: Bearer`); required |
 | `source_label`    | `string`   | optional; restrict to issues carrying this label   |
-| `follow_comments` | `duration` | re-read the issue this often **while its run is in flight**, delivering new comments to the working agent; a range `30s to 90s` jitters; default unset (no mid-run watch) |
+| `follow_comments` | `duration` | re-read the issue this often **while its run is in flight**, delivering new comments to the working agent; a range `30s~90s` jitters; default unset (no mid-run watch) |
 | `max_attempts`    | `int`      | retries per issue; default `1`                     |
-| `poll_interval`   | `duration` | default `30s`; a range `2m to 3m` jitters          |
+| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters             |
 
 The last three are afkd's own, read by afkd for every kind that claims its work.
 
@@ -168,6 +175,7 @@ the run's own facts, which afkd interpolates before the plugin sees the text: th
 outcome's `#{outcome.duration}` and `#{outcome.error}`, and the run's `#{run.id}`.
 
 ```conf
+import "core"
 import "@afkd/github"
 
 widgets :: service(github) {
@@ -175,17 +183,17 @@ widgets :: service(github) {
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
+  on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
     github.close(issue)
   }
-  on_fail(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error}")
     github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: github.Issue) {
+  on_run(run: core.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -199,16 +207,17 @@ interval for the extent of the run and hands any new one to the agent **that is 
 working**, as another turn in the same conversation:
 
 ```conf
+import "core"
 import "@afkd/github"
 
 widgets :: service(github) {
   repo            "acme/widgets"
   token           "REPLACE_ME"
-  poll_interval   4m to 6m
+  poll_interval   4m~6m
   follow_comments 60s          // the agent hears you mid-run
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: github.Issue) {
+  on_run(run: core.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -236,7 +245,7 @@ leaves feedback newer than the bot's last word, for an automated review loop.
 | `author_me`       | `bool`     | restrict to the bot's own PRs; default `false`     |
 | `follow_comments` | `duration` | as for `service(github)`                           |
 | `max_attempts`    | `int`      | retries per round; default `1`                     |
-| `poll_interval`   | `duration` | default `30s`; a range `2m to 3m` jitters          |
+| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters             |
 
 `source_label` is **not** a key here.
 
@@ -282,6 +291,7 @@ comments while a round runs. The comments the brief was built from are never del
 again.
 
 ```conf
+import "core"
 import "@afkd/github"
 
 reviews :: service(github.pr) {
@@ -291,18 +301,18 @@ reviews :: service(github.pr) {
   author_me       true
   follow_comments 60s
 
-  on_claim(run: afkd.Run, pr: github.Pull_Request) {
+  on_claim(run: core.Run, pr: github.Pull_Request) {
     github.pr_assign_me(pr)
     github.pr_label_add(pr, "afkd/reviewing")
   }
-  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
-  on_fail(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
+  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
+  on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     github.pr_label_remove(pr, "afkd/reviewing")
     github.pr_unassign(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, pr: github.Pull_Request) {
+  on_run(run: core.Run, pr: github.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -313,8 +323,8 @@ reviews :: service(github.pr) {
 Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
 the run, the claimed item, and after the run its outcome — by position, and a slot writes
 every one of them, in order, each with its type:
-`on_claim(run: afkd.Run, issue: github.Issue)` on `service(github)`, and
-`on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome)` on `service(github.pr)`.
+`on_claim(run: core.Run, issue: github.Issue)` on `service(github)`, and
+`on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome)` on `service(github.pr)`.
 Neither kind parks, so neither has `on_park`:
 
 | Slot       | Passed             | Runs                                                       |
@@ -324,7 +334,7 @@ Neither kind parks, so neither has `on_park`:
 | `on_done`  | run, item, outcome | after a run that finished                                  |
 | `on_fail`  | run, item, outcome | after a run that failed                                    |
 
-`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`ok`,
+`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`ok`,
 `duration`, `error`). The item is the plugin's handle for it — a **`github.Issue`** on
 `service(github)`, written `issue` in the examples here, and a **`github.Pull_Request`** on
 `service(github.pr)`, written `pr`:

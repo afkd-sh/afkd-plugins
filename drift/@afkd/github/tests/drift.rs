@@ -136,7 +136,8 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// then it writes every field of the issue's handle to [`FIELDS`], a line each.
 fn service(home: &Path, host: &str) -> String {
     format!(
-        r#"import "@afkd/github"
+        r#"import "core"
+import "@afkd/github"
 
 widgets :: service(github) {{
   host          "{host}"
@@ -146,15 +147,15 @@ widgets :: service(github) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run: afkd.Run, issue: github.Issue) {{ github.assign_me(issue) }}
-  on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {{
+  on_claim(run: core.Run, issue: github.Issue) {{ github.assign_me(issue) }}
+  on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
     github.label_remove(issue, "afkd/claimed")
     github.comment(issue, "done in #{{outcome.duration}} by #{{github.me}}: #{{issue.title}}")
     github.close(issue)
   }}
 
   work_dir "{home}"
-  on_run(run: afkd.Run, issue: github.Issue) {{
+  on_run(run: core.Run, issue: github.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -177,8 +178,8 @@ fn write_config(home: &Path, config: &str) {
     std::fs::write(&conf, config).expect("write the config");
 }
 
-/// The credential a config reads from the daemon's environment (`env.GITHUB_TOKEN`), as
-/// the README's lead example does.
+/// The credential a config reads from the daemon's environment
+/// (`env.get("GITHUB_TOKEN")`), as the README's lead example does.
 const CONFIG_ENV: &[(&str, &str)] = &[("GITHUB_TOKEN", TOKEN)];
 
 /// `afkd validate` over `home`'s config, with [`CONFIG_ENV`] set: the exit code and the
@@ -355,7 +356,8 @@ const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max
 /// the feedback, so the next poll does not claim the pull request again.
 fn pr_service(work: &Path, host: &str) -> String {
     format!(
-        r#"import "@afkd/github"
+        r#"import "core"
+import "@afkd/github"
 
 reviews :: service(github.pr) {{
   host          "{host}"
@@ -365,12 +367,12 @@ reviews :: service(github.pr) {{
   poll_interval 1s
   max_attempts  1
 
-  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {{
+  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {{
     github.pr_comment(pr, "round answered: #{{pr.title}}")
   }}
 
   work_dir "{work}"
-  on_run(run: afkd.Run, pr: github.Pull_Request) {{
+  on_run(run: core.Run, pr: github.Pull_Request) {{
     $ echo title #{{pr.title}} >> {FIELDS}
     $ echo url #{{pr.url}} >> {FIELDS}
     $ echo number #{{pr.number}} >> {FIELDS}
@@ -473,33 +475,34 @@ fn install_leg_places_the_plugin_and_runs_one_issue_and_one_pr_through_it() {
 /// each kind's own six, on the item its slot is passed — and read its value `me`, the run
 /// and the outcome, in the argument shapes the manifest types: wide and scoped label
 /// names, and a multi-line comment.
-const BOTH_KINDS: &str = r##"import "@afkd/github"
+const BOTH_KINDS: &str = r##"import "core"
+import "@afkd/github"
 
 issues :: service(github) {
   host            "ghe.example.com"
   repo            "acme/widgets"
   token           "REPLACE_ME"
   source_label    "afkd/ready"
-  follow_comments 30s to 90s
+  follow_comments 30s~90s
   max_attempts    2
-  poll_interval   1m to 3m
+  poll_interval   1m~3m
 
-  on_claim(run: afkd.Run, issue: github.Issue) {
+  on_claim(run: core.Run, issue: github.Issue) {
     github.assign_me(issue)
     github.label_add(issue, "afkd/working ⚙")
   }
-  on_done(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
+  on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.label_remove(issue, "afkd/working ⚙")
     github.comment(issue, "done by #{github.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     github.close(issue)
   }
-  on_fail(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.label_remove(issue, "afkd/working ⚙")
     github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, issue: github.Issue) {
+  on_run(run: core.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -510,21 +513,21 @@ reviews :: service(github.pr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run: afkd.Run, pr: github.Pull_Request) {
+  on_claim(run: core.Run, pr: github.Pull_Request) {
     github.pr_assign_me(pr)
     github.pr_label_add(pr, "afkd/reviewing 👀")
   }
-  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
+  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     github.pr_label_remove(pr, "afkd/reviewing 👀")
     github.pr_comment(pr, "round answered by #{github.me} in #{outcome.duration}")
   }
-  on_fail(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
+  on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     github.pr_unassign(pr)
     github.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, pr: github.Pull_Request) {
+  on_run(run: core.Run, pr: github.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -574,16 +577,17 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"import "@afkd/github"
+            r#"import "core"
+import "@afkd/github"
 
 reviews :: service(github.pr) {{
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {{ {call} }}
+  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, pr: github.Pull_Request) {{
+  on_run(run: core.Run, pr: github.Pull_Request) {{
     $ true
   }}
 }}

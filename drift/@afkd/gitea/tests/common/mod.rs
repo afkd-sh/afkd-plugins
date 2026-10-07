@@ -217,7 +217,7 @@ pub(crate) fn run_subcommand_args(dir: &Path, args: &[&str]) -> Output {
 }
 
 /// [`run_subcommand_args`] with `vars` set in its environment too: what a config's
-/// `env.NAME` reads at load.
+/// `env.get(…)` reads at load.
 pub(crate) fn run_subcommand_env(dir: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(bin_path());
     clear_layout_env(&mut cmd)

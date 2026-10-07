@@ -153,7 +153,8 @@ fn seed() -> (FakeTrello, String) {
 /// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "@afkd/trello"
+        r#"import "core"
+import "@afkd/trello"
 
 widgets :: service(trello) {{
   board         "https://trello.com/b/{BOARD}/afkd-drift"
@@ -164,17 +165,17 @@ widgets :: service(trello) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run: afkd.Run, card: trello.Card) {{
+  on_claim(run: core.Run, card: trello.Card) {{
     trello.add_member(card, trello.me)
-    trello.move_to(card, "In Progress", at=top)
+    trello.move_to(card, "In Progress", at=.top)
   }}
-  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
-    trello.move_to(card, "Review", at=top)
+  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+    trello.move_to(card, "Review", at=.top)
     trello.comment(card, "done in #{{outcome.duration}}: #{{card.title}}")
   }}
 
   work_dir "{home}"
-  on_run(run: afkd.Run, card: trello.Card) {{
+  on_run(run: core.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{card.title}} >> {FIELDS}
     $ echo url #{{card.url}} >> {FIELDS}
@@ -196,8 +197,9 @@ fn write_config(home: &Path, config: &str) {
     std::fs::write(&conf, config).expect("write the config");
 }
 
-/// The credentials a config reads from the daemon's environment (`env.TRELLO_API_KEY`), as
-/// the README's lead example and §24 do, and §24's `GH_TOKEN`.
+/// The credentials a config reads from the daemon's environment
+/// (`env.get("TRELLO_API_KEY")`), as the README's lead example and §24 do, and §24's
+/// `GH_TOKEN`.
 const CONFIG_ENV: &[(&str, &str)] = &[
     ("TRELLO_API_KEY", KEY),
     ("TRELLO_TOKEN", TOKEN),
@@ -378,7 +380,8 @@ const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network we
 /// the test creates `release`, then fails.
 fn failing_service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "@afkd/trello"
+        r#"import "core"
+import "@afkd/trello"
 
 widgets :: service(trello) {{
   board         "https://trello.com/b/{BOARD}/afkd-drift"
@@ -389,18 +392,18 @@ widgets :: service(trello) {{
   poll_interval 1s
   max_attempts  2
 
-  on_claim(run: afkd.Run, card: trello.Card) {{
-    trello.move_to(card, "In Progress", at=top)
+  on_claim(run: core.Run, card: trello.Card) {{
+    trello.move_to(card, "In Progress", at=.top)
   }}
-  on_fail(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
-    trello.move_to(card, "Backlog", at=bottom)
+  on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+    trello.move_to(card, "Backlog", at=.bottom)
     trello.add_label(card, "Problem")
   }}
 
   work_dir "{home}"
-  on_run(run: afkd.Run, card: trello.Card) {{
+  on_run(run: core.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
-    fail "{OUTAGE_FAULT}"
+    fail("{OUTAGE_FAULT}")
   }}
 }}
 "#,
@@ -551,32 +554,40 @@ import "selfdev"
 
 /// §24's shared queues.
 const SECTION_24_QUEUES: &str = r#"// shared/queues.afkd
-develop :: queue { slots 1 }
-discuss :: queue { slots 2 }
+develop :: queue { capacity 1 }
+discuss :: queue { capacity 2 }
 "#;
 
 /// §24's `selfdev/selfdev.afkd`, copied from `docs/lang-v2.md` at afkd master, up to the
 /// `develop` service's end. The `discuss` half after it is left out: it writes
 /// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
-/// `list[string]` and is written `[ "anyone" ]`.
+/// `list[string]` and is written `[ "anyone" ]`. One deviation: a prompt file is read
+/// through a `prompt` proc that destructures `fs.read_file` into its text and its error,
+/// the form that outlives reading it as one value.
 const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afkd - Trello-driven pipeline: afkd develops itself.
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
 // on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
 
+import "core"
+import "core:env"
+import "core:fs"
+import "core:git"
+import "vendor:claude"
 import "shared"
 import "@afkd/trello"
 
+HOME       :: env.get("HOME") ?? "/root"
 PROMPTS    :: "docs/agents"
 REPO       :: "/home/user/Projects/afkd"
 PLUGINS    :: "/home/user/Projects/afkd-plugins"
 PNPM_STORE :: "/home/user/Projects/.pnpm-store"
 
 TRELLO_BOARD   :: "https://trello.com/b/BOARDID/afkd"
-TRELLO_API_KEY :: env.TRELLO_API_KEY
-TRELLO_TOKEN   :: env.TRELLO_TOKEN
+TRELLO_API_KEY :: env.get("TRELLO_API_KEY") ?? ""
+TRELLO_TOKEN   :: env.get("TRELLO_TOKEN") ?? ""
 
 // gh's keyring is unreachable inside the sandbox, so the token travels by env.
-GH_TOKEN :: env.GH_TOKEN
+GH_TOKEN :: env.get("GH_TOKEN") ?? ""
 
 // Git commands the review-only agents may never run.
 GIT_WRITES :: [
@@ -593,8 +604,8 @@ builder :: agent(claude) {
   model           "opus"
   effort          high
   permission_mode bypass_permissions
-  skills          [ "@afkd/trello/trello" ]
-  tools           [ "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write" ]
+  skills          "@afkd/trello/trello"
+  tools           "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write"
 }
 
 // Gates each phase, review-only. Commits stay denied even under bypass_permissions.
@@ -603,8 +614,8 @@ critic :: agent(claude) {
   model           "opus"
   effort          high
   permission_mode bypass_permissions
-  skills          [ "@afkd/trello/trello" ]
-  tools           [ "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write" ]
+  skills          "@afkd/trello/trello"
+  tools           "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write"
   deny            GIT_WRITES
 }
 
@@ -613,34 +624,30 @@ critic :: agent(claude) {
 repo_jail :: sandbox {
   network host
 
-  read_write [
-    REPO,
-    PLUGINS,
-    "#{env.HOME}/.config/afkd/",
-    "#{env.HOME}/.cargo/",
-    "#{env.HOME}/.cache/pnpm/",
-    "#{env.HOME}/.claude/",
-    "#{env.HOME}/.claude.json",
-    "#{PNPM_STORE}/",
-  ]
+  read_write REPO,
+             PLUGINS,
+             "#{HOME}/.config/afkd/",
+             "#{HOME}/.cargo/",
+             "#{HOME}/.cache/pnpm/",
+             "#{HOME}/.claude/",
+             "#{HOME}/.claude.json",
+             "#{PNPM_STORE}/"
 
   // NOTE: granting ~/.ssh exposes private keys to the agent.
-  read_only [
-    "/etc/ca-certificates/",
-    "/etc/group",
-    "/etc/hosts",
-    "/etc/nsswitch.conf",
-    "/etc/passwd",
-    "/etc/resolv.conf",
-    "/etc/ssl/",
-    "/usr/",
-    "#{env.HOME}/.gitconfig",
-    "#{env.HOME}/.local/bin/",
-    "#{env.HOME}/.local/share/claude/",
-    "#{env.HOME}/.local/share/nvm/",
-    "#{env.HOME}/.rustup/",
-    "#{env.HOME}/.ssh/",
-  ]
+  read_only "/etc/ca-certificates/",
+            "/etc/group",
+            "/etc/hosts",
+            "/etc/nsswitch.conf",
+            "/etc/passwd",
+            "/etc/resolv.conf",
+            "/etc/ssl/",
+            "/usr/",
+            "#{HOME}/.gitconfig",
+            "#{HOME}/.local/bin/",
+            "#{HOME}/.local/share/claude/",
+            "#{HOME}/.local/share/nvm/",
+            "#{HOME}/.rustup/",
+            "#{HOME}/.ssh/"
 }
 
 // Fresh marker state each run, and a tree that starts where master is.
@@ -652,50 +659,60 @@ prep :: proc() {
       $AFKD_SCRATCH_DIR/*.blocked $AFKD_SCRATCH_DIR/*-feedback.md
 }
 
+// A prompt file's text; a missing or unreadable one fails the run.
+prompt :: proc(name: string) -> string {
+  text, err := fs.read_file("#{PROMPTS}/#{name}")
+  if err != nil { fail("cannot read #{err.path}: #{err.message}") }
+  return text
+}
+
+// How a gated phase ended.
+Verdict :: enum { blocked, approved, rejected }
+
 // Build, then critique, up to three times.
-gate :: proc(run: afkd.Run, phase: string, build: string, critique: string) -> "blocked" | "approved" | "rejected" {
+gate :: proc(run: core.Run, phase: string, build: string, critique: string) -> Verdict {
   for _ in 0..<3 {
-    builder <- fs.read("#{PROMPTS}/#{build}")
-    if fs.is_file("#{run.scratch_dir}/#{phase}.blocked") { return "blocked" }
+    builder <- prompt(build)
+    if fs.is_file("#{run.scratch_dir}/#{phase}.blocked") { return .blocked }
 
-    critic <- fs.read("#{PROMPTS}/#{critique}")
-    if fs.is_file("#{run.scratch_dir}/#{phase}.ok") { return "approved" }
+    critic <- prompt(critique)
+    if fs.is_file("#{run.scratch_dir}/#{phase}.ok") { return .approved }
   }
-  return "rejected"
+  return .rejected
 }
 
-plan :: proc(run: afkd.Run) {
+plan :: proc(run: core.Run) {
   verdict := gate(run, "plan", "20-plan-build.md", "21-plan-critique.md")
-  if verdict == "blocked" {
-    fail "card unimplementable as written - see card comment"
-  } else if verdict == "rejected" {
-    fail "plan not approved within retries"
+  if verdict == .blocked {
+    fail("card unimplementable as written - see card comment")
+  } else if verdict == .rejected {
+    fail("plan not approved within retries")
   }
 }
 
-implement :: proc(run: afkd.Run) {
+implement :: proc(run: core.Run) {
   verdict := gate(run, "impl", "30-implement-build.md", "31-implement-critique.md")
-  if verdict == "blocked" {
-    fail "implementation blocked - see card comment"
-  } else if verdict == "rejected" {
-    fail "implementation not approved within retries"
+  if verdict == .blocked {
+    fail("implementation blocked - see card comment")
+  } else if verdict == .rejected {
+    fail("implementation not approved within retries")
   }
 }
 
 // Commit the approved work, then check the fact rather than the agent's word.
-commit :: proc(run: afkd.Run) {
-  builder <- fs.read("#{PROMPTS}/40-commit.md")
+commit :: proc(run: core.Run) {
+  builder <- prompt("40-commit.md")
   if fs.is_file("#{run.scratch_dir}/commit.blocked") {
-    fail "commit blocked: approval stale, real change needed - see card comment"
+    fail("commit blocked: approval stale, real change needed - see card comment")
   }
 
   git.fetch("origin", "master")
   if !git.is_merged("HEAD", into="origin/master") {
-    fail "the commit never reached origin/master - the push did not land"
+    fail("the commit never reached origin/master - the push did not land")
   }
 }
 
-task :: proc(run: afkd.Run) {
+task :: proc(run: core.Run) {
   prep()
   plan(run)
   implement(run)
@@ -709,21 +726,21 @@ develop :: service(trello) {
   pick_from     "Up for Grabs"
   min_age       1m
   max_attempts  2
-  poll_interval 1m to 3m
+  poll_interval 1m~3m
 
-  on_claim(run: afkd.Run, card: trello.Card) {
+  on_claim(run: core.Run, card: trello.Card) {
     trello.add_member(card, trello.me)
-    trello.move_to(card, "In Progress", at=top)
+    trello.move_to(card, "In Progress", at=.top)
   }
-  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
-    trello.move_to(card, "Review", at=top)
+  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+    trello.move_to(card, "Review", at=.top)
     trello.comment(card, "afkd landed this card in #{outcome.duration}.")
   }
-  on_park(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_park(run: core.Run, card: trello.Card, outcome: core.Outcome) {
     trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
-    trello.move_to(card, "Backlog", at=bottom)
+  on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+    trello.move_to(card, "Backlog", at=.bottom)
     trello.add_label(card, "Problem")
   }
 
@@ -737,7 +754,7 @@ develop :: service(trello) {
     PNPM_CONFIG_STORE_DIR: PNPM_STORE,
   }
 
-  on_run(run: afkd.Run, card: trello.Card) { task(run) }
+  on_run(run: core.Run, card: trello.Card) { task(run) }
 }
 "##;
 
@@ -778,7 +795,8 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"import "@afkd/trello"
+            r#"import "core"
+import "@afkd/trello"
 
 widgets :: service(trello) {{
   board     "https://trello.com/b/BOARDID/afkd"
@@ -786,10 +804,10 @@ widgets :: service(trello) {{
   token     "REPLACE_ME"
   pick_from "Up for Grabs"
 
-  on_done(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{ {call} }}
+  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run(run: afkd.Run, card: trello.Card) {{
+  on_run(run: core.Run, card: trello.Card) {{
     $ true
   }}
 }}
