@@ -1031,6 +1031,12 @@ export function groups(board) {
  * `parallelism` is the **max** over members (a husk that learned its lane from a live event
  * reports none, and must not drag the lane's width down to nothing), `held` counts the
  * members holding a slot and `waiting` those at the door.
+ *
+ * A member holds a slot when it is `Busy` or `Checking`, **or** when it is `Stopping` with a
+ * run still in flight: a stop that lands mid-run keeps the lane until the run settles. That
+ * is `queue_lanes`' rule over `CardModel::is_in_flight` (in flight and `Busy` or `Stopping`),
+ * spelled with the badge so the two clients stay one rule. An idle or armed member being
+ * stopped, or one in its cleanup after its run settled, holds nothing.
  */
 export function queues(board) {
   const lanes = [];
@@ -1048,7 +1054,8 @@ export function queues(board) {
     if (svc.queueParallelism !== null) {
       lane.parallelism = lane.parallelism === null ? svc.queueParallelism : Math.max(lane.parallelism, svc.queueParallelism);
     }
-    if (svc.badge === "Busy" || svc.badge === "Checking") lane.held += 1;
+    const draining = svc.badge === "Stopping" && svc.inFlightSince !== null;
+    if (svc.badge === "Busy" || svc.badge === "Checking" || draining) lane.held += 1;
     if (svc.badge === "Queued") lane.waiting += 1;
   }
   lanes.sort((a, b) => (a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : 0));

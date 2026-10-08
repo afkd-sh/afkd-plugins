@@ -185,7 +185,7 @@ test("the drain is its own screen", () => {
   // The same capture folded **whole**. Adversarial against the live screen in four ways at
   // once: the header reads `Quitting` off a different anchor with its own drain count, every
   // operator hint is gone (the input side refuses them, so they read as unbound), the rows are
-  // a shelf of receding `Stopped` ones, and the lane is empty.
+  // a shelf of receding `Stopped` ones, and the lane is held only by the run still draining.
   const { board, at } = drainedBoard();
   const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
   assertGrid(rows, 100, 30);

@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.4.0 (companion)
+Installed @afkd/web_top 0.4.1 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 

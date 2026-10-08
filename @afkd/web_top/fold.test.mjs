@@ -5,7 +5,9 @@
 // verbs that drove each file). Nothing in here hand-writes a frame: an expectation is
 // derived from the fixture's own frames, so a re-capture cannot silently make an assertion
 // vacuous, and the two places a frame *is* synthesised — the unknown-tag legs and the
-// tracetree branch isolations — say so and build it by editing a recorded one.
+// tracetree branch isolations — say so and build it by editing a recorded one. One test folds
+// a recorded **subsequence** instead (the mid-run stop's settle): frames are held back, none
+// is written.
 //
 // Each fixture-driven test opens by asserting the recording actually contains the variety
 // it claims, so a degenerate capture fails loudly instead of passing.
@@ -969,13 +971,63 @@ test("the queue lanes read held, waiting and the max parallelism", () => {
   for (const lane of lanes) {
     const members = onLanes.filter((s) => s.queue === lane.lane);
     assert.deepEqual(lane.members, members.map((s) => s.name));
-    assert.equal(lane.held, members.filter((s) => s.state === "busy" || s.state === "checking").length, "held");
+    const holds = (s) => s.state === "busy" || s.state === "checking" || (s.state === "stopping" && s.busy_ms > 0);
+    assert.equal(lane.held, members.filter(holds).length, "held");
     assert.equal(lane.waiting, members.filter((s) => s.state === "queued").length, "waiting");
     const widths = members.map((s) => s.queue_parallelism).filter((n) => n !== undefined);
     assert.equal(lane.parallelism, widths.length === 0 ? null : Math.max(...widths), "the max over members");
   }
   const heavy = lanes.find((l) => l.held > 0);
   assert.ok(heavy && heavy.waiting > 0, "a lane reads both its holders and its waiters");
+});
+
+test("a lane-mate stopped mid-run holds its slot until its run settles", () => {
+  // The quit drain in the capture: every service on `heavy` is stopped, the two mid-run ones
+  // drain their runs under `Stopping` while the engine keeps their slots, and the queued one
+  // holds nothing. Same cases and numbers as afkd top's
+  // `a_lane_mate_stopped_mid_run_holds_its_slot_until_the_run_settles`.
+  const frames = readFixture("snapshot");
+  const snapshot = frames.find((f) => f.type === "meta" && f.meta === "snapshot");
+  assert.ok(frames.some((f) => f.type === "meta" && f.meta === "quitting"), "the capture drains the daemon");
+  const stopAt = (name) => frames.findIndex((f) => f.type === "event" && f.event === "service_stopping" && f.service === name);
+  const entry = (name) => snapshot.services.find((s) => s.name === name);
+  const laneOf = entry(
+    frames.find((f) => f.type === "event" && f.event === "service_stopping" && entry(f.service)?.busy_ms > 0).service,
+  ).queue;
+  const onLane = snapshot.services.filter((s) => s.queue === laneOf).sort((a, b) => stopAt(a.name) - stopAt(b.name));
+  const drained = onLane.find((s) => s.busy_ms > 0).name;
+  const mate = onLane.find((s) => s.busy_ms > 0 && stopAt(s.name) > stopAt(drained))?.name;
+  const neverRan = onLane.find((s) => s.state === "queued" && stopAt(s.name) >= 0 && stopAt(s.name) < stopAt(drained))?.name;
+  assert.ok(mate, `a second mid-run mate on ${laneOf} is stopped after ${drained}`);
+  assert.ok(neverRan, `a queued mate on ${laneOf} is stopped before ${drained}`);
+  const settleAt = frames.findIndex((f, i) => i > stopAt(drained) && f.type === "event" && f.event === "run_ok" && f.service === drained);
+  assert.ok(settleAt > stopAt(mate), `${drained}'s run settles after ${mate} is stopped`);
+  const held = (board) => queues(board).find((l) => l.lane === laneOf).held;
+
+  // (a) Stopped mid-run, the run still holds its slot beside the busy mate's.
+  const { boards } = replay(frames);
+  const atStop = boards[stopAt(drained)];
+  assert.equal(atStop.services[drained].badge, "Stopping");
+  assert.notEqual(atStop.services[drained].inFlightSince, null, `${drained}'s run is still in flight`);
+  assert.equal(atStop.services[mate].badge, "Busy");
+  assert.equal(atStop.services[neverRan].badge, "Stopping");
+  assert.equal(atStop.services[neverRan].inFlightSince, null, `${neverRan} never ran`);
+  assert.equal(held(atStop), 2, "the draining run and the busy mate; never the queued stop");
+
+  // (b)+(c) The drained run settles while the mate is still busy: the recorded frames up to
+  // the stop, then the drained service's own recorded `run_ok`, the frames between held back.
+  const { board: settled } = replay([...frames.slice(0, stopAt(drained) + 1), frames[settleAt]]);
+  assert.equal(settled.services[drained].badge, "Stopping", "it keeps draining its cleanup");
+  assert.equal(settled.services[drained].inFlightSince, null, "…with no run in flight");
+  assert.equal(settled.services[mate].badge, "Busy");
+  assert.equal(held(settled), 1, "a settled run holds nothing; the queued stop still holds nothing");
+
+  // In order, as recorded: both mid-run mates drain at once, then only the later one does.
+  assert.equal(held(boards[stopAt(mate)]), 2, "two runs drain under Stopping");
+  const end = boards[boards.length - 1];
+  assert.equal(end.services[mate].badge, "Stopping");
+  assert.notEqual(end.services[mate].inFlightSince, null);
+  assert.equal(held(end), 1, `${mate} still drains its run at the capture's end`);
 });
 
 test("a lane-less service is in no lane, and an ungrouped one is in no group", () => {
