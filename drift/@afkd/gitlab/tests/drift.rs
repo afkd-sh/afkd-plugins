@@ -148,7 +148,7 @@ widgets :: service(gitlab) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run: core.Run, issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
+  on_claim(issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
   on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
     gitlab.label_remove(issue, "afkd::claimed")
     gitlab.comment(issue, "done in #{{outcome.duration}} by #{{gitlab.me}}: #{{issue.title}}")
@@ -494,7 +494,7 @@ issues :: service(gitlab) {
   max_attempts    2
   poll_interval   1m~3m
 
-  on_claim(run: core.Run, issue: gitlab.Issue) {
+  on_claim(issue: gitlab.Issue) {
     gitlab.assign_me(issue)
     gitlab.label_add(issue, "afkd::working ⚙")
   }
@@ -520,7 +520,7 @@ reviews :: service(gitlab.mr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run: core.Run, mr: gitlab.Merge_Request) {
+  on_claim(mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)
     gitlab.mr_label_add(mr, "afkd::reviewing 👀")
   }

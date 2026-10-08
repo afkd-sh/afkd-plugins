@@ -111,10 +111,6 @@ claims = true
   when = "pre"
 
     [[kind.slot.param]]
-    name = "run"
-    type = "afkd.Run"
-
-    [[kind.slot.param]]
     name = "card"
     type = "Card"
 

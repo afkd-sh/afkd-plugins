@@ -139,7 +139,7 @@ widgets :: service(gitea) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run: core.Run, issue: gitea.Issue) {{ gitea.assign_me(issue) }}
+  on_claim(issue: gitea.Issue) {{ gitea.assign_me(issue) }}
   on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {{
     gitea.label_remove(issue, "afkd/claimed")
     gitea.comment(issue, "done in #{{outcome.duration}} by #{{gitea.me}}: #{{issue.title}}")
@@ -481,7 +481,7 @@ issues :: service(gitea) {
   max_attempts    2
   poll_interval   1m~3m
 
-  on_claim(run: core.Run, issue: gitea.Issue) {
+  on_claim(issue: gitea.Issue) {
     gitea.assign_me(issue)
     gitea.label_add(issue, "afkd/working ⚙")
   }
@@ -509,7 +509,7 @@ reviews :: service(gitea.pr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run: core.Run, pr: gitea.Pull_Request) {
+  on_claim(pr: gitea.Pull_Request) {
     gitea.pr_assign_me(pr)
     gitea.pr_label_add(pr, "afkd/reviewing 👀")
   }

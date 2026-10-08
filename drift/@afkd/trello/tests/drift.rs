@@ -165,7 +165,7 @@ widgets :: service(trello) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run: core.Run, card: trello.Card) {{
+  on_claim(card: trello.Card) {{
     trello.add_member(card, trello.me)
     trello.move_to(card, "In Progress", at=.top)
   }}
@@ -392,7 +392,7 @@ widgets :: service(trello) {{
   poll_interval 1s
   max_attempts  2
 
-  on_claim(run: core.Run, card: trello.Card) {{
+  on_claim(card: trello.Card) {{
     trello.move_to(card, "In Progress", at=.top)
   }}
   on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
@@ -728,7 +728,7 @@ develop :: service(trello) {
   max_attempts  2
   poll_interval 1m~3m
 
-  on_claim(run: core.Run, card: trello.Card) {
+  on_claim(card: trello.Card) {
     trello.add_member(card, trello.me)
     trello.move_to(card, "In Progress", at=.top)
   }

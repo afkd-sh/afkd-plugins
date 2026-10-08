@@ -66,7 +66,7 @@ develop :: service(gitea) {
   token         GITEA_TOKEN
   poll_interval 1m~3m
 
-  on_claim(run: core.Run, issue: gitea.Issue) {
+  on_claim(issue: gitea.Issue) {
     gitea.assign_me(issue)
     gitea.label_add(issue, "afkd/working")
   }
@@ -94,7 +94,7 @@ reviews :: service(gitea.pr) {
   author_me     true
   poll_interval 2m~4m
 
-  on_claim(run: core.Run, pr: gitea.Pull_Request) { gitea.pr_label_add(pr, "afkd/working") }
+  on_claim(pr: gitea.Pull_Request) { gitea.pr_label_add(pr, "afkd/working") }
   on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
     gitea.pr_label_remove(pr, "afkd/working")
     gitea.pr_comment(pr, "Round done in #{outcome.duration}.")
@@ -189,7 +189,7 @@ widgets :: service(gitea) {
   org      "acme"
   token    "REPLACE_ME"
 
-  on_claim(run: core.Run, issue: gitea.Issue) { gitea.assign_me(issue) }
+  on_claim(issue: gitea.Issue) { gitea.assign_me(issue) }
   on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.close(issue) }
   on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.unassign(issue) }
 
@@ -396,7 +396,7 @@ reviews :: service(gitea.pr) {
   token     "REPLACE_ME"
   author_me true
 
-  on_claim(run: core.Run, pr: gitea.Pull_Request) { gitea.pr_assign_me(pr) }
+  on_claim(pr: gitea.Pull_Request) { gitea.pr_assign_me(pr) }
   on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_unassign(pr) }
 
   work_dir "/srv/acme/widgets"
@@ -409,15 +409,16 @@ reviews :: service(gitea.pr) {
 ## Slots, handles and actions
 
 Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
-the run, the claimed item, and after the run its outcome — by position, and a slot writes
-every one of them, in order, each with its type:
-`on_claim(run: core.Run, issue: gitea.Issue)` on `service(gitea)`, and
+the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
+run its outcome — by position, and a slot writes every one of them, in order, each with its
+type:
+`on_claim(issue: gitea.Issue)` on `service(gitea)`, and
 `on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome)` on `service(gitea.pr)`.
 
 | Slot       | Passed               | `service(gitea)`                   | `service(gitea.pr)`             |
 |------------|----------------------|------------------------------------|---------------------------------|
 | `on_run`   | run, item            | the run itself                     | the run itself                  |
-| `on_claim` | run, item            | once the issue is claimed, before the run | once the PR is claimed, before the run |
+| `on_claim` | item                  | once the issue is claimed, before the run | once the PR is claimed, before the run |
 | `on_done`  | run, item, outcome   | after a run that finished          | after a round that finished     |
 | `on_park`  | run, item, outcome   | after a run that ended waiting on a human reply | —                  |
 | `on_fail`  | run, item, outcome   | after a run that failed            | after a round that failed       |

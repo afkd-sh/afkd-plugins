@@ -116,10 +116,6 @@ claims = true
   when = "pre"
 
     [[kind.slot.param]]
-    name = "run"
-    type = "afkd.Run"
-
-    [[kind.slot.param]]
     name = "issue"
     type = "Issue"
 
@@ -234,10 +230,6 @@ claims = true
   [[kind.slot]]
   name = "on_claim"
   when = "pre"
-
-    [[kind.slot.param]]
-    name = "run"
-    type = "afkd.Run"
 
     [[kind.slot.param]]
     name = "pr"

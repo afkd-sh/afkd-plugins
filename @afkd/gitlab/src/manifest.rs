@@ -291,8 +291,8 @@ fn the_kinds_are_the_claiming_triggers_with_every_setting_typed() {
             (quoted(MR_KIND), setting_tables(MR_SETTINGS)),
         ])
     );
-    // `on_run` first and without `when`; each slot passed the run, the kind's item, and
-    // after the run the outcome, in that order.
+    // `on_run` first and without `when`; each slot passed the run, except `on_claim`, run
+    // before any run exists; the kind's item; and after the run the outcome, in that order.
     let param = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
     let kind_slots = |item: &str, handle: &str, park: bool| {
         let mut names = vec![
@@ -308,7 +308,11 @@ fn the_kinds_are_the_claiming_triggers_with_every_setting_typed() {
             .into_iter()
             .map(|(name, when)| {
                 let mut t = table(&[("name", &quoted(name))]);
-                let mut params = vec![param("run", "afkd.Run"), param(item, handle)];
+                let mut params = Vec::new();
+                if when != Some("pre") {
+                    params.push(param("run", "afkd.Run"));
+                }
+                params.push(param(item, handle));
                 if let Some(when) = when {
                     t.insert("when".into(), quoted(when));
                     if when == "post" {

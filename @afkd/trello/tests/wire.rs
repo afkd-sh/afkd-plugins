@@ -94,7 +94,7 @@ fn settings(fake: &FakeTrello) -> Value {
 /// interpolated it.
 ///
 /// ```text
-/// on_claim(run: core.Run, card: trello.Card) {
+/// on_claim(card: trello.Card) {
 ///   trello.add_member(card, trello.me)
 ///   trello.move_to(card, "In Progress", at=.top)
 /// }

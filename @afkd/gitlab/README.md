@@ -67,7 +67,7 @@ develop :: service(gitlab) {
   source_label  "afkd::ready"
   poll_interval 1m~3m
 
-  on_claim(run: core.Run, issue: gitlab.Issue) {
+  on_claim(issue: gitlab.Issue) {
     gitlab.assign_me(issue)
     gitlab.label_add(issue, "afkd::working")
   }
@@ -92,7 +92,7 @@ reviews :: service(gitlab.mr) {
   author_me     true
   poll_interval 2m~4m
 
-  on_claim(run: core.Run, mr: gitlab.Merge_Request) { gitlab.mr_label_add(mr, "afkd::reviewing") }
+  on_claim(mr: gitlab.Merge_Request) { gitlab.mr_label_add(mr, "afkd::reviewing") }
   on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     gitlab.mr_label_remove(mr, "afkd::reviewing")
     gitlab.mr_comment(mr, "Round done in #{outcome.duration}.")
@@ -296,7 +296,7 @@ reviews :: service(gitlab.mr) {
   author_me       true
   follow_comments 60s
 
-  on_claim(run: core.Run, mr: gitlab.Merge_Request) {
+  on_claim(mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)
     gitlab.mr_label_add(mr, "afkd::reviewing")
   }
@@ -316,16 +316,17 @@ reviews :: service(gitlab.mr) {
 ## Slots, handles and actions
 
 Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
-the run, the claimed item, and after the run its outcome — by position, and a slot writes
-every one of them, in order, each with its type:
-`on_claim(run: core.Run, issue: gitlab.Issue)` on `service(gitlab)`, and
+the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
+run its outcome — by position, and a slot writes every one of them, in order, each with its
+type:
+`on_claim(issue: gitlab.Issue)` on `service(gitlab)`, and
 `on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome)` on `service(gitlab.mr)`.
 Neither kind parks, so neither has `on_park`:
 
 | Slot       | Passed             | Runs                                                       |
 |------------|--------------------|------------------------------------------------------------|
 | `on_run`   | run, item          | the run itself                                             |
-| `on_claim` | run, item          | once the issue or merge request is claimed, before the run |
+| `on_claim` | item                | once the issue or merge request is claimed, before the run |
 | `on_done`  | run, item, outcome | after a run that finished                                  |
 | `on_fail`  | run, item, outcome | after a run that failed                                    |
 

@@ -213,12 +213,16 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
         .cloned()
         .collect();
     assert_eq!(settings, want);
-    // `on_run` first and without `when`; each slot passed the run, the card, and after the
-    // run the outcome, in that order.
+    // `on_run` first and without `when`; each slot passed the run, except `on_claim`, run
+    // before any run exists; the card; and after the run the outcome, in that order.
     let param = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
     let slot = |name: &str, when: Option<&str>| {
         let mut t = table(&[("name", &quoted(name))]);
-        let mut params = vec![param("run", "afkd.Run"), param(HANDLE, "Card")];
+        let mut params = Vec::new();
+        if when != Some("pre") {
+            params.push(param("run", "afkd.Run"));
+        }
+        params.push(param(HANDLE, "Card"));
         if let Some(when) = when {
             t.insert("when".into(), quoted(when));
             if when == "post" {

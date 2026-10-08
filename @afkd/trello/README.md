@@ -68,7 +68,7 @@ develop :: service(trello) {
   max_attempts  2
   poll_interval 1m~3m
 
-  on_claim(run: core.Run, card: trello.Card) {
+  on_claim(card: trello.Card) {
     trello.add_member(card, trello.me)
     trello.move_to(card, "In Progress", at=.top)
   }
@@ -135,13 +135,14 @@ starts, finishes, or fails. Its secrets stay with the plugin and the run.
 The last three are afkd's own, read by afkd for every kind that claims its work.
 
 The service's slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each
-passed the run, the claimed card, and after the run its outcome — by position, and a slot
-writes every one of them, in order, each with its type:
+passed the run (all but `on_claim`, which runs before one exists), the claimed card, and
+after the run its outcome — by position, and a slot writes every one of them, in order,
+each with its type:
 
 | Slot                                                                | Runs                                            |
 |---------------------------------------------------------------------|-------------------------------------------------|
 | `on_run(run: core.Run, card: trello.Card)`                          | the run itself                                  |
-| `on_claim(run: core.Run, card: trello.Card)`                        | once the card is claimed, before the run        |
+| `on_claim(card: trello.Card)`                                       | once the card is claimed, before the run        |
 | `on_done(run: core.Run, card: trello.Card, outcome: core.Outcome)`  | after a run that finished                       |
 | `on_park(run: core.Run, card: trello.Card, outcome: core.Outcome)`  | after a run that ended waiting on a human reply |
 | `on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome)`  | after a run that failed                         |
@@ -244,7 +245,7 @@ implement :: service(trello) {
   without_label  [ "blocked", "needs design — ask 陳大文" ]
   min_age        10m
 
-  on_claim(run: core.Run, card: trello.Card) {
+  on_claim(card: trello.Card) {
     trello.move_to(card, "In Progress", at=.top)
     trello.remove_label(card, "ready")
   }
@@ -289,7 +290,7 @@ groom :: service(trello) {
   pick_from    "Ideas"
   discuss_with [ "alice", "bob" ]
 
-  on_claim(run: core.Run, card: trello.Card) { trello.add_member(card, trello.me) }
+  on_claim(card: trello.Card) { trello.add_member(card, trello.me) }
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, card: trello.Card) {
@@ -351,7 +352,7 @@ widgets :: service(trello) {
   token     "REPLACE_ME"
   pick_from "To Do"
 
-  on_claim(run: core.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_claim(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, card: trello.Card) {
@@ -370,7 +371,7 @@ down and agent, gate, and plugin all name the same file.
 too, but only its holder takes it off. A service whose `on_claim` does not move the card out
 of `pick_from` will re-claim **its own** parked card on the next beat, exactly as an
 `on_done`-less config re-fires — drag it elsewhere, or give the service an
-`on_claim(run: core.Run, card: trello.Card) { trello.move_to(card, …) }`, as the example below does. A human who
+`on_claim(card: trello.Card) { trello.move_to(card, …) }`, as the example below does. A human who
 drags a badged card back into the parking service's own `pick_from` gets it claimed and
 unbadged there, answered or not.
 
@@ -384,7 +385,7 @@ widgets :: service(trello) {
   token     "REPLACE_ME"
   pick_from "To Do"
 
-  on_claim(run: core.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_claim(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
   on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) { trello.move_to(card, "Review", at=.top) }
   on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) { trello.move_to(card, "Backlog", at=.bottom) }
   on_park(run: core.Run, card: trello.Card, outcome: core.Outcome) {
@@ -417,7 +418,7 @@ widgets :: service(trello) {
   poll_interval   2m~3m
   follow_comments 60s          // the agent hears you mid-run
 
-  on_claim(run: core.Run, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_claim(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
   on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
     trello.mark_complete(card)
     trello.move_to(card, "Done", at=.bottom)

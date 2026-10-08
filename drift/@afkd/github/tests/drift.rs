@@ -147,7 +147,7 @@ widgets :: service(github) {{
   poll_interval 1s
   max_attempts  1
 
-  on_claim(run: core.Run, issue: github.Issue) {{ github.assign_me(issue) }}
+  on_claim(issue: github.Issue) {{ github.assign_me(issue) }}
   on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
     github.label_remove(issue, "afkd/claimed")
     github.comment(issue, "done in #{{outcome.duration}} by #{{github.me}}: #{{issue.title}}")
@@ -487,7 +487,7 @@ issues :: service(github) {
   max_attempts    2
   poll_interval   1m~3m
 
-  on_claim(run: core.Run, issue: github.Issue) {
+  on_claim(issue: github.Issue) {
     github.assign_me(issue)
     github.label_add(issue, "afkd/working ⚙")
   }
@@ -513,7 +513,7 @@ reviews :: service(github.pr) {
   author_me     true
   poll_interval 2m
 
-  on_claim(run: core.Run, pr: github.Pull_Request) {
+  on_claim(pr: github.Pull_Request) {
     github.pr_assign_me(pr)
     github.pr_label_add(pr, "afkd/reviewing 👀")
   }
