@@ -707,9 +707,9 @@ commit :: proc(run: core.Run) {
   }
 
   git.fetch("origin", "master")
-  if !git.is_merged("HEAD", into="origin/master") {
-    fail("the commit never reached origin/master - the push did not land")
-  }
+  merged, err := git.is_merged("HEAD", into="origin/master")
+  if err != nil { fail("cannot tell whether HEAD reached origin/master: #{err.message}") }
+  if !merged { fail("the commit never reached origin/master - the push did not land") }
 }
 
 task :: proc(run: core.Run) {
