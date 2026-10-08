@@ -110,16 +110,15 @@ fn assignees(fake: &FakeGithub, number: u64) -> Vec<String> {
 
 // --- hello ---
 
-/// The accepted `hello` lists the calls the kind answers and supplies `me`, the token's
-/// login read off the forge — the one request `hello` makes.
+/// The accepted `hello` lists the calls the kind answers, after reading the token's login
+/// off the forge — the one request `hello` makes.
 #[test]
-fn hello_arms_lists_every_call_it_answers_and_supplies_me() {
+fn hello_arms_and_lists_every_call_it_answers() {
     let fake = forge();
     let mut plugin = Plugin::spawn();
     assert_eq!(
         plugin.hello("issue", settings(&fake)),
-        json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"],
-               "values": {"me": ME}})
+        json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"]})
     );
     let seen: Vec<(String, String)> = fake
         .seen()
@@ -956,8 +955,7 @@ fn pr_hello_lists_release_renew_comments() {
     let mut plugin = Plugin::spawn();
     assert_eq!(
         plugin.hello("pr", pr_settings(&fake)),
-        json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"],
-               "values": {"me": ME}})
+        json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"]})
     );
     assert!(
         fake.seen().iter().all(|r| r.path == "/api/v3/user"),

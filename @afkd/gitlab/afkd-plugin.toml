@@ -365,8 +365,3 @@ name = "mr_comment"
   name = "text"
   type = "string"
   required = true
-
-# `gitlab.me`: the username the token authenticates as, for a slot's comment or label.
-[[value]]
-name = "me"
-type = "string"

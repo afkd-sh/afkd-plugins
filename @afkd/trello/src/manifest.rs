@@ -244,10 +244,11 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
 }
 
 /// The `[[action]]`s are the ones [`from_call`](crate::lifecycle::from_call) decodes, in
-/// its order, each taking the card's handle first and then the parameters it reads; and
-/// the one `[[value]]` is `me`.
+/// its order, each taking the card's handle first and then the parameters it reads; a member
+/// action's `member` defaults to the token's own member. A plugin exposes no values, so
+/// there is no `[[value]]`.
 #[test]
-fn the_actions_and_the_value_are_the_ones_the_code_answers() {
+fn the_actions_are_the_ones_the_code_answers() {
     let tables = tables(MANIFEST);
     let actions: Vec<String> = named(&tables, "action")
         .iter()
@@ -275,6 +276,11 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
             ("required", "true"),
         ])]
     };
+    let member = table(&[
+        ("name", "\"member\""),
+        ("type", "\"string\""),
+        ("default", &quoted(ME)),
+    ]);
     let card = table(&[
         ("name", &quoted(HANDLE)),
         ("type", "\"Card\""),
@@ -283,8 +289,8 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
     let mut want = BTreeMap::from([
         ("add_label".to_string(), required("label")),
         ("remove_label".to_string(), required("label")),
-        ("add_member".to_string(), required("member")),
-        ("remove_member".to_string(), required("member")),
+        ("add_member".to_string(), vec![member.clone()]),
+        ("remove_member".to_string(), vec![member]),
         ("comment".to_string(), required("text")),
     ]);
     let mut move_to = required("list");
@@ -306,20 +312,20 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
         "mark_complete and archive take the card alone"
     );
 
-    assert_eq!(
-        named(&tables, "value"),
-        [&table(&[("name", &quoted("me")), ("type", "\"string\"")])]
+    assert!(
+        named(&tables, "value").is_empty(),
+        "a plugin exposes no values"
     );
-    assert_eq!(ME, "me", "the value `hello` supplies is Trello's own alias");
+    assert_eq!(ME, "me", "the member default is Trello's own alias");
 }
 
-/// A plugin's kinds, actions, values and handle types share one namespace (lang-v2
+/// A plugin's kinds, actions, withables and handle types share one namespace (lang-v2
 /// §16.3), and afkd's install refuses a collision; so no name is declared twice across
 /// them.
 #[test]
-fn no_kind_action_value_or_handle_shares_a_name() {
+fn no_kind_action_or_handle_shares_a_name() {
     let tables = tables(MANIFEST);
-    let mut names: Vec<&str> = ["handle", "kind", "action", "value"]
+    let mut names: Vec<&str> = ["handle", "kind", "action"]
         .iter()
         .flat_map(|header| named(&tables, header))
         .map(|t| t["name"].as_str())

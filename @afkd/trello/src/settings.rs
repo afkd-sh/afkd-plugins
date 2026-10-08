@@ -20,10 +20,10 @@ use serde_json::{Map, Value};
 
 use crate::client::TRELLO_BASE;
 
-/// The plugin's value `me` (`trello.me` in a config), as `hello` supplies it: Trello's own
-/// alias for the member the token authenticates as, which every member operand reads as
-/// that member. No username can collide with it, since Trello's are at least three
-/// characters long.
+/// Trello's own alias for the member the token authenticates as, which every member operand
+/// reads as that member: `add_member` and `remove_member` default their `member` to it, so a
+/// config writes `trello.add_member(card)`, and a setting spells it `"me"`. No username can
+/// collide with it, since Trello's are at least three characters long.
 pub(crate) const ME: &str = "me";
 
 /// Who an `add_member` / `remove_member` action, a `require_member` intake gate or a

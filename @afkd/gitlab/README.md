@@ -55,6 +55,7 @@ import "core:env"
 import "@afkd/gitlab"
 
 GITLAB_TOKEN :: env.get("GITLAB_TOKEN") ?? ""
+BOT :: "autocoder"
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md
@@ -73,7 +74,7 @@ develop :: service(gitlab) {
   }
   on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.label_remove(issue, "afkd::working")
-    gitlab.comment(issue, "Fixed in #{outcome.duration} by #{gitlab.me}.")
+    gitlab.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     gitlab.close(issue)
   }
   on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
@@ -370,9 +371,10 @@ config's types have no subtyping, so each kind has its own six: `service(gitlab)
 Passing the other kind's item — `gitlab.comment(mr, "…")` in a `service(gitlab.mr)` — or
 none at all is refused when the config loads.
 
-**`gitlab.me`** is the username the `token` authenticates as — `autocoder`, say — for a
-slot to name the bot in a note or a label. The plugin reads it off the forge when the
-service starts.
+A plugin exposes no values, so a slot that names the bot in a note or a label writes its
+username as a constant of the config's own, `BOT :: "autocoder"`, or reads it with
+`env.get("GITLAB_BOT")`. `gitlab.assign_me(issue)` assigns the token's own username without
+naming it.
 
 Each action returns a result, like any call: one the forge refused — a forge that is down,
 a token without the scope — fails with the plugin's sentence. A failing `on_claim` gives
@@ -395,10 +397,6 @@ few things. Each is deliberate, and none changes what a config means.
   after the claim marker is released. afkd retries no slot's action, so a post-run
   `gitlab.label_remove(issue, "afkd::claimed")` that fails leaves the re-pick gate on the
   issue for a human.
-- **`gitlab.me` is read when the service starts.** The plugin asks GitLab who the token is
-  when afkd greets it. If GitLab cannot say then, the service starts anyway — the first
-  call that needs the identity asks again — but a slot that reads `gitlab.me` fails until
-  the plugin is restarted.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot
   see — an empty `project` — the plugin refuses when it is greeted, in the built-in's own

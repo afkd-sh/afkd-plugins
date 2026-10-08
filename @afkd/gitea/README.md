@@ -55,6 +55,7 @@ import "core:env"
 import "@afkd/gitea"
 
 GITEA_TOKEN :: env.get("GITEA_TOKEN") ?? ""
+BOT :: "autocoder"
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md
@@ -72,7 +73,7 @@ develop :: service(gitea) {
   }
   on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.label_remove(issue, "afkd/working")
-    gitea.comment(issue, "Fixed in #{outcome.duration} by #{gitea.me}.")
+    gitea.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     gitea.close(issue)
   }
   on_park(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
@@ -461,9 +462,10 @@ with a `pr_` in front — a `gitea.Pull_Request`:
 Passing the other kind's item — `gitea.comment(pr, "…")` in a `service(gitea.pr)` — or none
 at all is refused when the config loads.
 
-**`gitea.me`** is the login the `token` authenticates as — `autocoder`, say — for a slot to
-name the bot in a comment or a label. The plugin reads it off the forge when the service
-starts.
+A plugin exposes no values, so a slot that names the bot in a comment or a label writes its
+login as a constant of the config's own, `BOT :: "autocoder"`, or reads it with
+`env.get("GITEA_BOT")`. `gitea.assign_me(issue)` assigns the token's own login without
+naming it.
 
 Each action returns a result, like any call: one the forge refused — a label the repository
 does not define (Gitea silently ignores such a name rather than failing, and the plugin
@@ -489,10 +491,6 @@ few things. Each is deliberate, and none changes what a config means.
   it down. afkd retries no slot's action, so a post-run
   `gitea.label_remove(issue, "afkd/claimed")` that fails leaves the re-pick gate on the
   issue for a human.
-- **`gitea.me` is read when the service starts.** The plugin asks the forge who the token
-  is when afkd greets it. If the forge cannot say then, the service starts anyway — the
-  first poll asks again before it claims — but a slot that reads `gitea.me` fails until the
-  plugin is restarted.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot
   see — both or neither of `repo`/`org`, a `discuss_with` that names nobody — the plugin

@@ -81,8 +81,8 @@ trait Service {
     /// Set (or, with `None`, clear) the current call's deadline, which the kind's scan
     /// and every forge request it makes until the next set run under.
     fn set_call_deadline(&self, deadline: Option<Instant>);
-    /// The value `me`, the token's username, resolved once and kept; `None`, diagnosed,
-    /// while the forge cannot say.
+    /// The token's username, resolved once and kept for the claims it marks; `None`,
+    /// diagnosed, while the forge cannot say.
     fn me(&mut self, diag: &dyn Diag) -> Option<String>;
     fn poll(&mut self, clock: &dyn Clock, diag: &dyn Diag) -> Answer;
     fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer;
@@ -158,16 +158,13 @@ impl Plugin {
                 let Some(service) = armed.as_deref_mut() else {
                     return Answer::Reply(json!({"ok": false, "proto": PROTO}).to_string());
                 };
-                // `me` is resolved here, under the call budget like any forge read. A
-                // forge that cannot say yet does not refuse the service over a blip: the
-                // reply leaves `values` out, and the first call that needs it asks again.
+                // `me` is resolved here, under the call budget like any forge read, so a
+                // token the forge refuses shows at start. A forge that cannot say yet does
+                // not refuse the service over a blip: the first call that needs it asks again.
                 service.set_call_deadline(Some(clock.now() + CALL_BUDGET));
-                let me = service.me(diag);
+                service.me(diag);
                 service.set_call_deadline(None);
-                let mut reply = json!({"ok": true, "proto": PROTO, "calls": service.calls()});
-                if let Some(me) = me {
-                    reply["values"] = json!({ "me": me });
-                }
+                let reply = json!({"ok": true, "proto": PROTO, "calls": service.calls()});
                 Answer::Reply(reply.to_string())
             }
             Request::Poll => on_armed(armed, clock, |a| a.poll(clock, diag)),
@@ -636,16 +633,15 @@ mod tests {
     }
 
     /// The accepted `hello` lists exactly the optional calls the kind answers — `call` is
-    /// proto 2's own and is never listed — and supplies the value `me`, the token's login
+    /// proto 2's own and is never listed — and reads the identity, the token's login
     /// read once, under the call budget.
     #[test]
-    fn hello_lists_every_optional_call_and_supplies_me() {
+    fn hello_lists_every_optional_call_and_reads_the_identity() {
         let mut f = Fixture::new();
         let reply = f.call(hello(ISSUE_KIND, settings()));
         assert_eq!(
             reply,
-            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"],
-                   "values": {"me": ME}})
+            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"]})
         );
         assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
         assert_eq!(f.mock.user_reads(), 1, "hello reads the identity");
@@ -661,8 +657,7 @@ mod tests {
         let reply = f.call(hello(MR_KIND, mr_settings()));
         assert_eq!(
             reply,
-            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"],
-                   "values": {"me": ME}})
+            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"]})
         );
         assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
         assert_eq!(
@@ -740,11 +735,11 @@ mod tests {
     }
 
     /// A forge that cannot say who the token is at `hello` does not refuse the service over
-    /// a blip: the kind is armed, the reply leaves `values` out, and the failure is
+    /// a blip: the kind is armed, the reply is the same, and the failure is
     /// diagnosed. Each poll asks again, idle until it can, and once resolved the identity
     /// is kept: the forge is not asked again.
     #[test]
-    fn a_hello_whose_identity_read_fails_is_accepted_without_me() {
+    fn a_hello_whose_identity_read_fails_is_still_accepted() {
         let mut f = Fixture::new();
         f.mock.add_issue(7, "Fix", "do it", &["afkd::ready"]);
         f.mock.add_issue(8, "Fix too", "do it", &["afkd::ready"]);
@@ -983,10 +978,11 @@ mod tests {
         let mut f = Fixture::new();
         let key = crashed_claim(&f.mock);
         f.mock.fail("current user");
-        assert!(f
-            .call(hello(ISSUE_KIND, settings()))
-            .get("values")
-            .is_none());
+        assert_eq!(
+            f.call(hello(ISSUE_KIND, settings()))["ok"],
+            true,
+            "the hello is accepted without an identity"
+        );
 
         assert_eq!(
             f.call(json!({"call": "release", "key": key})),

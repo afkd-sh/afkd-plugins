@@ -83,8 +83,8 @@ trait Service {
     /// Set (or, with `None`, clear) the current call's deadline, which the kind's scan
     /// and every forge request it makes until the next set run under.
     fn set_call_deadline(&self, deadline: Option<Instant>);
-    /// The token's login — the value `me` — resolved once and kept; `None`, diagnosed,
-    /// while the forge cannot say.
+    /// The token's login, resolved once and kept for the claims it marks; `None`,
+    /// diagnosed, while the forge cannot say.
     fn me(&mut self, diag: &dyn Diag) -> Option<String>;
     fn poll(&mut self, clock: &dyn Clock, diag: &dyn Diag) -> Answer;
     fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer;
@@ -162,16 +162,13 @@ impl Plugin {
                 let Some(service) = armed.as_deref_mut() else {
                     return Answer::Reply(json!({"ok": false, "proto": PROTO}).to_string());
                 };
-                // `me` is resolved here, under the call budget like any forge read. A
-                // forge that cannot say yet does not refuse the service over a blip: the
-                // reply leaves `values` out, and the first `poll` resolves it again.
+                // `me` is resolved here, under the call budget like any forge read, so a
+                // token the forge refuses shows at start. A forge that cannot say yet does
+                // not refuse the service over a blip: the first `poll` resolves it again.
                 service.set_call_deadline(Some(clock.now() + CALL_BUDGET));
-                let me = service.me(diag);
+                service.me(diag);
                 service.set_call_deadline(None);
-                let mut reply = json!({"ok": true, "proto": PROTO, "calls": service.calls()});
-                if let Some(me) = me {
-                    reply["values"] = json!({ "me": me });
-                }
+                let reply = json!({"ok": true, "proto": PROTO, "calls": service.calls()});
                 Answer::Reply(reply.to_string())
             }
             Request::Poll => on_armed(armed, clock, |a| a.poll(clock, diag)),
@@ -639,16 +636,15 @@ mod tests {
     }
 
     /// The accepted `hello` lists exactly the optional calls the kind answers — `call` is
-    /// proto 2's own and is never listed — and supplies the value `me`, the token's login
+    /// proto 2's own and is never listed — and reads the identity, the token's login
     /// read under the call budget.
     #[test]
-    fn hello_lists_every_optional_call_and_supplies_me() {
+    fn hello_lists_every_optional_call_and_reads_the_identity() {
         let mut f = Fixture::new();
         let reply = f.call(hello(ISSUE_KIND, settings()));
         assert_eq!(
             reply,
-            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments", "classify"],
-                   "values": {"me": "björn-öst[bot]"}})
+            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments", "classify"]})
         );
         assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
         let now = f.clock.now();
@@ -664,17 +660,16 @@ mod tests {
         let reply = f.call(hello(PR_KIND, pr_settings()));
         assert_eq!(
             reply,
-            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"],
-                   "values": {"me": "björn-öst[bot]"}})
+            json!({"ok": true, "proto": 2, "calls": ["release", "renew", "comments"]})
         );
         assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
     }
 
     /// A forge that cannot say who the token is at `hello` does not refuse the service
-    /// over a blip: the kind is armed, the reply leaves `values` out, the failure is
+    /// over a blip: the kind is armed, the reply is the same, the failure is
     /// diagnosed, and the first `poll` resolves the login and claims.
     #[test]
-    fn a_hello_whose_identity_read_fails_is_accepted_without_me() {
+    fn a_hello_whose_identity_read_fails_is_still_accepted() {
         let mut f = Fixture::new();
         f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
         f.mock.fail("current user");

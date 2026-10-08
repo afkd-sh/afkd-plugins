@@ -95,7 +95,7 @@ fn settings(fake: &FakeTrello) -> Value {
 ///
 /// ```text
 /// on_claim(card: trello.Card) {
-///   trello.add_member(card, trello.me)
+///   trello.add_member(card)
 ///   trello.move_to(card, "In Progress", at=.top)
 /// }
 /// on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
@@ -197,8 +197,7 @@ fn said(fake: &FakeTrello, card: &str, prefix: &str) -> Vec<String> {
 
 // --- hello ---
 
-/// The accepted `hello` lists every optional call it answers and supplies the value
-/// `me`, which every member action reads as the authed member.
+/// The accepted `hello` lists every optional call it answers.
 #[test]
 fn hello_arms_and_lists_every_call_it_answers() {
     let b = board();
@@ -206,8 +205,7 @@ fn hello_arms_and_lists_every_call_it_answers() {
     assert_eq!(
         plugin.hello(settings(&b.fake)),
         json!({"ok": true, "proto": 2,
-               "calls": ["release", "renew", "comments", "attempt_failed", "classify"],
-               "values": {"me": "me"}})
+               "calls": ["release", "renew", "comments", "attempt_failed", "classify"]})
     );
     assert!(b.fake.seen().is_empty(), "hello touches no board");
     plugin.finish();

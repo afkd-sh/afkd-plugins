@@ -167,7 +167,7 @@ mod tests {
     /// Every action in [`ACTIONS`] decodes from the arguments afkd binds for it, on the card
     /// its handle names, each name
     /// and text byte for byte: a wide list name, an emoji label, a username with
-    /// diacritics, the value `me`, and a multi-line markdown comment carrying CJK and a
+    /// diacritics, the member `me`, and a multi-line markdown comment carrying CJK and a
     /// literal `@{run:x}` that afkd did not interpolate.
     #[test]
     fn every_action_decodes_from_its_bound_arguments() {

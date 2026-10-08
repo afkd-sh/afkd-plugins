@@ -341,9 +341,9 @@ fn the_kinds_are_the_claiming_triggers_with_every_setting_typed() {
 /// The `[[action]]`s are the ones [`from_call`](crate::lifecycle::from_call) decodes: the
 /// issue kind's [`ACTIONS`], then the same under the pr kind's prefix, in its order. Each
 /// takes its kind's handle first, and then the parameters it reads — a prefixed action
-/// exactly its issue twin's — and the one `[[value]]` is `me`.
+/// exactly its issue twin's. A plugin exposes no values, so there is no `[[value]]`.
 #[test]
-fn the_actions_and_the_value_are_the_ones_the_code_answers() {
+fn the_actions_are_the_ones_the_code_answers() {
     let tables = tables(MANIFEST);
     let names = |vocabulary: &Vocabulary| {
         ACTIONS
@@ -393,19 +393,19 @@ fn the_actions_and_the_value_are_the_ones_the_code_answers() {
         }
     }
 
-    assert_eq!(
-        named(&tables, "value"),
-        [&table(&[("name", &quoted("me")), ("type", "\"string\"")])]
+    assert!(
+        named(&tables, "value").is_empty(),
+        "a plugin exposes no values"
     );
 }
 
-/// A plugin's kinds, actions, values and handle types share one namespace (lang-v2
+/// A plugin's kinds, actions, withables and handle types share one namespace (lang-v2
 /// §16.3), and afkd's install refuses a collision; so no name is declared twice across
 /// them.
 #[test]
-fn no_kind_action_value_or_handle_shares_a_name() {
+fn no_kind_action_or_handle_shares_a_name() {
     let tables = tables(MANIFEST);
-    let mut names: Vec<&str> = ["handle", "kind", "action", "value"]
+    let mut names: Vec<&str> = ["handle", "kind", "action"]
         .iter()
         .flat_map(|header| named(&tables, header))
         .map(|t| t["name"].as_str())

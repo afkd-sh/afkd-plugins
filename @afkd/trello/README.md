@@ -69,7 +69,7 @@ develop :: service(trello) {
   poll_interval 1m~3m
 
   on_claim(card: trello.Card) {
-    trello.add_member(card, trello.me)
+    trello.add_member(card)
     trello.move_to(card, "In Progress", at=.top)
   }
   on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
@@ -180,10 +180,10 @@ one request to the plugin, which does it on the card the action is passed first:
 The card is a `trello.Card` and nothing else: `trello.move_to("Review")`, with no card, or
 passed another plugin's handle, is refused when the config loads.
 
-A `<member>` is a username, or **`trello.me`**, the member the plugin's credentials
-authenticate as. `trello.me` is Trello's own alias for that member, the string `"me"`, so a
-setting, which afkd reads before the plugin runs, spells it `"me"`; it cannot name a real
-member, since a Trello username is at least three characters long.
+A `<member>`, in a call or a setting, is a username or **`"me"`**, Trello's own alias for
+the member the plugin's credentials authenticate as; it cannot name a real member, since a
+Trello username is at least three characters long. `add_member` and `remove_member`
+default it to `"me"`, so `trello.add_member(card)` adds that member.
 
 Each action returns a result, like any call: one the board refused — a list the board does
 not have, a member not on it — fails with the plugin's sentence. A failing `on_claim` gives
@@ -290,7 +290,7 @@ groom :: service(trello) {
   pick_from    "Ideas"
   discuss_with [ "alice", "bob" ]
 
-  on_claim(card: trello.Card) { trello.add_member(card, trello.me) }
+  on_claim(card: trello.Card) { trello.add_member(card) }
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, card: trello.Card) {
@@ -451,9 +451,9 @@ few things. Each is deliberate, and none changes what a config means.
   once the plugin's own claim or finish has landed: `on_claim` after the claim is won, and
   the post-run slot after the claim is released — so a card moved by `on_done` is, for a
   moment, unclaimed in its old list. afkd retries no slot's action.
-- **`me`, not `self`.** The member the credentials authenticate as is `trello.me` in a
-  slot and `"me"` in a setting — Trello's own alias for it — where the built-in reserved
-  the word `self`.
+- **`me`, not `self`.** The member the credentials authenticate as is `"me"` in a call or a
+  setting — Trello's own alias for it — where the built-in reserved the word `self`; a
+  member action left without one adds or removes that member.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot
   see — a list that names nothing, a `min_age` that is a range — the plugin refuses when it

@@ -365,8 +365,3 @@ name = "pr_comment"
   name = "text"
   type = "string"
   required = true
-
-# `github.me`: the login the token authenticates as, for a slot's comment or label.
-[[value]]
-name = "me"
-type = "string"

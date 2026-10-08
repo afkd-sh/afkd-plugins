@@ -8,9 +8,9 @@
 //!   is passed and its slots reading every field the issue's handle declares — then one
 //!   pull request the same way, through a `service(github.pr)`.
 //! - The **both kinds** leg `afkd validate`s one file with a service of each kind, whose
-//!   slots call every action the plugin provides on the item each is passed and read its
-//!   value `me`, and the **handle** leg holds `afkd validate` to refusing an action passed
-//!   the other kind's item.
+//!   slots call every action the plugin provides on the item each is passed and name the
+//!   bot by the config's own constant `BOT`, and the **handle** leg holds `afkd validate`
+//!   to refusing an action passed the other kind's item.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
 //!   each a whole entry file, against the installed plugin.
 //!
@@ -130,7 +130,7 @@ const BUDGET: Duration = Duration::from_secs(30);
 
 /// The service that drives [`ISSUE`], `home` its work dir: a v2 file importing the plugin,
 /// whose slots call its actions on the issue they are passed and whose `on_done` comment
-/// afkd interpolates — the outcome's duration, the plugin's value `me` and the issue's
+/// afkd interpolates — the outcome's duration, the config's constant `BOT` and the issue's
 /// title. The run holds until the test creates `release` — bounded, so a test that never
 /// does cannot wedge it — which is what lets the test see the claim and the run mid-flight;
 /// then it writes every field of the issue's handle to [`FIELDS`], a line each.
@@ -138,6 +138,8 @@ fn service(home: &Path, host: &str) -> String {
     format!(
         r#"import "core"
 import "@afkd/github"
+
+BOT :: "{ME}"
 
 widgets :: service(github) {{
   host          "{host}"
@@ -150,7 +152,7 @@ widgets :: service(github) {{
   on_claim(issue: github.Issue) {{ github.assign_me(issue) }}
   on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
     github.label_remove(issue, "afkd/claimed")
-    github.comment(issue, "done in #{{outcome.duration}} by #{{github.me}}: #{{issue.title}}")
+    github.comment(issue, "done in #{{outcome.duration}} by #{{BOT}}: #{{issue.title}}")
     github.close(issue)
   }}
 
@@ -316,7 +318,7 @@ fn drive_one_issue(home: &Path) {
             && c.body.starts_with("done in ")
             && c.body.ends_with(&format!(" by {ME}: {TITLE}"))
             && !c.body.contains("#{")),
-        "on_done's comment landed with its run fact, `github.me` and the title filled in:\n{}",
+        "on_done's comment landed with its run fact, `BOT` and the title filled in:\n{}",
         dump(home, &fake, &daemon)
     );
     // Every field verbatim — the `$` lines shell-quote what they interpolate — and the
@@ -472,11 +474,13 @@ fn install_leg_places_the_plugin_and_runs_one_issue_and_one_pr_through_it() {
 }
 
 /// A service of each kind, whose slots between them call every action the plugin provides —
-/// each kind's own six, on the item its slot is passed — and read its value `me`, the run
-/// and the outcome, in the argument shapes the manifest types: wide and scoped label
-/// names, and a multi-line comment.
+/// each kind's own six, on the item its slot is passed — name the bot by the config's own
+/// `BOT`, read the run and the outcome, in the argument shapes the manifest types: wide and
+/// scoped label names, and a multi-line comment.
 const BOTH_KINDS: &str = r##"import "core"
 import "@afkd/github"
+
+BOT :: "autocoder"
 
 issues :: service(github) {
   host            "ghe.example.com"
@@ -493,7 +497,7 @@ issues :: service(github) {
   }
   on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.label_remove(issue, "afkd/working ⚙")
-    github.comment(issue, "done by #{github.me} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
+    github.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     github.close(issue)
   }
   on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
@@ -519,7 +523,7 @@ reviews :: service(github.pr) {
   }
   on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     github.pr_label_remove(pr, "afkd/reviewing 👀")
-    github.pr_comment(pr, "round answered by #{github.me} in #{outcome.duration}")
+    github.pr_comment(pr, "round answered by #{BOT} in #{outcome.duration}")
   }
   on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     github.pr_unassign(pr)
@@ -535,8 +539,8 @@ reviews :: service(github.pr) {
 
 /// Both kinds validate as v2 services against the installed plugin: every setting either
 /// writes is one its kind declares, of its type, every action its slots call is one the
-/// plugin provides for that kind, with the item and the parameters it declares, and
-/// `github.me` is a value it has.
+/// plugin provides for that kind, with the item and the parameters it declares, and the bot
+/// is named by the config's own `BOT`.
 #[test]
 fn every_kind_validates_as_a_v2_service() {
     let home = TempDir::new().expect("tempdir");
@@ -558,7 +562,7 @@ fn every_kind_validates_as_a_v2_service() {
             assert!(BOTH_KINDS.contains(&call), "the file calls {call}");
         }
     }
-    for used in ["github.me", "outcome.duration", "run.id"] {
+    for used in ["BOT", "outcome.duration", "run.id"] {
         assert!(BOTH_KINDS.contains(used), "the file uses {used}");
     }
     write_config(home.path(), BOTH_KINDS);

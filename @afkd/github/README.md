@@ -55,6 +55,7 @@ import "core:env"
 import "@afkd/github"
 
 GITHUB_TOKEN :: env.get("GITHUB_TOKEN") ?? ""
+BOT :: "autocoder[bot]"
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md
@@ -72,7 +73,7 @@ develop :: service(github) {
   }
   on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.label_remove(issue, "afkd/working")
-    github.comment(issue, "Fixed in #{outcome.duration} by #{github.me}.")
+    github.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     github.close(issue)
   }
   on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
@@ -375,9 +376,10 @@ subtyping, so each kind has its own six: `service(github)`'s take a `github.Issu
 Passing the other kind's item — `github.comment(pr, "…")` in a `service(github.pr)` — or
 none at all is refused when the config loads.
 
-**`github.me`** is the login the `token` authenticates as — `autocoder[bot]`, say — for a
-slot to name the bot in a comment or a label. The plugin reads it off the forge when the
-service starts.
+A plugin exposes no values, so a slot that names the bot in a comment or a label writes its
+login as a constant of the config's own, `BOT :: "autocoder[bot]"`, or reads it with
+`env.get("GITHUB_BOT")`. `github.assign_me(issue)` assigns the token's own login without
+naming it.
 
 Each action returns a result, like any call: one the forge refused — a forge that is down,
 a token without the scope — fails with the plugin's sentence. A failing `on_claim` gives
@@ -400,10 +402,6 @@ few things. Each is deliberate, and none changes what a config means.
   after the claim marker is released. afkd retries no slot's action, so a post-run
   `github.label_remove(issue, "afkd/claimed")` that fails leaves the re-pick gate on the
   issue for a human.
-- **`github.me` is read when the service starts.** The plugin asks GitHub who the token is
-  when afkd greets it. If GitHub cannot say then, the service starts anyway — the first
-  call that needs the identity asks again — but a slot that reads `github.me` fails until
-  the plugin is restarted.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot
   see — an empty `repo` — the plugin refuses when it is greeted, in the built-in's own

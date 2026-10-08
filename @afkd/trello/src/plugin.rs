@@ -45,7 +45,7 @@ use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
 use crate::lifecycle::{from_call, Call};
 use crate::outbox::{Outbox, Write};
 use crate::rfc3339::format_utc;
-use crate::settings::{board_config, BoardConfig, ME};
+use crate::settings::{board_config, BoardConfig};
 use crate::wire::{
     fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
 };
@@ -172,8 +172,7 @@ impl Plugin {
                 });
                 Answer::Reply(
                     match armed {
-                        Some(_) => json!({"ok": true, "proto": PROTO, "calls": CALLS,
-                                          "values": {"me": ME}}),
+                        Some(_) => json!({"ok": true, "proto": PROTO, "calls": CALLS}),
                         None => json!({"ok": false, "proto": PROTO}),
                     }
                     .to_string(),
@@ -675,15 +674,14 @@ mod tests {
     }
 
     /// The accepted `hello` lists every optional call — `call` is proto 2's own and is
-    /// never listed — and supplies the value `me`.
+    /// never listed.
     #[test]
-    fn hello_lists_every_optional_call_and_supplies_me() {
+    fn hello_lists_every_optional_call() {
         let mut f = Fixture::new();
         assert_eq!(
             f.call(hello(settings())),
             json!({"ok": true, "proto": 2,
-                   "calls": ["release", "renew", "comments", "attempt_failed", "classify"],
-                   "values": {"me": "me"}})
+                   "calls": ["release", "renew", "comments", "attempt_failed", "classify"]})
         );
         assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
         assert!(f.board.calls().is_empty(), "hello touches no board");

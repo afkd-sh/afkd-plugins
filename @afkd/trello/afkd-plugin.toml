@@ -233,10 +233,11 @@ name = "add_member"
   type = "Card"
   required = true
 
+  # A username, or "me": Trello's own alias for the member the credentials authenticate as.
   [[action.param]]
   name = "member"
   type = "string"
-  required = true
+  default = "me"
 
 [[action]]
 name = "remove_member"
@@ -246,10 +247,11 @@ name = "remove_member"
   type = "Card"
   required = true
 
+  # A username, or "me": Trello's own alias for the member the credentials authenticate as.
   [[action.param]]
   name = "member"
   type = "string"
-  required = true
+  default = "me"
 
 [[action]]
 name = "comment"
@@ -263,8 +265,3 @@ name = "comment"
   name = "text"
   type = "string"
   required = true
-
-# `trello.me`: the member the credentials authenticate as, for a member action or setting.
-[[value]]
-name = "me"
-type = "string"

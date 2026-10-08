@@ -146,8 +146,8 @@ fn seed() -> (FakeTrello, String) {
 }
 
 /// The service that drives the seeded card, `home` its work dir: a v2 file importing the
-/// plugin, whose slots call its actions on the card they are passed — `trello.me` among
-/// the arguments — and whose `on_done` comment afkd interpolates from the outcome and the
+/// plugin, whose slots call its actions on the card they are passed — `add_member` with its
+/// `member` left to its default — and whose `on_done` comment afkd interpolates from the outcome and the
 /// card's title. The run holds until the test creates `release` — bounded, so a test that
 /// never does cannot wedge it — which is what lets the test see the claim and the run
 /// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each.
@@ -166,7 +166,7 @@ widgets :: service(trello) {{
   max_attempts  1
 
   on_claim(card: trello.Card) {{
-    trello.add_member(card, trello.me)
+    trello.add_member(card)
     trello.move_to(card, "In Progress", at=.top)
   }}
   on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
@@ -729,7 +729,7 @@ develop :: service(trello) {
   poll_interval 1m~3m
 
   on_claim(card: trello.Card) {
-    trello.add_member(card, trello.me)
+    trello.add_member(card)
     trello.move_to(card, "In Progress", at=.top)
   }
   on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
