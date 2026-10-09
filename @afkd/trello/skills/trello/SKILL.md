@@ -1,6 +1,6 @@
 ---
 name: trello
-description: Navigate and work the Trello card this run works on — read and post comments, rewrite the card's title and description, move it to another list, work the card's checklists, browse the board's lists and cards, handle attachments, and file a follow-up card. List the comments already on the card; re-read the card's checklists and tick an item you have genuinely completed; browse lists and cards to find related work; fetch an attachment (that is where a pasted screenshot lives, not in the comment text) so you can look at it; post a comment to report a finished plan, a blocker, or a changed approach; ask a question that parks the card until a human replies, when it does not say enough to build or its premise does not hold; rename a groomed card into house style and move it out of the column it was groomed in; archive a card that has resolved to nothing so it leaves the board; attach an artifact back onto the card; or file follow-up work you discovered as a new card in the backlog instead of derailing onto it. Not for routine chatter.
+description: Navigate and work the Trello card this run works on — read and post comments, rewrite the card's title and description, move it to another list, work the card's checklists, browse the board's lists and cards, handle attachments, and file a follow-up card. List the comments already on the card; re-read the card's checklists and tick an item you have genuinely completed; browse lists and cards to find related work; fetch an attachment (that is where a pasted screenshot lives, not in the comment text) so you can look at it; post a comment to report a finished plan, a blocker, or a changed approach; ask a question that parks the card until a human replies, when it does not say enough to build or its premise does not hold; rename a groomed card into house style and move it out of the column it was groomed in; archive a card that has resolved to nothing so it leaves the board; attach an artifact back onto the card; or file follow-up work you discovered as a new card — where your run's instructions say, else in Backlog — instead of derailing onto it. Not for routine chatter.
 allowed-tools: Bash(*/list_lists.py *), Bash(*/list_lists.py), Bash(*/list_cards.py *), Bash(*/list_comments.py *), Bash(*/list_comments.py), Bash(*/list_checklists.py *), Bash(*/list_checklists.py), Bash(*/check_item.py *), Bash(*/list_attachments.py *), Bash(*/list_attachments.py), Bash(*/fetch_attachment.py *), Bash(*/post_comment.py *), Bash(*/ask.py *), Bash(*/post_attachment.py *), Bash(*/create_card.py *), Bash(*/read_description.py *), Bash(*/read_description.py), Bash(*/set_description.py *), Bash(*/set_name.py *), Bash(*/move_card.py *), Bash(*/archive_card.py *), Bash(*/archive_card.py), Bash(*/list_labels.py *), Bash(*/list_labels.py), Bash(*/add_label.py *), Bash(*/remove_label.py *)
 requires-executables: [python3]
 ---
@@ -121,14 +121,22 @@ board — or more than one, which Trello permits — errors non-zero and moves n
 
 - `--pos top|bottom` — where in the target list the card lands (default `top`,
   matching where a service's own `move_to` puts a card).
+- `--above CARD` / `--below CARD` — put the card directly above or below CARD, a card
+  already in the target list, named by its id or its short link. It lands between
+  CARD and CARD's neighbour (at the very top or bottom when CARD is at that end). A
+  CARD that is not in the target list exits non-zero and moves nothing, and a CARD
+  that is the card being moved is refused. Exclusive with `--pos` and with each
+  other.
 - `--card ID` — move a different card (overrides `$TRELLO_CARD_ID`).
 
 **Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card`
 override can move **any** card the token reaches, and a list id can address **any**
 list on **any** board the token can. Sharper still: moving a card **into** the list
 the afkd trello trigger picks from (`pick_from`) **enqueues autonomous work for afkd
-itself**, exactly as creating one there does. The helper never learns `pick_from`
-and cannot enforce this — you are the guardrail.
+itself**, exactly as creating one there does. Do it only when your run's
+instructions say to, and then only with a card that is a finished spec — one another
+agent can build without asking a question. The helper never learns `pick_from` and
+cannot enforce this — you are the guardrail.
 
 ## Archive the card
 
@@ -167,8 +175,12 @@ Optional flags:
 - `--desc-file PATH` — read the description from a file instead. Use this for a
   real, multi-line card body; write it into `$AFKD_SCRATCH_DIR` first. It is
   mutually exclusive with `--desc`.
-- `--pos top|bottom` — where in the list the card lands (default `bottom`: a filed
-  follow-up joins the end of a list, it does not jump the queue).
+- `--pos top|bottom` — where in the list the card lands (default `bottom`).
+- `--above CARD` / `--below CARD` — file it directly above or below CARD, a card
+  already in the target list, named by its id or its short link. It lands between
+  CARD and CARD's neighbour (at the very top or bottom when CARD is at that end). A
+  CARD that is not in the target list exits non-zero and files nothing. Exclusive
+  with `--pos` and with each other.
 
 On success it prints the created card's short url. The list id is **required** —
 there is no default, because a list is not tied to this run the way the active card
@@ -177,9 +189,12 @@ is.
 **Blast radius:** the board token is account-wide (ADR-0046 §A), so a list id can
 address **any** list on **any** board the token reaches. Sharper still: creating a
 card into the list the afkd trello trigger picks from (`pick_from`) **enqueues
-autonomous work for afkd itself**. File follow-ups into `Backlog`, where a human
-promotes them. The helper never learns `pick_from` and cannot enforce this — you are
-the guardrail.
+autonomous work for afkd itself**. File a follow-up into the list and at the place
+your run's instructions name. Only when they name none, file it into `Backlog`, where
+a human promotes it. Filing into the build queue is right only when the instructions
+say so, and then the card must be a finished spec — one another agent can build
+without asking a question. The helper never learns `pick_from` and cannot enforce
+this — you are the guardrail.
 
 ## Checklists
 

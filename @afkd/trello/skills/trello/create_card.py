@@ -28,6 +28,14 @@
 # as a JSON body succeeds). post_attachment.py is the precedent for the resulting
 # shape: a POST body with the creds in the query.
 #
+# PLACEMENT: --pos top|bottom sends that word as `pos`, as Trello takes it. --above
+# CARD / --below CARD put the new card directly above or below a card already in the
+# target list (CARD is its id or short link): one GET of the list's open cards and
+# their `pos`, then the POST with the number half-way between CARD and its
+# neighbour, or `top`/`bottom` when CARD is at that end. A CARD that is not in the
+# list, or a list read that fails, exits non-zero before the POST, so nothing is
+# created.
+#
 # TRELLO_API_BASE overrides the API host. It defaults to the production host, so
 # field behavior is unchanged; the override exists ONLY so tests can point the
 # create at a local stub listener, mirroring the seam in list_comments.py.
@@ -48,6 +56,59 @@ def connection(base):
     if parts.scheme == "https":
         return http.client.HTTPSConnection(parts.hostname, parts.port)
     return http.client.HTTPConnection(parts.hostname, parts.port)
+
+
+def get(base, path, query):
+    """GET `path?query`; return (status, body-bytes). The token is never echoed."""
+    conn = connection(base)
+    try:
+        conn.request("GET", f"{path}?{query}")
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+def placement(base, list_id, anchor, above, query):
+    """The `pos` that puts a card directly above (or below) `anchor` in the list.
+
+    `anchor` is matched against each open card's id and short link. The answer is
+    the mean of the anchor's `pos` and its neighbour's, or `top`/`bottom` when the
+    anchor is at that end of the list. A failed read, an anchor not in the list, or
+    two neighbours with no float between them prints why and exits non-zero.
+    """
+    status, body = get(
+        base, f"/1/lists/{list_id}/cards", f"fields=pos,shortLink&{query}"
+    )
+    if not 200 <= status < 300:
+        print(
+            f"create_card.py: failed to read cards for list {list_id}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    cards = sorted(json.loads(body), key=lambda c: float(c.get("pos", 0)))
+    at = next(
+        (i for i, c in enumerate(cards) if anchor in (c.get("id"), c.get("shortLink"))),
+        None,
+    )
+    if at is None:
+        print(f"create_card.py: no card {anchor} in list {list_id}", file=sys.stderr)
+        sys.exit(1)
+    if above and at == 0:
+        return "top"
+    if not above and at == len(cards) - 1:
+        return "bottom"
+    lo, hi = (cards[at - 1], cards[at]) if above else (cards[at], cards[at + 1])
+    lo, hi = float(lo.get("pos", 0)), float(hi.get("pos", 0))
+    pos = (lo + hi) / 2
+    if not lo < pos < hi:
+        print(
+            f"create_card.py: no position left between {anchor} and its neighbour; "
+            f"move one of them first",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return pos
 
 
 def create_card(base, list_id, name, desc, pos, query):
@@ -85,8 +146,13 @@ def main():
     desc_source = parser.add_mutually_exclusive_group()
     desc_source.add_argument("--desc", help="the card's description text")
     desc_source.add_argument("--desc-file", help="read the description from this file")
-    # A filed follow-up joins the end of a list; it does not jump the queue.
-    parser.add_argument("--pos", choices=["top", "bottom"], default="bottom")
+    # Where in the list the card lands: an end (by default the bottom), or directly
+    # above or below a named card. Only one may be given: argparse rejects a pair
+    # (exit 2) before any network.
+    place = parser.add_mutually_exclusive_group()
+    place.add_argument("--pos", choices=["top", "bottom"], default="bottom")
+    place.add_argument("--above", metavar="CARD", help="file it directly above CARD")
+    place.add_argument("--below", metavar="CARD", help="file it directly below CARD")
     args = parser.parse_args()
 
     # --- Refuse the SKILL.md placeholder: never file the fill-me-in example. ---
@@ -131,10 +197,19 @@ def main():
     # --- The API host: production by default, overridable only for tests. ---
     base = os.environ.get("TRELLO_API_BASE", "https://api.trello.com")
 
+    query = urllib.parse.urlencode({"key": key, "token": token})
+
+    # --- The position: --pos as given, else the place next to the named card,
+    #     read off the list before anything is written. ---
+    pos = args.pos
+    above = args.above is not None
+    if above or args.below is not None:
+        anchor = args.above if above else args.below
+        pos = placement(base, args.list_id, anchor, above, query)
+
     # --- Create the card. A non-2xx (e.g. an auth failure or an unknown list) is a
     #     non-zero exit the agent surfaces. The token is never echoed. ---
-    query = urllib.parse.urlencode({"key": key, "token": token})
-    status, body = create_card(base, args.list_id, args.title, desc, args.pos, query)
+    status, body = create_card(base, args.list_id, args.title, desc, pos, query)
     if not 200 <= status < 300:
         print(
             f'create_card.py: failed to create card "{args.title}" in list {args.list_id}',

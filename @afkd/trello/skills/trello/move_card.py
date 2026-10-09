@@ -36,6 +36,16 @@
 # (crates/trello/src/client.rs::move_card) — a different layer, deliberately not
 # copied here.
 #
+# PLACEMENT: --above CARD / --below CARD put the card directly above or below a card
+# already in the target list (CARD is its id or short link), as create_card.py
+# does: one GET of the list's open cards and their `pos` once the list id is
+# resolved, then the PUT with the number half-way between CARD and its neighbour,
+# or `top`/`bottom` when CARD is at that end. The moved card itself is left out of
+# the neighbours (matched by id or short link, whichever --card is), so a re-place
+# inside its own list lands right, and a CARD that is the moved card is refused. A
+# CARD not in the list, or a list read that fails, exits non-zero before the PUT,
+# so nothing moves.
+#
 # TRELLO_API_BASE overrides the API host. It defaults to the production host, so
 # field behavior is unchanged; the override exists ONLY so tests can point the
 # calls at a local stub listener, mirroring the seam in list_comments.py.
@@ -130,15 +140,72 @@ def resolve_list_id(base, board, creds, name):
     return matches[0].get("id")
 
 
+def placement(base, list_id, anchor, above, query, moving):
+    """The `pos` that puts `moving` directly above (or below) `anchor` in the list.
+
+    Both are matched against each open card's id and short link, and `moving` is
+    left out of the neighbours. The answer is the mean of the anchor's `pos` and
+    its neighbour's, or `top`/`bottom` when the anchor is at that end of the list.
+    A failed read, an anchor not in the list, an anchor that is the moved card, or
+    two neighbours with no float between them prints why and exits non-zero.
+    """
+    status, body = get(
+        base, f"/1/lists/{list_id}/cards", f"fields=pos,shortLink&{query}"
+    )
+    if not 200 <= status < 300:
+        print(
+            f"move_card.py: failed to read cards for list {list_id}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    def names(card, x):
+        return x in (card.get("id"), card.get("shortLink"))
+
+    cards = sorted(json.loads(body), key=lambda c: float(c.get("pos", 0)))
+    target = next((c for c in cards if names(c, anchor)), None)
+    if target is None:
+        print(f"move_card.py: no card {anchor} in list {list_id}", file=sys.stderr)
+        sys.exit(1)
+    if names(target, moving):
+        print(
+            f"move_card.py: cannot place card {anchor} relative to itself",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    cards = [c for c in cards if not names(c, moving)]
+    at = cards.index(target)
+    if above and at == 0:
+        return "top"
+    if not above and at == len(cards) - 1:
+        return "bottom"
+    lo, hi = (cards[at - 1], cards[at]) if above else (cards[at], cards[at + 1])
+    lo, hi = float(lo.get("pos", 0)), float(hi.get("pos", 0))
+    pos = (lo + hi) / 2
+    if not lo < pos < hi:
+        print(
+            f"move_card.py: no position left between {anchor} and its neighbour; "
+            f"move one of them first",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return pos
+
+
 def main():
     parser = argparse.ArgumentParser()
     # nargs="?" so argparse does not error on a missing positional; the hand-rolled
     # guard below enforces "exactly one of list_id / --name" with exit 2.
     parser.add_argument("list_id", nargs="?", help="the target list id")
     parser.add_argument("--name", help="a list's name to resolve to an id")
-    # A moved card goes to the top of its new list, matching the DSL `move_to`'s
-    # positionless default.
-    parser.add_argument("--pos", choices=["top", "bottom"], default="top")
+    # Where in the list the card lands: an end (by default the top, matching the
+    # DSL `move_to`'s positionless default), or directly above or below a named
+    # card. Only one may be given: argparse rejects a pair (exit 2) before any
+    # network.
+    place = parser.add_mutually_exclusive_group()
+    place.add_argument("--pos", choices=["top", "bottom"], default="top")
+    place.add_argument("--above", metavar="CARD", help="move it directly above CARD")
+    place.add_argument("--below", metavar="CARD", help="move it directly below CARD")
     parser.add_argument("--card", help="card id (defaults to $TRELLO_CARD_ID)")
     args = parser.parse_args()
 
@@ -187,12 +254,20 @@ def main():
     else:
         list_id = resolve_list_id(base, card_board(base, card, creds), creds, args.name)
 
+    query = urllib.parse.urlencode(creds)
+
+    # --- The position: --pos as given, else the place next to the named card in
+    #     the resolved list, read before anything is written. ---
+    pos, where = args.pos, args.pos
+    above = args.above is not None
+    if above or args.below is not None:
+        anchor = args.above if above else args.below
+        pos = placement(base, list_id, anchor, above, query, card)
+        where = f"{'above' if above else 'below'} {anchor}"
+
     # --- Move the card. A non-2xx (e.g. an auth failure or an unknown list) is a
     #     non-zero exit the agent surfaces. The token is never echoed. ---
-    query = urllib.parse.urlencode(creds)
-    status, _ = put(
-        base, f"/1/cards/{card}", {"idList": list_id, "pos": args.pos}, query
-    )
+    status, _ = put(base, f"/1/cards/{card}", {"idList": list_id, "pos": pos}, query)
     if not 200 <= status < 300:
         print(
             f"move_card.py: failed to move card {card} to list {list_id}",
@@ -200,7 +275,7 @@ def main():
         )
         sys.exit(1)
 
-    print(f"move_card.py: moved card {card} to list {list_id} ({args.pos})")
+    print(f"move_card.py: moved card {card} to list {list_id} ({where})")
 
 
 if __name__ == "__main__":

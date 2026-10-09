@@ -10,10 +10,15 @@
 //! `token` query parameters; comment actions come back newest first and nest into a card
 //! read when `actions=commentCard` is asked for; an edited comment carries
 //! `data.dateLastEdited`; the board-wide card read answers only open cards, narrowed to
-//! `fields=name,labels`; a card move lands at the top or bottom of its list; adding a
-//! member already on the card is Trello's `400`; a comment or card that does not exist is
-//! a `404`. Every request is recorded, and any route can be made to answer a status
-//! instead — or the whole fake taken out of reach, every connection closed unanswered.
+//! `fields=name,labels`; a card is addressed by its id or its short link, and a card read
+//! carries the board's `idBoard`; a list's cards carry a `pos` of 16384 × their place,
+//! counted from one; a card created or moved (its `idList` and `pos` in the query or a
+//! JSON body) lands at the top or bottom of its list, or before the first other card
+//! whose `pos` is greater than the number it names, as those positions stood before the
+//! move; adding a member already on the card is Trello's `400`; a comment or card that
+//! does not exist is a `404`. Every request is recorded, and any route can be made to
+//! answer a status instead — or the whole fake taken out of reach, every connection
+//! closed unanswered.
 
 #![allow(dead_code)]
 
@@ -103,6 +108,29 @@ struct Card {
     due_complete: bool,
 }
 
+/// Where a created or moved card lands in its list.
+#[derive(Debug, Clone, Copy)]
+enum Pos {
+    Top,
+    Bottom,
+    /// Before the first other card whose `pos` is greater.
+    At(f64),
+}
+
+impl Pos {
+    /// Read `pos` as a query parameter (a string) or a body field (a string or a number);
+    /// anything else is `default`.
+    fn read(value: Option<&Value>, default: Self) -> Self {
+        match value {
+            Some(Value::String(word)) if word == "top" => Self::Top,
+            Some(Value::String(word)) if word == "bottom" => Self::Bottom,
+            Some(Value::String(word)) => word.parse().map_or(default, Self::At),
+            Some(Value::Number(n)) => n.as_f64().map_or(default, Self::At),
+            _ => default,
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     me: String,
@@ -184,9 +212,55 @@ impl State {
         thread.into_iter().map(|c| self.comment_json(c)).collect()
     }
 
+    /// The open cards of `list`, each as its index into `cards` and the `pos` the fake
+    /// derives for it: 16384 × its place in the list, counted from one.
+    fn positions(&self, list: &str) -> Vec<(usize, f64)> {
+        self.cards
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.list == list && !c.closed)
+            .zip(1u32..)
+            .map(|((at, _), n)| (at, 16_384.0 * f64::from(n)))
+            .collect()
+    }
+
+    /// Put `card` into its list at `pos`, taking it out of `cards` at `from` first when it
+    /// is already there. A numeric `pos` is resolved against the positions from before the
+    /// card is taken out, so a card moved down its own list lands where the number says.
+    fn place(&mut self, card: Card, from: Option<usize>, pos: Pos) {
+        let others: Vec<(String, f64)> = self
+            .positions(&card.list)
+            .into_iter()
+            .filter(|&(at, _)| Some(at) != from)
+            .map(|(at, p)| (self.cards[at].id.clone(), p))
+            .collect();
+        if let Some(from) = from {
+            self.cards.remove(from);
+        }
+        let index_of = |s: &Self, id: &str| s.cards.iter().position(|c| c.id == id);
+        match pos {
+            Pos::Top => self.cards.insert(0, card),
+            Pos::Bottom => self.cards.push(card),
+            Pos::At(n) => match others.iter().find(|(_, p)| *p > n) {
+                Some((next, _)) => {
+                    let at = index_of(self, next).expect("a card in the list");
+                    self.cards.insert(at, card);
+                }
+                None => match others.last() {
+                    Some((last, _)) => {
+                        let at = index_of(self, last).expect("a card in the list");
+                        self.cards.insert(at + 1, card);
+                    }
+                    None => self.cards.push(card),
+                },
+            },
+        }
+    }
+
     fn card_json(&self, card: &Card, with_actions: bool) -> Value {
         let mut value = json!({
             "id": card.id,
+            "idBoard": BOARD,
             "shortLink": card.short_link,
             "name": card.name,
             "url": card_url(card),
@@ -717,11 +791,12 @@ fn route(
             Some("createCard") => "created",
             _ => "read comments",
         },
+        ("POST", ["cards"]) => "create card",
         ("POST", ["cards", _, "actions", "comments"]) => "post comment",
         ("PUT", ["cards", _, "actions", _, "comments"]) => "edit comment",
         ("DELETE", ["cards", _, "actions", _, "comments"]) => "delete comment",
         ("PUT", ["cards", _]) => {
-            if param("idList").is_some() {
+            if param("idList").is_some() || payload.get("idList").is_some() {
                 "move card"
             } else if param("closed").is_some() {
                 "archive card"
@@ -742,8 +817,17 @@ fn route(
         return not_found;
     }
     let card_at = |s: &State| {
-        segs.get(1)
-            .and_then(|id| s.cards.iter().position(|c| c.id == *id))
+        segs.get(1).and_then(|id| {
+            s.cards
+                .iter()
+                .position(|c| c.id == *id || c.short_link == *id)
+        })
+    };
+    // A field read from the query, else from the JSON body.
+    let field = |key: &str| {
+        param(key)
+            .map(Value::String)
+            .or_else(|| payload.get(key).cloned())
     };
     match name {
         "me" => (200, s.member_json(&s.me.clone())),
@@ -786,10 +870,13 @@ fn route(
             let with_actions = param("actions").as_deref() == Some("commentCard");
             (
                 200,
-                s.cards
-                    .iter()
-                    .filter(|c| c.list == segs[1] && !c.closed)
-                    .map(|c| s.card_json(c, with_actions))
+                s.positions(segs[1])
+                    .into_iter()
+                    .map(|(at, pos)| {
+                        let mut card = s.card_json(&s.cards[at], with_actions);
+                        card["pos"] = json!(pos);
+                        card
+                    })
                     .collect(),
             )
         }
@@ -814,6 +901,29 @@ fn route(
             }
             None => not_found,
         },
+        "create card" => {
+            let list = payload["idList"].as_str().unwrap_or("").to_string();
+            if !s.lists.iter().any(|l| l.id == list) {
+                return (400, json!("invalid value for idList"));
+            }
+            let id = s.mint(now());
+            let card = Card {
+                short_link: id[id.len() - 8..].to_string(),
+                id,
+                name: payload["name"].as_str().unwrap_or("").to_string(),
+                desc: payload["desc"].as_str().unwrap_or("").to_string(),
+                list,
+                labels: Vec::new(),
+                members: Vec::new(),
+                checklists: Vec::new(),
+                closed: false,
+                due_complete: false,
+            };
+            let mut reply = s.card_json(&card, false);
+            reply["shortUrl"] = json!(format!("https://trello.com/c/{}", card.short_link));
+            s.place(card, None, Pos::read(payload.get("pos"), Pos::Bottom));
+            (200, reply)
+        }
         "post comment" => {
             let Some(at) = card_at(s) else {
                 return not_found;
@@ -880,18 +990,20 @@ fn route(
             };
             match name {
                 "move card" => {
-                    let mut card = s.cards.remove(at);
-                    card.list = param("idList").unwrap_or_default();
-                    if param("pos").as_deref() == Some("bottom") {
-                        s.cards.push(card);
-                    } else {
-                        s.cards.insert(0, card);
-                    }
+                    let mut card = s.cards[at].clone();
+                    card.list = field("idList")
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default();
+                    s.place(card, Some(at), Pos::read(field("pos").as_ref(), Pos::Top));
                 }
                 "archive card" => s.cards[at].closed = param("closed").as_deref() == Some("true"),
                 _ => s.cards[at].due_complete = param("dueComplete").as_deref() == Some("true"),
             }
-            let card = s.cards.iter().find(|c| c.id == segs[1]).cloned();
+            let card = s
+                .cards
+                .iter()
+                .find(|c| c.id == segs[1] || c.short_link == segs[1])
+                .cloned();
             (200, card.map_or(Value::Null, |c| s.card_json(&c, false)))
         }
         "add label" | "remove label" => {
