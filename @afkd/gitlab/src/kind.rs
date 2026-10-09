@@ -1,14 +1,17 @@
 //! The seam a kind sits behind: what [`crate::plugin`] drives per call, and what it reads
 //! off a claimed unit. The wire's bookkeeping — the identity, the live units, the 64 KiB
 //! fitting, the `comments` delta, the finished units — is written once in `plugin.rs`
-//! against these two traits, so a kind differs only in its vendor half
-//! ([`crate::issue`], [`crate::mr`]).
+//! against these two traits, and a slot's actions and the run-end release go through the
+//! one [`Outbox`], so a kind differs only in its vendor half ([`crate::issue`],
+//! [`crate::mr`]).
 
+use std::sync::Arc;
 use std::time::Instant;
 
-use crate::client::{GitlabError, Note, User};
+use crate::client::{GitlabClient, GitlabError, Note, User};
 use crate::common::{Clock, Diag};
-use crate::lifecycle::{LifecycleAction, Vocabulary};
+use crate::lifecycle::Vocabulary;
+use crate::outbox::{Delivery, Item, Outbox, Write};
 use crate::wire::WireUnit;
 
 /// A claimed unit, as the plugin's bookkeeping reads it.
@@ -19,6 +22,9 @@ pub(crate) trait ClaimedUnit {
 
     /// The username the unit was claimed as — the wire unit's `self`.
     fn claimed_as(&self) -> &str;
+
+    /// The unit's issue or merge request, as the [`Outbox`] writes to it and names it.
+    fn item(&self) -> Item;
 }
 
 /// One kind's vendor half: the calls `plugin.rs` makes per request.
@@ -67,9 +73,26 @@ pub(crate) trait Units {
     fn comments(&self, unit: &Self::Unit) -> Result<Vec<Note>, GitlabError>;
 
     /// The plugin-owned end of a unit's run, whatever its outcome: the claim marker's
-    /// release. Best-effort — a marker left behind ages out — so it cannot go undelivered.
-    fn finish(&self, unit: &Self::Unit, diag: &dyn Diag);
+    /// release, through the [`Outbox`] so the post-run slot's actions queue behind it.
+    /// Best-effort — a marker left behind ages out — so it cannot go undelivered.
+    fn finish(&self, unit: &Self::Unit, now: Instant, diag: &dyn Diag);
 
-    /// Do one action a slot called on the unit, as the identity it was claimed as.
-    fn act(&self, unit: &Self::Unit, action: &LifecycleAction) -> Result<(), GitlabError>;
+    /// The forge client the kind's calls go through.
+    fn client(&self) -> &dyn GitlabClient;
+
+    /// The writes this kind owes the forge, for the worker that delivers them.
+    fn outbox(&self) -> &Arc<Outbox>;
+
+    /// Do `write` on the unit's item as the identity it was claimed as, or queue it (see
+    /// [`Outbox::deliver`]): an action a slot called, or the run-end release.
+    fn deliver(
+        &self,
+        unit: &Self::Unit,
+        write: Write,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Result<Delivery, GitlabError> {
+        self.outbox()
+            .deliver(self.client(), &unit.item(), write, now, diag)
+    }
 }

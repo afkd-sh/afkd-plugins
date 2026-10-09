@@ -12,7 +12,8 @@
 //! sequences, so notes are scoped to their item **and its kind**, carry separate
 //! `created_at` and `updated_at` stamped from a clock the test moves, and an edit moves
 //! only the second; an item or a note that does not exist is a `404`. Every request is
-//! recorded, and any route can be made to answer a status instead.
+//! recorded, and any route can be made to answer a status instead — or the whole fake
+//! taken out of reach, every connection closed unanswered.
 
 #![allow(dead_code)]
 
@@ -106,6 +107,10 @@ struct State {
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
     seen: Vec<Seen>,
+    /// Whether the fake is out of reach: every request is read, recorded in `dropped`,
+    /// and its connection closed with no reply.
+    down: bool,
+    dropped: Vec<Seen>,
 }
 
 /// The page GitLab names as an item's `web_url`: `kind` is [`ISSUES`] or [`MRS`], which
@@ -389,6 +394,23 @@ impl FakeGitlab {
         lock(&self.state).faults.remove(route);
     }
 
+    /// Take the fake out of reach, as a network outage does: every request from now on is
+    /// read and its connection closed with no reply, so the client sees no response at
+    /// all. Nothing is answered, and nothing changes, until [`restore`](Self::restore).
+    pub fn outage(&self) {
+        lock(&self.state).down = true;
+    }
+
+    /// Bring the fake back after an [`outage`](Self::outage).
+    pub fn restore(&self) {
+        lock(&self.state).down = false;
+    }
+
+    /// The requests an outage dropped, in order.
+    pub fn dropped(&self) -> Vec<Seen> {
+        lock(&self.state).dropped.clone()
+    }
+
     /// An issue as it stands, its assignees by username.
     pub fn issue_state(&self, project: &str, iid: u64) -> Issue {
         let s = lock(&self.state);
@@ -573,12 +595,18 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
 
     let (status, reply) = {
         let mut s = lock(state);
-        s.seen.push(Seen {
+        let seen = Seen {
             method: method.clone(),
             path: path.clone(),
             query: query.clone(),
             body: body.clone(),
-        });
+        };
+        if s.down {
+            // Out of reach: the stream drops here, closed with no reply.
+            s.dropped.push(seen);
+            return;
+        }
+        s.seen.push(seen);
         if token != TOKEN {
             (401, json!({ "message": "401 Unauthorized" }))
         } else {

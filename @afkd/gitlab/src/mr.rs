@@ -23,18 +23,19 @@
 //! [`mr_feedback_delta`], [`mr_has_new_feedback`]).
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
 use crate::claim::is_claim;
 use crate::client::{GitlabClient, GitlabError, ItemKind, Note, Project, User};
 use crate::common::{
-    claim_item, claim_key_for, creds_env, delete_marker, do_action, lock, release_claim,
-    release_stale, renew_marker, unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL,
-    ENV_MR_BRANCH, ENV_MR_NUMBER, ENV_PROJECT,
+    claim_item, claim_key_for, creds_env, lock, release_claim, release_stale, renew_marker,
+    unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL, ENV_MR_BRANCH, ENV_MR_NUMBER,
+    ENV_PROJECT,
 };
 use crate::kind::{ClaimedUnit, Units};
-use crate::lifecycle::{LifecycleAction, Vocabulary, MR_VOCABULARY};
+use crate::lifecycle::{Vocabulary, MR_VOCABULARY};
+use crate::outbox::{lost_line, Item, Outbox, Write};
 use crate::settings::GitlabConfig;
 use crate::wire::{Fields, MrFields, WireFile, WireUnit};
 use crate::{MR_DIR, NUMBER_FILE, TASK_FILE};
@@ -88,6 +89,17 @@ impl ClaimedUnit for Unit {
     fn claimed_as(&self) -> &str {
         &self.claimed_as.username
     }
+
+    fn item(&self) -> Item {
+        Item {
+            noun: "merge request",
+            project: self.project.clone(),
+            kind: ItemKind::MergeRequest,
+            iid: self.iid,
+            title: self.title.clone(),
+            me: self.claimed_as.clone(),
+        }
+    }
 }
 
 /// The `mr` kind's vendor half: the single-project target, the `author_me`
@@ -102,6 +114,8 @@ pub(crate) struct MrUnits {
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
     /// its claim reserve.
     call_deadline: Mutex<Option<Instant>>,
+    /// The writes the forge could not take, which the plugin's worker retries.
+    outbox: Arc<Outbox>,
 }
 
 impl MrUnits {
@@ -112,6 +126,7 @@ impl MrUnits {
             author_me: cfg.author_me,
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
+            outbox: Arc::default(),
         }
     }
 
@@ -216,33 +231,6 @@ impl MrUnits {
             ],
         }
     }
-
-    /// The plugin-owned end of a round, whatever its outcome: the claim marker's release,
-    /// so a finished round leaves no marker to out-order the next claim. Best-effort: a
-    /// leaked marker ages out after `CLAIM_LIFETIME`. afkd runs the `on_done`/`on_fail` hook
-    /// after this, each action it calls one `call` ([`act`](Self::act)).
-    pub(crate) fn finish(&self, unit: &Unit, diag: &dyn Diag) {
-        delete_marker(
-            &*self.client,
-            &unit.project,
-            ItemKind::MergeRequest,
-            unit.iid,
-            unit.claim_id,
-            diag,
-        );
-    }
-
-    /// Do one action a hook called on the unit's merge request, as the user it was claimed as.
-    pub(crate) fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GitlabError> {
-        do_action(
-            &*self.client,
-            &unit.project,
-            ItemKind::MergeRequest,
-            unit.iid,
-            action,
-            &unit.claimed_as,
-        )
-    }
 }
 
 /// The `mr` kind behind the plugin's seam.
@@ -323,12 +311,26 @@ impl Units for MrUnits {
             .list_notes(&unit.project, ItemKind::MergeRequest, unit.iid)
     }
 
-    fn finish(&self, unit: &Unit, diag: &dyn Diag) {
-        MrUnits::finish(self, unit, diag);
+    /// The plugin-owned end of a round, whatever its outcome: the claim marker's release,
+    /// so a finished round leaves no marker to out-order the next claim. It goes through
+    /// the outbox — one GitLab could not take is retried, ahead of the `on_done`/`on_fail`
+    /// hook's actions, which afkd sends after this, each one `call`. Best-effort: a leaked
+    /// marker ages out after `CLAIM_LIFETIME`.
+    fn finish(&self, unit: &Unit, now: Instant, diag: &dyn Diag) {
+        let release = Write::Release {
+            marker: unit.claim_id,
+        };
+        if let Err(e) = self.deliver(unit, release.clone(), now, diag) {
+            diag.err(&lost_line(&unit.item(), &release, &e, None));
+        }
     }
 
-    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GitlabError> {
-        MrUnits::act(self, unit, action)
+    fn client(&self) -> &dyn GitlabClient {
+        &*self.client
+    }
+
+    fn outbox(&self) -> &Arc<Outbox> {
+        &self.outbox
     }
 }
 
@@ -429,7 +431,7 @@ mod tests {
     use crate::claim::{claim_renewal_text, claim_text, split_claim_key, CLAIM_MARKER};
     use crate::client::{Action, MockClient};
     use crate::common::{CaptureDiag, FakeClock, CALL_BUDGET, CLAIM_RESERVE};
-    use std::sync::Arc;
+    use crate::lifecycle::LifecycleAction;
     use std::time::{Duration, UNIX_EPOCH};
 
     fn cfg() -> GitlabConfig {
@@ -477,13 +479,15 @@ mod tests {
 
         /// The `finish` call for `unit`.
         fn finish(&self, unit: &Unit) {
-            self.units.finish(unit, &self.diag);
+            self.units.finish(unit, self.clock.now(), &self.diag);
         }
 
         /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
         /// (`on_claim`) or a `finish` (the post-run hooks).
         fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GitlabError> {
-            self.units.act(unit, &action)
+            self.units
+                .deliver(unit, Write::Act(action), self.clock.now(), &self.diag)
+                .map(drop)
         }
 
         /// Seed the bot's open MR !`iid` on `feature/x` with one human note — an MR with
@@ -1259,26 +1263,30 @@ mod tests {
         assert_all_on_the_mr_path(&h);
     }
     /// A hook's action the forge refused is that `call`'s error, for afkd to fail the hook
-    /// with — `unassign` reads the set before replacing it, so the read is where a
-    /// transport fault strikes first; a marker release the forge refused is diagnosed, and
-    /// the finish still ends.
+    /// with, and nothing is queued — `unassign` reads the set before replacing it, so the
+    /// read is where a refusal strikes first; a marker release the forge refused is said
+    /// lost, and the finish still ends.
     #[test]
     fn a_refused_action_is_the_calls_error_and_a_refused_release_is_logged() {
         let h = Harness::new(cfg());
         h.mr_with_feedback(7);
         let unit = h.poll().expect("claimed");
-        h.client.fail("get item");
+        h.client.refuse("get item", 403);
         let err = h.act(&unit, LifecycleAction::Unassign).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "gitlab get item: no response (mock failure)"
+            "gitlab get item: forge returned status 403"
         );
+        assert!(!h.units.outbox().owes(&unit.thread()));
 
-        h.client.fail("delete comment");
+        h.client.refuse("delete comment", 403);
         h.finish(&unit);
         assert_eq!(
             h.diag.lines(),
-            ["gitlab delete comment: no response (mock failure)"]
+            [
+                "merge request \"MR !7\" (group/widgets#7): deleting the claim marker is lost \
+                 — gitlab delete comment: forge returned status 403"
+            ]
         );
         assert_eq!(
             claim_markers_on(&h, 7).len(),

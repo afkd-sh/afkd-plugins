@@ -376,10 +376,20 @@ username as a constant of the config's own, `BOT :: "autocoder"`, or reads it wi
 `env.get("GITLAB_BOT")`. `gitlab.assign_me(issue)` assigns the token's own username without
 naming it.
 
-Each action returns a result, like any call: one the forge refused — a forge that is down,
-a token without the scope — fails with the plugin's sentence. A failing `on_claim` gives
-the issue back and fails the run; a failing post-run slot is logged and changes nothing.
-afkd never retries a slot's action.
+Each action returns a result, like any call: one the forge refused — another 4xx, a token
+without the scope — fails with the plugin's sentence. A failing `on_claim` gives the issue
+back and fails the run; a failing post-run slot is logged and changes nothing. afkd never
+retries a slot's action; the plugin retries what GitLab could not take.
+
+**When GitLab cannot be reached.** An action GitLab could not be reached for, or answered
+with a 429 or a 5xx, is queued and the call answers ok, so the slot's next action still runs
+and is queued behind it. The plugin retries the queue in the background, each issue's or
+merge request's writes in the order they were asked for: the first retry 5 seconds after
+the failure, the gap doubling to 5 minutes, for up to an hour. The plugin's own run-end
+write — the claim marker's release — is retried the same way, ahead of the post-run slot's
+actions. Every write queued is one line in the service log; one given up is a loud line
+naming the issue or merge request and what was lost. The queue is held in memory, so a
+plugin afkd ends names each write it still owes.
 
 **Mind the spelling.** The label actions are written verb-last, `gitlab.label_add` and
 `gitlab.label_remove`; `@afkd/trello` writes the same two verb-first, `trello.add_label`
@@ -395,7 +405,8 @@ few things. Each is deliberate, and none changes what a config means.
   action is one request to the plugin naming the item it acts on, sent once the plugin's
   own claim or finish has landed: `on_claim` after the claim is won, and the post-run slot
   after the claim marker is released. afkd retries no slot's action, so a post-run
-  `gitlab.label_remove(issue, "afkd::claimed")` that fails leaves the re-pick gate on the
+  `gitlab.label_remove(issue, "afkd::claimed")` that GitLab refuses, or that it could not
+  be reached for within the hour the plugin retries it, leaves the re-pick gate on the
   issue for a human.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot
