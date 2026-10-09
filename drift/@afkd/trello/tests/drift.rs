@@ -561,9 +561,7 @@ discuss :: queue { capacity 2 }
 /// §24's `selfdev/selfdev.afkd`, copied from `docs/lang-v2.md` at afkd master, up to the
 /// `develop` service's end. The `discuss` half after it is left out: it writes
 /// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
-/// `list[string]` and is written `[ "anyone" ]`. One deviation: a prompt file is read
-/// through a `prompt` proc that destructures `fs.read_file` into its text and its error,
-/// the form that outlives reading it as one value.
+/// `list[string]` and is written `[ "anyone" ]`.
 const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afkd - Trello-driven pipeline: afkd develops itself.
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
 // on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
@@ -652,12 +650,16 @@ repo_jail :: sandbox {
 
 // Fresh marker state each run, and a tree that starts where master is.
 prep :: proc() {
-  git.fetch("origin", "master")
+  fetched := git.fetch("origin", "master")
+  if !fetched.ok { fail("git fetch: #{fetched.error}") }
   $ git reset --hard
   $ git checkout -B master origin/master
   $ rm -f $AFKD_SCRATCH_DIR/plan.md $AFKD_SCRATCH_DIR/*.ok \
       $AFKD_SCRATCH_DIR/*.blocked $AFKD_SCRATCH_DIR/*-feedback.md
 }
+
+// How a gated phase ended.
+Verdict :: enum { blocked, approved, rejected }
 
 // A prompt file's text; a missing or unreadable one fails the run.
 prompt :: proc(name: string) -> string {
@@ -666,16 +668,15 @@ prompt :: proc(name: string) -> string {
   return text
 }
 
-// How a gated phase ended.
-Verdict :: enum { blocked, approved, rejected }
-
 // Build, then critique, up to three times.
 gate :: proc(run: core.Run, phase: string, build: string, critique: string) -> Verdict {
   for _ in 0..<3 {
-    builder <- prompt(build)
+    built := builder <- prompt(build)
+    if !built.ok { fail("builder: #{built.error}") }
     if fs.is_file("#{run.scratch_dir}/#{phase}.blocked") { return .blocked }
 
-    critic <- prompt(critique)
+    critiqued := critic <- prompt(critique)
+    if !critiqued.ok { fail("critic: #{critiqued.error}") }
     if fs.is_file("#{run.scratch_dir}/#{phase}.ok") { return .approved }
   }
   return .rejected
@@ -701,12 +702,14 @@ implement :: proc(run: core.Run) {
 
 // Commit the approved work, then check the fact rather than the agent's word.
 commit :: proc(run: core.Run) {
-  builder <- prompt("40-commit.md")
+  committed := builder <- prompt("40-commit.md")
+  if !committed.ok { fail("builder: #{committed.error}") }
   if fs.is_file("#{run.scratch_dir}/commit.blocked") {
     fail("commit blocked: approval stale, real change needed - see card comment")
   }
 
-  git.fetch("origin", "master")
+  fetched := git.fetch("origin", "master")
+  if !fetched.ok { fail("git fetch: #{fetched.error}") }
   merged, err := git.is_merged("HEAD", into="origin/master")
   if err != nil { fail("cannot tell whether HEAD reached origin/master: #{err.message}") }
   if !merged { fail("the commit never reached origin/master - the push did not land") }
@@ -729,19 +732,26 @@ develop :: service(trello) {
   poll_interval 1m~3m
 
   on_claim(card: trello.Card) {
-    trello.add_member(card)
-    trello.move_to(card, "In Progress", at=.top)
+    added := trello.add_member(card)
+    if added != nil { fail("trello.add_member: #{added.message}") }
+    moved := trello.move_to(card, "In Progress", at=.top)
+    if moved != nil { fail("trello.move_to: #{moved.message}") }
   }
   on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
-    trello.move_to(card, "Review", at=.top)
-    trello.comment(card, "afkd landed this card in #{outcome.duration}.")
+    moved := trello.move_to(card, "Review", at=.top)
+    if moved != nil { fail("trello.move_to: #{moved.message}") }
+    commented := trello.comment(card, "afkd landed this card in #{outcome.duration}.")
+    if commented != nil { fail("trello.comment: #{commented.message}") }
   }
   on_park(run: core.Run, card: trello.Card, outcome: core.Outcome) {
-    trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
+    commented := trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
+    if commented != nil { fail("trello.comment: #{commented.message}") }
   }
   on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {
-    trello.move_to(card, "Backlog", at=.bottom)
-    trello.add_label(card, "Problem")
+    moved := trello.move_to(card, "Backlog", at=.bottom)
+    if moved != nil { fail("trello.move_to: #{moved.message}") }
+    labelled := trello.add_label(card, "Problem")
+    if labelled != nil { fail("trello.add_label: #{labelled.message}") }
   }
 
   work_dir    REPO
