@@ -7,6 +7,10 @@
 //!   through it on a real daemon, its slots' actions crossing as `call`s on the issue each
 //!   is passed and its slots reading every field the issue's handle declares — then one
 //!   pull request the same way, through a `service(github.pr)`.
+//! - The **outage** leg fails an issue through both its attempts while GitHub is out of
+//!   reach, its `on_fail` checking every action's result, and holds the issue to its failed
+//!   state once GitHub is back: the slot's labels and comment on it, the bot unassigned, its
+//!   claim released.
 //! - The **both kinds** leg `afkd validate`s one file with a service of each kind, whose
 //!   slots call every action the plugin provides on the item each is passed and name the
 //!   bot by the config's own constant `BOT`, and the **handle** leg holds `afkd validate`
@@ -237,16 +241,16 @@ fn wait_for(
     what: &str,
     ready: impl Fn() -> bool,
 ) {
-    wait_until(what, ready, || dump(home, fake, daemon));
+    wait_until(what, BUDGET, ready, || dump(home, fake, daemon));
 }
 
-/// Poll `ready` to [`BUDGET`], failing with `what` and `dump`'s report when it never holds.
-fn wait_until(what: &str, ready: impl Fn() -> bool, dump: impl Fn() -> String) {
-    let deadline = Instant::now() + BUDGET;
+/// Poll `ready` to `budget`, failing with `what` and `dump`'s report when it never holds.
+fn wait_until(what: &str, budget: Duration, ready: impl Fn() -> bool, dump: impl Fn() -> String) {
+    let deadline = Instant::now() + budget;
     while !ready() {
         assert!(
             Instant::now() < deadline,
-            "{what} within {BUDGET:?}\n{}",
+            "{what} within {budget:?}\n{}",
             dump()
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -430,6 +434,7 @@ fn drive_one_pr(home: &Path) {
     };
     wait_until(
         "the pull request is claimed, run and answered",
+        BUDGET,
         || answered() && !marked(&fake, PR),
         report,
     );
@@ -441,6 +446,141 @@ fn drive_one_pr(home: &Path) {
         ),
         "{}",
         report()
+    );
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Why both attempts of the failing service fail: the outage's own sentence.
+const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network went away 🚨";
+
+/// The label the failing service's `on_fail` adds: a slash, a space and an emoji.
+const NEEDS_HUMAN: &str = "needs/human 🚧";
+
+/// A service whose runs fail: two attempts, each holding until the test creates `release`,
+/// then failing with [`OUTAGE_FAULT`]. Its `on_fail` checks every action's result and fails
+/// the slot on the first refused, so the slot running to its end through an outage is the
+/// plugin answering each queued write `ok`.
+fn failing_service(home: &Path, host: &str) -> String {
+    format!(
+        r#"import "core"
+import "@afkd/github"
+
+widgets :: service(github) {{
+  host          "{host}"
+  repo          "{REPO}"
+  token         "{TOKEN}"
+  source_label  "afkd/ready"
+  poll_interval 1s
+  max_attempts  2
+
+  on_claim(issue: github.Issue) {{
+    if github.assign_me(issue) != nil {{ fail("assign_me") }}
+  }}
+  on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
+    if github.label_remove(issue, "afkd/ready") != nil {{ fail("label_remove afkd/ready") }}
+    if github.unassign(issue) != nil {{ fail("unassign") }}
+    if github.label_add(issue, "{NEEDS_HUMAN}") != nil {{ fail("label_add") }}
+    if github.comment(issue, "attempts spent: #{{outcome.error}}") != nil {{ fail("comment") }}
+    if github.label_remove(issue, "afkd/claimed") != nil {{ fail("label_remove afkd/claimed") }}
+  }}
+
+  work_dir "{home}"
+  on_run(run: core.Run, issue: github.Issue) {{
+    $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    fail("{OUTAGE_FAULT}")
+  }}
+}}
+"#,
+        home = home.display()
+    )
+}
+
+/// The trello incident of 2026-10-01, replayed on GitHub on a real daemon: GitHub goes out
+/// of reach once the issue is claimed and stays out through both failed attempts, the
+/// finish and every action `on_fail` calls, and past the first retry. The plugin queues each
+/// write it cannot deliver and answers `ok`, so the checked slot runs to its end; once
+/// GitHub is back the issue ends in its failed state — the source label off, the bot
+/// unassigned, the `needs/human 🚧` label and the slot's comment with the fault on it, its
+/// claim released — with nothing given up.
+fn fail_one_issue_through_an_outage(home: &Path) {
+    let fake = FakeGithub::start(ME);
+    fake.issue(REPO, ISSUE, TITLE, BODY, LABELS, &[]);
+    write_config(home, &failing_service(home, fake.host()));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+    assert!(!report.contains("warning:"), "cleanly:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    wait_for(home, &fake, &daemon, "the issue is claimed", || {
+        let issue = fake.issue_state(REPO, ISSUE);
+        marked(&fake, ISSUE)
+            && issue.labels.iter().any(|l| l == "afkd/claimed")
+            && issue.assignees == [ME]
+    });
+
+    let outage_start = Instant::now();
+    fake.outage();
+    std::fs::write(home.join("release"), "").expect("release the run");
+    // `on_fail`'s last action, queued behind everything before it: the marker's delete and
+    // the slot's earlier writes. Seeing it means the checked slot ran to its end.
+    let queued_last = "removing the label \"afkd/claimed\" is queued behind them";
+    wait_for(
+        home,
+        &fake,
+        &daemon,
+        "on_fail runs through the outage",
+        || daemon.stderr_so_far().contains(queued_last),
+    );
+    // And the outage outlasts the first retry, 5 s after the first failure.
+    wait_for(home, &fake, &daemon, "a retry fails in the outage", || {
+        daemon
+            .stderr_so_far()
+            .contains("is tried again in 10s (try 3)")
+    });
+    fake.restore();
+    let outage_for = outage_start.elapsed();
+    assert!(!fake.dropped().is_empty(), "the outage dropped requests");
+
+    // The head write (the claim marker's delete, queued at the finish) is next tried at
+    // most the outage's length plus the first gap after it failed — the gap doubles from
+    // 5 s, and its tries fall at +5, +15, +35 s… — and one pass then lands the issue's
+    // whole backlog.
+    let commented = || {
+        fake.comments(REPO, ISSUE).into_iter().any(|c| {
+            c.author == ME
+                && c.body.starts_with("attempts spent: ")
+                && c.body.contains(OUTAGE_FAULT)
+                && !c.body.contains("#{")
+        })
+    };
+    wait_until(
+        "the issue reaches its failed state",
+        outage_for + Duration::from_secs(5) + BUDGET,
+        || {
+            let issue = fake.issue_state(REPO, ISSUE);
+            !issue
+                .labels
+                .iter()
+                .any(|l| l == "afkd/claimed" || l == "afkd/ready")
+                && issue.labels.iter().any(|l| l == NEEDS_HUMAN)
+                && issue.assignees.is_empty()
+                && !marked(&fake, ISSUE)
+                && commented()
+        },
+        || dump(home, &fake, &daemon),
+    );
+    let stderr = daemon.stderr_so_far();
+    assert!(
+        !stderr.contains("gave up"),
+        "nothing was given up:\n{stderr}"
     );
 
     daemon.signal(libc::SIGINT);
@@ -473,6 +613,14 @@ fn install_leg_places_the_plugin_and_runs_one_issue_and_one_pr_through_it() {
     drive_one_pr(home.path());
 }
 
+#[test]
+fn outage_leg_a_failed_issue_still_reaches_its_on_fail_state() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    fail_one_issue_through_an_outage(home.path());
+}
+
 /// A service of each kind, whose slots between them call every action the plugin provides —
 /// each kind's own six, on the item its slot is passed — name the bot by the config's own
 /// `BOT`, read the run and the outcome, in the argument shapes the manifest types: wide and
@@ -492,17 +640,17 @@ issues :: service(github) {
   poll_interval   1m~3m
 
   on_claim(issue: github.Issue) {
-    github.assign_me(issue)
-    github.label_add(issue, "afkd/working ⚙")
+    _ = github.assign_me(issue)
+    _ = github.label_add(issue, "afkd/working ⚙")
   }
   on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
-    github.label_remove(issue, "afkd/working ⚙")
-    github.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
-    github.close(issue)
+    _ = github.label_remove(issue, "afkd/working ⚙")
+    _ = github.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
+    _ = github.close(issue)
   }
   on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
-    github.label_remove(issue, "afkd/working ⚙")
-    github.unassign(issue)
+    _ = github.label_remove(issue, "afkd/working ⚙")
+    _ = github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
@@ -518,16 +666,16 @@ reviews :: service(github.pr) {
   poll_interval 2m
 
   on_claim(pr: github.Pull_Request) {
-    github.pr_assign_me(pr)
-    github.pr_label_add(pr, "afkd/reviewing 👀")
+    _ = github.pr_assign_me(pr)
+    _ = github.pr_label_add(pr, "afkd/reviewing 👀")
   }
   on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
-    github.pr_label_remove(pr, "afkd/reviewing 👀")
-    github.pr_comment(pr, "round answered by #{BOT} in #{outcome.duration}")
+    _ = github.pr_label_remove(pr, "afkd/reviewing 👀")
+    _ = github.pr_comment(pr, "round answered by #{BOT} in #{outcome.duration}")
   }
   on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
-    github.pr_unassign(pr)
-    github.pr_close(pr)
+    _ = github.pr_unassign(pr)
+    _ = github.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"

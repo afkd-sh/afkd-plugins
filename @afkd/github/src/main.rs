@@ -26,6 +26,7 @@ mod kind;
 mod lifecycle;
 #[cfg(test)]
 mod manifest;
+mod outbox;
 mod plugin;
 mod pr;
 mod rfc3339;
@@ -83,4 +84,6 @@ fn main() {
             }
         }
     }
+    // afkd closed the pipe: the process ends, and its outbox with it.
+    plugin.close();
 }

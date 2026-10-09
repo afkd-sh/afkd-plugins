@@ -16,7 +16,8 @@
 //! comments carry separate `created_at` and `updated_at` stamped from a clock the test
 //! moves, an edit moves only the second, and a comment is edited and deleted off a
 //! **repo**-scoped path; a comment that does not exist is a `404`. Every request is
-//! recorded, and any route can be made to answer a status instead.
+//! recorded, and any route can be made to answer a status instead — or the whole fake
+//! taken out of reach, every connection closed unanswered.
 
 #![allow(dead_code)]
 
@@ -98,6 +99,10 @@ struct State {
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
     seen: Vec<Seen>,
+    /// Whether the fake is out of reach: every request is read, recorded in `dropped`,
+    /// and its connection closed with no reply.
+    down: bool,
+    dropped: Vec<Seen>,
 }
 
 /// The page GitHub names as an issue's or pull request's `html_url`: a pull request's
@@ -345,6 +350,23 @@ impl FakeGithub {
         lock(&self.state).faults.remove(route);
     }
 
+    /// Take the fake out of reach, as a network outage does: every request from now on is
+    /// read and its connection closed with no reply, so the client sees no response at
+    /// all. Nothing is answered, and nothing changes, until [`restore`](Self::restore).
+    pub fn outage(&self) {
+        lock(&self.state).down = true;
+    }
+
+    /// Bring the fake back after an [`outage`](Self::outage).
+    pub fn restore(&self) {
+        lock(&self.state).down = false;
+    }
+
+    /// The requests an outage dropped, in order.
+    pub fn dropped(&self) -> Vec<Seen> {
+        lock(&self.state).dropped.clone()
+    }
+
     /// An issue as it stands.
     pub fn issue_state(&self, repo: &str, number: u64) -> Issue {
         lock(&self.state).issues[&(repo.to_string(), number)].clone()
@@ -497,13 +519,19 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
 
     let (status, reply) = {
         let mut s = lock(state);
-        s.seen.push(Seen {
+        let seen = Seen {
             method: method.clone(),
             path: path.clone(),
             query: query.clone(),
             auth: auth.clone(),
             body: body.clone(),
-        });
+        };
+        if s.down {
+            // Out of reach: the stream drops here, closed with no reply.
+            s.dropped.push(seen);
+            return;
+        }
+        s.seen.push(seen);
         if auth != format!("Bearer {TOKEN}") {
             (401, json!({ "message": "Bad credentials" }))
         } else {

@@ -831,6 +831,7 @@ mod mock {
     use super::*;
     use crate::common::lock;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -920,6 +921,13 @@ mod mock {
         /// one resolve per armed service.
         user_reads: Mutex<u32>,
         fail_stage: Mutex<Option<&'static str>>,
+        /// The stage a `refuse` knob makes answer a definite (non-transport) HTTP status —
+        /// the forge reached, and saying no.
+        refuse_stage: Mutex<Option<(&'static str, u16)>>,
+        /// The stage a `fail_decode` knob makes answer a body that cannot be read.
+        decode_stage: Mutex<Option<&'static str>>,
+        /// Whether every stage fails with a transport error: the forge out of reach.
+        down: AtomicBool,
         /// How many comments have been posted through `post_comment`, so each returned
         /// comment gets a distinct id and a strictly newer timestamp than any seeded one.
         posted: Mutex<u64>,
@@ -1072,9 +1080,30 @@ mod mock {
             *lock(&self.fail_stage) = Some(stage);
         }
 
+        /// Make every call belonging to `stage` answer `status`: the forge reached, and
+        /// refusing the request.
+        pub(crate) fn refuse(&self, stage: &'static str, status: u16) {
+            *lock(&self.refuse_stage) = Some((stage, status));
+        }
+
+        /// Make every call belonging to `stage` answer a success whose body cannot be
+        /// read: the forge answered, and what it did is unknown.
+        pub(crate) fn fail_decode(&self, stage: &'static str) {
+            *lock(&self.decode_stage) = Some(stage);
+        }
+
+        /// Make every call fail with a transport error until cleared: the forge out of
+        /// reach, as in a network outage.
+        pub(crate) fn go_down(&self) {
+            self.down.store(true, Ordering::SeqCst);
+        }
+
         /// Stop failing.
         pub(crate) fn clear_failure(&self) {
             *lock(&self.fail_stage) = None;
+            *lock(&self.refuse_stage) = None;
+            *lock(&self.decode_stage) = None;
+            self.down.store(false, Ordering::SeqCst);
         }
 
         /// Freeze the second every subsequent `post_comment` is stamped with, leaving the
@@ -1144,6 +1173,23 @@ mod mock {
         }
 
         fn guard(&self, stage: &'static str) -> Result<(), GithubError> {
+            if self.down.load(Ordering::SeqCst) {
+                return Err(GithubError::Transport {
+                    stage,
+                    reason: "mock failure".into(),
+                });
+            }
+            if let Some((refused, status)) = *lock(&self.refuse_stage) {
+                if refused == stage {
+                    return Err(GithubError::Status { stage, status });
+                }
+            }
+            if *lock(&self.decode_stage) == Some(stage) {
+                return Err(GithubError::Decode {
+                    stage,
+                    reason: "mock failure".into(),
+                });
+            }
             if *lock(&self.fail_stage) == Some(stage) {
                 Err(GithubError::Transport {
                     stage,

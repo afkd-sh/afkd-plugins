@@ -20,18 +20,19 @@
 //! degrades to a target that claims nothing.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::client::{GithubClient, GithubError, IssueComment, Repo};
 use crate::common::{
-    claim_issue, claim_key_for, creds_env, delete_marker, do_action, lock, release_claim,
-    release_stale, renew_marker, unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL,
-    ENV_PR_BRANCH, ENV_PR_NUMBER, ENV_REPO,
+    claim_issue, claim_key_for, creds_env, lock, release_claim, release_stale, renew_marker,
+    unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL, ENV_PR_BRANCH, ENV_PR_NUMBER,
+    ENV_REPO,
 };
 use crate::feedback::{self, FeedbackItem};
 use crate::kind::{ClaimedUnit, Units};
-use crate::lifecycle::{LifecycleAction, Vocabulary, PR_VOCABULARY};
+use crate::lifecycle::{Vocabulary, PR_VOCABULARY};
+use crate::outbox::{lost_line, Item, Outbox, Write};
 use crate::settings::GithubConfig;
 use crate::wire::{Fields, PrFields, WireFile, WireUnit};
 use crate::{NUMBER_FILE, PR_DIR, TASK_FILE};
@@ -80,6 +81,16 @@ impl ClaimedUnit for Unit {
     fn claimed_as(&self) -> &str {
         &self.claimed_as
     }
+
+    fn item(&self) -> Item {
+        Item {
+            noun: "pull request",
+            repo: self.repo.clone(),
+            number: self.number,
+            title: self.title.clone(),
+            me: self.claimed_as.clone(),
+        }
+    }
 }
 
 /// The `pr` kind's vendor half: the single-repo target, the `author_me`
@@ -96,6 +107,8 @@ pub(crate) struct PrUnits {
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
     /// its claim reserve.
     call_deadline: Mutex<Option<Instant>>,
+    /// The writes the forge could not take, which the plugin's worker retries.
+    outbox: Arc<Outbox>,
 }
 
 impl PrUnits {
@@ -106,6 +119,7 @@ impl PrUnits {
             author_me: cfg.author_me,
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
+            outbox: Arc::default(),
         }
     }
 }
@@ -261,22 +275,25 @@ impl Units for PrUnits {
     }
 
     /// The plugin-owned end of a round, whatever its outcome: the claim marker's release,
-    /// so a finished round leaves no marker to out-order the next claim. Best-effort: a
-    /// leaked marker ages out after `CLAIM_LIFETIME`. afkd runs the `on_done`/`on_fail` hook
-    /// after this, each action it calls one `call` ([`act`](Self::act)).
-    fn finish(&self, unit: &Unit, diag: &dyn Diag) {
-        delete_marker(&*self.client, &unit.repo, unit.claim_id, diag);
+    /// so a finished round leaves no marker to out-order the next claim. It goes through
+    /// the outbox — one GitHub could not take is retried, ahead of the `on_done`/`on_fail`
+    /// hook's actions, which afkd sends after this, each one `call`. Best-effort: a leaked
+    /// marker ages out after `CLAIM_LIFETIME`.
+    fn finish(&self, unit: &Unit, now: Instant, diag: &dyn Diag) {
+        let release = Write::Release {
+            marker: unit.claim_id,
+        };
+        if let Err(e) = self.deliver(unit, release.clone(), now, diag) {
+            diag.err(&lost_line(&unit.item(), &release, &e, None));
+        }
     }
 
-    /// Do one action a hook called on the unit's pull request, as the login it was claimed as.
-    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GithubError> {
-        do_action(
-            &*self.client,
-            &unit.repo,
-            unit.number,
-            action,
-            &unit.claimed_as,
-        )
+    fn client(&self) -> &dyn GithubClient {
+        &*self.client
+    }
+
+    fn outbox(&self) -> &Arc<Outbox> {
+        &self.outbox
     }
 }
 
@@ -295,7 +312,7 @@ mod tests {
     use crate::client::{Action, MockClient};
     use crate::common::{CaptureDiag, FakeClock, CALL_BUDGET, CLAIM_RESERVE};
     use crate::feedback::review_thread;
-    use std::sync::Arc;
+    use crate::lifecycle::LifecycleAction;
     use std::time::Duration;
 
     fn cfg(repo: &str) -> GithubConfig {
@@ -343,13 +360,15 @@ mod tests {
 
         /// The `finish` call for `unit`.
         fn finish(&self, unit: &Unit) {
-            self.units.finish(unit, &self.diag);
+            self.units.finish(unit, self.clock.now(), &self.diag);
         }
 
         /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
         /// (`on_claim`) or a `finish` (the post-run hooks).
         fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GithubError> {
-            self.units.act(unit, &action)
+            self.units
+                .deliver(unit, Write::Act(action), self.clock.now(), &self.diag)
+                .map(drop)
         }
     }
 
@@ -888,7 +907,8 @@ mod tests {
         );
     }
     /// A hook's action the forge refused is that `call`'s error, for afkd to fail the hook
-    /// with; a marker release it refused is diagnosed, and the finish still ends.
+    /// with, and nothing is queued; a marker release it refused is said lost, and the
+    /// finish still ends.
     #[test]
     fn a_refused_action_is_the_calls_error_and_a_refused_release_is_logged() {
         let h = Harness::new(cfg("acme/widgets"));
@@ -896,20 +916,24 @@ mod tests {
         h.client
             .add_comment_body(7, 9, "me", &claim_text("me"), 100);
         // GitHub's unassign is the dedicated `remove assignees` endpoint.
-        h.client.fail("remove assignees");
+        h.client.refuse("remove assignees", 403);
         let err = h
             .act(&unit(9, Vec::new()), LifecycleAction::Unassign)
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "github remove assignees: no response (mock failure)"
+            "github remove assignees: forge returned status 403"
         );
+        assert!(!h.units.outbox().owes(&unit(9, Vec::new()).thread()));
 
-        h.client.fail("delete comment");
+        h.client.refuse("delete comment", 403);
         h.finish(&unit(9, Vec::new()));
         assert_eq!(
             h.diag.lines(),
-            ["github delete comment: no response (mock failure)"]
+            [
+                "pull request \"PR 7\" (acme/widgets#7): deleting the claim marker is lost — \
+                 github delete comment: forge returned status 403"
+            ]
         );
         assert_eq!(
             claim_markers_on(&h, 7).len(),

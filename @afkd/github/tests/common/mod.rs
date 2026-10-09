@@ -28,6 +28,8 @@ pub struct Plugin {
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     stderr: Arc<Mutex<String>>,
+    /// The thread copying stderr in, which ends once the child has closed it.
+    stderr_reader: Option<thread::JoinHandle<()>>,
     /// Requests written, and replies read — equal whenever no call is outstanding.
     asked: usize,
     answered: usize,
@@ -63,7 +65,7 @@ impl Plugin {
         let stderr = Arc::new(Mutex::new(String::new()));
         let sink = Arc::clone(&stderr);
         let err = child.stderr.take().expect("piped stderr");
-        thread::spawn(move || {
+        let stderr_reader = thread::spawn(move || {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
                 let mut sink = sink.lock().unwrap();
                 sink.push_str(&line);
@@ -76,6 +78,7 @@ impl Plugin {
             stdin,
             lines,
             stderr,
+            stderr_reader: Some(stderr_reader),
             asked: 0,
             answered: 0,
             kind: String::new(),
@@ -207,8 +210,8 @@ impl Plugin {
 
     /// Close stdin as afkd does when a service disarms, and hold the child to the
     /// wire's discipline: it exits cleanly, and stdout carried exactly one line per
-    /// request and nothing else.
-    pub fn finish(mut self) {
+    /// request and nothing else. Everything it wrote to stderr comes back.
+    pub fn finish(mut self) -> String {
         self.stdin.take();
         let status = self.exit();
         assert!(
@@ -222,6 +225,10 @@ impl Plugin {
             extra.is_empty(),
             "stdout carried lines no request asked for: {extra:?}"
         );
+        if let Some(reader) = self.stderr_reader.take() {
+            reader.join().expect("the stderr reader");
+        }
+        self.stderr()
     }
 }
 
