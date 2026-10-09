@@ -19,7 +19,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { fold, seed } from "./fold.mjs";
-import { DEFAULT_KEYS, DESCRIPTIONS, SCOPES, all, idOf, primary } from "./keymap.mjs";
+import { DEFAULT_KEYS, DESCRIPTIONS, REFUSED_WHILE_QUITTING, SCOPES, all, glyphs, idOf, primary } from "./keymap.mjs";
 import { TREND_LADDER, bodyHeight as bodyHeightOf, formatElapsed, infoScrollMax, infoView, layout as layoutOf, peekFloorOffset, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
 import { newSession as bootSession, press } from "./session.mjs";
 import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, screenText } from "./testkit.mjs";
@@ -183,9 +183,10 @@ test("renders the whole overview at 100x30", () => {
 
 test("the drain is its own screen", () => {
   // The same capture folded **whole**. Adversarial against the live screen in four ways at
-  // once: the header reads `Quitting` off a different anchor with its own drain count, every
-  // operator hint is gone (the input side refuses them, so they read as unbound), the rows are
-  // a shelf of receding `Stopped` ones, and the lane is held only by the run still draining.
+  // once: the header reads `Quitting` off a different anchor with its own drain count, the
+  // reload hint is gone (the input side refuses it, so it reads as unbound) while the operator
+  // hints stay, the rows are a shelf of receding `Stopped` ones, and the lane is held only by
+  // the run still draining.
   const { board, at } = drainedBoard();
   const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
   assertGrid(rows, 100, 30);
@@ -193,10 +194,14 @@ test("the drain is its own screen", () => {
   const lines = screenText(rows).split("\n");
   assert.match(lines[0], /^afkd 0\.2\.123 · ■ Quitting \d+s/, "the drain owns the header, dot and all");
   const footer = lines.slice(-3).join("\n");
-  for (const gone of ["s start", "x stop", "t run now", "r restart", "Ctrl+R reload"]) {
-    assert.ok(!footer.includes(gone), `${gone} is refused while draining, so it is not advertised`);
+  for (const kept of ["s start", "x stop", "t run now", "r restart", "+ widen", "- narrow", "? help"]) {
+    assert.ok(footer.includes(kept), `${kept} still works while draining, so it is still advertised`);
   }
-  assert.ok(footer.includes("? help"), "the keys that still work are still there");
+  // The reload is refused, so it is not advertised — and the same board undrained, at the same
+  // size, does carry it, so the absence is the drain's doing and not the width's.
+  assert.ok(!footer.includes("reload"), "the reload is refused while draining, so it is not advertised");
+  const live = layout({ ...board, quittingSince: null }, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
+  assert.ok(footerOf(live, 3).join("\n").includes("Ctrl+R reload"), "…which the undrained footer carries");
 });
 
 test("the reconcile markers ride the name", () => {
@@ -572,6 +577,16 @@ function footerOf(rows, height) {
   return screenText(rows).split("\n").slice(-height);
 }
 
+/// The footer's `key label` cells, sorted: a cell is a run of single-spaced words and the
+/// ladder pads two or more spaces between cells, so a reflow that moves a cell to another row
+/// or column compares equal.
+function footerCells(rows, height) {
+  return footerOf(rows, height)
+    .flatMap((line) => line.split(/ {2,}/))
+    .filter((cell) => cell !== "")
+    .sort();
+}
+
 test("the footer advertises no unpressable key", () => {
   const { board, at } = liveBoard();
   const rows = layout(board, { cols: 120, rows: 30, now: at + 1000, version: "0.2.123" });
@@ -582,14 +597,30 @@ test("the footer advertises no unpressable key", () => {
     assert.ok(footer.includes(cell), `the footer carries ${cell}`);
   }
   // …while an **unbound** action renders nothing at all. The drain is the reachable case: it
-  // empties the chord list for every operator verb, and the cells vanish rather than dimming.
+  // empties the chord list for the refused reload, and the cell vanishes rather than dimming.
+  // `quitting_footer_is_the_contextual_footer_minus_refused`, computed: the drained footer is
+  // the same board's undrained footer minus exactly the cells whose key the drain refuses, so
+  // every key the drain leaves alone keeps its hint.
   const drained = drainedBoard();
-  const quitFooter = footerOf(
-    layout(drained.board, { cols: 120, rows: 30, now: drained.at + 1000, version: "0.2.123" }),
-    3,
-  ).join("\n");
-  for (const cell of ["s start", "x stop", "t run now", "r restart", "+ widen", "- narrow", "Ctrl+R reload"]) {
-    assert.ok(!quitFooter.includes(cell), `${cell} is unbound while draining, so it is absent — not dim`);
+  const options = { cols: 120, rows: 30, now: drained.at + 1000, version: "0.2.123" };
+  const liveCells = footerCells(layout({ ...drained.board, quittingSince: null }, options), 3);
+  assert.ok(liveCells.includes("Ctrl+R reload"), "the undrained footer advertises the reload");
+  const refusedKeys = new Set(REFUSED_WHILE_QUITTING.flatMap(glyphs));
+  const isRefused = (cell) => cell.split(" ")[0].split("/").some((key) => refusedKeys.has(key));
+  assert.deepEqual(
+    footerCells(layout(drained.board, options), 3),
+    liveCells.filter((cell) => !isRefused(cell)),
+    "the drained footer is the undrained one minus the refused cells — absent, not dim",
+  );
+  // The `?` legend is the table's other display reader: the refused row goes, the operator
+  // verbs and both scopes' lane keys stay.
+  const legendOf = (b) => screenText(layout(b, { ...options, cols: 160, rows: 44, help: true }));
+  const reload = DESCRIPTIONS["global.reload"];
+  const legend = legendOf(drained.board);
+  assert.ok(legendOf({ ...drained.board, quittingSince: null }).includes(reload), "the undrained legend lists the reload");
+  assert.ok(!legend.includes(reload), "the drained legend does not");
+  for (const kept of ["Start service", "Widen the service's queue lane", "Widen the queue lane at the cursor"]) {
+    assert.ok(legend.includes(kept), `the drained legend keeps ${kept}`);
   }
 });
 

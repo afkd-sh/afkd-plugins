@@ -205,21 +205,15 @@ export function resolve(scopes, chord) {
   return null;
 }
 
-/// `keys::REFUSED_WHILE_QUITTING` — the display *and* input half of the daemon's blanket drain
-/// refusal (`top_command`'s `refused_now`). A refused action reads as **unbound** on both
-/// sides from this one table, so the footer cannot advertise a key the drain would swallow and
-/// the dispatch cannot send one the footer stopped advertising.
-export const REFUSED_WHILE_QUITTING = [
-  "overview.service_start",
-  "overview.service_stop",
-  "overview.service_run",
-  "overview.service_restart",
-  "overview.queue_widen",
-  "overview.queue_narrow",
-  "queues.narrow",
-  "queues.widen",
-  "global.reload",
-];
+/// `keys::REFUSED_WHILE_QUITTING` — the display *and* input half of the daemon's quitting
+/// refusal (`top_command`'s `refused_now`), which turns away the global reload: the restart
+/// reads the config anyway. The operator verbs and the lane keys are deliberately absent
+/// (ADR-0026's 2026-10-07 amendment): a quit stops services band by band, a service whose band
+/// has not been reached still works, and the daemon itself answers a verb it will not serve
+/// with `meta.control_refused`, which `session.mjs`'s `noteFrame` flashes. A refused action
+/// reads as **unbound** on both sides from this one table, so the footer cannot advertise a key
+/// the drain would swallow, nor hide one that still works.
+export const REFUSED_WHILE_QUITTING = ["global.reload"];
 
 // --- what each action is, and whether this page takes it -------------------------------
 

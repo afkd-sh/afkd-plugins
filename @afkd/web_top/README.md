@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.4.1 (companion)
+Installed @afkd/web_top 0.4.2 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -441,11 +441,12 @@ the release workflow runs this directory's suites.
   rows, all eight scopes, alternates included — pinned to `crates/config/src/keymap.rs` by
   `keymap.test.mjs`, so a rebind in the Rust is a failing test here rather than a page that
   stopped answering a key. What that buys is the rule it has to keep: an action with no chord
-  renders **no hint at all** and takes no key — including every operator verb while the daemon
-  is draining, which the input side refuses from the same table the footer reads. What it
-  costs is that an operator who rebinds `x` sees `x` here and a different key in their
-  terminal. A layout whose keyboard cannot reach `/` or `?` loses those actions, exactly as it
-  would in a terminal.
+  renders **no hint at all** and takes no key — including the reload while the daemon is
+  draining (the one key `afkd top` refuses then), which the input side refuses from the same
+  table the footer reads. The operator verbs and lane keys stay; one the quitting daemon will
+  not serve flashes the daemon's refusal. What it costs is that an operator who rebinds `x`
+  sees `x` here and a different key in their terminal. A layout whose keyboard cannot reach `/`
+  or `?` loses those actions, exactly as it would in a terminal.
 - **A group a reload adds opens expanded.** `afkd top` tracks the groups an operator has
   *opened*, seeded with every group the board boots with; this page tracks the ones they have
   *closed*. The two agree on every group the board booted with, which is all of them until a

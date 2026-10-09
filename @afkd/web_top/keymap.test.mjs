@@ -196,12 +196,16 @@ test("the drain refuses exactly the actions keys.rs refuses", { skip: NO_AFKD_SR
   // `keys::REFUSED_WHILE_QUITTING` is a list of `act::` constants; each constant's value is the
   // scope-qualified action name, so the two are joined through the `act` module's own
   // definitions rather than through a second transcription.
+  // The read is bounded to the list itself — from its `= &[` to the closing `]` — and takes
+  // each `act::` entry with or without a trailing comma, so `&[act::RELOAD]` and a multi-line
+  // list read alike, whatever their length.
   const from = KEYS_RS.indexOf("pub(crate) const REFUSED_WHILE_QUITTING");
   assert.notEqual(from, -1, "keys.rs still declares REFUSED_WHILE_QUITTING");
-  const names = [...KEYS_RS.slice(from, KEYS_RS.indexOf("];", from)).matchAll(/act::(\w+),/g)].map(
-    ([, name]) => name,
-  );
-  assert.equal(names.length, 9, `the refusal read found ${names.length} constants, not nine`);
+  const open = KEYS_RS.indexOf("= &[", from);
+  assert.notEqual(open, -1, "REFUSED_WHILE_QUITTING is still a `&[…]` list");
+  const list = KEYS_RS.slice(open, KEYS_RS.indexOf("]", open));
+  const names = [...list.matchAll(/act::(\w+)/g)].map(([, name]) => name);
+  assert.ok(names.length > 0, "the refusal read found no act:: constants in REFUSED_WHILE_QUITTING");
   // `pub(crate) const LIST_START: Action = (Scope::Overview, "service_start");`
   const dsl = Object.fromEntries(
     [...KEYMAP_RS.matchAll(/Scope::(\w+) => "([\w.]+)",/g)].map(([, variant, name]) => [variant, name]),

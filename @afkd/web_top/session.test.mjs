@@ -2,10 +2,11 @@
 //
 // Every board here is **folded from a recorded capture** under `fixtures/` at a fixed synthetic
 // clock — the rule `fixtures/README.md` states, and the reason a re-capture cannot quietly make
-// an assertion vacuous. Nothing hand-writes a wire frame, with one stated exception noted at its
-// own test: `Meta::Error` appears in no capture (the recorder refuses to configure a provider
-// trigger, which is how you earn one), so that arm is driven by a frame built from `proto.rs`'s
-// shape and is called out as the hand-built frame it is.
+// an assertion vacuous. Nothing hand-writes a wire frame, with two stated exceptions noted at
+// their own tests: `Meta::Error` appears in no capture (the recorder refuses to configure a
+// provider trigger, which is how you earn one), and neither does `Meta::ControlRefused` (it needs
+// a verb landing mid-quit on a service whose stop band has begun), so those arms are driven by
+// frames built from `proto.rs`'s shape and are called out as the hand-built frames they are.
 //
 // The board is folded from real captures for a second reason too: the gates this file asserts
 // are badge predicates, and a hand-made board would let the test pick badges that make its own
@@ -30,6 +31,7 @@ import {
   selectedIndex,
   typingOf,
 } from "./session.mjs";
+import { NO_AFKD_SRC, afkdSource } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
 
@@ -347,7 +349,6 @@ test("the footer's gated hints track the selected row's own badge", () => {
   ];
   for (const { board, at, name } of cases) {
     const rows = visibleRows(board, {});
-    const quitting = board.quittingSince !== null;
     rows.forEach((row, i) => {
       if (rowKey(row) === null) return;
       const footer = footerTextAt(board, at, i);
@@ -368,13 +369,9 @@ test("the footer's gated hints track the selected row's own badge", () => {
       };
       for (const [label, live] of Object.entries(want)) {
         if (row.kind === "queue") continue; // a lane row carries no operator cell at all
+        // The drain refuses no operator verb, so a drained row is gated by its badge exactly
+        // as a live one is: the daemon, not the footer, turns away a verb it will not serve.
         const hit = footer.find((h) => h.label === label);
-        if (quitting) {
-          // Every operator verb is refused during the drain, so the cell is **absent** — not
-          // dim. That is the unbound/gated distinction, and it is the one a footer may not blur.
-          assert.equal(hit, undefined, `${name} row ${i}: ${label} is unbound while draining`);
-          continue;
-        }
         assert.notEqual(hit, undefined, `${name} row ${i}: the footer carries ${label}`);
         assert.equal(hit.live, live, `${name} row ${i} (${rowKey(row).key}): ${label} is ${live ? "live" : "gated"}`);
       }
@@ -454,8 +451,8 @@ test("t on an armed service fires, and the row moves only when the daemon's even
 
 /// The board `noise.jsonl` folds to at its first `service_stopping` — the **only** fixture that
 /// carries one before the drain (its lines 25 and 38, against `meta.quitting` at 64).
-/// `fire.jsonl`'s nine all follow its own `quitting`, where every verb is refused, so a test
-/// written on it would assert a drain refusal and call it a modal.
+/// `fire.jsonl`'s nine all follow its own `quitting`, so a test written on it would be
+/// exercising a drained board rather than the plain modal.
 function stoppingBoard() {
   return foldCapture("noise.jsonl", { lines: 25 });
 }
@@ -597,23 +594,75 @@ test("/ types a needle that narrows live, Enter confirms it and Esc clears it", 
 
 // --- the drain -----------------------------------------------------------------------------
 
-test("a draining daemon refuses every operator verb and still navigates", () => {
+test("a draining daemon refuses only the reload, and every other key works as it does live", () => {
   const { board, at } = drainedBoard();
   assert.notEqual(board.quittingSince, null);
   let session = newSession();
-  for (const chord of [key("s"), key("x"), key("t"), key("r"), ctrl("r"), key("+"), key("-")]) {
-    const out = press(session, board, chord, { now: at, bodyHeight: 20 });
-    assert.deepEqual(out.commands, [], `${chord.key} reaches no wire while draining`);
-    assert.equal(out.handled, false, `…and reads as unbound, exactly as the footer paints it`);
-    assert.equal(out.session.confirm, null, "…and raises no modal");
-    assert.equal(flashOf(out.session, at), null, "…and acknowledges nothing");
+  const reload = press(session, board, ctrl("r"), { now: at, bodyHeight: 20 });
+  assert.deepEqual(reload.commands, [], "the reload reaches no wire while draining");
+  assert.equal(reload.handled, false, "…and reads as unbound, exactly as the footer paints it");
+  assert.equal(reload.session.confirm, null, "…and raises no modal");
+  assert.equal(flashOf(reload.session, at), null, "…and acknowledges nothing");
+  // The operator verbs and the lane keys stay live (ADR-0026's 2026-10-07 amendment): a quit
+  // stops services band by band, so the drain changes nothing about them — each press on the
+  // drained board is the same press on that board undrained.
+  const live = { ...board, quittingSince: null };
+  for (const chord of [key("s"), key("x"), key("t"), key("r"), key("+"), key("-")]) {
+    const drained = press(session, board, chord, { now: at, bodyHeight: 20 });
+    const undrained = press(session, live, chord, { now: at, bodyHeight: 20 });
+    assert.deepEqual(drained.commands, undrained.commands, `${chord.key} sends what it sends live`);
+    assert.equal(drained.handled, undrained.handled, "…and is handled as it is live");
+    assert.deepEqual(drained.session.confirm, undrained.session.confirm, "…with the same modal");
+    assert.equal(flashOf(drained.session, at), flashOf(undrained.session, at), "…and the same ack");
   }
+  // …and the parity is not two empty lists: the cursor's `Stopped` janitor really starts.
+  assert.deepEqual(cursorOn(session, board), { kind: "service", key: "janitor" });
+  assert.equal(board.services["janitor"].badge, "Stopped");
+  assert.deepEqual(press(session, board, key("s"), { now: at, bodyHeight: 20 }).commands, [
+    { command: "start", service: "janitor" },
+  ]);
   // The keys the drain leaves alone still work: a draining board still reflows.
   const moved = press(session, board, key("j"), { now: at, bodyHeight: 20 });
   assert.equal(moved.handled, true);
   assert.notDeepEqual(cursorOn(moved.session, board), cursorOn(session, board));
   const helped = press(session, board, key("?"), { now: at, bodyHeight: 20 });
   assert.equal(helped.session.help, true, "? still opens");
+});
+
+test("a verb the quitting daemon turns away flashes its refusal over the ack", () => {
+  // `top.rs`'s `ControlRefused` arm: the daemon answers a verb aimed at a service whose stop
+  // band has begun with `meta.control_refused`, sent to the issuing connection alone, and the
+  // dashboard flashes its sentence. No capture carries one, so the frame is hand-built from
+  // `proto.rs`'s shape — the test below pins that shape to the daemon's own wire literal.
+  const { board, at } = drainedBoard();
+  const sent = press(newSession(), board, key("s"), { now: at, bodyHeight: 20 });
+  assert.deepEqual(sent.commands, [{ command: "start", service: "janitor" }], "the drain lets the verb out");
+  assert.equal(flashOf(sent.session, at), "Starting janitor", "…and the press acknowledges it");
+
+  const frame = { type: "meta", meta: "control_refused", service: "janitor", message: "The daemon is shutting down" };
+  const refused = noteFrame(sent.session, frame, at + 4);
+  assert.equal(flashOf(refused, at + 4), frame.message, "the daemon's refusal overwrites the ack");
+  assert.deepEqual({ ...refused, flash: sent.session.flash }, sent.session, "…and moves nothing but the flash");
+  // It is not board state: the page folds no optimistic edge, so there is nothing to revert.
+  const folded = fold(board, frame, at + 4);
+  assert.equal(folded.frames.ignored, board.frames.ignored + 1, "the board takes the ignore path");
+  assert.deepEqual({ ...folded, frames: board.frames }, board, "…and moves nothing else");
+  // A refusal with nothing to say leaves the ack where it was.
+  const silent = noteFrame(sent.session, { ...frame, message: "" }, at + 4);
+  assert.deepEqual(silent, sent.session, "an empty refusal leaves the session alone");
+});
+
+test("control_refused is read off afkd's own wire literal", { skip: NO_AFKD_SRC }, () => {
+  // `proto.rs`'s round-trip test spells the frame the daemon writes; reading it here keeps the
+  // tag and the field names the daemon's rather than a second spelling of them.
+  const literal = afkdSource("crates", "app", "src", "proto.rs").match(
+    /r#"(\{"type":"meta","meta":"control_refused".*?\})"#/,
+  );
+  assert.notEqual(literal, null, "proto.rs still pins the control_refused wire line");
+  const frame = JSON.parse(literal[1]);
+  assert.equal(typeof frame.message, "string");
+  assert.notEqual(frame.message, "");
+  assert.equal(flashOf(noteFrame(newSession(), frame, BASE), BASE), frame.message);
 });
 
 test("the drain frame drops the overlay, the modal and any filter typing", () => {
@@ -723,7 +772,7 @@ test("a press acknowledges the verbs nothing else on screen will", () => {
   assert.equal(flashOf(fired, at + FLASH_TIMEOUT), null, "and gone at the timeout");
 });
 
-test("the daemon's own two messages become the flash, and control_no_op does not", () => {
+test("the daemon's own three messages become the flash, and control_no_op does not", () => {
   // The frame half. `reload.jsonl` carries a real `meta.reloaded` — the fixture's own string,
   // not one written here — so a re-capture cannot make this vacuous.
   const line = readFileSync(join(HERE, "fixtures", "reload.jsonl"), "utf8")
@@ -746,6 +795,12 @@ test("the daemon's own two messages become the flash, and control_no_op does not
   // naming the path, in this plugin's own voice) against a live daemon.
   const error = { type: "meta", meta: "error", message: "no such service: nightlyy" };
   assert.equal(flashOf(noteFrame(newSession(), error, BASE), BASE), error.message);
+
+  // `meta.control_refused` appears in no capture either: earning one means landing a verb
+  // mid-quit on a service whose stop band has begun. Hand-built from `proto.rs`'s
+  // `Meta::ControlRefused` shape, and pinned to its wire literal by its own AFKD_SRC test.
+  const refusal = { type: "meta", meta: "control_refused", service: "ops::nightly", message: "The daemon is shutting down" };
+  assert.equal(flashOf(noteFrame(newSession(), refusal, BASE), BASE), refusal.message);
 
   // `meta.control_no_op` is deliberately **not** a flash: it exists to revert a pending
   // optimistic edge, and this page folds none. Asserted explicitly so the ignore has a guard

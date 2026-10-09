@@ -79,7 +79,7 @@ for (const line of readFileSync(need("frames"), "utf8").split("\n")) {
   }
   board = fold(board, frame, (at += 10));
   // `top.mjs`'s own second call on every frame: a reload summary and a daemon refusal are not
-  // board state, they are footer lines, and this is where they become one. Without it the two
+  // board state, they are footer lines, and this is where they become one. Without it the
   // frames that flash would render as nothing at all on this screen.
   session = noteFrame(session, frame, at);
 }

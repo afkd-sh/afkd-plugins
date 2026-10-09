@@ -26,8 +26,8 @@ Queue      Slots                                                        Parallel
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
-o output  i info  Enter peek    g/G first/last  v flat  b busy ○  / find    ? help  q quit          
+s start  t run now  + widen     o output  Enter peek    g/G first/last  b busy ○    ? help          
+x stop   r restart  - narrow    i info                  v flat          / find      q quit          
 
 ── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
 nnnnnnnnnnnnnnnccccccccccccccccccccccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -58,8 +58,8 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bnllllllllbnllllllbbbbbnllllllllbbbnllllllllllllbnllllllbnllllllllbnllllllllbnllllllbnllllnnnnnnnnnn
+bnlllllllbnlllllllllbnllllllllllbnllllllllbbbbbnllllllllbbbnllllllllllllbnllllllllllbnllllnnnnnnnnnn
+bnlllllllbnlllllllllbnllllllllllbnllllllllllllllllllllllbnllllllllllllllbnllllllllllbnllllnnnnnnnnnn
 
 ── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
 ....................................................................................................
@@ -90,5 +90,5 @@ bbbbb......bbbbb........................................................bbbbbbbb
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................
-....................................................................................................
-....................................................................................................
+.........d.ddddddd..d.ddddd.........................................................................
+d.dddd..............d.dddddd........................................................................

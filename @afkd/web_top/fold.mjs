@@ -829,7 +829,8 @@ function sameStamp(a, b) {
 // --- meta --------------------------------------------------------------------------
 
 /// The `Meta` variants that move the board. The rest — `spawned`, `control_no_op`,
-/// `status`/`runs`/`doctor`/`validate`, `queue_parallelism`, `error` — take the ignore path.
+/// `status`/`runs`/`doctor`/`validate`, `queue_parallelism`, `error`, `control_refused` — take
+/// the ignore path.
 function foldMeta(board, frame, now) {
   switch (frame.meta) {
     case "snapshot": {

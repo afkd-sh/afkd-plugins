@@ -254,7 +254,7 @@ function targetsOf(board, row) {
 const ACK = { run: "Run sent to", restart: "Restarting", start: "Starting", stop: "Stopping" };
 
 /// `ack_flash` — the press-time acknowledgement for a **dispatched**, post-gate batch. A gated
-/// no-op and a verb refused during the drain both dispatch nothing and so acknowledge nothing,
+/// no-op and a reload refused during the drain both dispatch nothing and so acknowledge nothing,
 /// because nothing happened; one command names its service, several read `N services`.
 function ackFlash(verb, commands) {
   const word = ACK[verb];
@@ -924,6 +924,11 @@ function scrolled(session, rows, height, board) {
  * - `meta.error` → its `message`, which `top.rs` flashes too. Without this arm an asynchronous
  *   daemon refusal would reach the tab on the stream and vanish; the relay's own non-2xx covers
  *   only a socket write that failed, which is a different failure.
+ * - `meta.control_refused` → its `message`: a quitting daemon turning away a verb aimed at a
+ *   service whose stop band has begun, which `top.rs` flashes too. It reaches only the tab that
+ *   sent the verb, since each tab has its own attach, and it **overwrites** the press-time ack
+ *   (`Starting janitor`) as `input.mjs`'s `send` does for a relay refusal. There is no edge to
+ *   revert, because this page folds none.
  * - **`meta.control_no_op` deliberately does not flash.** It exists to revert a pending
  *   optimistic edge; this page folds none, and the terminal posts no message for it either.
  *
@@ -943,7 +948,9 @@ export function noteFrame(session, frame, now) {
       filter: session.filter.mode === "typing" ? { mode: "off", needle: "" } : session.filter,
     };
   }
-  if (frame.meta !== "reloaded" && frame.meta !== "error") return session;
+  if (frame.meta !== "reloaded" && frame.meta !== "error" && frame.meta !== "control_refused") {
+    return session;
+  }
   const message = typeof frame.message === "string" ? frame.message : "";
   return message === "" ? session : flashed(session, message, now);
 }
