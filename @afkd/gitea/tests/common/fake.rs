@@ -10,7 +10,8 @@
 //! assignees, state and comments are the issue's, and only an open one is listed; a
 //! comment carries separate `created_at` and `updated_at`, and a review a `submitted_at`,
 //! stamped from a clock the test moves. Every request is recorded, and any
-//! route can be made to answer a status instead.
+//! route can be made to answer a status instead — or the whole fake taken out of reach,
+//! every connection closed unanswered.
 
 #![allow(dead_code)]
 
@@ -103,6 +104,10 @@ struct State {
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
     seen: Vec<Seen>,
+    /// Whether the fake is out of reach: every request is read, recorded in `dropped`,
+    /// and its connection closed with no reply.
+    down: bool,
+    dropped: Vec<Seen>,
 }
 
 /// The fake. Dropping it leaves the listener thread parked on `accept`; the process
@@ -286,6 +291,23 @@ impl FakeGitea {
     /// Stop failing `route`.
     pub fn heal(&self, route: &str) {
         lock(&self.state).faults.remove(route);
+    }
+
+    /// Take the fake out of reach, as a network outage does: every request from now on is
+    /// read and its connection closed with no reply, so the client sees no response at
+    /// all. Nothing is answered, and nothing changes, until [`restore`](Self::restore).
+    pub fn outage(&self) {
+        lock(&self.state).down = true;
+    }
+
+    /// Bring the fake back after an [`outage`](Self::outage).
+    pub fn restore(&self) {
+        lock(&self.state).down = false;
+    }
+
+    /// The requests an outage dropped, in order.
+    pub fn dropped(&self) -> Vec<Seen> {
+        lock(&self.state).dropped.clone()
     }
 
     pub fn issue_state(&self, repo: &str, number: u64) -> Issue {
@@ -502,12 +524,18 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
 
     let (status, reply) = {
         let mut s = lock(state);
-        s.seen.push(Seen {
+        let seen = Seen {
             method: method.clone(),
             path: path.clone(),
             query: query.clone(),
             body: body.clone(),
-        });
+        };
+        if s.down {
+            // Out of reach: the stream drops here, closed with no reply.
+            s.dropped.push(seen);
+            return;
+        }
+        s.seen.push(seen);
         if auth != format!("token {TOKEN}") {
             (401, json!({ "message": "token is required" }))
         } else {

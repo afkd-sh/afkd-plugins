@@ -1,15 +1,18 @@
 //! The seam both kinds sit behind: what [`crate::plugin`] drives per call, and what it
 //! reads off a claimed unit. The wire's bookkeeping — the live and finished units, the
 //! 64 KiB fitting, the `comments` delta, the undelivered-park fallback — is written once
-//! in `plugin.rs` against these two traits, so the `issue` and `pr` kinds differ only in
+//! in `plugin.rs` against these two traits, and a slot's actions and the kind's run-end
+//! writes go through the one [`Outbox`], so the `issue` and `pr` kinds differ only in
 //! their vendor half ([`crate::issue`], [`crate::pr`]).
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
-use crate::client::{GiteaError, IssueComment};
+use crate::client::{GiteaClient, GiteaError, IssueComment};
 use crate::common::{ClaimFault, Clock, Diag};
-use crate::lifecycle::{LifecycleAction, Vocabulary};
+use crate::lifecycle::Vocabulary;
+use crate::outbox::{Delivery, Item, Outbox, Write};
 use crate::wire::{Facts, UnitOutcome, WireUnit};
 
 /// A claimed unit, as the plugin's bookkeeping reads it.
@@ -19,6 +22,9 @@ pub(crate) trait ClaimedUnit {
 
     /// The login the unit was claimed as — the wire unit's `self`.
     fn claimed_as(&self) -> &str;
+
+    /// The unit's issue or pull request, as the [`Outbox`] writes to it and names it.
+    fn item(&self) -> Item;
 }
 
 /// One kind's vendor half: the calls `plugin.rs` makes per request.
@@ -71,15 +77,34 @@ pub(crate) trait Units {
     }
 
     /// The plugin-owned end of a unit's run: the claim marker's release, and whatever
-    /// else the kind itself owes the outcome. Returns whether that reached the remote.
+    /// else the kind itself owes the outcome. Returns whether the park landed or was
+    /// queued — always `true` for an outcome that is not a park.
     fn finish(
         &self,
         unit: &Self::Unit,
         outcome: UnitOutcome,
         facts: &Facts,
+        now: Instant,
         diag: &dyn Diag,
     ) -> bool;
 
-    /// Do one action a slot called on the unit, as the login it was claimed as.
-    fn act(&self, unit: &Self::Unit, action: &LifecycleAction) -> Result<(), GiteaError>;
+    /// The forge client the kind's calls go through.
+    fn client(&self) -> &dyn GiteaClient;
+
+    /// The writes this kind owes the forge, for the worker that delivers them.
+    fn outbox(&self) -> &Arc<Outbox>;
+
+    /// Do `write` on the unit's item as the login it was claimed as, or queue it (see
+    /// [`Outbox::deliver`]): an action a slot called, or one of the kind's own run-end
+    /// writes.
+    fn deliver(
+        &self,
+        unit: &Self::Unit,
+        write: Write,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Result<Delivery, GiteaError> {
+        self.outbox()
+            .deliver(self.client(), &unit.item(), write, now, diag)
+    }
 }

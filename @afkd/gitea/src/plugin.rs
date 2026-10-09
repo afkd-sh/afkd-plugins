@@ -11,7 +11,7 @@
 //! is kept a while for that ([`FINISHED_MAX`]), since its post-run slot's calls arrive
 //! after `finish`.
 //!
-//! Three things the wire forces that the built-in never had to do:
+//! Four things the wire forces that the built-in never had to do:
 //!
 //! - **Every reply fits one line.** afkd caps a line at 64 KiB. A `poll` whose brief would
 //!   overflow it is cut to fit ([`fit_poll`]); a `comments` reply sends only what afkd has
@@ -23,19 +23,26 @@
 //! - **Every call answers within 45 seconds.** afkd ends the service on a missed reply,
 //!   so each armed call runs under [`CALL_BUDGET`], and a forge too slow for it reads as
 //!   a forge that is down.
+//! - **A write Gitea could not take is retried after the reply.** afkd retries no action
+//!   and its deadline leaves no room for a retry inside the call, so an action, the claim
+//!   marker's release, the park or the backstop that could not reach Gitea is queued
+//!   ([`crate::outbox`]), the call answers `ok`, and a worker thread delivers it — each
+//!   item's writes in order — once Gitea is back, for up to an hour.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
 use crate::claim::is_claim;
 use crate::client::{Gitea, GiteaClient};
-use crate::common::{ClaimFault, Clock, Diag, CALL_BUDGET};
+use crate::common::{ClaimFault, Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
 use crate::issue::IssueUnits;
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{from_call, Call};
+use crate::outbox::{Outbox, Write};
 use crate::pr::PrUnits;
 use crate::rfc3339::format_utc;
 use crate::settings::{issue_config, pr_config, GiteaConfig};
@@ -65,8 +72,8 @@ pub(crate) enum Answer {
 }
 
 /// Builds the forge client a `hello` arms with — the real one in the running plugin, a
-/// mock in the tests.
-pub(crate) type Connect = Box<dyn Fn(&GiteaConfig) -> Box<dyn GiteaClient>>;
+/// mock in the tests. `Send`, since the outbox's worker gets one of its own.
+pub(crate) type Connect = Box<dyn Fn(&GiteaConfig) -> Box<dyn GiteaClient + Send>>;
 
 /// The plugin across its whole life: unarmed until `hello`, then one armed kind.
 pub(crate) struct Plugin {
@@ -74,6 +81,9 @@ pub(crate) struct Plugin {
     clock: Box<dyn Clock>,
     diag: Box<dyn Diag>,
     armed: Option<Box<dyn Service>>,
+    /// Whether arming starts the outbox's worker thread. The tests deliver the outbox
+    /// themselves, on their own clock.
+    worker: bool,
 }
 
 /// One armed service, whichever kind it is: the calls afkd makes after `hello`.
@@ -91,9 +101,23 @@ trait Service {
     fn renew(&self, key: &str, renewal: u64, diag: &dyn Diag) -> Answer;
     fn comments(&mut self, key: &str, diag: &dyn Diag) -> Answer;
     fn classify(&self, scratch: &Path, outcome: UnitOutcome) -> UnitOutcome;
-    fn finish(&mut self, key: &str, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag)
-        -> Answer;
-    fn call(&self, action: &str, args: &Map<String, Value>, diag: &dyn Diag) -> Answer;
+    fn finish(
+        &mut self,
+        key: &str,
+        outcome: UnitOutcome,
+        facts: &Facts,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Answer;
+    fn call(
+        &self,
+        action: &str,
+        args: &Map<String, Value>,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Answer;
+    /// The writes the armed kind owes the forge, for the worker that delivers them.
+    fn outbox(&self) -> &Arc<Outbox>;
 }
 
 /// One armed service of kind `K`.
@@ -121,12 +145,17 @@ struct LiveUnit<U> {
 impl Plugin {
     /// A plugin that arms against the real Gitea.
     pub(crate) fn new(clock: Box<dyn Clock>, diag: Box<dyn Diag>) -> Self {
-        let connect: Connect =
-            Box::new(|cfg| Box::new(Gitea::new(&cfg.base_url, &cfg.token)) as Box<dyn GiteaClient>);
-        Self::with_connect(connect, clock, diag)
+        let connect: Connect = Box::new(|cfg| {
+            Box::new(Gitea::new(&cfg.base_url, &cfg.token)) as Box<dyn GiteaClient + Send>
+        });
+        Self {
+            worker: true,
+            ..Self::with_connect(connect, clock, diag)
+        }
     }
 
-    /// A plugin that arms through `connect`.
+    /// A plugin that arms through `connect`, and starts no worker: what its outbox owes
+    /// waits for the caller to deliver it.
     pub(crate) fn with_connect(
         connect: Connect,
         clock: Box<dyn Clock>,
@@ -137,6 +166,14 @@ impl Plugin {
             clock,
             diag,
             armed: None,
+            worker: false,
+        }
+    }
+
+    /// Say what the outbox still owes: afkd has closed the pipe, and the process ends.
+    pub(crate) fn close(&self) {
+        if let Some(armed) = &self.armed {
+            armed.outbox().abandon(&*self.diag);
         }
     }
 
@@ -156,9 +193,15 @@ impl Plugin {
                 kind,
                 settings,
             } => {
-                *armed = arm(&self.connect, proto, &kind, &settings)
+                let arming = arm(&self.connect, proto, &kind, &settings)
                     .map_err(|problem| diag.err(&problem))
                     .ok();
+                *armed = arming.map(|(service, cfg)| {
+                    if self.worker {
+                        start_worker(&self.connect, Arc::clone(service.outbox()), &cfg);
+                    }
+                    service
+                });
                 let Some(service) = armed.as_deref_mut() else {
                     return Answer::Reply(json!({"ok": false, "proto": PROTO}).to_string());
                 };
@@ -185,9 +228,11 @@ impl Plugin {
                 key,
                 outcome,
                 facts,
-            } => on_armed(armed, clock, |a| a.finish(&key, outcome, &facts, diag)),
+            } => on_armed(armed, clock, |a| {
+                a.finish(&key, outcome, &facts, clock.now(), diag)
+            }),
             Request::Call { action, args } => {
-                on_armed(armed, clock, |a| a.call(&action, &args, diag))
+                on_armed(armed, clock, |a| a.call(&action, &args, clock.now(), diag))
             }
             Request::Unknown => unlisted(diag),
         }
@@ -219,15 +264,16 @@ fn on_armed(
     }
 }
 
-/// Arm the kind `hello` names over its settings, or say why not. afkd has already held
-/// the block to the manifest, so what can be wrong here is the protocol, the kind, or a
-/// rule the manifest cannot express.
+/// Arm the kind `hello` names over its settings, or say why not; the settings it armed
+/// with come back too, for the outbox's worker. afkd has already held the block to the
+/// manifest, so what can be wrong here is the protocol, the kind, or a rule the manifest
+/// cannot express.
 fn arm(
     connect: &Connect,
     proto: u32,
     kind: &str,
     settings: &serde_json::Value,
-) -> Result<Box<dyn Service>, String> {
+) -> Result<(Box<dyn Service>, GiteaConfig), String> {
     if proto != PROTO {
         return Err(format!(
             "afkd speaks plugin protocol {proto}, and this plugin speaks {PROTO}"
@@ -237,14 +283,24 @@ fn arm(
     Ok(match kind {
         ISSUE_KIND => {
             let cfg = issue_config(settings).map_err(fault)?;
-            Box::new(Armed::new(IssueUnits::new(connect(&cfg), &cfg)))
+            let service: Box<dyn Service> =
+                Box::new(Armed::new(IssueUnits::new(connect(&cfg), &cfg)));
+            (service, cfg)
         }
         PR_KIND => {
             let cfg = pr_config(settings).map_err(fault)?;
-            Box::new(Armed::new(PrUnits::new(connect(&cfg), &cfg)))
+            let service: Box<dyn Service> = Box::new(Armed::new(PrUnits::new(connect(&cfg), &cfg)));
+            (service, cfg)
         }
         _ => return Err(format!("kind `{kind}` is not provided by @afkd/gitea")),
     })
+}
+
+/// Start the worker that delivers `outbox` for the life of the process, on a forge client
+/// of its own, which no call's deadline reaches.
+fn start_worker(connect: &Connect, outbox: Arc<Outbox>, cfg: &GiteaConfig) {
+    let client = connect(cfg);
+    std::thread::spawn(move || outbox.run(&*client, &SystemClock, &StderrDiag));
 }
 
 /// The `poll` reply that hands nothing over.
@@ -422,13 +478,15 @@ impl<K: Units> Service for Armed<K> {
     }
 
     /// Finish a unit, and keep it for the post-run hook's `call`s. Always `ok` (see the
-    /// module doc): a park that did not land is released at once so the next poll retries
-    /// the unit, and the second time the same unit fails that way it is left for a human.
+    /// module doc): a park Gitea refused is released at once so the next poll retries the
+    /// unit, and the second time the same unit fails that way it is left for a human. A
+    /// park Gitea could not be reached for is the outbox's, and counts as delivered.
     fn finish(
         &mut self,
         key: &str,
         outcome: UnitOutcome,
         facts: &Facts,
+        now: Instant,
         diag: &dyn Diag,
     ) -> Answer {
         let ok = Answer::Reply(json!({"ok": true}).to_string());
@@ -438,7 +496,7 @@ impl<K: Units> Service for Armed<K> {
             ));
             return ok;
         };
-        if !self.units.finish(&live.unit, outcome, facts, diag) {
+        if !self.units.finish(&live.unit, outcome, facts, now, diag) {
             let thread = live.unit.thread();
             if self.undelivered.insert(thread.clone()) {
                 self.units.release(&live.unit, diag);
@@ -463,8 +521,16 @@ impl<K: Units> Service for Armed<K> {
     /// Do one action a slot called, on the unit its handle names — a live one, or one
     /// finished since. `{"ok":false}` with the sentence, diagnosed too, for an action afkd
     /// would not have bound under the armed kind's names, a handle naming no unit, or a
-    /// forge that refused it.
-    fn call(&self, action: &str, args: &Map<String, Value>, diag: &dyn Diag) -> Answer {
+    /// forge that refused it. An action the forge could not be reached for is taken for
+    /// delivery and `ok`: the outbox retries it, and the slot's next action on the item
+    /// queues behind it.
+    fn call(
+        &self,
+        action: &str,
+        args: &Map<String, Value>,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Answer {
         let refuse = |error: String| {
             diag.err(&error);
             Answer::Reply(json!({"ok": false, "error": error}).to_string())
@@ -478,10 +544,14 @@ impl<K: Units> Service for Armed<K> {
                 "{action} for {key}, which this plugin holds no claim on"
             ));
         };
-        match self.units.act(unit, &act) {
-            Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
+        match self.units.deliver(unit, Write::Act(act), now, diag) {
+            Ok(_) => Answer::Reply(json!({"ok": true}).to_string()),
             Err(e) => refuse(e.to_string()),
         }
+    }
+
+    fn outbox(&self) -> &Arc<Outbox> {
+        self.units.outbox()
     }
 }
 
@@ -496,6 +566,7 @@ mod tests {
     use crate::client::{Action, MockClient};
     use crate::common::{CaptureDiag, FakeClock, TempDir};
     use crate::lifecycle::{Vocabulary, ISSUE_VOCABULARY, PR_VOCABULARY};
+    use crate::outbox::RETRY_FIRST;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -538,7 +609,7 @@ mod tests {
             let clock = Arc::new(FakeClock::new());
             let forge = Arc::clone(&mock);
             let connect: Connect =
-                Box::new(move |_| Box::new(Arc::clone(&forge)) as Box<dyn GiteaClient>);
+                Box::new(move |_| Box::new(Arc::clone(&forge)) as Box<dyn GiteaClient + Send>);
             let plugin = Plugin::with_connect(
                 connect,
                 Box::new(SharedClock(Arc::clone(&clock))),
@@ -583,6 +654,23 @@ mod tests {
 
         fn poll(&mut self) -> serde_json::Value {
             self.call(json!({"call": "poll"}))
+        }
+
+        /// One pass of the outbox's worker, on the fixture's forge and clock: when the
+        /// earliest write left is due.
+        fn deliver(&self) -> Option<Instant> {
+            let armed = self.plugin.armed.as_ref().expect("an armed plugin");
+            armed
+                .outbox()
+                .deliver_due(&*self.mock, &*self.clock, &*self.diag)
+        }
+
+        /// Deliver until nothing is owed, the clock moved on to each next try.
+        fn drain(&self) {
+            while let Some(next) = self.deliver() {
+                self.clock
+                    .advance(next.saturating_duration_since(self.clock.now()));
+            }
         }
 
         /// The `finish` call for `key`, ended `outcome`, with the facts of a run that
@@ -961,17 +1049,17 @@ mod tests {
         );
     }
 
-    /// A park that did not land still answers `ok` — afkd would crash the service
+    /// A park Gitea refused still answers `ok` — afkd would crash the service
     /// otherwise. The first time, the claim is released so the next poll retries the
     /// issue; the second time for the same issue, it is left for a human.
     #[test]
     fn an_undelivered_park_releases_once_then_leaves_the_claim() {
         let mut f = Fixture::armed(settings());
         f.mock.add_issue(7, "Fix", "do it", &["afkd/ready"]);
-        // The first poll's ensure defines both managed labels; the park's swap then
-        // fails on the forge, so the awaiting label never lands.
+        // The first poll's ensure defines both managed labels; the forge then refuses
+        // the park's swap, so the awaiting label never lands.
         let key = f.poll()["unit"]["key"].clone();
-        f.mock.fail("add label");
+        f.mock.refuse("add label", 403);
         assert_eq!(f.finish(&key, "park"), json!({"ok": true}));
         f.mock.clear_failure();
         assert!(!f.mock.has_label(7, "afkd/claimed"), "released for a retry");
@@ -986,7 +1074,7 @@ mod tests {
         );
 
         let key = f.poll()["unit"]["key"].clone();
-        f.mock.fail("add label");
+        f.mock.refuse("add label", 403);
         assert_eq!(f.finish(&key, "park"), json!({"ok": true}));
         f.mock.clear_failure();
         assert!(f.mock.has_label(7, "afkd/claimed"), "left in place");
@@ -1316,7 +1404,7 @@ mod tests {
     /// Each call the plugin cannot do answers `ok:false` with its sentence — which afkd
     /// fails the slot's `result` with — and says it on the diagnostic channel too: an
     /// action afkd would not bind, a handle naming no claim, a label the repository does
-    /// not define, and a forge that never answered.
+    /// not define, and a forge that refused it. None of them is queued.
     #[test]
     fn a_call_the_plugin_cannot_do_answers_its_sentence() {
         let mut f = Fixture::armed(settings());
@@ -1359,14 +1447,15 @@ mod tests {
             );
             expect.push(error.to_string());
         }
-        f.mock.fail("set state");
+        f.mock.refuse("set state", 403);
         assert_eq!(
             f.act("close", json!({}), &key),
-            json!({"ok": false, "error": "gitea set state: no response (mock failure)"})
+            json!({"ok": false, "error": "gitea set state: forge returned status 403"})
         );
-        expect.push("gitea set state: no response (mock failure)".into());
+        expect.push("gitea set state: forge returned status 403".into());
         assert_eq!(f.diag.lines(), expect);
         assert_eq!(f.mock.actions().len(), before, "nothing landed");
+        assert_eq!(f.deliver(), None, "nothing queued");
     }
 
     /// The PR kind answers `call` too, under its own `pr_` names, on the claimed pull request.
@@ -1489,5 +1578,297 @@ mod tests {
             f.plugin.answer(request),
             Answer::Fatal(reason) if reason.contains("before a `hello`")
         ));
+    }
+    /// The issue the outage tests run: the delimiter a log line wraps it in, wide CJK, an
+    /// emoji and an em dash.
+    const TITLE: &str = "Fix \"the\" café — 修复 🚨";
+
+    /// What an `on_fail` comments: multi-line, with a fence.
+    const FAILED_NOTE: &str = "attempts spent: run did not complete\n```\nexit 128\n```";
+
+    /// A plugin armed over issue 7, claimed by a poll and assigned to the bot by its
+    /// `on_claim`, with the label an `on_fail` adds defined; and the unit's key.
+    fn claimed_issue() -> (Fixture, serde_json::Value) {
+        let mut f = Fixture::armed(settings());
+        f.mock.register_label("needs/human 🚧", false);
+        f.mock.add_issue(7, TITLE, "do it", &["afkd/ready"]);
+        let key = f.poll()["unit"]["key"].clone();
+        assert_eq!(f.act("assign_me", json!({}), &key), json!({"ok": true}));
+        (f, key)
+    }
+
+    /// The claim marker the unit `key` names was won on.
+    fn marker(key: &serde_json::Value) -> u64 {
+        key.as_str()
+            .unwrap()
+            .rsplit('#')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    /// A call the forge cannot be reached for answers `ok`, so the slot's next action
+    /// still runs; that one queues behind it, each said once; and both land, in order,
+    /// once the forge is back.
+    #[test]
+    fn a_call_the_forge_cannot_be_reached_for_answers_ok_and_lands_later() {
+        let (mut f, key) = claimed_issue();
+        let before = f.mock.actions().len();
+        f.mock.go_down();
+        assert_eq!(
+            f.act("label_add", json!({"label": "needs/human 🚧"}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            f.act("comment", json!({"text": FAILED_NOTE}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            f.diag.lines(),
+            [
+                format!(
+                    "gitea is unreachable for issue \"{TITLE}\" (acme/widgets#7): gitea add \
+                     label: no response (mock failure); adding the label \"needs/human 🚧\" is \
+                     queued and retried for up to 1h"
+                ),
+                format!(
+                    "gitea still owes issue \"{TITLE}\" (acme/widgets#7) earlier writes; the \
+                     comment \"attempts spent: run did not complete…\" is queued behind them"
+                ),
+            ]
+        );
+        assert_eq!(f.mock.actions().len(), before, "nothing landed yet");
+
+        f.clock.advance(RETRY_FIRST);
+        assert!(f.deliver().is_some(), "still down: tried again later");
+        f.mock.clear_failure();
+        f.drain();
+        assert_eq!(
+            f.mock.actions()[before..],
+            [
+                Action::Label {
+                    index: 7,
+                    name: "needs/human 🚧".into(),
+                },
+                Action::Comment {
+                    index: 7,
+                    body: FAILED_NOTE.into(),
+                },
+            ]
+        );
+    }
+
+    /// The run-end report and the whole `on_fail` slot through an outage: `finish` and
+    /// every call answer `ok`, a few retries fail, and once the forge is back one pass
+    /// lands the marker's delete and then the slot's actions in the order they were
+    /// called. The issue ends in its `on_fail` state, and nothing was given up.
+    #[test]
+    fn a_gitea_outage_through_the_failure_path_still_lands_the_failed_state() {
+        let (mut f, key) = claimed_issue();
+        let before = f.mock.actions().len();
+        f.mock.go_down();
+        assert_eq!(f.finish(&key, "failed"), json!({"ok": true}));
+        for (action, args) in [
+            ("label_remove", json!({"label": "afkd/ready"})),
+            ("unassign", json!({})),
+            ("label_add", json!({"label": "needs/human 🚧"})),
+            ("comment", json!({"text": FAILED_NOTE})),
+            ("label_remove", json!({"label": "afkd/claimed"})),
+        ] {
+            assert_eq!(f.act(action, args, &key), json!({"ok": true}), "{action}");
+        }
+        for _ in 0..3 {
+            let next = f.deliver().expect("still owed");
+            f.clock.advance(next - f.clock.now());
+        }
+        assert_eq!(f.mock.actions().len(), before, "nothing landed while down");
+
+        f.mock.clear_failure();
+        assert_eq!(f.deliver(), None, "one pass lands the whole backlog");
+        let landed = &f.mock.actions()[before..];
+        assert!(
+            matches!(
+                landed,
+                [
+                    Action::DeleteComment { id },
+                    Action::Unlabel { index: 7, .. },
+                    Action::Assign { index: 7, assignees },
+                    Action::Label { index: 7, name },
+                    Action::Comment { index: 7, body },
+                    Action::Unlabel { index: 7, .. },
+                ] if *id == marker(&key)
+                    && assignees.is_empty()
+                    && name == "needs/human 🚧"
+                    && body == FAILED_NOTE
+            ),
+            "{landed:?}"
+        );
+        assert!(!f.mock.has_label(7, "afkd/ready"));
+        assert!(!f.mock.has_label(7, "afkd/claimed"));
+        assert!(f.mock.has_label(7, "needs/human 🚧"));
+        assert!(f.mock.assignees_of(7).is_empty());
+        let lines = f.diag.lines();
+        assert!(lines.iter().all(|l| !l.contains("gave up")), "{lines:?}");
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("gitea is back for"))
+                .count(),
+            6,
+            "{lines:?}"
+        );
+    }
+
+    /// Gitea out for the whole hour: every write the run's end and its `on_fail` owed is
+    /// given up, one loud line each naming the issue and what is lost, in the order they
+    /// were asked for — and nothing landed.
+    #[test]
+    fn an_outage_past_the_hour_gives_up_every_owed_write_loudly() {
+        let (mut f, key) = claimed_issue();
+        let before = f.mock.actions().len();
+        f.mock.go_down();
+        assert_eq!(f.finish(&key, "failed"), json!({"ok": true}));
+        for (action, args) in [
+            ("label_add", json!({"label": "needs/human 🚧"})),
+            ("comment", json!({"text": FAILED_NOTE})),
+            ("unassign", json!({})),
+        ] {
+            assert_eq!(f.act(action, args, &key), json!({"ok": true}), "{action}");
+        }
+        f.drain();
+        let gave_up: Vec<String> = f
+            .diag
+            .lines()
+            .into_iter()
+            .filter(|l| l.starts_with("gave up"))
+            .collect();
+        let item = format!("issue \"{TITLE}\" (acme/widgets#7)");
+        assert_eq!(
+            gave_up,
+            [
+                format!(
+                    "gave up on {item} after 1h: deleting the claim marker is lost — gitea \
+                     delete comment: no response (mock failure)"
+                ),
+                format!(
+                    "gave up on {item} after 1h: adding the label \"needs/human 🚧\" is lost — \
+                     gitea add label: no response (mock failure)"
+                ),
+                format!(
+                    "gave up on {item} after 1h: the comment \"attempts spent: run did not \
+                     complete…\" is lost — gitea post comment: no response (mock failure)"
+                ),
+                format!(
+                    "gave up on {item} after 1h: unassigning the bot is lost — gitea get \
+                     issue: no response (mock failure)"
+                ),
+            ]
+        );
+        assert_eq!(f.mock.actions().len(), before, "nothing landed");
+    }
+
+    /// A park Gitea could not be reached for is queued, not refused: `finish` takes no
+    /// fallback, so the claim stays on rather than being released under a park that
+    /// will still land; once Gitea is back the park and the marker's delete land.
+    #[test]
+    fn a_park_during_an_outage_is_queued_and_the_claim_is_kept() {
+        let (mut f, key) = claimed_issue();
+        f.mock.go_down();
+        assert_eq!(f.finish(&key, "park"), json!({"ok": true}));
+        let lines = f.diag.lines();
+        assert_eq!(
+            lines[0],
+            format!(
+                "gitea is unreachable for issue \"{TITLE}\" (acme/widgets#7): gitea add label: \
+                 no response (mock failure); parking it is queued and retried for up to 1h"
+            )
+        );
+        assert!(
+            lines.iter().all(|l| !l.contains("could not deliver")),
+            "{lines:?}"
+        );
+        assert!(f.mock.has_label(7, "afkd/claimed"), "the claim is kept");
+
+        f.mock.clear_failure();
+        f.drain();
+        assert!(f.mock.has_label(7, "afkd/awaiting-reply"));
+        assert!(!f.mock.has_label(7, "afkd/claimed"));
+        assert!(f.mock.assignees_of(7).is_empty());
+        assert!(f
+            .mock
+            .actions()
+            .contains(&Action::DeleteComment { id: marker(&key) }));
+    }
+
+    /// The PR kind's round end through an outage: the marker's delete is queued, the
+    /// `on_done`'s calls queue behind it under the PR's own name, and all of it lands in
+    /// order once Gitea is back.
+    #[test]
+    fn a_pr_round_end_during_an_outage_lands_when_gitea_returns() {
+        let mut f = Fixture::armed_as(PR_KIND, pr_settings());
+        f.mock
+            .add_pull(7, "björn-öst[bot]", "feature/retry-backoff");
+        f.mock
+            .add_comment_body(7, 41, "陳大文", "看起来不对 🚨", 1_790_330_000);
+        let key = f.poll()["unit"]["key"].clone();
+        let before = f.mock.actions().len();
+        f.mock.go_down();
+        assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
+        assert_eq!(
+            f.act(
+                "pr_comment",
+                json!({"text": "round done ✅\n\n- 3m 12s"}),
+                &key
+            ),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            f.diag.lines(),
+            [
+                "gitea is unreachable for pull request \"PR 7\" (acme/widgets#7): gitea delete \
+                 comment: no response (mock failure); deleting the claim marker is queued and \
+                 retried for up to 1h",
+                "gitea still owes pull request \"PR 7\" (acme/widgets#7) earlier writes; the \
+                 comment \"round done ✅…\" is queued behind them",
+            ]
+        );
+        f.mock.clear_failure();
+        f.drain();
+        assert_eq!(
+            f.mock.actions()[before..],
+            [
+                Action::DeleteComment { id: marker(&key) },
+                Action::Comment {
+                    index: 7,
+                    body: "round done ✅\n\n- 3m 12s".into(),
+                },
+            ]
+        );
+    }
+
+    /// afkd closing the pipe with writes still owed: each is named, one line, on the way
+    /// out.
+    #[test]
+    fn closing_with_writes_owed_names_them() {
+        let (mut f, key) = claimed_issue();
+        f.mock.go_down();
+        assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
+        assert_eq!(f.act("close", json!({}), &key), json!({"ok": true}));
+        let said = f.diag.lines().len();
+        f.plugin.close();
+        assert_eq!(
+            f.diag.lines()[said..],
+            [
+                format!(
+                    "afkd ended the plugin with deleting the claim marker for issue \"{TITLE}\" \
+                     (acme/widgets#7) still owed"
+                ),
+                format!(
+                    "afkd ended the plugin with closing it for issue \"{TITLE}\" \
+                     (acme/widgets#7) still owed"
+                ),
+            ]
+        );
     }
 }

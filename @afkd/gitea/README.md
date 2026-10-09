@@ -469,9 +469,20 @@ naming it.
 
 Each action returns a result, like any call: one the forge refused — a label the repository
 does not define (Gitea silently ignores such a name rather than failing, and the plugin
-turns that into an error), a forge that is down — fails with the plugin's sentence. A
-failing `on_claim` gives the issue back and fails the run; a failing post-run slot is logged
-and changes nothing. afkd never retries a slot's action.
+turns that into an error), another 4xx — fails with the plugin's sentence. A failing
+`on_claim` gives the issue back and fails the run; a failing post-run slot is logged and
+changes nothing. afkd never retries a slot's action; the plugin retries what Gitea could not
+take.
+
+**When Gitea cannot be reached.** An action Gitea could not be reached for, or answered with
+a 429 or a 5xx, is queued and the call answers ok, so the slot's next action still runs and
+is queued behind it. The plugin retries the queue in the background, each issue's or pull
+request's writes in the order they were asked for: the first retry 5 seconds after the
+failure, the gap doubling to 5 minutes, for up to an hour. The plugin's own run-end writes —
+the claim marker's release, the park and the `discuss_with` backstop — are retried the same
+way, ahead of the post-run slot's actions. Every write queued is one line in the service
+log; one given up is a loud line naming the issue or pull request and what was lost. The
+queue is held in memory, so a plugin afkd ends names each write it still owes.
 
 **Mind the spelling.** The label actions are written verb-last, `gitea.label_add` and
 `gitea.label_remove`; `@afkd/trello` writes the same two verb-first, `trello.add_label` and
@@ -489,17 +500,20 @@ few things. Each is deliberate, and none changes what a config means.
   after the claim marker is released and, on the `discuss_with` path, after the backstop —
   so a comment `on_done` posts lands after `reviewed, nothing to add` rather than standing
   it down. afkd retries no slot's action, so a post-run
-  `gitea.label_remove(issue, "afkd/claimed")` that fails leaves the re-pick gate on the
-  issue for a human.
+  `gitea.label_remove(issue, "afkd/claimed")` that Gitea refuses, or that it could not be
+  reached for within the hour the plugin retries it, leaves the re-pick gate on the issue
+  for a human.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot
   see — both or neither of `repo`/`org`, a `discuss_with` that names nobody — the plugin
   refuses when it is greeted, in the built-in's own words, and the service ends there.
-- **A park that did not land is released at once.** When the park's label swap cannot be
+- **A park Gitea refused is released at once.** When the park's label swap cannot be
   carried out, the built-in holds the claim and releases it on its next poll. The plugin
-  releases it straight away — drops `afkd/claimed` and the marker — so the next poll
-  retries the issue. The second time the same issue fails that way it is left claimed, for
-  a human, exactly as the built-in does; both say so in the service log.
+  releases a park Gitea refused straight away — drops `afkd/claimed` and the marker — so
+  the next poll retries the issue. The second time the same issue fails that way it is left
+  claimed, for a human, exactly as the built-in does; both say so in the service log. A
+  park Gitea could not be reached for is queued instead, like any write: the claim stays
+  on until the park lands.
 - **One reply is at most 64 KiB.** A brief longer than that is cut to fit, with a note at
   the end telling the agent to read the whole issue through the skill. A thread with more
   new comments than fit in one reply delivers the newest, and names the ones left out.

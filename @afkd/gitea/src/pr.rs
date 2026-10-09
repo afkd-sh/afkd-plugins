@@ -18,19 +18,19 @@
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::client::{GiteaClient, GiteaError, IssueComment, Repo};
 use crate::common::{
-    claim_issue, claim_key_for, claim_label_fault, creds_env, delete_marker, do_action,
-    ensure_claimed_label, lock, release_claim, release_stale, renew_marker, unit_key, ClaimFault,
-    Claimed, Clock, Diag, ScanBudget, Target, CLAIMED_LABEL, ENV_PR_BRANCH, ENV_PR_NUMBER,
-    ENV_REPO,
+    claim_issue, claim_key_for, claim_label_fault, creds_env, delete_marker, ensure_claimed_label,
+    lock, release_claim, release_stale, renew_marker, unit_key, ClaimFault, Claimed, Clock, Diag,
+    ScanBudget, Target, CLAIMED_LABEL, ENV_PR_BRANCH, ENV_PR_NUMBER, ENV_REPO,
 };
 use crate::feedback::{self, FeedbackItem};
 use crate::kind::{ClaimedUnit, Units};
-use crate::lifecycle::{LifecycleAction, Vocabulary, PR_VOCABULARY};
+use crate::lifecycle::{Vocabulary, PR_VOCABULARY};
+use crate::outbox::{lost_line, Item, Outbox, Write};
 use crate::settings::GiteaConfig;
 use crate::wire::{Facts, Fields, PrFields, UnitOutcome, WireFile, WireUnit};
 use crate::{NUMBER_FILE, PR_DIR, TASK_FILE};
@@ -77,6 +77,16 @@ impl ClaimedUnit for Unit {
     fn claimed_as(&self) -> &str {
         &self.claimed_as
     }
+
+    fn item(&self) -> Item {
+        Item {
+            noun: "pull request",
+            repo: self.repo.clone(),
+            number: self.number,
+            title: self.title.clone(),
+            me: self.claimed_as.clone(),
+        }
+    }
 }
 
 /// The `pr` kind's vendor half: the target, the `author_me` filter, and the claim.
@@ -90,6 +100,8 @@ pub(crate) struct PrUnits {
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
     /// its claim reserve.
     call_deadline: Mutex<Option<Instant>>,
+    /// The writes the forge could not take, which the plugin's worker retries.
+    outbox: Arc<Outbox>,
 }
 
 impl PrUnits {
@@ -100,6 +112,7 @@ impl PrUnits {
             author_me: cfg.author_me,
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
+            outbox: Arc::default(),
         }
     }
 }
@@ -271,31 +284,40 @@ impl Units for PrUnits {
     }
 
     /// The plugin-owned end of a review round: the claim marker's release, whatever the
-    /// outcome. Nothing closes the PR — a human's merge ends the loop by dropping it from
-    /// the `state=open` set — and there is no park; afkd runs the `on_done`/`on_fail` hook
-    /// after this.
+    /// outcome, through the outbox — so one Gitea could not take is retried, ahead of the
+    /// `on_done`/`on_fail` hook's actions, which afkd sends after this. Nothing closes the
+    /// PR — a human's merge ends the loop by dropping it from the `state=open` set — and
+    /// there is no park.
     ///
     /// Always `true`: the release is best-effort, since a leaked marker ages out after
     /// `CLAIM_LIFETIME`, so nothing here can leave the round undelivered.
-    fn finish(&self, unit: &Unit, _outcome: UnitOutcome, _facts: &Facts, diag: &dyn Diag) -> bool {
+    fn finish(
+        &self,
+        unit: &Unit,
+        _outcome: UnitOutcome,
+        _facts: &Facts,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> bool {
         // The claim is over however it ended, so its marker goes — a finished round must
         // leave no marker to out-order the next claim.
-        if let Err(e) = self.client.delete_comment(&unit.repo, unit.claim_id) {
-            diag.err(&e);
+        let release = Write::Release {
+            marker: unit.claim_id,
+        };
+        if let Err(e) = self.deliver(unit, release.clone(), now, diag) {
+            diag.err(&lost_line(&unit.item(), &release, &e, None));
         }
         true
     }
 
-    /// Do one action a hook called on the unit's PR — Gitea models a PR as an issue, so
-    /// the issue kind's executor serves it as it is — as the login it was claimed as.
-    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GiteaError> {
-        do_action(
-            &*self.client,
-            &unit.repo,
-            unit.number,
-            action,
-            &unit.claimed_as,
-        )
+    /// Gitea models a PR as an issue, so a hook's action on the unit's PR is the issue
+    /// kind's executor, as it is.
+    fn client(&self) -> &dyn GiteaClient {
+        &*self.client
+    }
+
+    fn outbox(&self) -> &Arc<Outbox> {
+        &self.outbox
     }
 }
 
@@ -313,6 +335,7 @@ mod tests {
     use crate::client::{Action, MockClient};
     use crate::common::{CaptureDiag, FakeClock, CALL_BUDGET, CLAIM_RESERVE};
     use crate::feedback::review_thread;
+    use crate::lifecycle::LifecycleAction;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -363,13 +386,16 @@ mod tests {
 
         /// The `finish` call for `unit`, ended `outcome` with `facts`.
         fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts) -> bool {
-            self.units.finish(unit, outcome, facts, &self.diag)
+            self.units
+                .finish(unit, outcome, facts, self.clock.now(), &self.diag)
         }
 
         /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
         /// (`on_claim`) or a `finish` (the post-run hooks).
         fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GiteaError> {
-            self.units.act(unit, &action)
+            self.units
+                .deliver(unit, Write::Act(action), self.clock.now(), &self.diag)
+                .map(drop)
         }
     }
 
@@ -852,7 +878,7 @@ mod tests {
     }
 
     /// Nothing the finish does can leave a round undelivered: a marker release the forge
-    /// refused is diagnosed (the marker ages out), and the round is still delivered. A
+    /// refused is said lost (the marker ages out), and the round is still delivered. A
     /// hook's action the forge refused is that `call`'s error, for afkd to fail the hook.
     #[test]
     fn a_failed_marker_release_is_logged_and_the_round_still_delivered() {
@@ -861,7 +887,7 @@ mod tests {
         h.client
             .patch_assignees(&repo(), 7, &["me".into()])
             .unwrap();
-        h.client.fail("delete comment");
+        h.client.refuse("delete comment", 403);
         let facts = Facts {
             signal: "fault".into(),
             reason: Some("nope".into()),
@@ -869,16 +895,19 @@ mod tests {
         assert!(h.finish(&unit(1, Vec::new()), UnitOutcome::Failed, &facts));
         assert_eq!(
             h.diag.lines(),
-            ["gitea delete comment: no response (mock failure)"]
+            [
+                "pull request \"PR 7\" (acme/widgets#7): deleting the claim marker is lost — \
+              gitea delete comment: forge returned status 403"
+            ]
         );
 
-        h.client.fail("patch assignees");
+        h.client.refuse("patch assignees", 403);
         let err = h
             .act(&unit(1, Vec::new()), LifecycleAction::Unassign)
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "gitea patch assignees: no response (mock failure)"
+            "gitea patch assignees: forge returned status 403"
         );
         assert_eq!(h.client.assignees_of(7), ["me"]);
     }

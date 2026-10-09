@@ -9,6 +9,9 @@
 
 mod common;
 
+use std::thread;
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
 
 use common::fake::{FakeGitea, TOKEN};
@@ -76,6 +79,33 @@ fn finish(plugin: &mut Plugin, unit: &Value, outcome: &str, facts: Value) -> Val
         json!({"call": "finish", "id": unit["id"], "key": unit["key"],
                        "outcome": outcome, "facts": facts}),
     )
+}
+
+/// How long a write queued through an outage may take to land once the forge is back:
+/// the worker's first retry comes 5 s after the failure, and its second 10 s after that.
+const RETRY_WAIT: Duration = Duration::from_secs(20);
+
+/// Wait, up to [`RETRY_WAIT`], for `done` to hold — the outbox's worker landing what an
+/// outage queued, on its own thread and its own clock.
+fn soon(what: &str, plugin: &Plugin, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + RETRY_WAIT;
+    while !done() {
+        assert!(
+            Instant::now() < deadline,
+            "{what} within {RETRY_WAIT:?}; stderr: {}",
+            plugin.stderr()
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The writes the forge answered from request `from` on, as `METHOD path`.
+fn writes_since(fake: &FakeGitea, from: usize) -> Vec<String> {
+    fake.seen()[from..]
+        .iter()
+        .filter(|seen| seen.method != "GET")
+        .map(|seen| format!("{} {}", seen.method, seen.path))
+        .collect()
 }
 
 /// The ids of the claim markers on an issue.
@@ -591,8 +621,8 @@ fn a_park_finish_parks_and_on_park_comments_verbatim() {
     plugin.finish();
 }
 
-/// A park that does not land — the forge refuses the awaiting label — still answers
-/// `ok`, since afkd would crash the service otherwise. The claim is released at once so
+/// A park that does not land — the forge refuses the awaiting label, which no retry
+/// changes — still answers `ok`, since afkd would crash the service otherwise. The claim is released at once so
 /// the next poll retries the issue; the second time the same issue fails that way, it is
 /// left claimed for a human.
 #[test]
@@ -601,7 +631,7 @@ fn an_undelivered_park_releases_once_then_leaves_it() {
     let mut plugin = Plugin::armed(settings(&fake));
     let park = |plugin: &mut Plugin| {
         let unit = plugin.poll()["unit"].clone();
-        fake.fail("add label", 500);
+        fake.fail("add label", 422);
         let reply = finish(plugin, &unit, "park", facts("proceed", None));
         fake.heal("add label");
         assert_eq!(reply, json!({"ok": true}));
@@ -1372,4 +1402,373 @@ fn a_post_run_call_acts_on_the_finished_item_its_handle_names() {
         .iter()
         .any(|c| c.author == ME && c.body == round));
     plugin.finish();
+}
+
+// --- Gitea out of reach: the outbox ---
+
+/// A label an `on_fail` adds: slashed, with an emoji.
+const NEEDS_HUMAN: &str = "needs/human 🚧";
+
+/// What an `on_fail` comments: wide CJK, an em dash, and a fenced block on later lines.
+const FAILED_NOTE: &str = "attempts spent — 修复 failed twice\n\n```\nexit 128\n```";
+
+/// The issue as a log line names it.
+fn issue_named() -> String {
+    format!("issue \"{TITLE}\" (acme/widgets#7)")
+}
+
+/// Whether `stderr` has the line for a write queued because its first try reached no
+/// forge: the stage, then whatever the transport said, then what was queued.
+fn queued(stderr: &str, item: &str, stage: &str, what: &str) -> bool {
+    let (head, tail) = (
+        format!("afkd-gitea: gitea is unreachable for {item}: gitea {stage}: no response ("),
+        format!("; {what} is queued and retried for up to 1h"),
+    );
+    stderr
+        .lines()
+        .any(|line| line.starts_with(&head) && line.ends_with(&tail))
+}
+
+/// Each call of an `on_fail` slot during an outage answers `ok` at once, so the slot runs
+/// on; the first is queued with what went wrong and the rest behind it, one line each.
+/// Once Gitea is back the worker lands all three, in the order they were called, and says
+/// so.
+#[test]
+fn a_call_during_an_outage_answers_ok_and_lands_when_gitea_returns() {
+    let fake = forge();
+    fake.define_label(REPO, NEEDS_HUMAN, false);
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
+
+    fake.outage();
+    for (action, args) in [
+        ("label_add", json!({"label": NEEDS_HUMAN})),
+        ("comment", json!({"text": FAILED_NOTE})),
+        ("unassign", json!({})),
+    ] {
+        assert_eq!(
+            plugin.act(action, args, &unit),
+            json!({"ok": true}),
+            "{action}: {}",
+            plugin.stderr()
+        );
+    }
+    let item = issue_named();
+    let stderr = plugin.stderr_soon("unassigning the bot is queued behind them");
+    assert!(
+        queued(
+            &stderr,
+            &item,
+            "add label",
+            &format!("adding the label \"{NEEDS_HUMAN}\"")
+        ),
+        "{stderr}"
+    );
+    for what in [
+        "the comment \"attempts spent — 修复 failed twice…\"".to_string(),
+        "unassigning the bot".to_string(),
+    ] {
+        let line = format!(
+            "afkd-gitea: gitea still owes {item} earlier writes; {what} is queued behind them"
+        );
+        assert!(stderr.contains(&line), "{line}\n{stderr}");
+    }
+    assert!(!fake.dropped().is_empty(), "the first write did go out");
+    assert_eq!(fake.issue_state(REPO, 7).assignees, [ME], "nothing landed");
+
+    let restored = fake.seen().len();
+    fake.restore();
+    soon("the backlog landed", &plugin, || {
+        plugin.stderr().contains("unassigning the bot landed after")
+    });
+    assert_eq!(
+        writes_since(&fake, restored),
+        [
+            "POST /api/v1/repos/acme/widgets/issues/7/labels",
+            "POST /api/v1/repos/acme/widgets/issues/7/comments",
+            "PATCH /api/v1/repos/acme/widgets/issues/7",
+        ]
+    );
+    let issue = fake.issue_state(REPO, 7);
+    assert!(issue.labels.contains(&NEEDS_HUMAN.to_string()));
+    assert!(issue.assignees.is_empty());
+    let said: Vec<String> = fake.comments(REPO, 7).into_iter().map(|c| c.body).collect();
+    assert!(said.contains(&FAILED_NOTE.to_string()), "{said:?}");
+    let stderr = plugin.finish();
+    assert!(
+        stderr.contains(&format!(
+            "afkd-gitea: gitea is back for {item}: adding the label \"{NEEDS_HUMAN}\" landed \
+             after "
+        )),
+        "{stderr}"
+    );
+}
+
+/// The run-end report through an outage: the claim marker's delete is queued at
+/// `finish`, and the `on_fail` slot's calls after it queue behind it, so once Gitea is
+/// back the marker goes first and the slot's writes follow in order.
+#[test]
+fn a_finish_during_an_outage_releases_the_marker_before_the_post_run_slot() {
+    let fake = forge();
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
+    let marker = markers(&fake, 7)[0];
+
+    fake.outage();
+    let reply = finish(
+        &mut plugin,
+        &unit,
+        "failed",
+        facts("fault", Some("cargo test: 3 failed")),
+    );
+    assert_eq!(reply, json!({"ok": true}));
+    for (action, args) in [
+        ("label_remove", json!({"label": "afkd/working"})),
+        ("unassign", json!({})),
+    ] {
+        assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
+    }
+    let stderr = plugin.stderr_soon("unassigning the bot is queued behind them");
+    assert!(
+        queued(
+            &stderr,
+            &issue_named(),
+            "delete comment",
+            "deleting the claim marker"
+        ),
+        "{stderr}"
+    );
+
+    let restored = fake.seen().len();
+    fake.restore();
+    soon("the on_fail state", &plugin, || {
+        plugin.stderr().contains("unassigning the bot landed after")
+    });
+    let working = fake
+        .labels(REPO)
+        .into_iter()
+        .find(|l| l.name == "afkd/working")
+        .expect("defined")
+        .id;
+    assert_eq!(
+        writes_since(&fake, restored),
+        [
+            format!("DELETE /api/v1/repos/acme/widgets/issues/comments/{marker}"),
+            format!("DELETE /api/v1/repos/acme/widgets/issues/7/labels/{working}"),
+            "PATCH /api/v1/repos/acme/widgets/issues/7".to_string(),
+        ]
+    );
+    let issue = fake.issue_state(REPO, 7);
+    assert!(issue.assignees.is_empty());
+    assert!(!issue.labels.contains(&"afkd/working".to_string()));
+    assert!(markers(&fake, 7).is_empty());
+    plugin.finish();
+}
+
+/// A 429 or a 5xx is the forge saying "not now": queued, `ok`, and landed once the forge
+/// takes it. Any other 4xx is its answer about the write, which no retry changes: the
+/// call's sentence, and nothing queued.
+#[test]
+fn a_429_or_5xx_is_queued_and_another_4xx_answers_its_sentence() {
+    let fake = forge();
+    fake.define_label(REPO, NEEDS_HUMAN, false);
+    fake.define_label(REPO, "afkd/reviewed ✅", false);
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+
+    for status in [429, 503] {
+        let label = if status == 429 {
+            NEEDS_HUMAN
+        } else {
+            "afkd/working"
+        };
+        fake.fail("add label", status);
+        assert_eq!(
+            plugin.act("label_add", json!({"label": label}), &unit),
+            json!({"ok": true}),
+            "{status}"
+        );
+        let line = format!(
+            "afkd-gitea: gitea is unreachable for {}: gitea add label: forge returned status \
+             {status}; adding the label \"{label}\" is queued and retried for up to 1h",
+            issue_named()
+        );
+        let stderr = plugin.stderr_soon(&line);
+        assert!(stderr.contains(&line), "{stderr}");
+        fake.heal("add label");
+        let landed = format!("adding the label \"{label}\" landed after");
+        soon("the label landed", &plugin, || {
+            plugin.stderr().contains(&landed)
+        });
+        assert!(fake
+            .issue_state(REPO, 7)
+            .labels
+            .contains(&label.to_string()));
+    }
+
+    fake.fail("add label", 403);
+    assert_eq!(
+        plugin.act("label_add", json!({"label": "afkd/reviewed ✅"}), &unit),
+        json!({"ok": false, "error": "gitea add label: forge returned status 403"})
+    );
+    fake.heal("add label");
+    let stderr = plugin.finish();
+    assert!(
+        !stderr.contains("still owed"),
+        "nothing was queued: {stderr}"
+    );
+}
+
+/// A write queued through an outage that the forge, once back, refuses is given up at
+/// once with one loud line naming the issue and what is lost — and the item's next write
+/// still lands.
+#[test]
+fn a_queued_write_the_forge_then_refuses_is_given_up_loudly() {
+    let fake = forge();
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+
+    fake.outage();
+    for (action, args) in [
+        ("label_add", json!({"label": NEEDS_HUMAN})),
+        ("comment", json!({"text": FAILED_NOTE})),
+    ] {
+        assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
+    }
+    fake.fail("add label", 422);
+    fake.restore();
+    let lost = format!(
+        "afkd-gitea: gave up on {} after 5s: adding the label \"{NEEDS_HUMAN}\" is lost — \
+         gitea add label: forge returned status 422",
+        issue_named()
+    );
+    soon("the refused label given up", &plugin, || {
+        plugin.stderr().contains(&lost)
+    });
+    soon("the comment behind it landed", &plugin, || {
+        fake.comments(REPO, 7).iter().any(|c| c.body == FAILED_NOTE)
+    });
+    fake.heal("add label");
+    plugin.finish();
+}
+
+/// A park Gitea cannot be reached for is queued, not refused: `finish` takes no
+/// fallback, so the claim stays on rather than being released under a park that still
+/// lands; once Gitea is back the issue is parked and its marker gone.
+#[test]
+fn a_park_during_an_outage_is_queued_then_lands() {
+    let fake = forge();
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
+
+    fake.outage();
+    let reply = finish(
+        &mut plugin,
+        &unit,
+        "park",
+        facts("fault", Some("parked: awaiting a human reply")),
+    );
+    assert_eq!(reply, json!({"ok": true}));
+    let stderr = plugin.stderr_soon("deleting the claim marker is queued behind them");
+    assert!(
+        queued(&stderr, &issue_named(), "add label", "parking it"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("could not deliver"), "{stderr}");
+    assert!(fake
+        .issue_state(REPO, 7)
+        .labels
+        .contains(&"afkd/claimed".to_string()));
+
+    fake.restore();
+    soon("the park landed", &plugin, || {
+        plugin
+            .stderr()
+            .contains("deleting the claim marker landed after")
+    });
+    let issue = fake.issue_state(REPO, 7);
+    assert!(issue.labels.contains(&"afkd/awaiting-reply".to_string()));
+    assert!(!issue.labels.contains(&"afkd/claimed".to_string()));
+    assert!(issue.assignees.is_empty());
+    assert!(markers(&fake, 7).is_empty());
+    plugin.finish();
+}
+
+/// The PR kind's round end through an outage: the marker's delete and the `on_done`'s
+/// calls are queued under the PR's own name, and land in order once Gitea is back.
+#[test]
+fn a_pr_round_end_during_an_outage_lands_when_gitea_returns() {
+    let (fake, _) = pr_forge();
+    let mut plugin = Plugin::armed_as(PR_KIND, pr_settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
+    let marker = markers(&fake, 7)[0];
+
+    fake.outage();
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    let done = "Round done ✅ — 重试 now caps at 30s.\n\nSee the run log.";
+    for (action, args) in [
+        ("pr_comment", json!({"text": done})),
+        ("pr_unassign", json!({})),
+    ] {
+        assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
+    }
+    let pr = format!("pull request \"{PR_TITLE}\" (acme/widgets#7)");
+    let stderr = plugin.stderr_soon("unassigning the bot is queued behind them");
+    assert!(
+        queued(&stderr, &pr, "delete comment", "deleting the claim marker"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "afkd-gitea: gitea still owes {pr} earlier writes; the comment \"Round done ✅ — \
+             重试 now caps at 30s.…\" is queued behind them"
+        )),
+        "{stderr}"
+    );
+
+    let restored = fake.seen().len();
+    fake.restore();
+    soon("the round end landed", &plugin, || {
+        plugin.stderr().contains("unassigning the bot landed after")
+    });
+    assert_eq!(
+        writes_since(&fake, restored),
+        [
+            format!("DELETE /api/v1/repos/acme/widgets/issues/comments/{marker}"),
+            "POST /api/v1/repos/acme/widgets/issues/7/comments".to_string(),
+            "PATCH /api/v1/repos/acme/widgets/issues/7".to_string(),
+        ]
+    );
+    assert!(markers(&fake, 7).is_empty());
+    assert!(fake.issue_state(REPO, 7).assignees.is_empty());
+    plugin.finish();
+}
+
+/// afkd closing stdin while writes are still owed: the plugin exits cleanly, naming each
+/// on its way out.
+#[test]
+fn closing_stdin_with_writes_owed_names_them() {
+    let fake = forge();
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    on_claim(&mut plugin, &unit);
+    fake.outage();
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    assert_eq!(plugin.act("close", json!({}), &unit), json!({"ok": true}));
+    let stderr = plugin.finish();
+    let item = issue_named();
+    for what in ["deleting the claim marker", "closing it"] {
+        let line = format!("afkd-gitea: afkd ended the plugin with {what} for {item} still owed");
+        assert!(stderr.contains(&line), "{line}\n{stderr}");
+    }
 }

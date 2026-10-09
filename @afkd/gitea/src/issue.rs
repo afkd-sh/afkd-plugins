@@ -22,20 +22,21 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::claim::is_claim;
 use crate::client::{GiteaClient, GiteaError, Issue, IssueComment, Repo};
 use crate::common::{
     claim_issue, claim_key_for, claim_label_fault, comment_watermark, creds_env, delete_marker,
-    do_action, ensure_issue_labels, lock, new_reply_comments, park_issue, release_claim,
-    release_stale, renew_marker, unit_key, ClaimFault, Claimed, Clock, Diag, ScanBudget, Target,
-    AWAITING_LABEL, CLAIMED_LABEL, ENV_ISSUE_NUMBER, ENV_REPO,
+    do_action, ensure_issue_labels, lock, new_reply_comments, release_claim, release_stale,
+    renew_marker, unit_key, ClaimFault, Claimed, Clock, Diag, ScanBudget, Target, AWAITING_LABEL,
+    CLAIMED_LABEL, ENV_ISSUE_NUMBER, ENV_REPO,
 };
 use crate::feedback::{render_feedback_section, FeedbackItem};
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{LifecycleAction, Vocabulary, ISSUE_VOCABULARY};
+use crate::outbox::{lost_line, Item, Outbox, Write};
 use crate::settings::{DiscussWith, GiteaConfig};
 use crate::wire::{Facts, Fields, IssueFields, UnitOutcome, WireFile, WireUnit};
 use crate::{ISSUE_DIR, NUMBER_FILE, PARK_FILE, TASK_FILE};
@@ -88,6 +89,16 @@ impl ClaimedUnit for Unit {
     fn claimed_as(&self) -> &str {
         &self.claimed_as
     }
+
+    fn item(&self) -> Item {
+        Item {
+            noun: "issue",
+            repo: self.repo.clone(),
+            number: self.number,
+            title: self.title.clone(),
+            me: self.claimed_as.clone(),
+        }
+    }
 }
 
 /// The `discuss_with` gate resolved for one poll: afkd's own login (the tail boundary and
@@ -131,6 +142,8 @@ pub(crate) struct IssueUnits {
     /// The current call's deadline, `None` between calls: the poll's scan reads it for
     /// its claim reserve.
     call_deadline: Mutex<Option<Instant>>,
+    /// The writes the forge could not take, which the plugin's worker retries.
+    outbox: Arc<Outbox>,
 }
 
 impl IssueUnits {
@@ -144,6 +157,7 @@ impl IssueUnits {
             discuss_with: cfg.discuss_with.clone(),
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
+            outbox: Arc::default(),
         }
     }
 
@@ -326,39 +340,43 @@ impl IssueUnits {
     /// The plugin-owned end of a run: the **park**'s label swap when the run parked, then
     /// the claim marker's release and, on the `discuss_with` path, the backstop that keeps
     /// afkd the last speaker. afkd runs the `on_done`/`on_fail`/`on_park` hook after this,
-    /// so a comment one of them posts lands after the backstop.
+    /// so a comment one of them posts lands after the backstop. Each write goes through
+    /// the outbox, so one Gitea could not take is retried, and the issue's writes keep
+    /// this order.
     ///
-    /// Returns whether the park reached the remote — always `true` for the other two
-    /// outcomes. A park whose label swap failed leaves `afkd/claimed` standing, so the
-    /// issue is neither parked nor re-pickable.
+    /// Returns whether the park landed or was queued — always `true` for the other two
+    /// outcomes. A park Gitea refused leaves `afkd/claimed` standing, so the issue is
+    /// neither parked nor re-pickable.
     pub(crate) fn finish(
         &self,
         unit: &Unit,
         outcome: UnitOutcome,
         facts: &Facts,
+        now: Instant,
         diag: &dyn Diag,
     ) -> bool {
         let delivered = match outcome {
             UnitOutcome::Clean | UnitOutcome::Failed => true,
-            UnitOutcome::Park => {
-                match park_issue(&*self.client, &unit.repo, unit.number, &unit.claimed_as) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        diag.err(&e);
-                        false
-                    }
+            UnitOutcome::Park => match self.deliver(unit, Write::Park, now, diag) {
+                Ok(_) => true,
+                Err(e) => {
+                    diag.err(&e);
+                    false
                 }
-            }
+            },
         };
         // The claim is over however it ended, so its marker goes — unconditionally, and
         // outside the delivery verdict: the lock is the label.
-        if let Err(e) = self.client.delete_comment(&unit.repo, unit.claim_id) {
-            diag.err(&e);
+        let release = Write::Release {
+            marker: unit.claim_id,
+        };
+        if let Err(e) = self.deliver(unit, release.clone(), now, diag) {
+            diag.err(&lost_line(&unit.item(), &release, &e, None));
         }
         // Last: a comment the agent posted during the run counts as afkd speaking, so it
         // suppresses the backstop.
         if self.discuss_with.is_some() {
-            self.post_backstop_if_silent(unit, outcome, facts, diag);
+            self.post_backstop_if_silent(unit, outcome, facts, now, diag);
         }
         delivered
     }
@@ -372,6 +390,7 @@ impl IssueUnits {
         unit: &Unit,
         outcome: UnitOutcome,
         facts: &Facts,
+        now: Instant,
         diag: &dyn Diag,
     ) {
         let me = unit.claimed_as.as_str();
@@ -388,24 +407,11 @@ impl IssueUnits {
             }
         };
         if !spoke {
-            if let Err(e) =
-                self.client
-                    .post_comment(&unit.repo, unit.number, &backstop_text(outcome, facts))
-            {
-                diag.err(&e);
+            let backstop = Write::Note(backstop_text(outcome, facts));
+            if let Err(e) = self.deliver(unit, backstop.clone(), now, diag) {
+                diag.err(&lost_line(&unit.item(), &backstop, &e, None));
             }
         }
-    }
-
-    /// Do one action a hook called on the unit's issue, as the login it was claimed as.
-    pub(crate) fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GiteaError> {
-        do_action(
-            &*self.client,
-            &unit.repo,
-            unit.number,
-            action,
-            &unit.claimed_as,
-        )
     }
 
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
@@ -495,12 +501,23 @@ impl Units for IssueUnits {
         IssueUnits::classify(scratch, verdict)
     }
 
-    fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts, diag: &dyn Diag) -> bool {
-        IssueUnits::finish(self, unit, outcome, facts, diag)
+    fn finish(
+        &self,
+        unit: &Unit,
+        outcome: UnitOutcome,
+        facts: &Facts,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> bool {
+        IssueUnits::finish(self, unit, outcome, facts, now, diag)
     }
 
-    fn act(&self, unit: &Unit, action: &LifecycleAction) -> Result<(), GiteaError> {
-        IssueUnits::act(self, unit, action)
+    fn client(&self) -> &dyn GiteaClient {
+        &*self.client
+    }
+
+    fn outbox(&self) -> &Arc<Outbox> {
+        &self.outbox
     }
 }
 
@@ -618,13 +635,16 @@ mod tests {
 
         /// The `finish` call for `unit`, ended `outcome` with `facts`.
         fn finish(&self, unit: &Unit, outcome: UnitOutcome, facts: &Facts) -> bool {
-            self.units.finish(unit, outcome, facts, &self.diag)
+            self.units
+                .finish(unit, outcome, facts, self.clock.now(), &self.diag)
         }
 
         /// One `call` of a hook's `action` on `unit`, as afkd sends it after a `poll`
         /// (`on_claim`) or a `finish` (the post-run hooks).
         fn act(&self, unit: &Unit, action: LifecycleAction) -> Result<(), GiteaError> {
-            self.units.act(unit, &action)
+            self.units
+                .deliver(unit, Write::Act(action), self.clock.now(), &self.diag)
+                .map(drop)
         }
 
         /// Define the two afkd-managed labels in the repo, as a repository afkd has
@@ -1396,7 +1416,7 @@ mod tests {
 
     /// The delivery verdict (ADR-0059) for the one outcome the plugin still owes a
     /// write: the park's label swap, which the re-arm gate reads. A park whose swap
-    /// landed is delivered; one whose swap failed is not, and leaves `afkd/claimed`
+    /// landed is delivered; one Gitea refused is not, and leaves `afkd/claimed`
     /// standing, so the issue is neither parked nor re-picked — and the plugin's fallback
     /// releases it. Either way the finish runs no `on_park` action: that hook is afkd's.
     #[test]
@@ -1425,7 +1445,7 @@ mod tests {
         );
 
         let no_park = park_harness();
-        no_park.client.fail("add label");
+        no_park.client.refuse("add label", 403);
         assert!(!park(&no_park), "an unparked issue is not delivered");
         assert!(!no_park.client.has_label(1, AWAITING_LABEL));
         assert!(
@@ -1837,7 +1857,7 @@ mod tests {
     /// AC6 — a claim marker is not afkd speaking, so a silent turn still backstops.
     ///
     /// The run-end release normally takes the marker away before the last-speaker
-    /// diff reads the thread; here that delete **fails** (the realistic case the
+    /// diff reads the thread; here Gitea **refuses** that delete (the realistic case the
     /// guard exists for), so the marker is still sitting there, self-authored and
     /// new since the claim-time snapshot. Without the marker exclusion it would read
     /// as afkd having spoken, the backstop would stand down, and the human's reply
@@ -1850,7 +1870,7 @@ mod tests {
         h.client.add_comment_body(1, 10, "álvaro", REPLY, 100);
 
         let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
-        h.client.fail("delete comment");
+        h.client.refuse("delete comment", 403);
         h.finish(&unit, UnitOutcome::Clean, &Facts::none());
 
         assert_eq!(
@@ -1956,6 +1976,112 @@ mod tests {
             comments_posted(&h, 1),
             vec!["reviewed, nothing to add", "Fixed in 3m 12s."]
         );
+    }
+
+    /// The run-end writes through an outage on the `discuss_with` path: the marker's
+    /// delete is queued, the after-read fails, so the backstop is posted anyway — queued
+    /// behind the delete — and the post-run hook's comment queues behind both. All three
+    /// land in that order once the forge is back.
+    #[test]
+    fn a_backstop_during_an_outage_queues_behind_the_marker_release() {
+        let h = Harness::new(discuss_cfg(DiscussWith::Anyone), "me");
+        h.client
+            .add_issue_assigned(1, "Retry storm 🚨", "It retries forever.", &[], &["me"]);
+        h.client.add_comment_body(1, 10, "álvaro", REPLY, 100);
+        let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
+        let before = h.client.actions().len();
+
+        h.client.go_down();
+        assert!(h.finish(&unit, UnitOutcome::Clean, &Facts::none()));
+        h.act(&unit, LifecycleAction::Comment("Fixed in 3m 12s.".into()))
+            .expect("queued, not refused");
+        assert_eq!(
+            h.diag.lines(),
+            [
+                "gitea is unreachable for issue \"Retry storm 🚨\" (acme/widgets#1): gitea \
+                 delete comment: no response (mock failure); deleting the claim marker is \
+                 queued and retried for up to 1h",
+                "gitea list comments: no response (mock failure)",
+                "gitea still owes issue \"Retry storm 🚨\" (acme/widgets#1) earlier writes; the \
+                 comment \"reviewed, nothing to add\" is queued behind them",
+                "gitea still owes issue \"Retry storm 🚨\" (acme/widgets#1) earlier writes; the \
+                 comment \"Fixed in 3m 12s.\" is queued behind them",
+            ]
+        );
+        assert_eq!(h.client.actions().len(), before);
+
+        h.client.clear_failure();
+        h.clock.advance(crate::outbox::RETRY_FIRST);
+        assert_eq!(
+            h.units.outbox().deliver_due(&*h.client, &h.clock, &h.diag),
+            None
+        );
+        assert_eq!(
+            h.client.actions()[before..],
+            [
+                Action::DeleteComment { id: unit.claim_id },
+                Action::Comment {
+                    index: 1,
+                    body: "reviewed, nothing to add".into(),
+                },
+                Action::Comment {
+                    index: 1,
+                    body: "Fixed in 3m 12s.".into(),
+                },
+            ]
+        );
+    }
+
+    /// Each write the forge could not take says so once, as it is queued: the first with
+    /// the error, each behind it as owed behind the first.
+    #[test]
+    fn every_queued_write_logs_one_line() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        let title = "修复 — \"the\" retry storm 🚨";
+        h.client.add_issue_assigned(1, title, "", &[], &["me"]);
+        let unit = Unit {
+            title: title.into(),
+            ..unit(1)
+        };
+        h.client.go_down();
+        for action in [
+            LifecycleAction::LabelAdd("afkd/reviewed ✅".into()),
+            LifecycleAction::Comment("## 完了 ✅\n\n- took 3m".into()),
+            LifecycleAction::Unassign,
+        ] {
+            h.act(&unit, action).expect("queued, not refused");
+        }
+        assert_eq!(
+            h.diag.lines(),
+            [
+                format!(
+                    "gitea is unreachable for issue \"{title}\" (acme/widgets#1): gitea add \
+                     label: no response (mock failure); adding the label \"afkd/reviewed ✅\" is \
+                     queued and retried for up to 1h"
+                ),
+                format!(
+                    "gitea still owes issue \"{title}\" (acme/widgets#1) earlier writes; the \
+                     comment \"## 完了 ✅…\" is queued behind them"
+                ),
+                format!(
+                    "gitea still owes issue \"{title}\" (acme/widgets#1) earlier writes; \
+                     unassigning the bot is queued behind them"
+                ),
+            ]
+        );
+    }
+
+    /// A reply the plugin could not read is not retried inline either: the action is the
+    /// call's error, and nothing is queued, since the write may already have landed.
+    #[test]
+    fn a_decode_inline_still_answers_err() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        h.client.add_issue(1, "Fix", "do it", &[]);
+        h.client.fail_decode("set state");
+        let err = h.act(&unit(1), LifecycleAction::Close).unwrap_err();
+        assert!(matches!(err, GiteaError::Decode { .. }), "{err}");
+        assert!(!h.units.outbox().owes("acme/widgets#1"));
+        assert!(h.diag.lines().is_empty(), "{:?}", h.diag.lines());
     }
 
     #[test]
