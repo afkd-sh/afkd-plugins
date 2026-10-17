@@ -1,5 +1,5 @@
 name = "@afkd/gitea"
-version = "0.5.0"
+version = "0.6.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -275,7 +275,7 @@ name = "unassign"
   required = true
 
 [[action]]
-name = "label_add"
+name = "add_label"
 
   [[action.param]]
   name = "issue"
@@ -288,7 +288,7 @@ name = "label_add"
   required = true
 
 [[action]]
-name = "label_remove"
+name = "remove_label"
 
   [[action.param]]
   name = "issue"
@@ -340,7 +340,7 @@ name = "pr_unassign"
   required = true
 
 [[action]]
-name = "pr_label_add"
+name = "pr_add_label"
 
   [[action.param]]
   name = "pr"
@@ -353,7 +353,7 @@ name = "pr_label_add"
   required = true
 
 [[action]]
-name = "pr_label_remove"
+name = "pr_remove_label"
 
   [[action.param]]
   name = "pr"

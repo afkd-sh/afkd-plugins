@@ -31,7 +31,7 @@ use crate::feedback::FeedbackItem;
 use crate::lifecycle::LifecycleAction;
 use crate::settings::GiteaConfig;
 
-/// The in-progress label the claim adds (and a hook's `label_remove` removes by id). A
+/// The in-progress label the claim adds (and a hook's `remove_label` removes by id). A
 /// fixed internal name, like the `[afkd-claim]` marker. It is also the **re-pick gate** the kind's
 /// `eligible` reads, so the plugin creates it in a repository that does not define it
 /// ([`ensure_labels`]) — Gitea would otherwise drop the write and re-claim the unit on
@@ -375,9 +375,9 @@ pub(crate) fn claim_label_fault(
 /// Carry out one lifecycle action against an issue — what one `call` does.
 ///
 /// A `Comment` posts its text as afkd sent it: any `#{…}` in it is afkd's, already
-/// interpolated. `LabelRemove` resolves the name to its id and removes by id (**never** the
+/// interpolated. `RemoveLabel` resolves the name to its id and removes by id (**never** the
 /// all-clearing bare `…/labels` path); a name that resolves to no id is a no-op.
-/// `LabelAdd` is **not** forgiving of an undefined name: Gitea drops it under a success
+/// `AddLabel` is **not** forgiving of an undefined name: Gitea drops it under a success
 /// status and the client turns that into an error.
 pub(crate) fn do_action(
     client: &dyn GiteaClient,
@@ -391,8 +391,8 @@ pub(crate) fn do_action(
         // they read-modify-write rather than evict (or clear) a human's assignment.
         LifecycleAction::AssignMe => assign_me(client, repo, index, me),
         LifecycleAction::Unassign => unassign_me(client, repo, index, me),
-        LifecycleAction::LabelAdd(name) => client.add_label(repo, index, name),
-        LifecycleAction::LabelRemove(name) => match label_named(client, repo, name)? {
+        LifecycleAction::AddLabel(name) => client.add_label(repo, index, name),
+        LifecycleAction::RemoveLabel(name) => match label_named(client, repo, name)? {
             Some(label) => client.remove_label(repo, index, &label.id.to_string()),
             None => Ok(()),
         },
@@ -1033,14 +1033,14 @@ mod tests {
     }
 
     #[test]
-    fn do_action_label_remove_resolves_to_an_id() {
+    fn do_action_remove_label_resolves_to_an_id() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &["afkd/claimed"]);
         do_action(
             &c,
             &repo(),
             7,
-            &LifecycleAction::LabelRemove("afkd/claimed".into()),
+            &LifecycleAction::RemoveLabel("afkd/claimed".into()),
             "me",
         )
         .unwrap();
@@ -1053,8 +1053,8 @@ mod tests {
     }
 
     #[test]
-    fn do_action_label_remove_is_a_no_op_when_the_name_has_no_id() {
-        // A LabelRemove for a name that resolves to no id is a no-op (nothing to remove) —
+    fn do_action_remove_label_is_a_no_op_when_the_name_has_no_id() {
+        // A RemoveLabel for a name that resolves to no id is a no-op (nothing to remove) —
         // never the all-clearing bare `…/labels` path (ADR-0031). Here the label was never
         // defined, so `label_id` returns `None` and no removal is recorded.
         let c = MockClient::new("me");
@@ -1063,7 +1063,7 @@ mod tests {
             &c,
             &repo(),
             7,
-            &LifecycleAction::LabelRemove("afkd/absent".into()),
+            &LifecycleAction::RemoveLabel("afkd/absent".into()),
             "me",
         )
         .unwrap();
@@ -1122,12 +1122,12 @@ mod tests {
         );
     }
 
-    /// AC5 — a `label_add` naming a label the repository does not define is an
+    /// AC5 — an `add_label` naming a label the repository does not define is an
     /// error, not a quiet no-op: Gitea drops the name and answers success, and the
     /// client reads the resulting list and refuses — so the `call` answers `ok:false`
     /// and afkd fails the hook, rather than the label silently never landing.
     #[test]
-    fn a_label_add_the_forge_did_not_apply_is_an_error() {
+    fn an_add_label_the_forge_did_not_apply_is_an_error() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &["afkd/ready"]);
         // `afkd/working` is never defined in this repo — the shape the docs' own
@@ -1136,7 +1136,7 @@ mod tests {
             &c,
             &repo(),
             7,
-            &LifecycleAction::LabelAdd("afkd/working".into()),
+            &LifecycleAction::AddLabel("afkd/working".into()),
             "me",
         )
         .expect_err("a dropped label add is a failed action");

@@ -1476,7 +1476,7 @@ mod mock {
     }
 
     #[test]
-    fn label_add_then_remove_by_name() {
+    fn add_label_then_remove_by_name() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &[]);
         c.add_label(&repo(), 7, "afkd/claimed").unwrap();

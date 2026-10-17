@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn a_call_decodes_with_its_args() {
         let call: Request = serde_json::from_str(
-            r#"{"call":"call","action":"label_add",
+            r#"{"call":"call","action":"add_label",
                 "args":{"issue":{"id":"7","key":"acme/widgets#7#1000001"},
                         "label":"afkd/reviewed ✅"},
                 "key":"acme/widgets#8#1000002","later":1}"#,
@@ -316,7 +316,7 @@ mod tests {
         let Request::Call { action, args } = call else {
             panic!("{call:?}");
         };
-        assert_eq!(action, "label_add");
+        assert_eq!(action, "add_label");
         assert_eq!(args["issue"]["key"], "acme/widgets#7#1000001");
         assert_eq!(args["label"], "afkd/reviewed ✅");
         assert!(

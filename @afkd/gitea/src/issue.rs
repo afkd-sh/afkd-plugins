@@ -269,7 +269,7 @@ impl IssueUnits {
                         // Re-claim of a parked issue: drop the awaiting-reply marker so
                         // the gate is clean for the next round.
                         if parked {
-                            let unpark = LifecycleAction::LabelRemove(AWAITING_LABEL.to_string());
+                            let unpark = LifecycleAction::RemoveLabel(AWAITING_LABEL.to_string());
                             if let Err(e) =
                                 do_action(&*self.client, &repo, issue.number, &unpark, me)
                             {
@@ -892,7 +892,7 @@ mod tests {
     }
 
     /// AC2 — the exclusive trap sprung by the user's own config: their `on_claim`
-    /// calls `gitea.label_add(issue, "afkd/inprogress")`, an **exclusive** label in the
+    /// calls `gitea.add_label(issue, "afkd/inprogress")`, an **exclusive** label in the
     /// `afkd` scope, which strips every other exclusive label in that scope off the issue.
     /// The gate afkd created is not exclusive, so it survives — while the exclusive
     /// `afkd/triage` sitting beside it does not, which is what makes this assertion mean
@@ -906,7 +906,7 @@ mod tests {
         h.client.add_label(&repo(), 1, "afkd/triage").unwrap();
 
         let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
-        h.act(&unit, LifecycleAction::LabelAdd("afkd/inprogress".into()))
+        h.act(&unit, LifecycleAction::AddLabel("afkd/inprogress".into()))
             .unwrap();
 
         assert!(h.client.has_label(1, "afkd/inprogress"), "on_claim ran");
@@ -1011,11 +1011,11 @@ mod tests {
         );
     }
 
-    /// AC5 — a hook's `label_add` for a name Gitea would drop is an **error**, not a
+    /// AC5 — a hook's `add_label` for a name Gitea would drop is an **error**, not a
     /// success, naming the label: the `call` answers `ok:false`, so afkd fails the hook
     /// there and runs nothing behind it. The claim itself stands, gate and all.
     #[test]
-    fn a_label_add_gitea_would_drop_is_an_error_and_the_claim_stands() {
+    fn an_add_label_gitea_would_drop_is_an_error_and_the_claim_stands() {
         let h = Harness::new(cfg("acme/widgets"), "me");
         // `afkd/working` is what the docs' own example spells — and this repository
         // never created it.
@@ -1023,7 +1023,7 @@ mod tests {
 
         let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
         let err = h
-            .act(&unit, LifecycleAction::LabelAdd("afkd/working".into()))
+            .act(&unit, LifecycleAction::AddLabel("afkd/working".into()))
             .expect_err("a dropped label add is a failed action");
         assert!(err.to_string().contains("afkd/working"), "{err}");
         assert!(!h.client.has_label(1, "afkd/working"), "nothing landed");
@@ -1367,7 +1367,7 @@ mod tests {
     }
 
     /// Each action a post-run hook calls does its one forge operation on the finished
-    /// unit's issue, as its claim identity: `close` closes it, `label_remove` removes by
+    /// unit's issue, as its claim identity: `close` closes it, `remove_label` removes by
     /// **id** (never the all-clearing path), `unassign` drops afkd's own row alone, and
     /// a comment posts its text byte for byte.
     #[test]
@@ -1385,7 +1385,7 @@ mod tests {
         h.finish(&unit, UnitOutcome::Failed, &fault("boom"));
         let text = "## 失敗 ❌\n\nran out of attempts: #{run.x}";
         for action in [
-            LifecycleAction::LabelRemove(CLAIMED_LABEL.into()),
+            LifecycleAction::RemoveLabel(CLAIMED_LABEL.into()),
             LifecycleAction::Unassign,
             LifecycleAction::Comment(text.into()),
             LifecycleAction::Close,
@@ -2045,7 +2045,7 @@ mod tests {
         };
         h.client.go_down();
         for action in [
-            LifecycleAction::LabelAdd("afkd/reviewed ✅".into()),
+            LifecycleAction::AddLabel("afkd/reviewed ✅".into()),
             LifecycleAction::Comment("## 完了 ✅\n\n- took 3m".into()),
             LifecycleAction::Unassign,
         ] {

@@ -90,8 +90,8 @@ impl Write {
             Write::Act(action) => match action {
                 LifecycleAction::AssignMe => "assigning it to the bot".to_string(),
                 LifecycleAction::Unassign => "unassigning the bot".to_string(),
-                LifecycleAction::LabelAdd(name) => format!("adding the label \"{name}\""),
-                LifecycleAction::LabelRemove(name) => format!("removing the label \"{name}\""),
+                LifecycleAction::AddLabel(name) => format!("adding the label \"{name}\""),
+                LifecycleAction::RemoveLabel(name) => format!("removing the label \"{name}\""),
                 LifecycleAction::Close => "closing it".to_string(),
                 LifecycleAction::Comment(text) => format!("the comment {}", quoted(text)),
             },
@@ -494,7 +494,7 @@ mod tests {
     }
 
     fn label(name: &str) -> Write {
-        Write::Act(LifecycleAction::LabelAdd(name.into()))
+        Write::Act(LifecycleAction::AddLabel(name.into()))
     }
 
     fn comment(text: &str) -> Write {
@@ -932,7 +932,7 @@ mod tests {
             (Write::Act(LifecycleAction::Unassign), "unassigning the bot"),
             (label("reviewed ✅"), "adding the label \"reviewed ✅\""),
             (
-                Write::Act(LifecycleAction::LabelRemove("Blockerat / Väntar".into())),
+                Write::Act(LifecycleAction::RemoveLabel("Blockerat / Väntar".into())),
                 "removing the label \"Blockerat / Väntar\"",
             ),
             (Write::Act(LifecycleAction::Close), "closing it"),

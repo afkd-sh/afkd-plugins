@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(h.clock.sleeps(), [CLAIM_SETTLE]);
 
         h.act(&unit, LifecycleAction::AssignMe).unwrap();
-        h.act(&unit, LifecycleAction::LabelAdd("afkd/working ⚙".into()))
+        h.act(&unit, LifecycleAction::AddLabel("afkd/working ⚙".into()))
             .unwrap();
         assert_eq!(
             writes()[1..],
@@ -655,7 +655,7 @@ mod tests {
     // --- The post-run hooks' `call`s ---
 
     /// Each action a post-run hook calls does its one forge operation on the finished
-    /// unit's issue, as its claim identity: `label_remove` removes by **name** (never the
+    /// unit's issue, as its claim identity: `remove_label` removes by **name** (never the
     /// all-clearing path), `unassign` takes the bot alone back out, a comment posts its
     /// text byte for byte, and `close` closes the issue.
     #[test]
@@ -672,7 +672,7 @@ mod tests {
         h.finish(&unit);
         let text = "## 失敗 ❌\n\nran out of attempts: #{run.x}";
         for action in [
-            LifecycleAction::LabelRemove("afkd/claimed".into()),
+            LifecycleAction::RemoveLabel("afkd/claimed".into()),
             LifecycleAction::Unassign,
             LifecycleAction::Comment(text.into()),
             LifecycleAction::Close,

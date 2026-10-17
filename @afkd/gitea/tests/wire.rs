@@ -52,7 +52,7 @@ fn facts(signal: &str, reason: Option<&str>) -> Value {
 }
 
 /// The `on_claim` afkd runs after a `poll` hands `unit` over, for a config whose slot is
-/// `gitea.assign_me(issue)` then `gitea.label_add(issue, "afkd/working")` — or, on the
+/// `gitea.assign_me(issue)` then `gitea.add_label(issue, "afkd/working")` — or, on the
 /// pr kind, the same under its own names, `gitea.pr_assign_me(pr)` and so on: one
 /// `call` per action.
 fn on_claim(plugin: &mut Plugin, unit: &Value) {
@@ -62,7 +62,7 @@ fn on_claim(plugin: &mut Plugin, unit: &Value) {
     };
     for (verb, args) in [
         ("assign_me", json!({})),
-        ("label_add", json!({"label": "afkd/working"})),
+        ("add_label", json!({"label": "afkd/working"})),
     ] {
         let action = format!("{prefix}{verb}");
         assert_eq!(
@@ -522,7 +522,7 @@ fn a_clean_finish_drops_the_marker_and_on_done_closes_after() {
     assert!(markers(&fake, 7).is_empty());
 
     for (action, args) in [
-        ("label_remove", json!({"label": "afkd/working"})),
+        ("remove_label", json!({"label": "afkd/working"})),
         ("close", json!({})),
     ] {
         assert_eq!(
@@ -554,7 +554,7 @@ fn a_failed_finish_then_on_fail_keeps_a_human_assignee() {
     );
     assert_eq!(reply, json!({"ok": true}));
     for (action, args) in [
-        ("label_remove", json!({"label": "afkd/working"})),
+        ("remove_label", json!({"label": "afkd/working"})),
         ("unassign", json!({})),
     ] {
         assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
@@ -835,11 +835,11 @@ fn every_action_over_call_lands_on_the_forge() {
     );
     assert_eq!(fake.issue_state(REPO, 7).assignees, ["alice", ME]);
     assert_eq!(
-        plugin.act("label_add", json!({"label": "afkd/reviewed ✅"}), &unit),
+        plugin.act("add_label", json!({"label": "afkd/reviewed ✅"}), &unit),
         json!({"ok": true})
     );
     assert_eq!(
-        plugin.act("label_remove", json!({"label": "afkd/ready"}), &unit),
+        plugin.act("remove_label", json!({"label": "afkd/ready"}), &unit),
         json!({"ok": true})
     );
     assert_eq!(
@@ -891,15 +891,15 @@ fn every_action_over_call_lands_on_the_forge() {
     plugin.finish();
 }
 
-/// A hook's `label_add` for a label the repository never defined — which Gitea drops
+/// A hook's `add_label` for a label the repository never defined — which Gitea drops
 /// under a 200 — is refused with the forge's sentence, so afkd fails the hook there.
 #[test]
-fn a_label_add_gitea_drops_is_refused_over_call() {
+fn an_add_label_gitea_drops_is_refused_over_call() {
     let fake = forge();
     let mut plugin = Plugin::armed(settings(&fake));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(
-        plugin.act("label_add", json!({"label": "undefined"}), &unit),
+        plugin.act("add_label", json!({"label": "undefined"}), &unit),
         json!({"ok": false, "error": "gitea add label: label “undefined” was not applied \
                                         (the repository defines no such label)"})
     );
@@ -1252,7 +1252,7 @@ fn a_clean_pr_finish_then_on_done_leaves_the_pr_open() {
         json!({"ok": true})
     );
     assert_eq!(
-        plugin.act("pr_label_remove", json!({"label": "afkd/working"}), &unit),
+        plugin.act("pr_remove_label", json!({"label": "afkd/working"}), &unit),
         json!({"ok": true})
     );
     let issue = fake.issue_state(REPO, 7);
@@ -1300,7 +1300,7 @@ fn a_failed_pr_finish_then_on_fail_lets_go() {
     );
     assert_eq!(reply, json!({"ok": true}));
     for (action, args) in [
-        ("pr_label_remove", json!({"label": "afkd/working"})),
+        ("pr_remove_label", json!({"label": "afkd/working"})),
         ("pr_unassign", json!({})),
     ] {
         assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
@@ -1443,7 +1443,7 @@ fn a_call_during_an_outage_answers_ok_and_lands_when_gitea_returns() {
 
     fake.outage();
     for (action, args) in [
-        ("label_add", json!({"label": NEEDS_HUMAN})),
+        ("add_label", json!({"label": NEEDS_HUMAN})),
         ("comment", json!({"text": FAILED_NOTE})),
         ("unassign", json!({})),
     ] {
@@ -1525,7 +1525,7 @@ fn a_finish_during_an_outage_releases_the_marker_before_the_post_run_slot() {
     );
     assert_eq!(reply, json!({"ok": true}));
     for (action, args) in [
-        ("label_remove", json!({"label": "afkd/working"})),
+        ("remove_label", json!({"label": "afkd/working"})),
         ("unassign", json!({})),
     ] {
         assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
@@ -1586,7 +1586,7 @@ fn a_429_or_5xx_is_queued_and_another_4xx_answers_its_sentence() {
         };
         fake.fail("add label", status);
         assert_eq!(
-            plugin.act("label_add", json!({"label": label}), &unit),
+            plugin.act("add_label", json!({"label": label}), &unit),
             json!({"ok": true}),
             "{status}"
         );
@@ -1610,7 +1610,7 @@ fn a_429_or_5xx_is_queued_and_another_4xx_answers_its_sentence() {
 
     fake.fail("add label", 403);
     assert_eq!(
-        plugin.act("label_add", json!({"label": "afkd/reviewed ✅"}), &unit),
+        plugin.act("add_label", json!({"label": "afkd/reviewed ✅"}), &unit),
         json!({"ok": false, "error": "gitea add label: forge returned status 403"})
     );
     fake.heal("add label");
@@ -1632,7 +1632,7 @@ fn a_queued_write_the_forge_then_refuses_is_given_up_loudly() {
 
     fake.outage();
     for (action, args) in [
-        ("label_add", json!({"label": NEEDS_HUMAN})),
+        ("add_label", json!({"label": NEEDS_HUMAN})),
         ("comment", json!({"text": FAILED_NOTE})),
     ] {
         assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));

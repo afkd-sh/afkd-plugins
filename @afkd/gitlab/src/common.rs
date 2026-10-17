@@ -35,7 +35,7 @@ use crate::client::{GitlabClient, GitlabError, ItemKind, Note, Project, User};
 use crate::lifecycle::LifecycleAction;
 use crate::settings::GitlabConfig;
 
-/// The in-progress label the claim adds (and a hook's `label_remove` removes by name). A
+/// The in-progress label the claim adds (and a hook's `remove_label` removes by name). A
 /// fixed internal name, like the `[afkd-claim]` marker; GitLab labels are commonly scoped,
 /// so this uses the `::` convention. GitLab creates a label on first use, so the add always
 /// lands.
@@ -201,7 +201,7 @@ pub(crate) fn claim_key_for(project: &Project, iid: u64, marker_id: u64) -> Stri
 /// A `Comment` posts its text as afkd sent it: any `#{…}` in it is afkd's, already
 /// interpolated.
 ///
-/// `LabelRemove` removes the single named label via `remove_labels` (**never** an
+/// `RemoveLabel` removes the single named label via `remove_labels` (**never** an
 /// all-clearing path — GitLab has none); no name→id lookup is needed. `Close` uses the
 /// `close` state event. `AssignMe`/`Unassign` are [`assign_me`]/[`unassign`], which read
 /// the set before replacing it so neither evicts a human.
@@ -216,8 +216,8 @@ pub(crate) fn do_action(
     match action {
         LifecycleAction::AssignMe => assign_me(client, project, kind, iid, me),
         LifecycleAction::Unassign => unassign(client, project, kind, iid, me),
-        LifecycleAction::LabelAdd(name) => client.add_label(project, kind, iid, name),
-        LifecycleAction::LabelRemove(name) => client.remove_label(project, kind, iid, name),
+        LifecycleAction::AddLabel(name) => client.add_label(project, kind, iid, name),
+        LifecycleAction::RemoveLabel(name) => client.remove_label(project, kind, iid, name),
         LifecycleAction::Close => client.set_state(project, kind, iid, "close"),
         LifecycleAction::Comment(text) => client.post_comment(project, kind, iid, text).map(|_| ()),
     }
@@ -1006,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn do_action_label_remove_removes_by_name() {
+    fn do_action_remove_label_removes_by_name() {
         let c = MockClient::new(1, "me");
         c.add_issue(7, "T", "B", &["afkd::claimed"]);
         do_action(
@@ -1014,7 +1014,7 @@ mod tests {
             &project(),
             ItemKind::Issue,
             7,
-            &LifecycleAction::LabelRemove("afkd::claimed".into()),
+            &LifecycleAction::RemoveLabel("afkd::claimed".into()),
             &me(),
         )
         .unwrap();

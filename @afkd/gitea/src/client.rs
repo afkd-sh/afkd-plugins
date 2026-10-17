@@ -1691,7 +1691,7 @@ mod mock {
     }
 
     /// A label the repository **defines** lands on the issue and comes back off by
-    /// its id — the round trip every lifecycle `label_add`/`label_remove` pair makes.
+    /// its id — the round trip every lifecycle `add_label`/`remove_label` pair makes.
     #[test]
     fn a_registered_label_lands_and_removes_by_id() {
         let c = MockClient::new("me");
@@ -1775,7 +1775,7 @@ mod mock {
     /// non-exclusive label is never stripped by anything, which is why afkd's gate
     /// must be one.
     #[test]
-    fn an_exclusive_label_add_strips_its_scope_siblings() {
+    fn an_exclusive_add_label_strips_its_scope_siblings() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &[]);
         c.register_label("afkd/claimed", false);

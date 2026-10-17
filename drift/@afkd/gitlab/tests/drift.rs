@@ -13,8 +13,9 @@
 //!   claim released.
 //! - The **both kinds** leg `afkd validate`s one file with a service of each kind, whose
 //!   slots call every action the plugin provides on the item each is passed and name the
-//!   bot by the config's own constant `BOT`, and the **handle** leg holds `afkd validate`
-//!   to refusing an action passed the other kind's item.
+//!   bot by the config's own constant `BOT`, and refuses the same file spelling the label
+//!   actions noun-first, as they were before they were named Odin-style. The **handle**
+//!   leg holds `afkd validate` to refusing an action passed the other kind's item.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
 //!   each a whole entry file, against the installed plugin.
 //!
@@ -156,7 +157,7 @@ widgets :: service(gitlab) {{
 
   on_claim(issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
   on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
-    gitlab.label_remove(issue, "afkd::claimed")
+    gitlab.remove_label(issue, "afkd::claimed")
     gitlab.comment(issue, "done in #{{outcome.duration}} by #{{BOT}}: #{{issue.title}}")
     gitlab.close(issue)
   }}
@@ -492,11 +493,11 @@ widgets :: service(gitlab) {{
     if gitlab.assign_me(issue) != nil {{ fail("assign_me") }}
   }}
   on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
-    if gitlab.label_remove(issue, "afkd::ready") != nil {{ fail("label_remove afkd::ready") }}
+    if gitlab.remove_label(issue, "afkd::ready") != nil {{ fail("remove_label afkd::ready") }}
     if gitlab.unassign(issue) != nil {{ fail("unassign") }}
-    if gitlab.label_add(issue, "{NEEDS_HUMAN}") != nil {{ fail("label_add") }}
+    if gitlab.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
     if gitlab.comment(issue, "attempts spent: #{{outcome.error}}") != nil {{ fail("comment") }}
-    if gitlab.label_remove(issue, "afkd::claimed") != nil {{ fail("label_remove afkd::claimed") }}
+    if gitlab.remove_label(issue, "afkd::claimed") != nil {{ fail("remove_label afkd::claimed") }}
   }}
 
   work_dir "{home}"
@@ -647,15 +648,15 @@ issues :: service(gitlab) {
 
   on_claim(issue: gitlab.Issue) {
     _ = gitlab.assign_me(issue)
-    _ = gitlab.label_add(issue, "afkd::working ⚙")
+    _ = gitlab.add_label(issue, "afkd::working ⚙")
   }
   on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
-    _ = gitlab.label_remove(issue, "afkd::working ⚙")
+    _ = gitlab.remove_label(issue, "afkd::working ⚙")
     _ = gitlab.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     _ = gitlab.close(issue)
   }
   on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
-    _ = gitlab.label_remove(issue, "afkd::working ⚙")
+    _ = gitlab.remove_label(issue, "afkd::working ⚙")
     _ = gitlab.unassign(issue)
   }
 
@@ -673,10 +674,10 @@ reviews :: service(gitlab.mr) {
 
   on_claim(mr: gitlab.Merge_Request) {
     _ = gitlab.mr_assign_me(mr)
-    _ = gitlab.mr_label_add(mr, "afkd::reviewing 👀")
+    _ = gitlab.mr_add_label(mr, "afkd::reviewing 👀")
   }
   on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
-    _ = gitlab.mr_label_remove(mr, "afkd::reviewing 👀")
+    _ = gitlab.mr_remove_label(mr, "afkd::reviewing 👀")
     _ = gitlab.mr_comment(mr, "round answered by #{BOT} in #{outcome.duration}")
   }
   on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
@@ -694,7 +695,9 @@ reviews :: service(gitlab.mr) {
 /// Both kinds validate as v2 services against the installed plugin: every setting either
 /// writes is one its kind declares, of its type, every action its slots call is one the
 /// plugin provides for that kind, with the item and the parameters it declares, and the bot
-/// is named by the config's own `BOT`.
+/// is named by the config's own `BOT`. The label actions' noun-first names —
+/// `gitlab.label_add`, `gitlab.mr_label_remove` — are no aliases: the same file
+/// spelling them so is refused.
 #[test]
 fn every_kind_validates_as_a_v2_service() {
     let home = TempDir::new().expect("tempdir");
@@ -703,8 +706,8 @@ fn every_kind_validates_as_a_v2_service() {
     let verbs = [
         "assign_me",
         "unassign",
-        "label_add",
-        "label_remove",
+        "add_label",
+        "remove_label",
         "close",
         "comment",
     ];
@@ -723,6 +726,26 @@ fn every_kind_validates_as_a_v2_service() {
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "both kinds validate:\n{report}");
     assert!(!report.contains("warning:"), "cleanly:\n{report}");
+
+    let noun_first = BOTH_KINDS
+        .replace("add_label(", "label_add(")
+        .replace("remove_label(", "label_remove(");
+    write_config(home.path(), &noun_first);
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(1), "the noun-first names are refused:\n{report}");
+    for old in [
+        "label_add",
+        "label_remove",
+        "mr_label_add",
+        "mr_label_remove",
+    ] {
+        assert!(
+            report
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|word| word == old),
+            "the refusal names {old}:\n{report}"
+        );
+    }
 }
 
 /// An action acts on the item it is passed, typed by kind, so an issue action passed the

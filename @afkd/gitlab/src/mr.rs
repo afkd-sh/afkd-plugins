@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(bodies(&unit.feedback), ["note 1"]);
         // The kind's status label alone, then `on_claim`'s calls — all on the MR path.
         h.act(&unit, LifecycleAction::AssignMe).unwrap();
-        h.act(&unit, LifecycleAction::LabelAdd("afkd::reviewing".into()))
+        h.act(&unit, LifecycleAction::AddLabel("afkd::reviewing".into()))
             .unwrap();
         let writes: Vec<Action> = h
             .client

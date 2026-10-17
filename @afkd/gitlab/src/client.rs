@@ -1641,7 +1641,7 @@ mod mock {
     /// A label write lands on the item its `kind` names: an issue and an MR sharing iid 3
     /// are two items, and the MR's label never shows on the issue.
     #[test]
-    fn label_add_then_remove_by_name_records_the_kind() {
+    fn add_label_then_remove_by_name_records_the_kind() {
         let c = MockClient::new(1, "me");
         c.add_issue(3, "T", "B", &[]);
         c.add_mr(3, 1, "me", "feature/x");

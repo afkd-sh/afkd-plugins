@@ -70,15 +70,15 @@ develop :: service(gitlab) {
 
   on_claim(issue: gitlab.Issue) {
     gitlab.assign_me(issue)
-    gitlab.label_add(issue, "afkd::working")
+    gitlab.add_label(issue, "afkd::working")
   }
   on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
-    gitlab.label_remove(issue, "afkd::working")
+    gitlab.remove_label(issue, "afkd::working")
     gitlab.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     gitlab.close(issue)
   }
   on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
-    gitlab.label_remove(issue, "afkd::working")
+    gitlab.remove_label(issue, "afkd::working")
     gitlab.unassign(issue)
   }
 
@@ -93,12 +93,12 @@ reviews :: service(gitlab.mr) {
   author_me     true
   poll_interval 2m~4m
 
-  on_claim(mr: gitlab.Merge_Request) { gitlab.mr_label_add(mr, "afkd::reviewing") }
+  on_claim(mr: gitlab.Merge_Request) { gitlab.mr_add_label(mr, "afkd::reviewing") }
   on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
-    gitlab.mr_label_remove(mr, "afkd::reviewing")
+    gitlab.mr_remove_label(mr, "afkd::reviewing")
     gitlab.mr_comment(mr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
+  on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_remove_label(mr, "afkd::reviewing") }
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, mr: gitlab.Merge_Request) { task() }
@@ -161,7 +161,7 @@ only a marker nobody is renewing any more ages out.
 
 **The claim label.** The plugin holds its re-pick gate in `afkd::claimed`: it adds the
 label itself when a claim is won, and an issue carrying it is never picked up again (a
-human, or a slot's `gitlab.label_remove(issue, "afkd::claimed")`, removes it to retry).
+human, or a slot's `gitlab.remove_label(issue, "afkd::claimed")`, removes it to retry).
 GitLab creates a label the first time it is used, so there is nothing to define up front.
 
 **Cadence.** Polls the forge every `poll_interval` for open issues carrying `source_label`
@@ -296,11 +296,11 @@ reviews :: service(gitlab.mr) {
 
   on_claim(mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)
-    gitlab.mr_label_add(mr, "afkd::reviewing")
+    gitlab.mr_add_label(mr, "afkd::reviewing")
   }
-  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_label_remove(mr, "afkd::reviewing") }
+  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_remove_label(mr, "afkd::reviewing") }
   on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
-    gitlab.mr_label_remove(mr, "afkd::reviewing")
+    gitlab.mr_remove_label(mr, "afkd::reviewing")
     gitlab.mr_unassign(mr)
   }
 
@@ -360,8 +360,8 @@ config's types have no subtyping, so each kind has its own six: `service(gitlab)
 |----------------------------------------|----------------------------------------|-----------------------------------------|
 | `gitlab.assign_me(issue)`              | `gitlab.mr_assign_me(mr)`              | add the bot to the assignees (`assignee_ids`, unioned in) |
 | `gitlab.unassign(issue)`               | `gitlab.mr_unassign(mr)`               | remove **only** the bot from the assignees (a human's stays) |
-| `gitlab.label_add(issue, "<name>")`    | `gitlab.mr_label_add(mr, "<name>")`    | add a named label (`add_labels`)        |
-| `gitlab.label_remove(issue, "<name>")` | `gitlab.mr_label_remove(mr, "<name>")` | remove a named label (`remove_labels`, by name) |
+| `gitlab.add_label(issue, "<name>")`    | `gitlab.mr_add_label(mr, "<name>")`    | add a named label (`add_labels`)        |
+| `gitlab.remove_label(issue, "<name>")` | `gitlab.mr_remove_label(mr, "<name>")` | remove a named label (`remove_labels`, by name) |
 | `gitlab.close(issue)`                  | `gitlab.mr_close(mr)`                  | close the issue or merge request (`state_event=close`) |
 | `gitlab.comment(issue, "<text>")`      | `gitlab.mr_comment(mr, "<text>")`      | post a note, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
 
@@ -388,10 +388,6 @@ actions. Every write queued is one line in the service log; one given up is a lo
 naming the issue or merge request and what was lost. The queue is held in memory, so a
 plugin afkd ends names each write it still owes.
 
-**Mind the spelling.** The label actions are written verb-last, `gitlab.label_add` and
-`gitlab.label_remove`; `@afkd/trello` writes the same two verb-first, `trello.add_label`
-and `trello.remove_label`.
-
 ## Where it differs from the built-in
 
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
@@ -402,7 +398,7 @@ few things. Each is deliberate, and none changes what a config means.
   action is one request to the plugin naming the item it acts on, sent once the plugin's
   own claim or finish has landed: `on_claim` after the claim is won, and the post-run slot
   after the claim marker is released. afkd retries no slot's action, so a post-run
-  `gitlab.label_remove(issue, "afkd::claimed")` that GitLab refuses, or that it could not
+  `gitlab.remove_label(issue, "afkd::claimed")` that GitLab refuses, or that it could not
   be reached for within the hour the plugin retries it, leaves the re-pick gate on the
   issue for a human.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types

@@ -1,5 +1,5 @@
 name = "@afkd/gitlab"
-version = "0.5.0"
+version = "0.6.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -245,7 +245,7 @@ name = "unassign"
   required = true
 
 [[action]]
-name = "label_add"
+name = "add_label"
 
   [[action.param]]
   name = "issue"
@@ -258,7 +258,7 @@ name = "label_add"
   required = true
 
 [[action]]
-name = "label_remove"
+name = "remove_label"
 
   [[action.param]]
   name = "issue"
@@ -310,7 +310,7 @@ name = "mr_unassign"
   required = true
 
 [[action]]
-name = "mr_label_add"
+name = "mr_add_label"
 
   [[action.param]]
   name = "mr"
@@ -323,7 +323,7 @@ name = "mr_label_add"
   required = true
 
 [[action]]
-name = "mr_label_remove"
+name = "mr_remove_label"
 
   [[action.param]]
   name = "mr"

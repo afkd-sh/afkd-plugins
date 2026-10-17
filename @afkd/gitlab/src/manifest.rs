@@ -371,8 +371,8 @@ fn the_actions_are_the_ones_the_code_answers() {
     let reads = BTreeMap::from([
         ("assign_me", none()),
         ("unassign", none()),
-        ("label_add", required("label")),
-        ("label_remove", required("label")),
+        ("add_label", required("label")),
+        ("remove_label", required("label")),
         ("close", none()),
         ("comment", required("text")),
     ]);
@@ -400,6 +400,45 @@ fn the_actions_are_the_ones_the_code_answers() {
         named(&tables, "value").is_empty(),
         "a plugin exposes no values"
     );
+}
+
+/// The `[[action]]` names are Odin-style, spelled out here rather than derived from
+/// [`ACTIONS`]: the issue is the plugin's main thing, so its actions are `verb_object`
+/// with no prefix; a merge request is the second type, so its actions carry the `mr_` type
+/// prefix and then `verb_object`. None puts the noun first, as `label_add` and
+/// `mr_label_add` once did.
+#[test]
+fn the_action_names_are_odin_style() {
+    let tables = tables(MANIFEST);
+    let actions: Vec<String> = named(&tables, "action")
+        .iter()
+        .map(|t| t["name"].trim_matches('"').to_string())
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "assign_me",
+            "unassign",
+            "add_label",
+            "remove_label",
+            "close",
+            "comment",
+            "mr_assign_me",
+            "mr_unassign",
+            "mr_add_label",
+            "mr_remove_label",
+            "mr_close",
+            "mr_comment",
+        ]
+    );
+    for name in &actions {
+        assert!(
+            !name.starts_with("label_")
+                && !name.ends_with("_label_add")
+                && !name.ends_with("_label_remove"),
+            "{name} puts the noun first"
+        );
+    }
 }
 
 /// A plugin's kinds, actions, withables and handle types share one namespace (lang-v2

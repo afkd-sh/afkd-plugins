@@ -69,10 +69,10 @@ develop :: service(gitea) {
 
   on_claim(issue: gitea.Issue) {
     gitea.assign_me(issue)
-    gitea.label_add(issue, "afkd/working")
+    gitea.add_label(issue, "afkd/working")
   }
   on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
-    gitea.label_remove(issue, "afkd/working")
+    gitea.remove_label(issue, "afkd/working")
     gitea.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     gitea.close(issue)
   }
@@ -80,7 +80,7 @@ develop :: service(gitea) {
     gitea.comment(issue, "parked after #{outcome.duration}: waiting for a reply.")
   }
   on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
-    gitea.label_remove(issue, "afkd/working")
+    gitea.remove_label(issue, "afkd/working")
     gitea.unassign(issue)
   }
 
@@ -95,12 +95,12 @@ reviews :: service(gitea.pr) {
   author_me     true
   poll_interval 2m~4m
 
-  on_claim(pr: gitea.Pull_Request) { gitea.pr_label_add(pr, "afkd/working") }
+  on_claim(pr: gitea.Pull_Request) { gitea.pr_add_label(pr, "afkd/working") }
   on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
-    gitea.pr_label_remove(pr, "afkd/working")
+    gitea.pr_remove_label(pr, "afkd/working")
     gitea.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_label_remove(pr, "afkd/working") }
+  on_fail(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_remove_label(pr, "afkd/working") }
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, pr: gitea.Pull_Request) { task() }
@@ -168,7 +168,7 @@ Opening the PR and posting the reply comment are the **agent's** job, done throu
 
 **The claim label.** The plugin holds its re-pick gate in `afkd/claimed`: it adds the label
 itself when a claim is won, and an issue carrying it is never picked up again (a human, or a
-slot's `gitea.label_remove(issue, "afkd/claimed")`, removes it to retry). It **creates that
+slot's `gitea.remove_label(issue, "afkd/claimed")`, removes it to retry). It **creates that
 label** — and `afkd/awaiting-reply` — in the repository when they are missing, as plain
 non-exclusive labels. Do not redefine either as an **exclusive** scoped label: Gitea strips
 an exclusive label the moment another label in the same scope is added, so the gate would
@@ -451,8 +451,8 @@ with a `pr_` in front — a `gitea.Pull_Request`:
 |---------------------------------------|---------------------------------------|-----------------------------------------|
 | `gitea.assign_me(issue)`              | `gitea.pr_assign_me(pr)`              | add the bot to the assignees (a human's stay) |
 | `gitea.unassign(issue)`               | `gitea.pr_unassign(pr)`               | remove the bot from the assignees (a human's stay) |
-| `gitea.label_add(issue, "<name>")`    | `gitea.pr_label_add(pr, "<name>")`    | add a named label; the repository must define it |
-| `gitea.label_remove(issue, "<name>")` | `gitea.pr_label_remove(pr, "<name>")` | remove a named label; a name the repository does not define has nothing to remove |
+| `gitea.add_label(issue, "<name>")`    | `gitea.pr_add_label(pr, "<name>")`    | add a named label; the repository must define it |
+| `gitea.remove_label(issue, "<name>")` | `gitea.pr_remove_label(pr, "<name>")` | remove a named label; a name the repository does not define has nothing to remove |
 | `gitea.close(issue)`                  | `gitea.pr_close(pr)`                  | close the issue or PR                   |
 | `gitea.comment(issue, "<text>")`      | `gitea.pr_comment(pr, "<text>")`      | post a comment, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
 
@@ -481,10 +481,6 @@ way, ahead of the post-run slot's actions. Every write queued is one line in the
 log; one given up is a loud line naming the issue or pull request and what was lost. The
 queue is held in memory, so a plugin afkd ends names each write it still owes.
 
-**Mind the spelling.** The label actions are written verb-last, `gitea.label_add` and
-`gitea.label_remove`; `@afkd/trello` writes the same two verb-first, `trello.add_label` and
-`trello.remove_label`.
-
 ## Where it differs from the built-in
 
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
@@ -497,7 +493,7 @@ few things. Each is deliberate, and none changes what a config means.
   after the claim marker is released and, on the `discuss_with` path, after the backstop —
   so a comment `on_done` posts lands after `reviewed, nothing to add` rather than standing
   it down. afkd retries no slot's action, so a post-run
-  `gitea.label_remove(issue, "afkd/claimed")` that Gitea refuses, or that it could not be
+  `gitea.remove_label(issue, "afkd/claimed")` that Gitea refuses, or that it could not be
   reached for within the hour the plugin retries it, leaves the re-pick gate on the issue
   for a human.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types

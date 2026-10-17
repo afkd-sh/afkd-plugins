@@ -4,7 +4,7 @@
 //!
 //! afkd runs the slots (`on_claim`, `on_done`, `on_fail`) as code, in the order
 //! they are written, and each plugin action a slot calls —
-//! `github.label_remove(issue, "afkd/claimed")` — crosses as one `call`, its arguments
+//! `github.remove_label(issue, "afkd/claimed")` — crosses as one `call`, its arguments
 //! already bound and typed against the manifest and any `#{…}` in a comment already
 //! interpolated. The item is the handle the action takes first, never an implied current
 //! one. What is left here is reading those arguments back, and refusing a shape only a
@@ -25,9 +25,9 @@ pub(crate) enum LifecycleAction {
     /// Take the bot off the issue's assignees (release it for a human).
     Unassign,
     /// Add a named label.
-    LabelAdd(String),
+    AddLabel(String),
     /// Remove a named label — by name, never an all-clearing bare path.
-    LabelRemove(String),
+    RemoveLabel(String),
     /// Close the issue (state → closed).
     Close,
     /// Post a literal comment on the issue.
@@ -71,8 +71,8 @@ pub(crate) const PR_VOCABULARY: Vocabulary = Vocabulary {
 pub(crate) const ACTIONS: &[&str] = &[
     "assign_me",
     "unassign",
-    "label_add",
-    "label_remove",
+    "add_label",
+    "remove_label",
     "close",
     "comment",
 ];
@@ -124,8 +124,8 @@ fn decode(action: &str, verb: &str, args: &Map<String, Value>) -> Result<Lifecyc
     Ok(match verb {
         "assign_me" => LifecycleAction::AssignMe,
         "unassign" => LifecycleAction::Unassign,
-        "label_add" => LifecycleAction::LabelAdd(string("label")?),
-        "label_remove" => LifecycleAction::LabelRemove(string("label")?),
+        "add_label" => LifecycleAction::AddLabel(string("label")?),
+        "remove_label" => LifecycleAction::RemoveLabel(string("label")?),
         "close" => LifecycleAction::Close,
         "comment" => LifecycleAction::Comment(string("text")?),
         _ => return Err(format!("no action `{action}`")),
@@ -170,8 +170,8 @@ mod tests {
         let decoded: Vec<LifecycleAction> = [
             ("assign_me", json!({})),
             ("unassign", json!({})),
-            ("label_add", json!({"label": "afkd/reviewed ✅"})),
-            ("label_remove", json!({"label": "afkd/claimed"})),
+            ("add_label", json!({"label": "afkd/reviewed ✅"})),
+            ("remove_label", json!({"label": "afkd/claimed"})),
             ("close", json!({})),
             ("comment", json!({"text": markdown})),
         ]
@@ -183,8 +183,8 @@ mod tests {
             [
                 LifecycleAction::AssignMe,
                 LifecycleAction::Unassign,
-                LifecycleAction::LabelAdd("afkd/reviewed ✅".into()),
-                LifecycleAction::LabelRemove("afkd/claimed".into()),
+                LifecycleAction::AddLabel("afkd/reviewed ✅".into()),
+                LifecycleAction::RemoveLabel("afkd/claimed".into()),
                 LifecycleAction::Close,
                 LifecycleAction::Comment(markdown.into()),
             ]
@@ -205,13 +205,15 @@ mod tests {
             Ok(LifecycleAction::Close)
         );
         assert_eq!(
-            call("label_add", json!({"label": "shipped", "later": 1})),
-            Ok(LifecycleAction::LabelAdd("shipped".into()))
+            call("add_label", json!({"label": "shipped", "later": 1})),
+            Ok(LifecycleAction::AddLabel("shipped".into()))
         );
     }
 
     /// Each shape afkd would never bind is refused with a sentence naming the action and
     /// the parameter: an unknown action, a missing parameter, and one of the wrong type.
+    /// The label actions' noun-first names, `label_add` and `label_remove`, are unknown
+    /// actions: the Odin-style names replaced them, and they are not kept as aliases.
     #[test]
     fn a_call_afkd_would_not_bind_is_refused_by_name() {
         for (action, args, problem) in [
@@ -219,23 +221,33 @@ mod tests {
             ("", json!({}), "no action ``"),
             (
                 "label_add",
+                json!({"label": "afkd/reviewed ✅"}),
+                "no action `label_add`",
+            ),
+            (
+                "label_remove",
+                json!({"label": "afkd/claimed"}),
+                "no action `label_remove`",
+            ),
+            (
+                "add_label",
                 json!({}),
-                "label_add: parameter label is required",
+                "add_label: parameter label is required",
             ),
             (
-                "label_add",
+                "add_label",
                 json!({"label": ["a", "b"]}),
-                "label_add: parameter label must be a string",
+                "add_label: parameter label must be a string",
             ),
             (
-                "label_remove",
+                "remove_label",
                 json!({"name": "afkd/claimed"}),
-                "label_remove: parameter label is required",
+                "remove_label: parameter label is required",
             ),
             (
-                "label_remove",
+                "remove_label",
                 json!({"label": null}),
-                "label_remove: parameter label must be a string",
+                "remove_label: parameter label must be a string",
             ),
             ("comment", json!({}), "comment: parameter text is required"),
             (
@@ -254,11 +266,12 @@ mod tests {
 
     /// The pr kind's actions are the same six, prefixed `pr_` and taking the `pr`
     /// handle, and decode to the same actions; neither kind answers the other's names, and
-    /// an issue's handle passed under the pr kind's is no `pr` at all.
+    /// an issue's handle passed under the pr kind's is no `pr` at all. The noun-first
+    /// `pr_label_add` and `pr_label_remove` are no names of either.
     #[test]
     fn each_kind_answers_its_own_names_on_its_own_handle() {
         let args = |verb: &str| match verb {
-            "label_add" | "label_remove" => json!({"label": "afkd/reviewed ✅"}),
+            "add_label" | "remove_label" => json!({"label": "afkd/reviewed ✅"}),
             "comment" => json!({"text": "## 完了 ✅\n\nsee the run log."}),
             _ => json!({}),
         };
@@ -288,6 +301,16 @@ mod tests {
                     &bound(&ISSUE_VOCABULARY, args(verb))
                 ),
                 Err(format!("no action `{prefixed}`"))
+            );
+        }
+        for old in ["pr_label_add", "pr_label_remove"] {
+            assert_eq!(
+                from_call(
+                    &PR_VOCABULARY,
+                    old,
+                    &bound(&PR_VOCABULARY, args("add_label"))
+                ),
+                Err(format!("no action `{old}`"))
             );
         }
         assert_eq!(

@@ -36,7 +36,7 @@ use crate::client::{GithubClient, GithubError, IssueComment, Repo};
 use crate::lifecycle::LifecycleAction;
 use crate::settings::GithubConfig;
 
-/// The in-progress label the claim adds (and a hook's `label_remove` removes by name). A
+/// The in-progress label the claim adds (and a hook's `remove_label` removes by name). A
 /// fixed internal name, like the `[afkd-claim]` marker.
 pub(crate) const CLAIMED_LABEL: &str = "afkd/claimed";
 
@@ -200,7 +200,7 @@ pub(crate) fn claim_key_for(repo: &Repo, number: u64, marker_id: u64) -> String 
 /// A `Comment` posts its text as afkd sent it: any `#{…}` in it is afkd's, already
 /// interpolated.
 ///
-/// `LabelRemove` removes the single named label via the dedicated `…/labels/{name}` path
+/// `RemoveLabel` removes the single named label via the dedicated `…/labels/{name}` path
 /// (**never** the all-clearing bare `…/labels` path); GitHub needs no name→id lookup.
 /// `Unassign` removes only the bot, not an all-clear (GitHub assignment is additive).
 pub(crate) fn do_action(
@@ -213,8 +213,8 @@ pub(crate) fn do_action(
     match action {
         LifecycleAction::AssignMe => client.add_assignees(repo, index, &[me.to_string()]),
         LifecycleAction::Unassign => client.remove_assignees(repo, index, &[me.to_string()]),
-        LifecycleAction::LabelAdd(name) => client.add_label(repo, index, name),
-        LifecycleAction::LabelRemove(name) => client.remove_label(repo, index, name),
+        LifecycleAction::AddLabel(name) => client.add_label(repo, index, name),
+        LifecycleAction::RemoveLabel(name) => client.remove_label(repo, index, name),
         LifecycleAction::Close => client.set_state(repo, index, "closed"),
         LifecycleAction::Comment(text) => client.post_comment(repo, index, text).map(|_| ()),
     }
@@ -793,14 +793,14 @@ mod tests {
     }
 
     #[test]
-    fn do_action_label_remove_removes_by_name() {
+    fn do_action_remove_label_removes_by_name() {
         let c = MockClient::new("me");
         c.add_issue(7, "T", "B", &["afkd/claimed"]);
         do_action(
             &c,
             &repo(),
             7,
-            &LifecycleAction::LabelRemove("afkd/claimed".into()),
+            &LifecycleAction::RemoveLabel("afkd/claimed".into()),
             "me",
         )
         .unwrap();

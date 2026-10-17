@@ -1253,8 +1253,8 @@ mod tests {
         let markdown = "## 完了 ✅\n\n- took 3m 12s\n- log: #{run.x}\n\nsee the run log.";
         for (action, args) in [
             ("assign_me", json!({})),
-            ("label_add", json!({"label": "afkd::reviewed ✅"})),
-            ("label_remove", json!({"label": "afkd::claimed"})),
+            ("add_label", json!({"label": "afkd::reviewed ✅"})),
+            ("remove_label", json!({"label": "afkd::claimed"})),
             ("comment", json!({"text": markdown})),
             ("unassign", json!({})),
             ("close", json!({})),
@@ -1379,10 +1379,10 @@ mod tests {
         for (action, args, key, error) in [
             ("reopen", json!({}), key.clone(), "no action `reopen`"),
             (
-                "label_remove",
+                "remove_label",
                 json!({}),
                 key.clone(),
-                "label_remove: parameter label is required",
+                "remove_label: parameter label is required",
             ),
             (
                 "comment",
@@ -1574,7 +1574,7 @@ mod tests {
         let before = f.mock.actions().len();
         f.mock.go_down();
         assert_eq!(
-            f.act("label_add", json!({"label": "needs::human 🚧"}), &key),
+            f.act("add_label", json!({"label": "needs::human 🚧"}), &key),
             json!({"ok": true})
         );
         assert_eq!(
@@ -1631,11 +1631,11 @@ mod tests {
         f.mock.go_down();
         assert_eq!(f.finish(&key, "failed"), json!({"ok": true}));
         for (action, args) in [
-            ("label_remove", json!({"label": "afkd::ready"})),
+            ("remove_label", json!({"label": "afkd::ready"})),
             ("unassign", json!({})),
-            ("label_add", json!({"label": "needs::human 🚧"})),
+            ("add_label", json!({"label": "needs::human 🚧"})),
             ("comment", json!({"text": FAILED_NOTE})),
-            ("label_remove", json!({"label": "afkd::claimed"})),
+            ("remove_label", json!({"label": "afkd::claimed"})),
         ] {
             assert_eq!(f.act(action, args, &key), json!({"ok": true}), "{action}");
         }
@@ -1694,7 +1694,7 @@ mod tests {
         f.mock.go_down();
         assert_eq!(f.finish(&key, "failed"), json!({"ok": true}));
         for (action, args) in [
-            ("label_add", json!({"label": "needs::human 🚧"})),
+            ("add_label", json!({"label": "needs::human 🚧"})),
             ("comment", json!({"text": FAILED_NOTE})),
             ("unassign", json!({})),
         ] {
@@ -1747,7 +1747,7 @@ mod tests {
         assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
         for (action, args) in [
             ("mr_comment", json!({"text": "round done ✅\n\n- 3m 12s"})),
-            ("mr_label_add", json!({"label": "afkd::reviewed ✅"})),
+            ("mr_add_label", json!({"label": "afkd::reviewed ✅"})),
         ] {
             assert_eq!(f.act(action, args, &key), json!({"ok": true}), "{action}");
         }

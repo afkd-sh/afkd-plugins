@@ -69,15 +69,15 @@ develop :: service(github) {
 
   on_claim(issue: github.Issue) {
     github.assign_me(issue)
-    github.label_add(issue, "afkd/working")
+    github.add_label(issue, "afkd/working")
   }
   on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
-    github.label_remove(issue, "afkd/working")
+    github.remove_label(issue, "afkd/working")
     github.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     github.close(issue)
   }
   on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
-    github.label_remove(issue, "afkd/working")
+    github.remove_label(issue, "afkd/working")
     github.unassign(issue)
   }
 
@@ -91,12 +91,12 @@ reviews :: service(github.pr) {
   author_me     true
   poll_interval 2m~4m
 
-  on_claim(pr: github.Pull_Request) { github.pr_label_add(pr, "afkd/reviewing") }
+  on_claim(pr: github.Pull_Request) { github.pr_add_label(pr, "afkd/reviewing") }
   on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
-    github.pr_label_remove(pr, "afkd/reviewing")
+    github.pr_remove_label(pr, "afkd/reviewing")
     github.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
+  on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, pr: github.Pull_Request) { task() }
@@ -163,7 +163,7 @@ renewing any more ages out.
 
 **The claim label.** The plugin holds its re-pick gate in `afkd/claimed`: it adds the label
 itself when a claim is won, and an issue carrying it is never picked up again (a human, or
-a slot's `github.label_remove(issue, "afkd/claimed")`, removes it to retry). GitHub creates
+a slot's `github.remove_label(issue, "afkd/claimed")`, removes it to retry). GitHub creates
 a label the first time it is added to an issue, so there is nothing to define up front.
 
 **Cadence.** Polls the forge every `poll_interval` for open issues carrying `source_label`
@@ -300,11 +300,11 @@ reviews :: service(github.pr) {
 
   on_claim(pr: github.Pull_Request) {
     github.pr_assign_me(pr)
-    github.pr_label_add(pr, "afkd/reviewing")
+    github.pr_add_label(pr, "afkd/reviewing")
   }
-  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_label_remove(pr, "afkd/reviewing") }
+  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
   on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
-    github.pr_label_remove(pr, "afkd/reviewing")
+    github.pr_remove_label(pr, "afkd/reviewing")
     github.pr_unassign(pr)
   }
 
@@ -364,8 +364,8 @@ subtyping, so each kind has its own six: `service(github)`'s take a `github.Issu
 |----------------------------------------|----------------------------------------|-----------------------------------------|
 | `github.assign_me(issue)`              | `github.pr_assign_me(pr)`              | add the bot to the assignees            |
 | `github.unassign(issue)`               | `github.pr_unassign(pr)`               | remove **only** the bot from the assignees (a human's stays) |
-| `github.label_add(issue, "<name>")`    | `github.pr_label_add(pr, "<name>")`    | add a named label                       |
-| `github.label_remove(issue, "<name>")` | `github.pr_label_remove(pr, "<name>")` | remove a named label (by name)          |
+| `github.add_label(issue, "<name>")`    | `github.pr_add_label(pr, "<name>")`    | add a named label                       |
+| `github.remove_label(issue, "<name>")` | `github.pr_remove_label(pr, "<name>")` | remove a named label (by name)          |
 | `github.close(issue)`                  | `github.pr_close(pr)`                  | close the issue or pull request (`state=closed`) |
 | `github.comment(issue, "<text>")`      | `github.pr_comment(pr, "<text>")`      | post a comment, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
 
@@ -392,10 +392,6 @@ Every write queued is one line in the service log; one given up is a loud line n
 issue or pull request and what was lost. The queue is held in memory, so a plugin afkd ends
 names each write it still owes.
 
-**Mind the spelling.** The label actions are written verb-last, `github.label_add` and
-`github.label_remove`; `@afkd/trello` writes the same two verb-first, `trello.add_label`
-and `trello.remove_label`.
-
 ## Where it differs from the built-in
 
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
@@ -406,7 +402,7 @@ few things. Each is deliberate, and none changes what a config means.
   action is one request to the plugin naming the item it acts on, sent once the plugin's
   own claim or finish has landed: `on_claim` after the claim is won, and the post-run slot
   after the claim marker is released. afkd retries no slot's action, so a post-run
-  `github.label_remove(issue, "afkd/claimed")` that GitHub refuses, or that it could not
+  `github.remove_label(issue, "afkd/claimed")` that GitHub refuses, or that it could not
   be reached for within the hour the plugin retries it, leaves the re-pick gate on the
   issue for a human.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types

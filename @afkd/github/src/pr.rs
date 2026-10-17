@@ -453,7 +453,7 @@ mod tests {
         assert!(h.diag.lines().is_empty(), "{:?}", h.diag.lines());
         // `on_claim`'s calls, which afkd sends after the `poll`, act as the claim identity.
         h.act(&unit, LifecycleAction::AssignMe).unwrap();
-        h.act(&unit, LifecycleAction::LabelAdd("afkd/reviewing".into()))
+        h.act(&unit, LifecycleAction::AddLabel("afkd/reviewing".into()))
             .unwrap();
         assert!(h.client.has_label(7, "afkd/reviewing"));
         assert_eq!(h.client.assignees_of(7), ["me"]);

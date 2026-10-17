@@ -73,7 +73,7 @@ fn hook(plugin: &mut Plugin, unit: &Value, actions: &[(&str, Value)]) {
 }
 
 /// The `on_claim` of a config that takes the item — `github.assign_me(issue)` then
-/// `github.label_add(issue, working)`, or the pr kind's `github.pr_assign_me(pr)` and so on — as
+/// `github.add_label(issue, working)`, or the pr kind's `github.pr_assign_me(pr)` and so on — as
 /// afkd runs it after the `poll`.
 fn on_claim(plugin: &mut Plugin, unit: &Value, working: &str) {
     hook(
@@ -81,7 +81,7 @@ fn on_claim(plugin: &mut Plugin, unit: &Value, working: &str) {
         unit,
         &[
             ("assign_me", json!({})),
-            ("label_add", json!({ "label": working })),
+            ("add_label", json!({ "label": working })),
         ],
     );
 }
@@ -677,7 +677,7 @@ fn a_clean_finish_drops_the_marker_and_on_done_closes_after() {
         &mut plugin,
         &unit,
         &[
-            ("label_remove", json!({"label": "afkd/working"})),
+            ("remove_label", json!({"label": "afkd/working"})),
             ("close", json!({})),
         ],
     );
@@ -708,7 +708,7 @@ fn a_failed_finish_then_on_fail_keeps_a_human_assignee() {
         &mut plugin,
         &unit,
         &[
-            ("label_remove", json!({"label": "afkd/working"})),
+            ("remove_label", json!({"label": "afkd/working"})),
             ("unassign", json!({})),
         ],
     );
@@ -803,11 +803,11 @@ fn every_action_over_call_lands_on_the_forge() {
     );
     assert_eq!(assignees(&fake, 7), [HUMAN, ME]);
     assert_eq!(
-        plugin.act("label_add", json!({"label": "afkd/reviewed ✅"}), &unit),
+        plugin.act("add_label", json!({"label": "afkd/reviewed ✅"}), &unit),
         json!({"ok": true})
     );
     assert_eq!(
-        plugin.act("label_remove", json!({"label": "afkd/ready"}), &unit),
+        plugin.act("remove_label", json!({"label": "afkd/ready"}), &unit),
         json!({"ok": true})
     );
     assert_eq!(labels(&fake, 7), ["afkd/claimed", "afkd/reviewed ✅"]);
@@ -1339,7 +1339,7 @@ fn pr_a_clean_finish_then_on_done_leaves_the_pr_open() {
     hook(
         &mut plugin,
         &unit,
-        &[("label_remove", json!({"label": "afkd/reviewing"}))],
+        &[("remove_label", json!({"label": "afkd/reviewing"}))],
     );
     let pr = fake.issue_state(REPO, 7);
     assert_eq!(pr.labels, ["afkd/claimed"]);
@@ -1373,7 +1373,7 @@ fn pr_a_failed_finish_then_on_fail_lets_go() {
         &mut plugin,
         &unit,
         &[
-            ("label_remove", json!({"label": "afkd/reviewing"})),
+            ("remove_label", json!({"label": "afkd/reviewing"})),
             ("unassign", json!({})),
             ("comment", json!({ "text": stopped })),
         ],
@@ -1550,7 +1550,7 @@ fn a_call_during_an_outage_answers_ok_and_lands_when_github_returns() {
 
     fake.outage();
     for (action, args) in [
-        ("label_add", json!({"label": NEEDS_HUMAN})),
+        ("add_label", json!({"label": NEEDS_HUMAN})),
         ("comment", json!({"text": FAILED_NOTE})),
         ("unassign", json!({})),
     ] {
@@ -1632,7 +1632,7 @@ fn a_finish_during_an_outage_releases_the_marker_before_the_post_run_slot() {
     );
     assert_eq!(reply, json!({"ok": true}));
     for (action, args) in [
-        ("label_remove", json!({"label": "afkd/working"})),
+        ("remove_label", json!({"label": "afkd/working"})),
         ("unassign", json!({})),
     ] {
         assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
@@ -1680,7 +1680,7 @@ fn a_429_or_5xx_is_queued_and_another_4xx_answers_its_sentence() {
     for (status, label) in [(429, NEEDS_HUMAN), (503, "afkd/working")] {
         fake.fail("add label", status);
         assert_eq!(
-            plugin.act("label_add", json!({"label": label}), &unit),
+            plugin.act("add_label", json!({"label": label}), &unit),
             json!({"ok": true}),
             "{status}"
         );
@@ -1701,7 +1701,7 @@ fn a_429_or_5xx_is_queued_and_another_4xx_answers_its_sentence() {
 
     fake.fail("add label", 403);
     assert_eq!(
-        plugin.act("label_add", json!({"label": "afkd/reviewed ✅"}), &unit),
+        plugin.act("add_label", json!({"label": "afkd/reviewed ✅"}), &unit),
         json!({"ok": false, "error": "github add label: forge returned status 403"})
     );
     fake.heal("add label");
@@ -1723,7 +1723,7 @@ fn a_queued_write_the_forge_then_refuses_is_given_up_loudly() {
 
     fake.outage();
     for (action, args) in [
-        ("label_add", json!({"label": NEEDS_HUMAN})),
+        ("add_label", json!({"label": NEEDS_HUMAN})),
         ("comment", json!({"text": FAILED_NOTE})),
     ] {
         assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
@@ -1773,7 +1773,7 @@ fn a_pr_round_end_during_an_outage_lands_when_github_returns() {
     let done = "Round done ✅ — 重试 now caps at 30s.\n\nSee the run log.";
     for (action, args) in [
         ("pr_comment", json!({"text": done})),
-        ("pr_label_remove", json!({"label": "afkd/reviewing"})),
+        ("pr_remove_label", json!({"label": "afkd/reviewing"})),
     ] {
         assert_eq!(plugin.act(action, args, &unit), json!({"ok": true}));
     }
