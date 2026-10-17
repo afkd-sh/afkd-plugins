@@ -1,6 +1,6 @@
 [package]
 name = "afkd-gitlab"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 publish = false
 description = "The @afkd/gitlab trigger plugin: GitLab issues as afkd units, over the plugin wire"

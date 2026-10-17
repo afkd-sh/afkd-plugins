@@ -5,9 +5,9 @@
 //! every key is one the kind declares, `token` is present, and each value is of its
 //! declared type. What is left here is the part a manifest cannot say — exactly one of
 //! `repo`/`org`, and a `discuss_with` naming someone — in the built-in trigger's own
-//! sentences. The cadence and the attempt bound (`poll_interval`, `max_attempts`,
-//! `follow_comments`) are afkd's and are not read here, and the hooks never arrive here at
-//! all: afkd runs them, and each action they call is one `call` ([`crate::lifecycle`]).
+//! sentences. The cadence and the attempt bound (`poll_interval`, `max_attempts`) are
+//! afkd's and are not read here, and the hooks never arrive here at all: afkd runs them,
+//! and each action they call is one `call` ([`crate::lifecycle`]).
 //!
 //! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a `bool` its
 //! word `true` or `false`, a duration its largest whole unit), and a `list[…]` its items —
@@ -104,7 +104,7 @@ pub(crate) type Declared = (
 /// manifest, never this: it is what `manifest.rs`'s test holds `afkd-plugin.toml` to, so
 /// the two cannot drift apart.
 ///
-/// The last three are afkd's own claim keys, declared exactly as afkd declares them for
+/// The last two are afkd's own claim keys, declared exactly as afkd declares them for
 /// every claiming kind; afkd's declaration is the one that applies.
 #[cfg(test)]
 pub(crate) const ISSUE_SETTINGS: &[Declared] = &[
@@ -114,7 +114,6 @@ pub(crate) const ISSUE_SETTINGS: &[Declared] = &[
     ("token", "string", &[("required", "true")]),
     ("source_label", "string", &[]),
     ("discuss_with", "list[string]", &[]),
-    ("follow_comments", "duration", &[("jitter", "true")]),
     ("max_attempts", "int", &[("default", "1")]),
     (
         "poll_interval",
@@ -132,7 +131,6 @@ pub(crate) const PR_SETTINGS: &[Declared] = &[
     ("org", "string", &[]),
     ("token", "string", &[("required", "true")]),
     ("author_me", "bool", &[("default", "false")]),
-    ("follow_comments", "duration", &[("jitter", "true")]),
     ("max_attempts", "int", &[("default", "1")]),
     (
         "poll_interval",

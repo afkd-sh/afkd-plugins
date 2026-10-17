@@ -33,7 +33,7 @@ fn forge() -> FakeGitea {
 }
 
 /// A full `issue` block, lowered to JSON as afkd lowers it: every value a string — and
-/// afkd's own three keys along for the ride. The hooks never cross here; afkd runs them.
+/// afkd's own two keys along for the ride. The hooks never cross here; afkd runs them.
 fn settings(fake: &FakeGitea) -> Value {
     json!({
         "base_url": fake.base_url(),

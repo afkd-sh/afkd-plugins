@@ -135,17 +135,16 @@ Fires for open issues on a single GitHub repository, and its slots reflect progr
 through the issue's assignees, labels, and state. Its token stays with the plugin and the
 run.
 
-| Key               | Type       | Notes                                              |
-|-------------------|------------|----------------------------------------------------|
-| `host`            | `string`   | optional; empty/`github.com` → the cloud API, any other host → GitHub Enterprise `…/api/v3` |
-| `repo`            | `string`   | **required**: a single repository, `"owner/name"`  |
-| `token`           | `string`   | personal access token (`Authorization: Bearer`); required |
-| `source_label`    | `string`   | optional; restrict to issues carrying this label   |
-| `follow_comments` | `duration` | re-read the issue this often **while its run is in flight**, delivering new comments to the working agent; a range `30s~90s` jitters; default unset (no mid-run watch) |
-| `max_attempts`    | `int`      | retries per issue; default `1`                     |
-| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters             |
+| Key             | Type       | Notes                                              |
+|-----------------|------------|----------------------------------------------------|
+| `host`          | `string`   | optional; empty/`github.com` → the cloud API, any other host → GitHub Enterprise `…/api/v3` |
+| `repo`          | `string`   | **required**: a single repository, `"owner/name"`  |
+| `token`         | `string`   | personal access token (`Authorization: Bearer`); required |
+| `source_label`  | `string`   | optional; restrict to issues carrying this label   |
+| `max_attempts`  | `int`      | retries per issue; default `1`                     |
+| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters             |
 
-The last three are afkd's own, read by afkd for every kind that claims its work.
+The last two are afkd's own, read by afkd for every kind that claims its work.
 
 There is no `org` key — a GitHub trigger polls a single `repo` (required, non-empty). A
 `repo` that is not `owner/name` claims nothing. `author_me` is **not** a key here; it
@@ -201,21 +200,21 @@ widgets :: service(github) {
 ```
 
 **Talking to a run in progress.** The brief is a snapshot taken at claim time, so a comment
-posted while the agent is working is invisible to the run it is about — and on a repo whose
-`on_done` closes the issue, it is invisible for good. `follow_comments <duration>` closes
-that window. With it set, afkd asks the plugin for the claimed issue's comments on that
-interval for the extent of the run and hands any new one to the agent **that is already
-working**, as another turn in the same conversation:
+posted while the agent is working would be invisible to the run it is about — and on a repo
+whose `on_done` closes the issue, invisible for good. afkd closes that window for every
+service, with no setting: it asks the plugin for the claimed issue's comments every 25-35 s
+for the extent of the run, and once more when the last agent stops, and hands any new one to
+the agent **that is already working**, as another turn in the same conversation. Nothing in
+the block asks for it:
 
 ```conf
 import "core"
 import "@afkd/github"
 
 widgets :: service(github) {
-  repo            "acme/widgets"
-  token           "REPLACE_ME"
-  poll_interval   4m~6m
-  follow_comments 60s          // the agent hears you mid-run
+  repo          "acme/widgets"
+  token         "REPLACE_ME"
+  poll_interval 4m~6m
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, issue: github.Issue) {
@@ -228,25 +227,24 @@ Every delivered message is **also appended to the run's `task.md`**, so the next
 multi-agent run reads the correction in the task itself, and a retry keeps it. Comments are
 delivered once each, oldest-first; afkd's own comments and `[afkd-claim]` markers are never
 delivered back. The issue claim reads no comments, so the first read takes the thread as it
-stands as the baseline and delivers only what comes after. Cost: one extra comments read
-per interval **per running issue**, plus one at the end of each run, and nothing at all
-while no run is in flight. All of this is afkd's own mid-run watch; the plugin only reads
-the thread for it.
+stands as the baseline and delivers only what comes after. Cost: one comments read every
+25-35 s **per running issue**, plus one at the end of each run, and nothing at all while no
+run is in flight. All of this is afkd's own mid-run watch; the plugin only reads the thread
+for it.
 
 ## `service(github.pr)` (pull-request review)
 
 Fires on open pull requests — optionally only the bot's own — and re-fires when a human
 leaves feedback newer than the bot's last word, for an automated review loop.
 
-| Key               | Type       | Notes                                              |
-|-------------------|------------|----------------------------------------------------|
-| `host`            | `string`   | as for `service(github)`                           |
-| `repo`            | `string`   | **required**: a single repository, `"owner/name"`  |
-| `token`           | `string`   | personal access token; required                    |
-| `author_me`       | `bool`     | restrict to the bot's own PRs; default `false`     |
-| `follow_comments` | `duration` | as for `service(github)`                           |
-| `max_attempts`    | `int`      | retries per round; default `1`                     |
-| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters             |
+| Key             | Type       | Notes                                              |
+|-----------------|------------|----------------------------------------------------|
+| `host`          | `string`   | as for `service(github)`                           |
+| `repo`          | `string`   | **required**: a single repository, `"owner/name"`  |
+| `token`         | `string`   | personal access token; required                    |
+| `author_me`     | `bool`     | restrict to the bot's own PRs; default `false`     |
+| `max_attempts`  | `int`      | retries per round; default `1`                     |
+| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters             |
 
 `source_label` is **not** a key here.
 
@@ -287,20 +285,18 @@ Address review feedback on PR #7.
 **carol:** (review 2291)
 ```
 
-`follow_comments` works as for `service(github)`: afkd asks the plugin for the PR's
-comments while a round runs. The comments the brief was built from are never delivered
-again.
+The comment watch works as for `service(github)`: afkd asks the plugin for the PR's comments
+while a round runs. The comments the brief was built from are never delivered again.
 
 ```conf
 import "core"
 import "@afkd/github"
 
 reviews :: service(github.pr) {
-  host            "github.com"
-  repo            "acme/widgets"
-  token           "REPLACE_ME"
-  author_me       true
-  follow_comments 60s
+  host      "github.com"
+  repo      "acme/widgets"
+  token     "REPLACE_ME"
+  author_me true
 
   on_claim(pr: github.Pull_Request) {
     github.pr_assign_me(pr)

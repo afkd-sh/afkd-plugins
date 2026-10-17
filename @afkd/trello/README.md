@@ -116,23 +116,22 @@ Nothing hands it to an agent on its own; a `skills` list has to name it. It read
 Fires when a card lands in a watched list; its slots move cards across the board as work
 starts, finishes, or fails. Its secrets stay with the plugin and the run.
 
-| Key               | Type           | Notes                                  |
-|-------------------|----------------|----------------------------------------|
-| `board`           | `string`       | board address; required                |
-| `api_key`         | `string`       | Trello API key; required               |
-| `token`           | `string`       | Trello token; required                 |
-| `base_url`        | `string`       | API base; defaults to the public Trello API (a test/overseer seam) |
-| `pick_from`       | `string`       | list new cards are drawn from          |
-| `require_member`  | `string`       | `"me"` or a username: only claim cards this member is already on; default unset (the head card is claimed) |
-| `require_label`   | `string`       | only claim cards carrying the named label; default unset (no label filter) |
-| `without_label`   | `list[string]` | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
-| `discuss_with`    | `list[string]` | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
-| `min_age`         | `duration`     | don't claim a card younger than this, measured from card creation; default `0` (no filter) |
-| `follow_comments` | `duration`     | re-read the card this often **while its run is in flight**, delivering new comments to the working agent; a range `30s~90s` jitters; default unset (no mid-run watch) |
-| `max_attempts`    | `int`          | retries per card; default `1`          |
-| `poll_interval`   | `duration`     | default `30s`; a range `2m~3m` jitters |
+| Key              | Type           | Notes                                  |
+|------------------|----------------|----------------------------------------|
+| `board`          | `string`       | board address; required                |
+| `api_key`        | `string`       | Trello API key; required               |
+| `token`          | `string`       | Trello token; required                 |
+| `base_url`       | `string`       | API base; defaults to the public Trello API (a test/overseer seam) |
+| `pick_from`      | `string`       | list new cards are drawn from          |
+| `require_member` | `string`       | `"me"` or a username: only claim cards this member is already on; default unset (the head card is claimed) |
+| `require_label`  | `string`       | only claim cards carrying the named label; default unset (no label filter) |
+| `without_label`  | `list[string]` | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
+| `discuss_with`   | `list[string]` | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
+| `min_age`        | `duration`     | don't claim a card younger than this, measured from card creation; default `0` (no filter) |
+| `max_attempts`   | `int`          | retries per card; default `1`          |
+| `poll_interval`  | `duration`     | default `30s`; a range `2m~3m` jitters |
 
-The last three are afkd's own, read by afkd for every kind that claims its work.
+The last two are afkd's own, read by afkd for every kind that claims its work.
 
 The service's slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each
 passed the run (all but `on_claim`, which runs before one exists), the claimed card, and
@@ -400,23 +399,23 @@ widgets :: service(trello) {
 ```
 
 **Talking to a run in progress.** Everything above happens *between* runs: the brief is a
-snapshot taken at claim time, so a comment posted while the agent is working is invisible to
-the run it is about — and on a board whose `on_done` archives the card, it is invisible for
-good. `follow_comments <duration>` closes that window. With it set, afkd asks the plugin for
-the claimed card's comments on that interval for the extent of the run and hands any new one
-to the agent **that is already working**, as another turn in the same conversation:
+snapshot taken at claim time, so a comment posted while the agent is working would be
+invisible to the run it is about — and on a board whose `on_done` archives the card,
+invisible for good. afkd closes that window for every service, with no setting: it asks the
+plugin for the claimed card's comments every 25-35 s for the extent of the run, and once
+more when the last agent stops, and hands any new one to the agent **that is already
+working**, as another turn in the same conversation. Nothing in the block asks for it:
 
 ```conf
 import "core"
 import "@afkd/trello"
 
 widgets :: service(trello) {
-  board           "https://trello.com/b/REPLACE_ME/board"
-  api_key         "REPLACE_ME"
-  token           "REPLACE_ME"
-  pick_from       "To Do"
-  poll_interval   2m~3m
-  follow_comments 60s          // the agent hears you mid-run
+  board         "https://trello.com/b/REPLACE_ME/board"
+  api_key       "REPLACE_ME"
+  token         "REPLACE_ME"
+  pick_from     "To Do"
+  poll_interval 2m~3m
 
   on_claim(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
   on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
@@ -436,8 +435,8 @@ Every delivered message is **also appended to the run's `task.md`**, so the next
 multi-agent run reads the correction in the task itself, and a retry keeps it. Comments are
 delivered once each, oldest-first, attributed exactly as a brief's `## New comments` section
 is; afkd's own comments and claim markers are never delivered back, and the comments the
-brief was built from are never delivered again. Cost: one extra comment read per interval
-**per running card**, plus one at the end of each run, and nothing at all while no run is in
+brief was built from are never delivered again. Cost: one comment read every 25-35 s **per
+running card**, plus one at the end of each run, and nothing at all while no run is in
 flight. All of this is afkd's own mid-run watch; the plugin only reads the thread for it.
 
 ## Where it differs from the built-in

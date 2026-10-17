@@ -626,14 +626,13 @@ import "@afkd/gitea"
 BOT :: "autocoder"
 
 issues :: service(gitea) {
-  base_url        "https://gitea.example.com"
-  org             "acme"
-  token           "REPLACE_ME"
-  source_label    "afkd/ready"
-  discuss_with    [ "alice", "陳大文" ]
-  follow_comments 30s~90s
-  max_attempts    2
-  poll_interval   1m~3m
+  base_url      "https://gitea.example.com"
+  org           "acme"
+  token         "REPLACE_ME"
+  source_label  "afkd/ready"
+  discuss_with  [ "alice", "陳大文" ]
+  max_attempts  2
+  poll_interval 1m~3m
 
   on_claim(issue: gitea.Issue) {
     _ = gitea.assign_me(issue)

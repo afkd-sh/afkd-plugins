@@ -631,13 +631,12 @@ import "@afkd/github"
 BOT :: "autocoder"
 
 issues :: service(github) {
-  host            "ghe.example.com"
-  repo            "acme/widgets"
-  token           "REPLACE_ME"
-  source_label    "afkd/ready"
-  follow_comments 30s~90s
-  max_attempts    2
-  poll_interval   1m~3m
+  host          "ghe.example.com"
+  repo          "acme/widgets"
+  token         "REPLACE_ME"
+  source_label  "afkd/ready"
+  max_attempts  2
+  poll_interval 1m~3m
 
   on_claim(issue: github.Issue) {
     _ = github.assign_me(issue)

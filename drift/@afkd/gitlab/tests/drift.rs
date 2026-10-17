@@ -638,13 +638,12 @@ import "@afkd/gitlab"
 BOT :: "autocoder"
 
 issues :: service(gitlab) {
-  base_url        "https://gitlab.example.com"
-  project         "acme/sub.group/widgets"
-  token           "REPLACE_ME"
-  source_label    "afkd::ready"
-  follow_comments 30s~90s
-  max_attempts    2
-  poll_interval   1m~3m
+  base_url      "https://gitlab.example.com"
+  project       "acme/sub.group/widgets"
+  token         "REPLACE_ME"
+  source_label  "afkd::ready"
+  max_attempts  2
+  poll_interval 1m~3m
 
   on_claim(issue: gitlab.Issue) {
     _ = gitlab.assign_me(issue)

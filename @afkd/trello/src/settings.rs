@@ -5,10 +5,9 @@
 //! every key is one the kind declares, `board`/`api_key`/`token` are present, and each
 //! value is of its declared type. What is left here is the part a manifest cannot say — a
 //! list that names nothing, a `min_age` that is not a plain duration — in the built-in
-//! trigger's own sentences. The cadence, the attempt bound and the mid-run watch
-//! (`poll_interval`, `max_attempts`, `follow_comments`) are afkd's and are not read here,
-//! and the hooks never arrive here at all: afkd runs them, and each action they call is
-//! one `call` ([`crate::lifecycle`]).
+//! trigger's own sentences. The cadence and the attempt bound (`poll_interval`,
+//! `max_attempts`) are afkd's and are not read here, and the hooks never arrive here at
+//! all: afkd runs them, and each action they call is one `call` ([`crate::lifecycle`]).
 //!
 //! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a duration
 //! its largest whole unit, a range `lo..hi`), and a `list[…]` is always an array — of the
@@ -146,7 +145,7 @@ pub(crate) type Declared = (
 /// the manifest, never this: it is what `manifest.rs`'s test holds `afkd-plugin.toml` to,
 /// so the two cannot drift apart.
 ///
-/// The last three are afkd's own claim keys, declared exactly as afkd declares them for
+/// The last two are afkd's own claim keys, declared exactly as afkd declares them for
 /// every claiming kind; afkd's declaration is the one that applies.
 #[cfg(test)]
 pub(crate) const SETTINGS: &[Declared] = &[
@@ -160,7 +159,6 @@ pub(crate) const SETTINGS: &[Declared] = &[
     ("without_label", "list[string]", &[]),
     ("discuss_with", "list[string]", &[]),
     ("min_age", "duration", &[]),
-    ("follow_comments", "duration", &[("jitter", "true")]),
     ("max_attempts", "int", &[("default", "1")]),
     (
         "poll_interval",
@@ -369,12 +367,11 @@ mod tests {
 
     #[test]
     fn reads_scalars_and_derives_board_id() {
-        // afkd's own three keys ride along and are not read here.
+        // afkd's own two keys ride along and are not read here.
         let cfg = cfg(json!({
             "pick_from": "Up for Grabs",
             "max_attempts": "2",
             "poll_interval": "30s",
-            "follow_comments": "2m..3m",
         }));
         assert_eq!(cfg.board_address, "https://trello.com/b/BID/x");
         assert_eq!(cfg.board_id, "BID");

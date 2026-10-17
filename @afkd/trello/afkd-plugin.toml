@@ -1,5 +1,5 @@
 name = "@afkd/trello"
-version = "0.4.0"
+version = "0.5.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -76,12 +76,7 @@ claims = true
   name = "min_age"
   type = "duration"
 
-  # These three afkd reads itself, as it declares them for every claiming kind.
-  [[kind.setting]]
-  name = "follow_comments"
-  type = "duration"
-  jitter = true
-
+  # These two afkd reads itself, as it declares them for every claiming kind.
   [[kind.setting]]
   name = "max_attempts"
   type = "int"

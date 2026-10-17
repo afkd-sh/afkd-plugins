@@ -135,17 +135,16 @@ Fires for open issues on a single GitLab project, and its slots reflect progress
 through the issue's assignees, labels, and state. Its token stays with the plugin and the
 run.
 
-| Key               | Type       | Notes                                              |
-|-------------------|------------|----------------------------------------------------|
-| `base_url`        | `string`   | optional; empty → `https://gitlab.com` (API under `/api/v4`) |
-| `project`         | `string`   | **required**: a numeric id or a path-with-namespace (`group/widgets`) |
-| `token`           | `string`   | personal/project access token (`PRIVATE-TOKEN`); required |
-| `source_label`    | `string`   | optional; restrict to issues carrying this label   |
-| `follow_comments` | `duration` | re-read the issue this often **while its run is in flight**, delivering new notes to the working agent; a range `30s~90s` jitters; default unset (no mid-run watch) |
-| `max_attempts`    | `int`      | retries per issue; default `1`                     |
-| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters             |
+| Key             | Type       | Notes                                              |
+|-----------------|------------|----------------------------------------------------|
+| `base_url`      | `string`   | optional; empty → `https://gitlab.com` (API under `/api/v4`) |
+| `project`       | `string`   | **required**: a numeric id or a path-with-namespace (`group/widgets`) |
+| `token`         | `string`   | personal/project access token (`PRIVATE-TOKEN`); required |
+| `source_label`  | `string`   | optional; restrict to issues carrying this label   |
+| `max_attempts`  | `int`      | retries per issue; default `1`                     |
+| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters             |
 
-The last three are afkd's own, read by afkd for every kind that claims its work.
+The last two are afkd's own, read by afkd for every kind that claims its work.
 
 There is no `group`/org key — a GitLab trigger polls a single `project` (required,
 non-empty). A path-with-namespace `project` is URL-encoded to its `:id`
@@ -198,22 +197,22 @@ widgets :: service(gitlab) {
 ```
 
 **Talking to a run in progress.** The brief is a snapshot taken at claim time, so a note
-posted while the agent is working is invisible to the run it is about — and on a project
-whose `on_done` closes the issue, it is invisible for good. `follow_comments <duration>`
-closes that window. With it set, afkd asks the plugin for the claimed issue's notes on that
-interval for the extent of the run and hands any new one to the agent **that is already
-working**, as another turn in the same conversation:
+posted while the agent is working would be invisible to the run it is about — and on a
+project whose `on_done` closes the issue, invisible for good. afkd closes that window for
+every service, with no setting: it asks the plugin for the claimed issue's notes every
+25-35 s for the extent of the run, and once more when the last agent stops, and hands any
+new one to the agent **that is already working**, as another turn in the same conversation.
+Nothing in the block asks for it:
 
 ```conf
 import "core"
 import "@afkd/gitlab"
 
 widgets :: service(gitlab) {
-  base_url        "https://gitlab.example.com"
-  project         "group/sub.group/widgets"
-  token           "REPLACE_ME"
-  poll_interval   4m~6m
-  follow_comments 60s          // the agent hears you mid-run
+  base_url      "https://gitlab.example.com"
+  project       "group/sub.group/widgets"
+  token         "REPLACE_ME"
+  poll_interval 4m~6m
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, issue: gitlab.Issue) {
@@ -226,25 +225,24 @@ Every delivered message is **also appended to the run's `task.md`**, so the next
 multi-agent run reads the correction in the task itself, and a retry keeps it. Notes are
 delivered once each, oldest-first; afkd's own notes and `[afkd-claim]` markers are never
 delivered back. The issue claim reads no notes, so the first read takes the thread as it
-stands as the baseline and delivers only what comes after. Cost: one extra notes read per
-interval **per running issue**, plus one at the end of each run, and nothing at all while
-no run is in flight. All of this is afkd's own mid-run watch; the plugin only reads the
-thread for it.
+stands as the baseline and delivers only what comes after. Cost: one notes read every
+25-35 s **per running issue**, plus one at the end of each run, and nothing at all while no
+run is in flight. All of this is afkd's own mid-run watch; the plugin only reads the thread
+for it.
 
 ## `service(gitlab.mr)` (merge-request review)
 
 Fires on open merge requests — optionally only the bot's own — and re-fires when a human
 leaves a note newer than the bot's last word, for an automated review loop.
 
-| Key               | Type       | Notes                                              |
-|-------------------|------------|----------------------------------------------------|
-| `base_url`        | `string`   | as for `service(gitlab)`                           |
-| `project`         | `string`   | **required**: a numeric id or a path-with-namespace |
-| `token`           | `string`   | personal/project access token; required           |
-| `author_me`       | `bool`     | restrict to the bot's own MRs; default `false`     |
-| `follow_comments` | `duration` | as for `service(gitlab)`                           |
-| `max_attempts`    | `int`      | retries per round; default `1`                     |
-| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters             |
+| Key             | Type       | Notes                                              |
+|-----------------|------------|----------------------------------------------------|
+| `base_url`      | `string`   | as for `service(gitlab)`                           |
+| `project`       | `string`   | **required**: a numeric id or a path-with-namespace |
+| `token`         | `string`   | personal/project access token; required           |
+| `author_me`     | `bool`     | restrict to the bot's own MRs; default `false`     |
+| `max_attempts`  | `int`      | retries per round; default `1`                     |
+| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters             |
 
 `source_label` is **not** a key here.
 
@@ -283,7 +281,7 @@ Address review feedback on MR !7.
 **carol:** and the jitter is still zero
 ```
 
-`follow_comments` works as for `service(gitlab)`: afkd asks the plugin for the MR's notes
+The comment watch works as for `service(gitlab)`: afkd asks the plugin for the MR's notes
 while a round runs. The notes the brief was built from are never delivered again.
 
 ```conf
@@ -291,11 +289,10 @@ import "core"
 import "@afkd/gitlab"
 
 reviews :: service(gitlab.mr) {
-  base_url        "https://gitlab.example.com"
-  project         "group/widgets"
-  token           "REPLACE_ME"
-  author_me       true
-  follow_comments 60s
+  base_url  "https://gitlab.example.com"
+  project   "group/widgets"
+  token     "REPLACE_ME"
+  author_me true
 
   on_claim(mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)

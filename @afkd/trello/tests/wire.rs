@@ -75,7 +75,7 @@ fn board() -> Board {
 }
 
 /// The live selfdev service's settings, lowered to JSON as afkd lowers them: every value a
-/// string — afkd's own three keys along for the ride — and no hook, since afkd runs those.
+/// string — afkd's own two keys along for the ride — and no hook, since afkd runs those.
 fn settings(fake: &FakeTrello) -> Value {
     json!({
         "board": format!("https://trello.com/b/{BOARD}/afkd-selfdev"),
@@ -85,7 +85,6 @@ fn settings(fake: &FakeTrello) -> Value {
         "pick_from": "Up for Grabs",
         "poll_interval": "30s",
         "max_attempts": "2",
-        "follow_comments": "2m",
     })
 }
 

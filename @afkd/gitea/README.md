@@ -143,19 +143,18 @@ authenticates as (e.g. a dedicated `autocoder` account) — *or* when it carries
 next poll picks it up, no label to remember. The `source_label` remains as a classic label
 gate for those who want it; either signal suffices.
 
-| Key               | Type           | Notes                                              |
-|-------------------|----------------|----------------------------------------------------|
-| `base_url`        | `string`       | the Gitea instance base URL                        |
-| `repo`            | `string`       | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
-| `org`             | `string`       | every repository of an org; **exactly one** of `repo`/`org` |
-| `token`           | `string`       | personal access token; required                    |
-| `source_label`    | `string`       | optional label gate; alternative to assigning bot  |
-| `discuss_with`    | `list[string]` | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
-| `follow_comments` | `duration`     | re-read the issue this often **while its run is in flight**, delivering new comments to the working agent; a range `30s~90s` jitters; default unset (no mid-run watch) |
-| `max_attempts`    | `int`          | retries per issue; default `1`                     |
-| `poll_interval`   | `duration`     | default `30s`; a range `2m~3m` jitters             |
+| Key             | Type           | Notes                                              |
+|-----------------|----------------|----------------------------------------------------|
+| `base_url`      | `string`       | the Gitea instance base URL                        |
+| `repo`          | `string`       | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
+| `org`           | `string`       | every repository of an org; **exactly one** of `repo`/`org` |
+| `token`         | `string`       | personal access token; required                    |
+| `source_label`  | `string`       | optional label gate; alternative to assigning bot  |
+| `discuss_with`  | `list[string]` | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
+| `max_attempts`  | `int`          | retries per issue; default `1`                     |
+| `poll_interval` | `duration`     | default `30s`; a range `2m~3m` jitters             |
 
-The last three are afkd's own, read by afkd for every kind that claims its work.
+The last two are afkd's own, read by afkd for every kind that claims its work.
 
 **Exactly one** of `repo` (a single `owner/name`) or `org` (every repo of an org) is
 required — naming neither or both is refused when the service starts. The slots only manage
@@ -296,22 +295,22 @@ groom :: service(gitea) {
 ```
 
 **Talking to a run in progress.** Everything above happens *between* runs: the brief is a
-snapshot taken at claim time, so a comment posted while the agent is working is invisible
-to the run it is about — and on a repo whose `on_done` closes the issue, it is invisible for
-good. `follow_comments <duration>` closes that window. With it set, afkd asks the plugin
-for the claimed issue's comments on that interval for the extent of the run and hands any
-new one to the agent **that is already working**, as another turn in the same conversation:
+snapshot taken at claim time, so a comment posted while the agent is working would be
+invisible to the run it is about — and on a repo whose `on_done` closes the issue, invisible
+for good. afkd closes that window for every service, with no setting: it asks the plugin for
+the claimed issue's comments every 25-35 s for the extent of the run, and once more when the
+last agent stops, and hands any new one to the agent **that is already working**, as another
+turn in the same conversation. Nothing in the block asks for it:
 
 ```conf
 import "core"
 import "@afkd/gitea"
 
 widgets :: service(gitea) {
-  base_url        "https://git.example.com"
-  repo            "acme/widgets"
-  token           "REPLACE_ME"
-  poll_interval   4m~6m
-  follow_comments 60s          // the agent hears you mid-run
+  base_url      "https://git.example.com"
+  repo          "acme/widgets"
+  token         "REPLACE_ME"
+  poll_interval 4m~6m
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, issue: gitea.Issue) {
@@ -324,28 +323,26 @@ Every delivered message is **also appended to the run's `task.md`**, so the next
 multi-agent run reads the correction in the task itself, and a retry keeps it. The agent
 picks a delivered message up at its next tool boundary. Comments are delivered once each,
 oldest-first, attributed exactly as a brief's `## New comments` section is; afkd's own
-comments and `[afkd-claim]` markers are never delivered back. A comment that lands after
-the last tick is picked up by the **run-end sweep** afkd makes before the post-run slot,
-and earns the issue another round of the same fire. Cost: one extra comment read per
-interval **per running issue**, plus one at the end of each run, and nothing at all while
-no run is in flight. All of this is afkd's own mid-run watch; the plugin only reads the
-thread for it.
+comments and `[afkd-claim]` markers are never delivered back. A comment that lands after the
+last tick is picked up by the **run-end sweep** afkd makes before the post-run slot, and
+earns the issue another round of the same fire. Cost: one comment read every 25-35 s **per
+running issue**, plus one at the end of each run, and nothing at all while no run is in
+flight. All of this is afkd's own mid-run watch; the plugin only reads the thread for it.
 
 ## `service(gitea.pr)` (pull-request review)
 
 Fires on open pull requests — optionally only the bot's own — and re-fires when a human
 leaves feedback newer than the bot's last word, for an automated review loop.
 
-| Key               | Type       | Notes                                                  |
-|-------------------|------------|--------------------------------------------------------|
-| `base_url`        | `string`   | the Gitea instance base URL                            |
-| `repo`            | `string`   | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
-| `org`             | `string`   | every repository of an org; **exactly one** of `repo`/`org` |
-| `token`           | `string`   | personal access token; required                        |
-| `author_me`       | `bool`     | restrict to the bot's own PRs; default `false`         |
-| `follow_comments` | `duration` | as for `service(gitea)`                                |
-| `max_attempts`    | `int`      | retries per round; default `1`                         |
-| `poll_interval`   | `duration` | default `30s`; a range `2m~3m` jitters                 |
+| Key             | Type       | Notes                                                  |
+|-----------------|------------|--------------------------------------------------------|
+| `base_url`      | `string`   | the Gitea instance base URL                            |
+| `repo`          | `string`   | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
+| `org`           | `string`   | every repository of an org; **exactly one** of `repo`/`org` |
+| `token`         | `string`   | personal access token; required                        |
+| `author_me`     | `bool`     | restrict to the bot's own PRs; default `false`         |
+| `max_attempts`  | `int`      | retries per round; default `1`                         |
+| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters                 |
 
 `source_label` and `discuss_with` are not keys here, and the kind has no `on_park` slot.
 
@@ -384,7 +381,7 @@ Address review feedback on PR #7.
 **carol:** (review 1042)
 ```
 
-`follow_comments` works as for `service(gitea)`: afkd asks the plugin for the PR's comments
+The comment watch works as for `service(gitea)`: afkd asks the plugin for the PR's comments
 while a round runs, and the comments the brief was built from are never delivered again.
 
 ```conf

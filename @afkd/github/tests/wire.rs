@@ -35,7 +35,7 @@ fn forge() -> FakeGithub {
 }
 
 /// A full `issue` block, lowered to JSON as afkd lowers it: every value a string — and
-/// afkd's own three keys along for the ride. The hooks never cross here; afkd runs them.
+/// afkd's own two keys along for the ride. The hooks never cross here; afkd runs them.
 fn settings(fake: &FakeGithub) -> Value {
     json!({
         "host": fake.host(),
@@ -44,7 +44,6 @@ fn settings(fake: &FakeGithub) -> Value {
         "source_label": "afkd/ready",
         "poll_interval": "30s",
         "max_attempts": "1",
-        "follow_comments": "2m",
     })
 }
 
@@ -961,7 +960,7 @@ fn pr_forge() -> (FakeGithub, u64) {
 }
 
 /// A full `pr` block, lowered to JSON as afkd lowers it — `author_me` a `bool` as its word
-/// — and afkd's own three keys along for the ride.
+/// — and afkd's own two keys along for the ride.
 fn pr_settings(fake: &FakeGithub) -> Value {
     json!({
         "host": fake.host(),
@@ -970,7 +969,6 @@ fn pr_settings(fake: &FakeGithub) -> Value {
         "author_me": "true",
         "poll_interval": "30s",
         "max_attempts": "1",
-        "follow_comments": "2m",
     })
 }
 
