@@ -1,0 +1,62 @@
+{"afkd":"welcome","proto":1,"daemon":"0.2.379","auth":"none"}
+{"type":"meta","meta":"snapshot","services":[{"name":"backup.0","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🈶","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3597447,"state_ms":2552,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"selfdev.develop.0","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"selfdev","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3597447,"state_ms":2552,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"selfdev.develop.1","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"selfdev","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3597447,"state_ms":2552,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"selfdev.develop.2","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"selfdev","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3597447,"state_ms":2552,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"selfdev.review","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"selfdev","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3597447,"state_ms":2552,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":2553}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6903623680,"mem_total":32453844992,"rx_bps":3381,"tx_bps":831}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":6902702080,"mem_total":32453844992,"rx_bps":7425,"tx_bps":50156}
+{"type":"event","event":"run_started","service":"selfdev.develop.0"}
+{"type":"trace","service":"selfdev.develop.0","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"printf '解析 copy %s: 3 件の失敗\\nsecond line\\n' \"$AFKD_INSTANCE\"","detail":""},"at":{"year":2026,"month":10,"day":20,"hour":16,"minute":55,"second":29,"millis":514}}}
+{"type":"log","service":"selfdev.develop.0","stream":"stderr","line":"[selfdev.develop.0] [RUN] run_cmd: printf '解析 copy %s: 3 件の失敗\\nsecond line\\n' \"$AFKD_INSTANCE\""}
+{"type":"log","service":"selfdev.develop.0","stream":"stdout","line":"[selfdev.develop.0] [printf] 解析 copy 0: 3 件の失敗","node":1}
+{"type":"log","service":"selfdev.develop.0","stream":"stdout","line":"[selfdev.develop.0] [printf] second line","node":1}
+{"type":"log","service":"selfdev.develop.0","stream":"stderr","line":"[selfdev.develop.0] [OK] run_cmd: printf '解析 copy %s: 3 件の失敗\\nsecond line\\n' \"$AFKD_INSTANCE\" (exit 0, 0ms)"}
+{"type":"trace","service":"selfdev.develop.0","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":0,"out":{"out":"lines","n":2}}}
+{"type":"trace","service":"selfdev.develop.0","event":{"op":"opened","node":{"id":2,"kind":"cmd","label":"sleep 3","detail":""},"at":{"year":2026,"month":10,"day":20,"hour":16,"minute":55,"second":29,"millis":515}}}
+{"type":"log","service":"selfdev.develop.0","stream":"stderr","line":"[selfdev.develop.0] [RUN] run_cmd: sleep 3"}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":6906449920,"mem_total":32453844992,"rx_bps":5035,"tx_bps":3206}
+{"type":"event","event":"run_started","service":"selfdev.develop.1"}
+{"type":"trace","service":"selfdev.develop.1","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"printf '解析 copy %s: 3 件の失敗\\nsecond line\\n' \"$AFKD_INSTANCE\"","detail":""},"at":{"year":2026,"month":10,"day":20,"hour":16,"minute":55,"second":29,"millis":814}}}
+{"type":"log","service":"selfdev.develop.1","stream":"stderr","line":"[selfdev.develop.1] [RUN] run_cmd: printf '解析 copy %s: 3 件の失敗\\nsecond line\\n' \"$AFKD_INSTANCE\""}
+{"type":"log","service":"selfdev.develop.1","stream":"stdout","line":"[selfdev.develop.1] [printf] 解析 copy 1: 3 件の失敗","node":1}
+{"type":"log","service":"selfdev.develop.1","stream":"stdout","line":"[selfdev.develop.1] [printf] second line","node":1}
+{"type":"log","service":"selfdev.develop.1","stream":"stderr","line":"[selfdev.develop.1] [OK] run_cmd: printf '解析 copy %s: 3 件の失敗\\nsecond line\\n' \"$AFKD_INSTANCE\" (exit 0, 0ms)"}
+{"type":"trace","service":"selfdev.develop.1","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":0,"out":{"out":"lines","n":2}}}
+{"type":"trace","service":"selfdev.develop.1","event":{"op":"opened","node":{"id":2,"kind":"cmd","label":"sleep 3","detail":""},"at":{"year":2026,"month":10,"day":20,"hour":16,"minute":55,"second":29,"millis":815}}}
+{"type":"log","service":"selfdev.develop.1","stream":"stderr","line":"[selfdev.develop.1] [RUN] run_cmd: sleep 3"}
+{"type":"event","event":"run_started","service":"backup.0"}
+{"type":"trace","service":"backup.0","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"sleep 3","detail":""},"at":{"year":2026,"month":10,"day":20,"hour":16,"minute":55,"second":30,"millis":414}}}
+{"type":"log","service":"backup.0","stream":"stderr","line":"[backup.0]          [RUN] run_cmd: sleep 3"}
+{"type":"event","event":"service_paused","service":"backup.1","paused":false}
+{"type":"meta","meta":"spawned","service":{"name":"backup.1","state":"starting","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🈶","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},"order":["backup.0","backup.1","selfdev.develop.0","selfdev.develop.1","selfdev.develop.2","selfdev.review"]}
+{"type":"event","event":"service_armed","service":"backup.1"}
+{"type":"event","event":"service_next_run","service":"backup.1","next_ms":3599999}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6903390208,"mem_total":32453844992,"rx_bps":1348,"tx_bps":982}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6902259712,"mem_total":32453844992,"rx_bps":3279,"tx_bps":767}
+{"type":"log","service":"selfdev.develop.0","stream":"stderr","line":"[selfdev.develop.0] [OK] run_cmd: sleep 3 (exit 0, 3.00s)"}
+{"type":"trace","service":"selfdev.develop.0","event":{"op":"closed","id":2,"status":"ok","elapsed_ms":3000,"out":{"out":"lines","n":0}}}
+{"type":"event","event":"run_ok","service":"selfdev.develop.0","elapsed_ms":3001}
+{"type":"event","event":"service_next_run","service":"selfdev.develop.0","next_ms":3599999}
+{"type":"meta","meta":"host_load","cpu_pct":1,"mem_used":6905819136,"mem_total":32453844992,"rx_bps":9708,"tx_bps":7189}
+{"type":"log","service":"selfdev.develop.1","stream":"stderr","line":"[selfdev.develop.1] [OK] run_cmd: sleep 3 (exit 0, 3.00s)"}
+{"type":"trace","service":"selfdev.develop.1","event":{"op":"closed","id":2,"status":"ok","elapsed_ms":3001,"out":{"out":"lines","n":0}}}
+{"type":"event","event":"run_ok","service":"selfdev.develop.1","elapsed_ms":3002}
+{"type":"event","event":"service_next_run","service":"selfdev.develop.1","next_ms":3599999}
+{"type":"log","service":"backup.0","stream":"stderr","line":"[backup.0]          [OK] run_cmd: sleep 3 (exit 0, 3.00s)"}
+{"type":"trace","service":"backup.0","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":3001,"out":{"out":"lines","n":0}}}
+{"type":"event","event":"run_ok","service":"backup.0","elapsed_ms":3001}
+{"type":"event","event":"service_next_run","service":"backup.0","next_ms":3599999}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6872145920,"mem_total":32453844992,"rx_bps":2964,"tx_bps":2555}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6868533248,"mem_total":32453844992,"rx_bps":2474,"tx_bps":1463}
+{"type":"event","event":"service_stopping","service":"backup.1"}
+{"type":"event","event":"service_paused","service":"backup.1","paused":true}
+{"type":"meta","meta":"dropped","service":"backup.1"}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6866812928,"mem_total":32453844992,"rx_bps":6650,"tx_bps":3546}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"selfdev.review"}
+{"type":"event","event":"service_paused","service":"selfdev.review","paused":true}
+{"type":"event","event":"service_stopping","service":"backup.0"}
+{"type":"event","event":"service_stopping","service":"selfdev.develop.0"}
+{"type":"event","event":"service_stopping","service":"selfdev.develop.1"}
+{"type":"event","event":"service_stopping","service":"selfdev.develop.2"}
+{"type":"event","event":"service_paused","service":"backup.0","paused":true}
+{"type":"event","event":"service_paused","service":"selfdev.develop.0","paused":true}
+{"type":"event","event":"service_paused","service":"selfdev.develop.1","paused":true}
+{"type":"event","event":"service_paused","service":"selfdev.develop.2","paused":true}

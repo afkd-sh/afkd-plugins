@@ -26,7 +26,7 @@
 // on the board was converted into at receipt, so a subtraction here is always two instants
 // of one clock.
 
-import { queues } from "./fold.mjs";
+import { copiesOf, queues, rowCards, rowRecord } from "./fold.mjs";
 import {
   DEFAULT_KEYS,
   DESCRIPTIONS,
@@ -506,18 +506,20 @@ function planHeader(view, cols) {
 
 /// The typed header the ladder above sheds — `layout::HeaderView`, derived from the board.
 function headerView(board, now, version) {
-  let alive = 0;
   let draining = 0;
   let tokens = 0;
   let cost = 0;
   for (const name of board.order) {
     const svc = board.services[name];
     if (svc === undefined) continue;
-    if (isAlive(svc.badge)) alive += 1;
     if (svc.inFlightSince !== null) draining += 1;
     tokens += svc.tokens;
     cost += svc.cost;
   }
+  // `up N/total` counts rows: a multi-copy family is one service, up when its folded badge is.
+  // The drain count and the usage totals stay per copy — a forced shutdown interrupts each.
+  const rows = rowCards(board);
+  const alive = rows.filter((svc) => isAlive(svc.badge)).length;
   const quitting = board.quittingSince !== null;
   return {
     version,
@@ -530,7 +532,7 @@ function headerView(board, now, version) {
     elapsed: formatElapsed(quitting ? now - board.quittingSince : now - (board.daemonStartedAt ?? now)),
     draining: quitting ? draining : null,
     alive,
-    total: board.order.length,
+    total: rows.length,
     tokens: formatTokens(tokens),
     cost,
   };
@@ -757,7 +759,17 @@ const COLUMNS = [
 
 /// The fixed reserves, `shell::*_COL_WIDTH`. `service` has none: it is the content-fit column
 /// below the stretch floor and the flex sink above it.
-const COL_WIDTH = { state: 19, trigger: 16, liveness: 13, next: 8 };
+export const COL_WIDTH = { state: 19, trigger: 16, liveness: 13, next: 8 };
+/// `shell::FAMILY_STATE_COL_WIDTH` — the `State` column on a board holding a multi-copy family,
+/// wide enough for `▶ Busy 10/10 365d 23h`. The two cells over `COL_WIDTH.state` come out of
+/// `Service`'s room, so the shed ladder stays where it is.
+export const FAMILY_STATE_COL_WIDTH = 21;
+
+/// `shell::family_extra` — the cells a family board moves from `Service` to `State`: none on a
+/// board with no multi-copy family, so its layout is the one it always was.
+function familyExtra(board) {
+  return Object.keys(board.families).length > 0 ? FAMILY_STATE_COL_WIDTH - COL_WIDTH.state : 0;
+}
 /// `shell::COLUMN_SPACING` — the gutter between adjacent columns, spent by this table and by
 /// the `Queues` section's own five alike.
 const COLUMN_SPACING = 3;
@@ -811,9 +823,11 @@ function triggerColWidth(cols) {
 
 /// `shell::service_col_width` — content-fit below the stretch floor (clamped to the floor and
 /// to what the visible set leaves), and the pure remainder above it, where `content` is
-/// deliberately ignored so no column moves as a service is added, renamed or filtered.
-function serviceColWidth(content, cols) {
-  const avail = Math.max(0, cols - columnReserve(visibleColumns(cols)));
+/// deliberately ignored so no column moves as a service is added, renamed or filtered. `extra`
+/// is [`familyExtra`]: it comes off what is left **before** either regime, so a name that fits
+/// the rest keeps its full width and the row still fills the pane.
+export function serviceColWidth(content, cols, extra = 0) {
+  const avail = Math.max(0, cols - columnReserve(visibleColumns(cols)) - extra);
   if (cols < stretchFloor()) {
     return Math.min(Math.max(content, SERVICE_COL_MIN), Math.max(avail, SERVICE_COL_MIN));
   }
@@ -822,10 +836,34 @@ function serviceColWidth(content, cols) {
 
 /// `shell::column_render_width` — the on-screen width of one column, so the header labels,
 /// the body cells and their eliding budgets are three projections of one number.
-function columnRenderWidth(key, content, cols) {
-  if (key === "service") return serviceColWidth(content, cols);
+function columnRenderWidth(key, content, cols, extra = 0) {
+  if (key === "service") return serviceColWidth(content, cols, extra);
   if (key === "trigger") return triggerColWidth(cols);
+  if (key === "state") return COL_WIDTH.state + extra;
   return COL_WIDTH[key];
+}
+
+// --- a multi-copy family's wording --------------------------------------------------
+//
+// `crates/tui/src/family.rs`, the wording's one home there and here.
+
+/// `family::COPIES_MARK` — what follows a family row's name before its live copy count:
+/// `develop ×3`.
+export const COPIES_MARK = " ×";
+
+/// `family::busy_share` — a busy family's share of its copies, between its `Busy` and the
+/// elapsed: `▶ Busy 2/3 4m 10s`.
+export function busyShare(busy, copies) {
+  return `${busy}/${copies}`;
+}
+
+/// `family::copies_breakdown` — the info page's `State` row for a family:
+/// `3 copies: 2 busy, 1 idle`, the states most urgent first, each word lowercased as the
+/// sentence's complement.
+export function copiesBreakdown(count) {
+  const copies = count.copies === 1 ? "1 copy" : `${count.copies} copies`;
+  const states = count.states.map(([badge, n]) => `${n} ${badge.toLowerCase()}`);
+  return [copies, states.join(", ")].join(": ");
 }
 
 // --- the rows ----------------------------------------------------------------------
@@ -1060,7 +1098,7 @@ function nextCell(svc, now) {
 /// (`shell::service_prefix_spans` — a stopped member's tint must not fade the group's guide),
 /// then the icon, the markers and the name, with the name's `::` separators receded
 /// (`shell::dim_separator_spans`).
-function identityCells(prefix, body, name, tint) {
+function identityCells(prefix, body, name, tint, count = "") {
   const cells = [];
   if (prefix !== "") cells.push(cell(prefix, { fg: "recede" }));
   if (body !== "") cells.push(cell(body, { fg: tint }));
@@ -1075,6 +1113,8 @@ function identityCells(prefix, body, name, tint) {
     cells.push(cell("::", { fg: "recede" }));
     rest = rest.slice(at + 2);
   }
+  // A multi-copy family's live copy count follows its name in the name's own tint.
+  if (count !== "") cells.push(cell(count, { fg: tint }));
   return cells;
 }
 
@@ -1090,8 +1130,10 @@ function stateText(svc, now) {
   else if (["Starting", "Queued", "Checking", "Stopping"].includes(svc.badge)) {
     since = svc.stateEnteredAt;
   }
+  // A busy family's share rides between the label and the elapsed.
+  const share = svc.badge === "Busy" && svc.family != null ? ` ${busyShare(svc.family.busy, svc.family.copies)}` : "";
   const elapsed = since === null ? "" : ` ${formatElapsed(Math.max(0, now - since))}`;
-  return `${glyph} ${svc.badge}${elapsed}`;
+  return `${glyph} ${svc.badge}${share}${elapsed}`;
 }
 
 /// `DashboardModel::visible_cards`'s name axis — the `/` needle, matched as a substring over
@@ -1114,13 +1156,16 @@ function keptByLens(svc, busyOnly) {
 }
 
 /// `DashboardModel::visible_cards` — the cards that survive both axes, in config order: the one
-/// set the rows are built from, a header's rollup folds and the selection walk climbs.
+/// set the rows are built from, a header's rollup folds and the selection walk climbs. The
+/// cards are **row records** ([`rowCards`]): a multi-copy family is one, kept when its base or
+/// **any copy's** name matches the needle, and lensed by its folded badge.
 export function visibleCards(board, options = {}) {
   const filter = options.filter ?? "";
   const busyOnly = options.busyOnly === true;
-  return board.order
-    .map((name) => board.services[name])
-    .filter((svc) => svc !== undefined && keptByFilter(svc.name, filter) && keptByLens(svc, busyOnly));
+  const named = (svc) =>
+    keptByFilter(svc.name, filter) ||
+    (svc.family != null && (board.families[svc.name]?.members ?? []).some((m) => keptByFilter(m, filter)));
+  return rowCards(board).filter((svc) => named(svc) && keptByLens(svc, busyOnly));
 }
 
 /// `DashboardModel::group_rollup` — the **transitive** fold (ADR-0073): every service in the
@@ -1285,6 +1330,7 @@ function identityOf(row) {
     prefix: row.prefix,
     body: `${cardIcon(svc)} ${reconcileMarker(svc)}`,
     name: displayedName(svc, row.depth),
+    count: svc.family == null ? "" : `${COPIES_MARK}${svc.family.copies}`,
     // `shell::row_line_style`: a **stopped** row recedes whole-line so a shelf of switched-off
     // services sinks below the live ones; under the cursor it lifts back to full weight.
     tint: svc.badge === "Stopped" ? "muted" : "ink",
@@ -1300,8 +1346,8 @@ function identityText(row) {
   // counts its whole width; a real peek line overpaints the row and counts nothing.
   if (row.kind === "peek") return row.line === null ? `${peekGuide(row)}${TREE_BODY_BAR}${PEEK_EMPTY}` : "";
   if (row.kind !== "service" && row.kind !== "group") return "";
-  const { prefix, body, name } = identityOf(row);
-  return `${prefix}${body}${name}`;
+  const { prefix, body, name, count = "" } = identityOf(row);
+  return `${prefix}${body}${name}${count}`;
 }
 
 // --- the `Queues` section ----------------------------------------------------------
@@ -1763,14 +1809,13 @@ function hintRowCells(row) {
 /// the badge; only an **unbound** action renders nothing at all. The `x` cell is a single cell
 /// for a single gesture: its label flips to `force-stop` exactly when pressing `x` would open
 /// the force-confirm modal.
-function controlHints(keys, badge, poisoned) {
+function controlHints(keys, startable, stopping, stoppable) {
   const out = [];
-  const start = keys.hintGated("overview.service_start", "start", canStart(badge) && !poisoned);
+  const start = keys.hintGated("overview.service_start", "start", startable);
   if (start !== null) out.push(start);
-  const stop =
-    badge === "Stopping"
-      ? keys.hintGated("overview.service_stop", "force-stop", true)
-      : keys.hintGated("overview.service_stop", "stop", canStop(badge));
+  const stop = stopping
+    ? keys.hintGated("overview.service_stop", "force-stop", true)
+    : keys.hintGated("overview.service_stop", "stop", stoppable);
   if (stop !== null) out.push(stop);
   return out;
 }
@@ -1860,14 +1905,25 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
   const hints = [];
   if (row !== undefined && row.kind === "service") {
     const svc = row.svc;
-    hints.push(...controlHints(keys, svc.badge, svc.poisoned));
+    // The copies the row's keys reach — one record, or every live copy of a family — each key
+    // live when **any** of them can take it, which for one record is its own gate exactly.
+    const copies = copiesOf(board, svc);
+    const some = (f) => copies.some(f);
+    hints.push(
+      ...controlHints(
+        keys,
+        some((c) => canStart(c.badge) && !c.poisoned),
+        some((c) => c.badge === "Stopping"),
+        some((c) => canStop(c.badge)),
+      ),
+    );
     // A poisoned `Crashed` card has neither a live `s` nor a live `r`; rather than leave the
     // operator guessing at two muted slots, an inert note states why and what lifts the gate.
     if (svc.poisoned) hints.push(note("✕", POISON_RECOVERY));
-    push(hints, keys.hintGated("overview.service_run", "run now", canRun(svc.badge)));
+    push(hints, keys.hintGated("overview.service_run", "run now", some((c) => canRun(c.badge))));
     push(
       hints,
-      keys.hintGated("overview.service_restart", "restart", !svc.poisoned && svc.badge !== "Stopping"),
+      keys.hintGated("overview.service_restart", "restart", some((c) => !c.poisoned && c.badge !== "Stopping")),
     );
     // `+`/`-` move the selected service's **lane**, so they are gated on the selection naming
     // one rather than on its badge: a lane-less service renders both dim.
@@ -2162,7 +2218,7 @@ function confirmModal(board, confirm, quitting) {
   const count = confirm.targets.length;
   const noun = count === 1 ? "service" : "services";
   const icon = (name) => {
-    const svc = board.services[name];
+    const svc = rowRecord(board, name);
     return svc === undefined ? name : `${cardIcon(svc)} ${name}`;
   };
   if (confirm.verb === "abandon") {
@@ -2357,6 +2413,8 @@ function groupLabel(svc) {
 /// time-of-day anchor crosses this wire. The elapsed is the **same** anchor the list `State`
 /// cell reads for this badge (`stateText`), so the two surfaces cannot drift.
 function statePhrase(svc, now) {
+  // A multi-copy family's page describes the service once: its state is the breakdown.
+  if (svc.family != null) return copiesBreakdown(svc.family);
   const since = svc.badge === "Busy" && svc.inFlightSince !== null ? svc.inFlightSince : svc.stateEnteredAt;
   const elapsed = formatElapsed(Math.max(0, now - since));
   if (svc.badge === "Busy") return `Busy ${elapsed} (running)`;
@@ -2673,7 +2731,7 @@ function infoBandRows(about, cols) {
 export function infoView(board, options) {
   const name = options.info ?? null;
   if (name === null) return null;
-  const svc = board.services[name];
+  const svc = rowRecord(board, name);
   if (svc === undefined) return null;
   return {
     title: `afkd › ${svc.name} · ${svc.badge}`,
@@ -3430,7 +3488,7 @@ function treeBodyCells(body, paneW) {
 function runPlan(board, options) {
   const run = options.run ?? null;
   if (run === null) return null;
-  const svc = board.services[run.service];
+  const svc = rowRecord(board, run.service);
   if (svc === undefined) return null;
   const cols = Math.max(1, Math.trunc(options.cols));
   const rows = Math.max(1, Math.trunc(options.rows));
@@ -3464,6 +3522,7 @@ function runPlan(board, options) {
     focus,
     cols,
     rows,
+    extra: familyExtra(board),
     now: options.now,
     paneW,
     viewport,
@@ -3518,7 +3577,7 @@ function treeParentIds(tree) {
  */
 export function runTreeNav(board, run, viewport) {
   if (run === null || run === undefined) return null;
-  const svc = board.services[run.service];
+  const svc = rowRecord(board, run.service);
   if (svc === undefined) return null;
   const tree = svc.tree;
   const cursor = run.cursor ?? null;
@@ -3583,7 +3642,7 @@ function runHeaderCells(plan) {
   const visible = visibleColumns(plan.cols);
   const widths = {};
   for (const column of visible) {
-    widths[column.key] = columnRenderWidth(column.key, textWidth(identityText(row)), plan.cols);
+    widths[column.key] = columnRenderWidth(column.key, textWidth(identityText(row)), plan.cols, plan.extra);
   }
   return bodyRowCells(row, visible, widths, queueCols(plan.cols, 0), {}, plan.now);
 }
@@ -3707,7 +3766,8 @@ export function layout(board, options) {
   const content = measured.reduce((w, row) => Math.max(w, textWidth(identityText(row))), 0);
   const visible = visibleColumns(cols);
   const widths = {};
-  for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols);
+  const extra = familyExtra(board);
+  for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols, extra);
   const laneCols = queueCols(cols, lanes.reduce((w, l) => Math.max(w, textWidth(l.lane)), 0));
   // The rollups a header shows. `fold.mjs`'s `groups()` buckets by the **exact** group
   // string and says so: "the fold has no tree to collapse into yet … the nesting belongs
@@ -3807,7 +3867,10 @@ function bodyRowCells(row, visible, widths, laneCols, rollups, now, cols) {
 
   const identity = row.kind === "peek" ? null : identityOf(row);
   const parts = {
-    service: identity === null ? peekEmptyCells(row, cols) : identityCells(identity.prefix, identity.body, identity.name, identity.tint),
+    service:
+      identity === null
+        ? peekEmptyCells(row, cols)
+        : identityCells(identity.prefix, identity.body, identity.name, identity.tint, identity.count),
     state: [],
     trigger: [],
     liveness: [],

@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.4.2 (companion)
+Installed @afkd/web_top 0.5.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -142,7 +142,10 @@ stream to per-service state — the state word and its badge, the trigger and qu
 the four countdown anchors, the run and usage tallies, a bounded log ring and a bounded run
 tree — plus `queues(board)`, the lane rollup the layout reads, and `groups(board)`, its flat
 bucketing of the same (the *transitive* group fold belongs with the paint, and lives in
-`layout.mjs`). The tui's
+`layout.mjs`). A service that runs as copies (`instances 3`, an `instances auto` pool) keeps
+one record per copy, as the wire reports them, and folds into one **family** row beside them
+(`crates/tui/src/family.rs`): `rowCards(board)` is what the list shows, `develop ×3` wearing
+its most urgent copy's badge, and a key on that row reaches every copy. The tui's
 own arms are mirrored one for one, and each cites the file it was read off, because the two
 can drift and the citation is what makes that findable.
 

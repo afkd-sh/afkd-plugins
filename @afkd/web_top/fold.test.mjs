@@ -20,7 +20,23 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { LOG_LINES_DEFAULT, TRACE_NODES_CAPACITY, fold, groups, queues, sanitize, seed } from "./fold.mjs";
+import {
+  LOG_LINES_DEFAULT,
+  TRACE_NODES_CAPACITY,
+  URGENCY,
+  copiesOf,
+  fold,
+  groups,
+  instanceFamily,
+  instanceSplit,
+  queues,
+  rowCards,
+  rowNameOf,
+  rowRecord,
+  sanitize,
+  seed,
+} from "./fold.mjs";
+import { NO_AFKD_SRC, afkdSource } from "./testkit.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -1126,4 +1142,129 @@ test("a node's openedAt is the instant its frame folded", () => {
   const root = board.services[subject].tree.nodes[opens[0].frame.event.node.id];
   assert.equal(root.openedAt, clock[opens[0].i], "a closed node still names when it opened");
   assert.ok(root.elapsedMs > 0, "…and carries the engine's own span for the rail");
+});
+
+// --- a multi-copy service is one row (ADR-0047 #8, as amended 2026-10-20) ----------------
+
+/** The family capture folded up to (not including) the first frame `until` answers true for. */
+function familyUntil(until) {
+  const all = readFixture("family");
+  const stop = all.findIndex(until);
+  const frames = stop === -1 ? all : all.slice(0, stop);
+  return { frames, ...replay(frames) };
+}
+
+/** Whether `frame` is `event` for `service`. */
+const isEvent = (event, service) => (frame) =>
+  frame.type === "event" && frame.event === event && frame.service === service;
+
+test("the family rule is afkd_lang's instance_split and instance_family", () => {
+  // `crates/lang/src/model.rs`: the suffix off the **last** `.`, canonical decimal below
+  // MAX_INSTANCES, a non-empty base — every other spelling an ordinary name.
+  assert.deepEqual(instanceSplit("selfdev.develop.2"), { base: "selfdev.develop", index: 2 });
+  assert.deepEqual(instanceSplit("a.b.0"), { base: "a.b", index: 0 });
+  for (const ordinary of ["develop", "worker.x", "worker.", ".0", "worker.1x", "worker.01", "worker.10", "worker.+1", "worker.٣"]) {
+    assert.equal(instanceSplit(ordinary), null, ordinary);
+  }
+  // Anchored on copy 0 — the bare base or `.0` — in index order, case-folded, spelled as given.
+  const names = ["develop.2", "zulu", "Develop.0", "develop.10", "develop.1"];
+  assert.deepEqual(instanceFamily("develop", names), ["Develop.0", "develop.1", "develop.2"]);
+  assert.deepEqual(instanceFamily("develop", ["develop.3"]), [], "a stray copy anchors nothing");
+  assert.deepEqual(instanceFamily("develop", ["develop.1", "develop"]), ["develop", "develop.1"]);
+});
+
+test("a fixed family folds into one row at its lead, wearing its most urgent copy's badge", () => {
+  // Up to the auto pool's run: two of develop's three copies are busy.
+  const { frames, board } = familyUntil(isEvent("run_started", "backup.0"));
+  assert.ok(frames.some(isEvent("run_started", "selfdev.develop.1")), "the capture runs two copies");
+  assert.deepEqual(
+    board.order,
+    ["backup.0", "selfdev.develop.0", "selfdev.develop.1", "selfdev.develop.2", "selfdev.review"],
+    "the wire still reports every copy",
+  );
+  assert.deepEqual(rowCards(board).map((r) => r.name), ["backup", "selfdev.develop", "selfdev.review"]);
+  const row = rowRecord(board, "selfdev.develop");
+  assert.equal(row.badge, "Busy");
+  assert.deepEqual(row.family, { copies: 3, busy: 2, states: [["Busy", 2], ["Idle", 1]] });
+  assert.equal(
+    row.inFlightSince,
+    board.services["selfdev.develop.0"].inFlightSince,
+    "the longest-running copy's clock",
+  );
+  assert.deepEqual(copiesOf(board, row).map((c) => c.name), ["selfdev.develop.0", "selfdev.develop.1", "selfdev.develop.2"]);
+  assert.equal(rowNameOf(board, "selfdev.develop.1"), "selfdev.develop");
+  assert.equal(rowRecord(board, "selfdev.review").family, undefined, "a single service is no family");
+  // A pool down to its copy 0 is a family of one.
+  assert.deepEqual(rowRecord(board, "backup").family, { copies: 1, busy: 0, states: [["Idle", 1]] });
+  // The lane-free capture holds no lane, and the copies keep their own records.
+  assert.equal(board.services["selfdev.develop.2"].badge, "Idle");
+});
+
+test("every copy's lines join the family ring in arrival order, each copy's ring its own", () => {
+  const { frames, board } = familyUntil(isEvent("run_started", "backup.0"));
+  const copyLines = (name) => frames.filter((f) => f.type === "log" && f.service === name).map((f) => sanitize(f.line));
+  const familyLines = frames
+    .filter((f) => f.type === "log" && f.service.startsWith("selfdev.develop."))
+    .map((f) => sanitize(f.line));
+  assert.ok(familyLines.some((l) => l.includes("解析 copy 1")), "the capture carries CJK output");
+  assert.deepEqual(rowRecord(board, "selfdev.develop").log.lines.map((e) => e.text), familyLines);
+  for (const name of ["selfdev.develop.0", "selfdev.develop.1"]) {
+    assert.deepEqual(board.services[name].log.lines.map((e) => e.text), copyLines(name));
+  }
+  // A leaf's lines are rewritten into the family tree's ids, so they still find their node.
+  const row = rowRecord(board, "selfdev.develop");
+  for (const entry of row.log.lines.filter((e) => e.node !== null)) {
+    assert.equal(row.tree.nodes[entry.node].label.startsWith("printf"), true, entry.text);
+  }
+});
+
+test("each copy's runs are roots ordered by start, and one copy's run never abandons its sibling's", () => {
+  const { frames, board } = familyUntil(isEvent("run_started", "backup.0"));
+  // Both copies number their nodes 1 and 2 from their own allocators.
+  const ids = (name) => traceFrames(frames, name).filter((f) => f.event.op === "opened").map((f) => f.event.node.id);
+  assert.deepEqual(ids("selfdev.develop.0"), ids("selfdev.develop.1"), "the copies' ids collide");
+  const tree = rowRecord(board, "selfdev.develop").tree;
+  const opened = frames.filter((f) => f.type === "trace" && f.event.op === "opened" && f.service.startsWith("selfdev.develop."));
+  // The capture's own starts, sorted (stably, so a tie keeps arrival order): one day, so the
+  // time of day orders them.
+  const startOf = ({ at }) => ((at.hour * 60 + at.minute) * 60 + at.second) * 1000 + at.millis;
+  const byStart = opened.map((f) => f.event).sort((a, b) => startOf(a) - startOf(b));
+  assert.deepEqual(tree.roots.map((id) => tree.nodes[id].label), byStart.map((e) => e.node.label));
+  assert.equal(tree.roots.length, 4);
+  // Copy 1's run opened after copy 0's `sleep 3`, and copy 0's is still running.
+  const running = tree.roots.filter((id) => tree.nodes[id].status === "running");
+  assert.equal(running.length, 2, "both copies' sleeps run on");
+  // The ids only grow, so the newest node is the last one opened.
+  assert.equal(tree.nodes[tree.newest].label, opened[opened.length - 1].event.node.label);
+});
+
+test("a pool's mint and retire move only its count, never its row", () => {
+  const frames = readFixture("family");
+  const spawned = frames.findIndex((f) => f.type === "meta" && f.meta === "spawned");
+  const dropped = frames.findIndex((f) => f.type === "meta" && f.meta === "dropped");
+  assert.ok(spawned !== -1 && dropped > spawned, "the capture mints and retires a copy");
+  const { boards } = replay(frames);
+  const at = (i) => boards[i];
+  const rows = (b) => rowCards(b).map((r) => r.name);
+  const copies = (b) => rowRecord(b, "backup").family.copies;
+  for (const i of [spawned - 1, spawned, dropped - 1, dropped]) {
+    assert.deepEqual(rows(at(i)), ["backup", "selfdev.develop", "selfdev.review"], `frame ${i}`);
+  }
+  assert.deepEqual([copies(at(spawned - 1)), copies(at(spawned)), copies(at(dropped))], [1, 2, 1]);
+  assert.deepEqual(at(spawned).order.slice(0, 2), ["backup.0", "backup.1"], "the copy lands beside its base");
+  // The minted copy arrives arming, under its busy sibling.
+  assert.deepEqual(rowRecord(at(spawned), "backup").family.states, [["Busy", 1], ["Starting", 1]]);
+});
+
+test("the family badge order is Badge::urgency's", { skip: NO_AFKD_SRC }, () => {
+  // `crates/tui/src/model.rs`'s one home of the order, read out of the Rust: a badge added or
+  // reordered there reds here.
+  const rust = afkdSource("crates", "tui", "src", "model.rs");
+  const start = rust.indexOf("pub fn urgency(self) -> u8 {");
+  assert.notEqual(start, -1, "Badge::urgency is where it was");
+  const body = rust.slice(start, rust.indexOf("\n    }", start));
+  const arms = [...body.matchAll(/Badge::(\w+) => (\d+)/g)].map(([, name, n]) => [name, Number(n)]);
+  assert.equal(arms.length, 8, "one arm per badge");
+  arms.sort((a, b) => a[1] - b[1]);
+  assert.deepEqual(URGENCY, arms.map(([name]) => name));
 });

@@ -22,6 +22,7 @@
 //   for a fire, and what this page does for all six.
 
 import { HANDLED, REFUSED_WHILE_QUITTING, resolve } from "./keymap.mjs";
+import { copiesOf, rowNameOf, rowRecord } from "./fold.mjs";
 import { peekFloorOffset, rowKey, runTreeNav, scrollOffset, visibleCards, visibleRows } from "./layout.mjs";
 
 /// `model::FLASH_TIMEOUT` — how long a transient footer message stays up. Long enough to read
@@ -231,11 +232,12 @@ function eligible(verb, svc) {
 }
 
 /// The services a row's verb reaches — `DashboardModel::selected_targets`: one card on a
-/// service row, every member of the subtree on a group header (the transitive reading ADR-0073
-/// and the footer both use), none on a lane row or the section's header.
+/// service row, every live copy on a multi-copy family's, every member of the subtree on a
+/// group header (the transitive reading ADR-0073 and the footer both use, copies included),
+/// none on a lane row or the section's header.
 function targetsOf(board, row) {
   if (row === undefined) return [];
-  if (row.kind === "service") return [row.svc];
+  if (row.kind === "service") return copiesOf(board, row.svc);
   if (row.kind !== "group") return [];
   return board.order
     .map((name) => board.services[name])
@@ -255,12 +257,25 @@ const ACK = { run: "Run sent to", restart: "Restarting", start: "Starting", stop
 
 /// `ack_flash` — the press-time acknowledgement for a **dispatched**, post-gate batch. A gated
 /// no-op and a reload refused during the drain both dispatch nothing and so acknowledge nothing,
-/// because nothing happened; one command names its service, several read `N services`.
-function ackFlash(verb, commands) {
+/// because nothing happened; one row names its service, several read `N services` — counted in
+/// rows, so a key that reached a family's three copies acks `Stopping develop`.
+function ackFlash(board, verb, commands) {
   const word = ACK[verb];
-  if (word === undefined || commands.length === 0) return null;
-  if (commands.length === 1) return `${word} ${commands[0].service}`;
-  return `${word} ${commands.length} services`;
+  const rows = distinctRows(board, commands.map((c) => c.service));
+  if (word === undefined || rows.length === 0) return null;
+  if (rows.length === 1) return `${word} ${rows[0]}`;
+  return `${word} ${rows.length} services`;
+}
+
+/// The rows `names` show on, in order, each once — `top::distinct_rows`. One family is one
+/// service to the modal and the ack, however many copies a key reached.
+function distinctRows(board, names) {
+  const rows = [];
+  for (const name of names) {
+    const row = rowNameOf(board, name);
+    if (!rows.includes(row)) rows.push(row);
+  }
+  return rows;
 }
 
 /// One posted command body, in the shape `POST /command` composes a frame from.
@@ -268,22 +283,23 @@ function command(verb, service) {
   return { command: verb, service };
 }
 
-/// `shell::fanout_confirm_modal`'s gate: 0 eligible targets is a silent no-op, exactly 1 acts
-/// directly, and >1 raises the confirm modal — a multi-service op must say what it is about to
-/// do and wait for a `y`. `abandon` is always gated, even at one target: it abandons a wedged
-/// thread, and the modal is the one place that is stated before the key.
+/// `shell::fanout_confirm_modal`'s gate: 0 eligible targets is a silent no-op, exactly 1 **row**
+/// acts directly, and >1 raises the confirm modal — a multi-service op must say what it is about
+/// to do and wait for a `y`. A multi-copy family is one row, so its key reaches every eligible
+/// copy at once with no modal, as naming its base on the CLI does (ADR-0047 #8, as amended
+/// 2026-10-20). `abandon` is always gated, even at one target: it abandons a wedged thread, and
+/// the modal is the one place that is stated before the key.
 function verbFor(session, board, verb, row, now) {
-  const targets = targetsOf(board, row).filter((svc) => eligible(verb, svc));
+  const all = targetsOf(board, row);
+  const targets = all.filter((svc) => eligible(verb, svc));
   if (targets.length === 0) return { session, commands: [] };
-  const skipped = targetsOf(board, row).length - targets.length;
-  if (verb === "abandon" || targets.length > 1) {
-    return {
-      session: { ...session, confirm: { verb, targets: targets.map((s) => s.name), skipped } },
-      commands: [],
-    };
+  const rows = distinctRows(board, targets.map((s) => s.name));
+  const skipped = distinctRows(board, all.map((s) => s.name)).length - rows.length;
+  if (verb === "abandon" || rows.length > 1) {
+    return { session: { ...session, confirm: { verb, targets: rows, skipped } }, commands: [] };
   }
-  const commands = [command(verb, targets[0].name)];
-  return { session: flashed(session, ackFlash(verb, commands), now), commands };
+  const commands = targets.map((svc) => command(verb, svc.name));
+  return { session: flashed(session, ackFlash(board, verb, commands), now), commands };
 }
 
 /**
@@ -322,13 +338,22 @@ function refused(board, id) {
 /// The confirm modal's own arm — `translate_confirm_key`. The modal captures the whole
 /// surface: only `y`/`n`/`Esc` act, every other key is inert, because a stray key must never
 /// confirm a force.
-function pressConfirm(session, chord, now) {
+function pressConfirm(session, board, chord, now) {
   const id = resolve(["confirm"], chord);
   if (id === "confirm.accept") {
     const { verb, targets } = session.confirm;
-    const commands = targets.map((name) => command(verb, name));
+    // A listed family reaches the copies that can still take the verb — re-gated here, as
+    // `top_command` re-gates the `y`, since a copy's badge may have moved while the modal was
+    // up. Any other listed name is sent as it was listed.
+    const commands = targets.flatMap((name) => {
+      const row = rowRecord(board, name);
+      if (row === undefined || row.family == null) return [command(verb, name)];
+      return copiesOf(board, row)
+        .filter((svc) => eligible(verb, svc))
+        .map((svc) => command(verb, svc.name));
+    });
     const cleared = { ...session, confirm: null };
-    return { session: flashed(cleared, ackFlash(verb, commands), now), commands, handled: true };
+    return { session: flashed(cleared, ackFlash(board, verb, commands), now), commands, handled: true };
   }
   if (id === "confirm.cancel") {
     return { session: { ...session, confirm: null }, commands: [], handled: true };
@@ -709,7 +734,7 @@ function pressTyping(session, chord) {
 export function press(session, board, chord, options) {
   const now = options.now;
   const height = Math.max(0, options.bodyHeight ?? 0);
-  if (session.confirm !== null) return pressConfirm(session, chord, now);
+  if (session.confirm !== null) return pressConfirm(session, board, chord, now);
   if (session.help) return pressHelp(session, chord);
   if (session.info !== null) return pressInfo(session, board, chord);
   if (session.run !== null) return pressRun(session, board, chord, options.run ?? NO_RUN_METRICS);

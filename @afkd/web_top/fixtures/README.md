@@ -53,7 +53,7 @@ the lane can be filled and a third fire parks `queued`; a service that prints an
 adversarial line set; one that exits non-zero; one nested workflow
 (`in_parallel` → `times` → `if`); and one removed by the reload.
 
-## The eight captures
+## The nine captures
 
 | File | What was driven |
 |---|---|
@@ -65,6 +65,7 @@ adversarial line set; one that exits non-zero; one nested workflow
 | `loud-fail.jsonl` | One service whose `run_cmd` prints eight lines and **exits 3**, so a `cmd` leaf closes `failed` with its own output attributed to it. That pairing exists nowhere else in the corpus: `noise.jsonl`'s failing fire and `deep-fail.jsonl`'s failing leaves all close with **zero** node-tagged ring lines, which renders `with_bodies`' auto-expand arm — a failed leaf showing its output unasked — true and invisible. Its stderr line also lands *third* in the ring though the shell printed it last, which is the real interleaving of two pipes and the reason the body is asserted in ring order. |
 | `backfill.jsonl` | One fire with the recorder attached **mid-fire**, so its `meta.snapshot` carries the service `busy` and the live frames are the second half of a run whose first half is already on disk. Recorded beside the two run corpora below, in the fourth session. |
 | `reload.jsonl` | A real reconcile: a running service removed (`orphaned`, then a `meta.dropped` when it stops), one whose display metadata drifted (`changed`), one whose recipe drifted while running (`stale`), one added (`added`), and the post-reload `order`. |
+| `family.jsonl` | Multi-copy services: an `instances 3` service with two of its copies run by name, so their logs and trees interleave and their trace ids collide, beside a single service in the same package; and an `instances auto` pool whose run mints a copy (`meta.spawned`), which is then stopped by name and retired (`meta.dropped`). |
 
 `meta.host_load` rides along in all of them.
 
@@ -159,6 +160,30 @@ Two things this session could not record, and does not fake:
   therefore exercised by the Rust's own tests and by nothing here.
 - **`service_checking` / `service_check_done`**, for the same reason as every other session
   below.
+
+### The fifth session: multi-copy families
+
+`family.jsonl` was recorded on its own, the same way again, against `afkd 0.2.379` (debug, the
+worktree of card Ch4xZeEQ): a throwaway daemon started with `env -i` and an isolated `HOME`
+under `/tmp`, so no `AFKD_HOME` / `XDG_*` reached it, a v2 config with no provider trigger and
+an `every 1h` cadence everywhere. None of the earlier files was re-recorded, so no existing
+golden moved. The recorder is the same shape as before — a second connection to
+`<state dir>/sock`, `{"afkd":"hello","proto":1}`, every line appended — so the file opens on
+the daemon's `welcome`, as `loud-fail.jsonl` does.
+
+Its config is a `selfdev` package holding `develop` (`instances 3`; a `printf` of a CJK line
+and a second line, then `sleep 3`) and `review` (one copy), and in the main package `backup`
+(`instances auto`, icon `🈶`, `sleep 3`), which validates with the expected warning that an
+`auto` pool behind an interval adds runs, not capacity. The session, in order:
+
+1. attach, then `run selfdev.develop.0` and, 0.3s later, `run selfdev.develop.1` — two of the
+   three copies busy, both numbering their nodes from 1, so the family tree's remap is
+   exercised on a real collision;
+2. `run backup.0` — the pool's only copy goes busy, and the controller mints `backup.1`
+   (`meta.spawned`, the pool-spliced `order` with it);
+3. the three runs finish, then `stop backup.1` — the copy is dropped on the retire edge
+   (`meta.dropped`);
+4. the daemon takes its `SIGINT` with the recorder still attached.
 
 ## What is *not* in here, and why nothing hand-writes it
 

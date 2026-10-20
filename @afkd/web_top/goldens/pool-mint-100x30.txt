@@ -1,0 +1,94 @@
+afkd 0.2.379 · ● Running 3s · 3 up                                                     0 tok · $0.00
+CPU           ▁▁▁   1% · Mem           ▂▂▂ 6.4G/30G · Net ↓         ▁▂▂ 4.9k/s ↑         ▁▆▁ 3.1k/s 
+                                                                                                    
+Service                        State                   Trigger              Last Activity   Next Run
+🈶 backup ×2                    ▶ Busy 1/2 1s           Every 1h                        1s           
+🔷 selfdev.develop ×3          ▶ Busy 2/3 1s           Every 1h                        1s           
+🔹 selfdev.review              ● Idle                  Every 1h                              59m 56s
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+s start    r restart    o output      g/G first/last  / find    Ctrl+R reload                       
+x stop     + widen      i info        v grouped                 ? help                              
+t run now  - narrow     Enter peek    b busy ○                  q quit                              
+
+── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
+nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bnlllllllllbnlllllllllllbnllllllllllllbbbnllllllllllllbnllllllllbbbbbbnllllllnnnnnnnnnnnnnnnnnnnnnnn
+bnlllllllllbnlllllllllllbnllllllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bnlllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
+....................................................................................................
+dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
+....................................................................................................
+bbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb
+sssssssssssssssssssssssssssssssBBBBBBBBBBBBBssssssssssssssssssssssssssssssssssssssssssssssssssssssss
+...............................bbbbbbbbbbbbb........................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+....................................................................................................
+d.ddddd.............................................................................................
+...........d.ddddd..................................................................................
+d.ddddddd..d.dddddd.................................................................................

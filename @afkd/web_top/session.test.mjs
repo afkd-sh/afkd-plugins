@@ -1291,3 +1291,68 @@ test("a run view whose service vanished keeps its place, and its keys stay inert
   assert.equal(runPress(start, gone, key("esc"), at).session.run, null, "`Esc` still closes it");
   assert.equal(runPress(start, gone, key("tab"), at).session.run.focus, "tree", "`Tab` still swaps the pane");
 });
+
+// --- a multi-copy service is one row (ADR-0047 #8, as amended 2026-10-20) ----------------
+
+/// The family capture up to the auto pool's run: `selfdev.develop`'s copies 0 and 1 busy and
+/// its copy 2 idle, beside `selfdev.review` and the `auto` pool `backup`, down to its copy 0.
+const familyBoard = () =>
+  foldCapture("family.jsonl", {
+    until: (f) => f.type === "event" && f.event === "run_started" && f.service === "backup.0",
+  });
+
+test("a key on a family row reaches every copy that can take it, with no confirm", () => {
+  // `x` stops the three copies as `afkd stop selfdev.develop` would: one family is one service,
+  // so there is no modal, and the ack names the row. `t` runs the one idle copy.
+  const { board, at } = familyBoard();
+  const onDevelop = { ...bootSession(), cursor: { kind: "service", key: "selfdev.develop" }, cursorRow: 1 };
+  assert.deepEqual(cursorOn(onDevelop, board), { kind: "service", key: "selfdev.develop" });
+  const stop = press(onDevelop, board, key("x"), { now: at, bodyHeight: 20 });
+  assert.equal(stop.session.confirm, null);
+  assert.deepEqual(
+    stop.commands,
+    [0, 1, 2].map((n) => ({ command: "stop", service: `selfdev.develop.${n}` })),
+  );
+  assert.equal(flashOf(stop.session, at), "Stopping selfdev.develop");
+  const run = press(onDevelop, board, key("t"), { now: at, bodyHeight: 20 });
+  assert.equal(run.session.confirm, null);
+  assert.deepEqual(run.commands, [{ command: "run", service: "selfdev.develop.2" }]);
+  assert.equal(flashOf(run.session, at), "Run sent to selfdev.develop");
+});
+
+test("a group confirm lists a family once, and y reaches every copy", () => {
+  const { board, at } = familyBoard();
+  const onSelfdev = { ...newSession(), cursor: { kind: "group", key: "selfdev" }, cursorRow: 1 };
+  assert.deepEqual(cursorOn(onSelfdev, board), { kind: "group", key: "selfdev" });
+  const raised = press(onSelfdev, board, key("r"), { now: at, bodyHeight: 20 });
+  assert.deepEqual(raised.commands, []);
+  assert.deepEqual(raised.session.confirm, {
+    verb: "restart",
+    targets: ["selfdev.develop", "selfdev.review"],
+    skipped: 0,
+  });
+  const confirmed = press(raised.session, board, key("y"), { now: at, bodyHeight: 20 });
+  assert.deepEqual(confirmed.commands, [
+    ...[0, 1, 2].map((n) => ({ command: "restart", service: `selfdev.develop.${n}` })),
+    { command: "restart", service: "selfdev.review" },
+  ]);
+  assert.equal(flashOf(confirmed.session, at), "Restarting 2 services");
+  // A run-now over the group skips the family only when no copy of it is idle; here copy 2 is,
+  // so both rows take it and the family sends one run.
+  const runs = press(onSelfdev, board, key("t"), { now: at, bodyHeight: 20 });
+  assert.deepEqual(runs.session.confirm.targets, ["selfdev.develop", "selfdev.review"]);
+  assert.deepEqual(press(runs.session, board, key("y"), { now: at, bodyHeight: 20 }).commands, [
+    { command: "run", service: "selfdev.develop.2" },
+    { command: "run", service: "selfdev.review" },
+  ]);
+});
+
+test("a filter on one copy's name keeps its family's row", () => {
+  const { board } = familyBoard();
+  const typed = type(bootSession(), board, [key("/"), ..."develop.1".split("").map(key), key("enter")]).session;
+  assert.equal(needleOf(typed), "develop.1");
+  assert.deepEqual(
+    rowsOf(typed, board).map(rowKey).filter((k) => k !== null),
+    [{ kind: "service", key: "selfdev.develop" }],
+  );
+});

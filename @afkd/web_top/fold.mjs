@@ -80,6 +80,12 @@ export function seed(options = {}) {
     // Every service name in the daemon's own order; `services` is keyed by the same names.
     order: [],
     services: {},
+    // The multi-copy families on the board, keyed by base, and each member's base — derived
+    // from `services` by [`regroup`] whenever the service set changes (`crates/tui/src/family.rs`,
+    // ADR-0047 #8 as amended 2026-10-20). `services` keeps one record per copy, as the wire
+    // reports them; a family's **row** record is what the board shows for all of them.
+    families: {},
+    memberOf: {},
     load: { at: null, cpuPct: null, memUsed: null, memTotal: null, rxBps: null, txBps: null, history: [] },
     // What the fold has seen. `ignored` counts the frames whose `type`/`event`/`meta`/`op`
     // tag this module does not know — the forward-compat path, which is a count and never
@@ -262,12 +268,34 @@ function completeFire(service, outcome, elapsedMs) {
 // --- events ------------------------------------------------------------------------
 
 /**
- * One arm per `Event` variant (`crates/app/src/proto.rs`), folding as
- * `DashboardModel::apply` does. An unknown tag takes the ignore path; a known tag naming a
- * service the board never saw folds to nothing.
+ * One event into its copy's record, then into that copy's family row —
+ * `DashboardModel::apply`'s two halves. A copy's new last error or breadcrumb is written
+ * through to the row as it lands, since neither carries a time to fold by; every other fact
+ * the row shows is refolded from the members ([`refoldFamilyOf`]).
  */
 function foldEvent(board, frame, now) {
   const name = toText(frame.service);
+  const next = foldEventArm(board, frame, now, name);
+  const base = next.memberOf[name];
+  if (base === undefined) return next;
+  const before = board.services[name];
+  const after = next.services[name];
+  let family = next.families[base];
+  if (before !== undefined && after !== undefined) {
+    const row = { ...family.row };
+    if (after.lastError !== before.lastError) row.lastError = after.lastError;
+    if (after.breadcrumb !== before.breadcrumb) row.breadcrumb = after.breadcrumb;
+    family = { ...family, row };
+  }
+  return refoldFamilyOf({ ...next, families: { ...next.families, [base]: family } }, name);
+}
+
+/**
+ * One arm per `Event` variant (`crates/app/src/proto.rs`), folding as
+ * `DashboardModel::fold_event` does. An unknown tag takes the ignore path; a known tag naming a
+ * service the board never saw folds to nothing.
+ */
+function foldEventArm(board, frame, now, name) {
   switch (frame.event) {
     case "service_armed":
       return folded(
@@ -444,22 +472,34 @@ function foldEvent(board, frame, now) {
  * browser is the client, so it is sanitized here.
  */
 function foldLog(board, frame, now) {
-  return folded(
-    withService(board, toText(frame.service), (svc) => {
-      applyLog(
-        svc,
-        {
-          // An unrecognised future stream value is kept verbatim rather than dropped.
-          stream: toText(frame.stream),
-          text: sanitize(toText(frame.line)),
-          node: frame.node === undefined || frame.node === null ? null : toNumber(frame.node, 0),
-        },
-        board.logLines,
-        now,
-      );
-      return svc;
-    }),
-  );
+  const name = toText(frame.service);
+  const entry = {
+    // An unrecognised future stream value is kept verbatim rather than dropped.
+    stream: toText(frame.stream),
+    text: sanitize(toText(frame.line)),
+    node: frame.node === undefined || frame.node === null ? null : toNumber(frame.node, 0),
+  };
+  let admitted = false;
+  const next = withService(board, name, (svc) => {
+    admitted = applyLog(svc, entry, board.logLines, now);
+    return svc;
+  });
+  return folded(admitted ? familyLog(next, name, entry, now) : next);
+}
+
+/**
+ * A copy's admitted line joins its family's ring too, in arrival order, its node rewritten into
+ * the family tree's ids so the run view's leaf bodies and node scope still work there —
+ * `DashboardModel::apply_log`'s second push. Then the row is refolded, since the copy's
+ * activity stamp may have moved. A line of a service in no family returns the board as it is.
+ */
+function familyLog(board, name, entry, now) {
+  const base = board.memberOf[name];
+  if (base === undefined) return board;
+  const family = board.families[base];
+  const node = entry.node === null ? null : remapNode(family.trace, name, entry.node);
+  const row = { ...family.row, log: pushRing(family.row.log, { ...entry, node, at: now }, board.logLines) };
+  return refoldFamilyOf({ ...board, families: { ...board.families, [base]: { ...family, row } } }, name);
 }
 
 /**
@@ -476,19 +516,26 @@ function applyLog(svc, entry, capacity, now) {
   svc.logSeam = seam;
   // The early return at `model.rs`'s seam check: a line the backfill already pushed is this
   // line's live replay across the seam, dropped whole — the activity stamp included.
-  if (!admitted) return;
-  const lines = svc.log.lines.slice();
-  let dropped = svc.log.dropped;
-  lines.push({ ...entry, at: now });
-  while (lines.length > capacity) {
-    lines.shift();
-    dropped += 1;
-  }
-  svc.log = { lines, dropped };
+  if (!admitted) return false;
+  svc.log = pushRing(svc.log, { ...entry, at: now }, capacity);
   // A log line emitted **from a run** is observable activity. Output with no fire in
   // flight (the boot lifecycle's narration, `init`/`cleanup`) is not a run, so it does
   // not move the column — the `apply_log` gate.
   if (svc.inFlightSince !== null) svc.lastActivityAt = now;
+  return true;
+}
+
+/// `ring` with `entry` pushed on, its oldest dropped past `capacity` — `LogRing::push`. A new
+/// ring: the one passed in may still be shared with the board it came from.
+function pushRing(ring, entry, capacity) {
+  const lines = ring.lines.slice();
+  let dropped = ring.dropped;
+  lines.push(entry);
+  while (lines.length > capacity) {
+    lines.shift();
+    dropped += 1;
+  }
+  return { lines, dropped };
 }
 
 /**
@@ -516,19 +563,21 @@ function applyLog(svc, entry, capacity, now) {
  */
 function foldBackfillLog(board, frame, now) {
   const busy = frame.busy === true;
-  return folded(
-    withService(board, toText(frame.service), (svc) => {
-      const text = toText(frame.line);
-      applyLog(svc, { stream: "stdout", text, node: null }, board.logLines, now);
-      if (busy) svc.servedLog = svc.servedLog.concat([text]);
-      if (frame.last === true) {
-        const texts = svc.servedLog;
-        svc.servedLog = [];
-        if (busy) svc.logSeam = armSeam(texts);
-      }
-      return svc;
-    }),
-  );
+  const name = toText(frame.service);
+  const text = toText(frame.line);
+  const entry = { stream: "stdout", text, node: null };
+  let admitted = false;
+  const next = withService(board, name, (svc) => {
+    admitted = applyLog(svc, entry, board.logLines, now);
+    if (busy) svc.servedLog = svc.servedLog.concat([text]);
+    if (frame.last === true) {
+      const texts = svc.servedLog;
+      svc.servedLog = [];
+      if (busy) svc.logSeam = armSeam(texts);
+    }
+    return svc;
+  });
+  return folded(admitted ? familyLog(next, name, entry, now) : next);
 }
 
 /// Arm a seam with `texts`, the tail a backfill just pushed oldest → newest — `LogSeam::arm`.
@@ -618,6 +667,12 @@ function emptyTree() {
   return { nodes: {}, roots: [], newest: null };
 }
 
+/// An empty **family** tree: the runs of every copy of a multi-copy service in one tree, each
+/// node tagged in `sources` with the slot of the copy it came from (`TraceTree::sources`).
+function emptyFamilyTree() {
+  return { ...emptyTree(), sources: {} };
+}
+
 /**
  * One `trace` frame into its service's run tree — `crates/tui/src/tracetree.rs`, whose four
  * loss-reconciliation rules this mirrors whole. Trace frames take the **lossy** prune class
@@ -633,17 +688,23 @@ function foldTrace(board, frame, now, stamp) {
   if (!isObject(event)) return ignore(board);
   const op = event.op;
   if (op !== "opened" && op !== "closed" && op !== "relabeled") return ignore(board);
-  return folded(
-    withService(board, toText(frame.service), (svc) => {
-      const before = svc.tree;
-      if (op === "opened") svc.tree = openNode(before, event.node, event.at, now);
-      else if (op === "closed") svc.tree = closeNode(before, event);
-      else svc.tree = relabelNode(before, event);
-      // A trace event from a run is observable activity, on the same gate the ring uses.
-      if (stamp && svc.tree !== before && svc.inFlightSince !== null) svc.lastActivityAt = now;
-      return svc;
-    }),
-  );
+  const name = toText(frame.service);
+  const next = withService(board, name, (svc) => {
+    const before = svc.tree;
+    if (op === "opened") svc.tree = openNode(before, event.node, event.at, now);
+    else if (op === "closed") svc.tree = closeNode(before, event);
+    else svc.tree = relabelNode(before, event);
+    // A trace event from a run is observable activity, on the same gate the ring uses.
+    if (stamp && svc.tree !== before && svc.inFlightSince !== null) svc.lastActivityAt = now;
+    return svc;
+  });
+  const base = next.memberOf[name];
+  if (base === undefined || next.services[name] === undefined) return folded(next);
+  // A copy's event also lands in its family's tree, remapped onto the family's ids.
+  const family = next.families[base];
+  const { tree, trace } = familyTrace(family.row.tree, family.trace, name, event, now);
+  const row = { ...family.row, tree };
+  return folded(refoldFamilyOf({ ...next, families: { ...next.families, [base]: { ...family, row, trace } } }, name));
 }
 
 /**
@@ -666,7 +727,7 @@ function foldTrace(board, frame, now, stamp) {
  * [`openedAt`](#openedAt) beside the wire's civil `at` — the anchor the run view's ticking
  * `TOOK` measures against. It is **not** part of the dedup (see the field's own note).
  */
-function openNode(tree, wire, at, now) {
+function openNode(tree, wire, at, now, source = null) {
   if (!isObject(wire)) return tree;
   const id = toNumber(wire.id, 0);
   const declaredParent = wire.parent === undefined || wire.parent === null ? null : toNumber(wire.parent, 0);
@@ -676,29 +737,18 @@ function openNode(tree, wire, at, now) {
   const stamp = isObject(at) ? { ...at } : null;
 
   const existing = tree.nodes[id];
-  if (existing !== undefined) {
-    // Resolve the incoming's declared parent the way the insert below will (rule 2), so an
-    // orphan replayed identically still compares equal.
-    const incomingParent = declaredParent !== null && tree.nodes[declaredParent] !== undefined ? declaredParent : null;
-    if (
-      existing.parent === incomingParent &&
-      existing.kind === kind &&
-      existing.label === label &&
-      existing.detail === detail &&
-      sameStamp(existing.at, stamp)
-    ) {
-      return tree;
-    }
-  }
+  if (isReplay(tree, wire, at)) return tree;
 
   const regressedRoot = declaredParent === null && tree.newest !== null && id <= tree.newest;
   let nodes;
   let roots;
   let newest;
+  let sources = tree.sources === undefined ? undefined : { ...tree.sources };
   if (regressedRoot || existing !== undefined) {
     nodes = {};
     roots = [];
     newest = null;
+    if (sources !== undefined) sources = {};
   } else {
     nodes = { ...tree.nodes };
     roots = tree.roots.slice();
@@ -706,17 +756,27 @@ function openNode(tree, wire, at, now) {
   }
 
   // Rule 4: runs are sequential, so anything still running when a fresh root opens lost its
-  // close.
+  // close. In a family tree (`TraceTree::apply_from`) only the new root's own source is over:
+  // a sibling copy's run goes on beside it.
   if (declaredParent === null) {
     for (const key of Object.keys(nodes)) {
-      if (nodes[key].status === "running") nodes[key] = { ...nodes[key], status: "unknown" };
+      const sameSource = source === null || sources?.[key] === source;
+      if (nodes[key].status === "running" && sameSource) nodes[key] = { ...nodes[key], status: "unknown" };
     }
   }
 
   // Rule 2: a declared parent whose `Opened` was dropped makes this an orphan root.
   const parent = declaredParent !== null && nodes[declaredParent] !== undefined ? declaredParent : null;
-  if (parent === null) roots.push(id);
-  else nodes[parent] = { ...nodes[parent], children: nodes[parent].children.concat([id]) };
+  if (parent === null && source === null) roots.push(id);
+  else if (parent === null) {
+    // A family root lands at its start, after any root that began at the same instant — so the
+    // roots read in the order the copies' runs began, however they arrived.
+    const key = startKey(stamp);
+    let pos = 0;
+    while (pos < roots.length && compareStart(startKey(nodes[roots[pos]]?.at ?? null), key) <= 0) pos += 1;
+    roots.splice(pos, 0, id);
+  } else nodes[parent] = { ...nodes[parent], children: nodes[parent].children.concat([id]) };
+  if (source !== null && sources !== undefined) sources[id] = source;
 
   nodes[id] = {
     id,
@@ -746,7 +806,48 @@ function openNode(tree, wire, at, now) {
     tokens: null,
   };
   newest = newest === null || id > newest ? id : newest;
-  return evictToCapacity({ nodes, roots, newest });
+  return evictToCapacity(sources === undefined ? { nodes, roots, newest } : { nodes, roots, newest, sources });
+}
+
+/// A node's start as a sortable key — `tracetree::start_key`, down to the millisecond. A node
+/// with no stamp sorts first.
+function startKey(at) {
+  if (at === null) return [];
+  return [at.year, at.month, at.day, at.hour, at.minute, at.second, at.millis].map((n) => toNumber(n, 0));
+}
+
+/// Order two [`startKey`]s.
+function compareStart(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const x = a[i] ?? -Infinity;
+    const y = b[i] ?? -Infinity;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Whether an `opened` for `wire` at `at` is an **identical replay** of the node already held
+ * under its id — same resolved parent, kind, label, detail and start (`TraceTree::is_replay`).
+ * The one definition of "the same emit reaching the tree twice", read by [`openNode`]'s dedup
+ * and by the family remap, which must tell a replay from a re-minted id before it hands the
+ * event on.
+ */
+function isReplay(tree, wire, at) {
+  if (!isObject(wire)) return false;
+  const existing = tree.nodes[toNumber(wire.id, 0)];
+  if (existing === undefined) return false;
+  const declaredParent = wire.parent === undefined || wire.parent === null ? null : toNumber(wire.parent, 0);
+  // Resolve the incoming's declared parent the way the insert will (rule 2), so an orphan
+  // replayed identically still compares equal.
+  const incomingParent = declaredParent !== null && tree.nodes[declaredParent] !== undefined ? declaredParent : null;
+  return (
+    existing.parent === incomingParent &&
+    existing.kind === toText(wire.kind) &&
+    existing.label === toText(wire.label) &&
+    existing.detail === toText(wire.detail) &&
+    sameStamp(existing.at, isObject(at) ? at : null)
+  );
 }
 
 /**
@@ -793,22 +894,24 @@ function relabelNode(tree, event) {
  * removed, so the tree may transiently exceed the cap rather than show a partial run.
  */
 function evictToCapacity(tree) {
-  let { nodes, roots } = tree;
+  let { nodes, roots, sources } = tree;
   while (Object.keys(nodes).length > TRACE_NODES_CAPACITY) {
     const pos = roots.findIndex((root) => nodes[root] !== undefined && nodes[root].status !== "running");
     if (pos === -1) break; // no completed root to reclaim — never evict the live run
     const stack = [roots[pos]];
     roots = roots.slice(0, pos).concat(roots.slice(pos + 1));
     nodes = { ...nodes };
+    if (sources !== undefined) sources = { ...sources };
     while (stack.length > 0) {
       const id = stack.pop();
       const node = nodes[id];
       if (node === undefined) continue;
       delete nodes[id];
+      if (sources !== undefined) delete sources[id];
       stack.push(...node.children);
     }
   }
-  return { ...tree, nodes, roots };
+  return sources === undefined ? { ...tree, nodes, roots } : { ...tree, nodes, roots, sources };
 }
 
 /// Whether two `Opened` stamps are the same civil instant — the dedup's discriminant, and
@@ -828,7 +931,7 @@ function sameStamp(a, b) {
 
 // --- meta --------------------------------------------------------------------------
 
-/// The `Meta` variants that move the board. The rest — `spawned`, `control_no_op`,
+/// The `Meta` variants that move the board. The rest — `control_no_op`,
 /// `status`/`runs`/`doctor`/`validate`, `queue_parallelism`, `error`, `control_refused` — take
 /// the ignore path.
 function foldMeta(board, frame, now) {
@@ -850,15 +953,18 @@ function foldMeta(board, frame, now) {
         services[name] = seedService(entry, now);
         order.push(name);
       }
-      return folded({
+      return folded(regroup({
         ...board,
         services,
         order,
+        // A reattach forms its families afresh, empty, as `DashboardModel::seed` does.
+        families: {},
+        memberOf: {},
         daemonStartedAt: now - toNumber(frame.uptime_ms, 0),
         // Presence *is* the drain: a client attaching after the edge seeds `quitting`,
         // back-dated so it reads the drain's true age and not this connection's.
         quittingSince: anchorPast(now, frame.quitting_ms),
-      });
+      }));
     }
     case "quitting":
       // The live twin of the snapshot's back-dated anchor, broadcast once per drain. No
@@ -867,7 +973,21 @@ function foldMeta(board, frame, now) {
     case "dropped":
       // One card pulled: an orphan reached `Stopped`, so it is now neither configured nor
       // running. The same fold a reload's `dropped` verdict takes, one name at a time.
-      return folded(dropService(board, toText(frame.service)));
+      return folded(regroup(dropService(board, toText(frame.service))));
+    case "spawned": {
+      // An `instances auto` pool minted a copy, out of band from any reload — folded exactly as
+      // a reload's `added` entry is, then placed on the pool-spliced order so it lands beside
+      // its base (`top.rs`'s `Meta::Spawned` arm). The copy joins its family's row.
+      const entry = frame.service;
+      if (!isObject(entry) || toText(entry.name) === "") return folded(board);
+      const name = toText(entry.name);
+      const next = {
+        ...board,
+        services: { ...board.services, [name]: seedService(entry, now) },
+        order: board.order.includes(name) ? board.order : board.order.concat([name]),
+      };
+      return folded(regroup(reorder(next, frame.order)));
+    }
     case "host_load": {
       const sample = {
         at: now,
@@ -914,17 +1034,20 @@ function foldMeta(board, frame, now) {
       for (const name of asArray(frame.orphaned)) next = setFlag(next, toText(name), "orphan", true);
       for (const name of asArray(frame.adopted)) next = setFlag(next, toText(name), "orphan", false);
       for (const name of asArray(frame.stale)) next = setFlag(next, toText(name), "stale", true);
-      const order = asArray(frame.order).map(toText).filter((name) => next.services[name] !== undefined);
-      // The daemon is the single source of truth for config order; a name it does not list
-      // (a still-running orphan) keeps its place after the ones it does.
-      if (order.length > 0) {
-        next = { ...next, order: order.concat(next.order.filter((name) => !order.includes(name))) };
-      }
-      return folded(next);
+      return folded(regroup(reorder(next, frame.order)));
     }
     default:
       return ignore(board);
   }
+}
+
+/// `board` placed on the daemon's `order` — `DashboardModel::apply_config_order`. The daemon is
+/// the single source of truth for config order; a name it does not list (a still-running
+/// orphan) keeps its place after the ones it does, and an empty order leaves the board alone.
+function reorder(board, wireOrder) {
+  const order = asArray(wireOrder).map(toText).filter((name) => board.services[name] !== undefined);
+  if (order.length === 0) return board;
+  return { ...board, order: order.concat(board.order.filter((name) => !order.includes(name))) };
 }
 
 /// The fields a reload's `changed` verdict overwrites — the config-derived metadata, and
@@ -958,6 +1081,382 @@ function setFlag(board, name, key, value) {
     svc[key] = value;
     return svc;
   });
+}
+
+// --- multi-copy families -------------------------------------------------------------
+//
+// `crates/tui/src/family.rs` (ADR-0047 #8, as amended 2026-10-20): a service with `instances N`
+// or `instances auto` runs as copies the daemon reports one by one, and the dashboard shows them
+// as **one row**, named by the base. `services` keeps one record per copy, every per-copy fold
+// untouched; a family's `row` is a service-shaped record refolded from its members, with a ring
+// and a run tree of its own fed beside each copy's.
+
+/// `afkd_lang::MAX_INSTANCES` — the ceiling on a service's copies, and so on a copy's index.
+const MAX_INSTANCES = 10;
+
+/**
+ * A name split into the base it would be a generated copy of and its index, or `null` when it
+ * is not instance-shaped — `afkd_lang::instance_split` (`crates/lang/src/model.rs`), the one
+ * parser of the naming rule. The suffix is read off the **last** `.`; the base must be
+ * non-empty and the tail the canonical decimal of an index below [`MAX_INSTANCES`], so
+ * `worker.01`, `worker.10` and `worker.x` are ordinary names.
+ */
+export function instanceSplit(name) {
+  const at = name.lastIndexOf(".");
+  if (at === -1) return null;
+  const base = name.slice(0, at);
+  const tail = name.slice(at + 1);
+  if (base === "" || !/^[0-9]+$/.test(tail)) return null;
+  const index = Number(tail);
+  return String(index) === tail && index < MAX_INSTANCES ? { base, index } : null;
+}
+
+/**
+ * Every live member of `base`'s family among `names`, in index order —
+ * `afkd_lang::instance_family`. Anchored on copy 0, the bare base or `<base>.0`: with neither
+ * present the answer is empty. Matched case-folded (`afkd_lang::fold_name`), each member spelled
+ * as `names` carries it.
+ */
+export function instanceFamily(base, names) {
+  const folded = base.toLowerCase();
+  const members = [];
+  for (const name of names) {
+    if (name.toLowerCase() === folded) {
+      members.push([0, name]);
+      continue;
+    }
+    const split = instanceSplit(name);
+    if (split !== null && split.base.toLowerCase() === folded) members.push([split.index, name]);
+  }
+  if (!members.some(([index]) => index === 0)) return [];
+  members.sort(([a, x], [b, y]) => (a !== b ? a - b : x < y ? -1 : x > y ? 1 : 0));
+  return members.map(([, name]) => name);
+}
+
+/**
+ * Every family among `names`, as `[base, members]` — `family::find_families`: a set
+ * [`instanceFamily`] returns for the base of some copy-shaped name, the base spelled as the
+ * anchor spells it. A lone `develop` is no family, nor is a stray `develop.3` with no copy 0;
+ * an `auto` pool down to `develop.0` is one (`develop ×1`).
+ */
+function findFamilies(names) {
+  const seen = [];
+  const found = [];
+  for (const name of names) {
+    const split = instanceSplit(name);
+    if (split === null) continue;
+    const folded = split.base.toLowerCase();
+    if (seen.includes(folded)) continue;
+    seen.push(folded);
+    const members = instanceFamily(split.base, names);
+    if (members.length === 0) continue;
+    const anchor = members[0];
+    const spelled = anchor.toLowerCase() === folded ? anchor : (instanceSplit(anchor)?.base ?? anchor);
+    found.push([spelled, members]);
+  }
+  return found;
+}
+
+/// `Badge::urgency` — a family row wears its most urgent copy's badge, most urgent first, so a
+/// crash is never hidden behind a busy sibling and a busy copy never behind idle ones. The info
+/// view's breakdown lists states in the same order.
+export const URGENCY = ["Crashed", "Busy", "Queued", "Checking", "Starting", "Stopping", "Idle", "Stopped"];
+
+/// A badge's place in [`URGENCY`]; an unknown one sorts last.
+function urgency(badge) {
+  const at = URGENCY.indexOf(badge);
+  return at === -1 ? URGENCY.length : at;
+}
+
+/// `FamilyCount::of` — how `members` split across states: the live copy count, how many are
+/// busy, and each state some copy is in with its count, most urgent first.
+function familyCount(members) {
+  const states = [];
+  for (const badge of members.map((m) => m.badge).sort((a, b) => urgency(a) - urgency(b))) {
+    const last = states[states.length - 1];
+    if (last !== undefined && last[0] === badge) last[1] += 1;
+    else states.push([badge, 1]);
+  }
+  return { copies: members.length, busy: members.filter((m) => m.badge === "Busy").length, states };
+}
+
+/// A family's empty row record named `base`, built off `anchor`, whose config every copy shares
+/// (ADR-0047 #1) — `Family::new`. Its ring and run tree start empty and are the family's own.
+function familyRow(base, anchor) {
+  return {
+    ...anchor,
+    name: base,
+    log: { lines: [], dropped: 0 },
+    logSeam: null,
+    servedLog: [],
+    tree: emptyFamilyTree(),
+    family: null,
+  };
+}
+
+/// `family::fold_row` — the row's facts read across `members` (index order, non-empty): copy
+/// 0's config, the most urgent badge, the longest-running busy copy's clock, the soonest next
+/// fire, the newest activity, summed tallies and any copy's flags. `lastError` and `breadcrumb`
+/// are written through by [`foldEvent`] instead, having no time to fold by.
+function foldRow(row, members) {
+  const anchor = members[0];
+  const min = (values) => values.reduce((m, v) => (v === null ? m : m === null ? v : Math.min(m, v)), null);
+  const max = (values) => values.reduce((m, v) => (v === null ? m : m === null ? v : Math.max(m, v)), null);
+  const sum = (key) => members.reduce((total, m) => total + m[key], 0);
+  const any = (key) => members.some((m) => m[key]);
+  const lead = members.reduce((best, m) => (urgency(m.badge) < urgency(best.badge) ? m : best), anchor);
+  const next = { ...row };
+  for (const key of RELOAD_METADATA_KEYS) next[key] = anchor[key];
+  next.badge = lead.badge;
+  next.state = lead.state;
+  next.inFlightSince =
+    min(members.filter((m) => m.badge === "Busy").map((m) => m.inFlightSince)) ??
+    min(members.map((m) => m.inFlightSince));
+  next.stateEnteredAt = min(members.filter((m) => m.badge === lead.badge).map((m) => m.stateEnteredAt));
+  next.nextFireAt = min(members.map((m) => m.nextFireAt));
+  next.lastActivityAt = max(members.map((m) => m.lastActivityAt));
+  next.runs = sum("runs");
+  next.failures = sum("failures");
+  next.errors = sum("errors");
+  next.runTimeTotalMs = sum("runTimeTotalMs");
+  next.okRunTimeTotalMs = sum("okRunTimeTotalMs");
+  next.tokens = sum("tokens");
+  next.cost = sum("cost");
+  next.turns = sum("turns");
+  next.faultedSinceArm = any("faultedSinceArm");
+  next.orphan = any("orphan");
+  next.stale = any("stale");
+  next.poisoned = any("poisoned");
+  next.family = familyCount(members);
+  return next;
+}
+
+/// `family` with its row refolded off the board's current member records.
+function refold(family, services) {
+  const members = family.members.map((name) => services[name]).filter((m) => m !== undefined);
+  return members.length === 0 ? family : { ...family, row: foldRow(family.row, members) };
+}
+
+/// The board with the family `name` is a copy of refolded — or as it is, for a name in none.
+function refoldFamilyOf(board, name) {
+  const base = board.memberOf[name];
+  if (base === undefined) return board;
+  return { ...board, families: { ...board.families, [base]: refold(board.families[base], board.services) } };
+}
+
+/**
+ * Rebuild the families from the service set — `DashboardModel::regroup_families`: find every
+ * family, form the new ones, drop the dissolved, retire the members that left, place each row
+ * at its lead (its first member in config order), and refold every row. A family that **forms**
+ * adopts the ring and tree of its first member holding any, so a reload from one copy to many
+ * keeps the history its row showed a moment ago.
+ */
+function regroup(board) {
+  const families = {};
+  const memberOf = {};
+  for (const [base, members] of findFamilies(board.order.filter((name) => board.services[name] !== undefined))) {
+    for (const name of members) memberOf[name] = base;
+    const lead = board.order.find((name) => members.includes(name));
+    const prior = board.families[base];
+    let family;
+    if (prior !== undefined) {
+      let tree = prior.row.tree;
+      let trace = prior.trace;
+      for (const gone of prior.members.filter((name) => !members.includes(name))) {
+        ({ tree, trace } = retireMember(tree, trace, gone));
+      }
+      family = { ...prior, members, lead, row: { ...prior.row, tree }, trace };
+    } else {
+      const cards = members.map((name) => board.services[name]);
+      family = { base, members, lead, row: familyRow(base, cards[0]), trace: emptyRemap() };
+      const history = cards.find((c) => c.log.lines.length > 0 || Object.keys(c.tree.nodes).length > 0);
+      if (history !== undefined) family = adoptHistory(family, history);
+    }
+    families[base] = refold(family, board.services);
+  }
+  return { ...board, families, memberOf };
+}
+
+/// `family` taking over `member`'s ring and run tree, ids unchanged — `Family::adopt`.
+function adoptHistory(family, member) {
+  const { trace, slot } = slotOf(family.trace, member.name);
+  const sources = {};
+  const alias = { ...trace.alias };
+  for (const id of Object.keys(member.tree.nodes)) {
+    sources[id] = slot;
+    alias[`${slot}:${id}`] = Number(id);
+  }
+  const newest = member.tree.newest ?? 0;
+  return {
+    ...family,
+    row: { ...family.row, log: member.log, tree: { ...member.tree, sources } },
+    trace: {
+      ...trace,
+      alias,
+      newest: { ...trace.newest, [slot]: newest },
+      nextSeq: Math.max(trace.nextSeq, newest + 1),
+    },
+  };
+}
+
+/**
+ * The board's **row records**, in config order: every service in no family as itself, and each
+ * family once, as its row, where its lead copy sits — `DashboardModel::row_cards`. What the
+ * list builds its rows from and the header counts.
+ */
+export function rowCards(board) {
+  const out = [];
+  for (const name of board.order) {
+    const svc = board.services[name];
+    if (svc === undefined) continue;
+    const base = board.memberOf[name];
+    if (base === undefined) out.push(svc);
+    else if (board.families[base].lead === name) out.push(board.families[base].row);
+  }
+  return out;
+}
+
+/// The row record named `name` — a family's row by its base, else the service itself:
+/// `DashboardModel::row_card`, read by every surface keyed by a row's name.
+export function rowRecord(board, name) {
+  return board.families[name]?.row ?? board.services[name];
+}
+
+/// The row `name` shows on — its family's base for a copy, else itself: `DashboardModel::row_name`.
+export function rowNameOf(board, name) {
+  return board.memberOf[name] ?? name;
+}
+
+/// The per-copy records behind row record `row`: a family's members in index order, or the one
+/// record — the fan-out unit a key on the row reaches (`DashboardModel::copies_of`).
+export function copiesOf(board, row) {
+  const family = row.family == null ? undefined : board.families[row.name];
+  if (family === undefined) return [row];
+  return family.members.map((name) => board.services[name]).filter((m) => m !== undefined);
+}
+
+// --- the family tree's remap --------------------------------------------------------
+//
+// `family::FamilyTrace`. Each copy numbers its nodes from its own allocator, so two copies' ids
+// collide and a copy's ids restart when its allocator is re-minted. The family tree takes a
+// **sequence** of its own instead: every node a copy opens gets the next number, kept in an
+// alias from `(slot, the copy's id)`. A copy's slot tags its nodes, so rule 4 abandons only that
+// copy's open nodes when it starts a new run.
+
+/// The declared parent a remapped `opened` carries when the copy's own parent is unknown to the
+/// family tree: an id no family tree holds, so rule 2 re-roots it as an orphan.
+const UNKNOWN_PARENT = Number.MAX_SAFE_INTEGER;
+
+/// A remap that has seen nothing.
+function emptyRemap() {
+  return { slots: {}, nextSlot: 0, alias: {}, newest: {}, nextSeq: 1 };
+}
+
+/// `name`'s slot, minting one on its first event.
+function slotOf(trace, name) {
+  const held = trace.slots[name];
+  if (held !== undefined) return { trace, slot: held };
+  const slot = trace.nextSlot;
+  return { trace: { ...trace, slots: { ...trace.slots, [name]: slot }, nextSlot: slot + 1 }, slot };
+}
+
+/// The family tree's id for `name`'s node `id`, when the family holds it — what a log line's
+/// node is rewritten to before it joins the family ring (`FamilyTrace::node`).
+function remapNode(trace, name, id) {
+  const slot = trace.slots[name];
+  if (slot === undefined) return null;
+  return trace.alias[`${slot}:${id}`] ?? null;
+}
+
+/// `trace` and `tree` with `slot`'s history dropped — a re-minted allocator.
+function forgetSlot(tree, trace, slot) {
+  return { tree: dropSource(tree, slot), trace: withoutSlot(trace, slot) };
+}
+
+/// `trace` with every alias and the frontier of `slot` removed.
+function withoutSlot(trace, slot) {
+  const alias = {};
+  for (const [key, seq] of Object.entries(trace.alias)) if (!key.startsWith(`${slot}:`)) alias[key] = seq;
+  const newest = { ...trace.newest };
+  delete newest[slot];
+  return { ...trace, alias, newest };
+}
+
+/**
+ * One of copy `name`'s trace events into the family `tree`, remapped — `FamilyTrace::fold`.
+ * Returns the new tree and remap.
+ */
+function familyTrace(tree, trace0, name, event, now) {
+  let { trace, slot } = slotOf(trace0, name);
+  const mapped = (id) => trace.alias[`${slot}:${id}`];
+  if (event.op === "closed" || event.op === "relabeled") {
+    const id = mapped(toNumber(event.id, 0));
+    if (id === undefined) return { tree, trace };
+    const remapped = { ...event, id };
+    return { tree: event.op === "closed" ? closeNode(tree, remapped) : relabelNode(tree, remapped), trace };
+  }
+  const node = event.node;
+  if (!isObject(node)) return { tree, trace };
+  const wire = toNumber(node.id, 0);
+  const declared = node.parent === undefined || node.parent === null ? null : toNumber(node.parent, 0);
+  const parentOf = () => (declared === null ? null : (mapped(declared) ?? UNKNOWN_PARENT));
+  const held = mapped(wire);
+  if (held !== undefined && isReplay(tree, { ...node, id: held, parent: parentOf() }, event.at)) {
+    // An identical replay (the attach overlap) folds to the node it already is.
+    return { tree, trace };
+  }
+  if (held !== undefined && tree.nodes[held] === undefined) {
+    // An alias whose node was evicted is forgotten, and the event is new.
+    const alias = { ...trace.alias };
+    delete alias[`${slot}:${wire}`];
+    trace = { ...trace, alias };
+  } else if (held !== undefined || (declared === null && trace.newest[slot] !== undefined && wire <= trace.newest[slot])) {
+    // A held id opening as a different node, or a root at or below the copy's frontier: the
+    // copy's allocator was re-minted.
+    ({ tree, trace } = forgetSlot(tree, trace, slot));
+  }
+  const seq = trace.nextSeq;
+  trace = {
+    ...trace,
+    nextSeq: seq + 1,
+    alias: { ...trace.alias, [`${slot}:${wire}`]: seq },
+    newest: { ...trace.newest, [slot]: Math.max(trace.newest[slot] ?? 0, wire) },
+  };
+  return { tree: openNode(tree, { ...node, id: seq, parent: parentOf() }, event.at, now, slot), trace };
+}
+
+/// Copy `name` left the board: its open nodes settle `unknown` and its runs stay as history, and
+/// its slot is released so a copy minted under the same name later starts afresh
+/// (`FamilyTrace::retire`).
+function retireMember(tree, trace, name) {
+  const slot = trace.slots[name];
+  if (slot === undefined) return { tree, trace };
+  const slots = { ...trace.slots };
+  delete slots[name];
+  return { tree: retireSource(tree, slot), trace: withoutSlot({ ...trace, slots }, slot) };
+}
+
+/// `tree` without the nodes folded from `source`, and their roots — `TraceTree::drop_source`.
+function dropSource(tree, source) {
+  const sources = tree.sources ?? {};
+  const dropped = new Set(Object.keys(sources).filter((id) => sources[id] === source).map(Number));
+  const nodes = {};
+  for (const [id, node] of Object.entries(tree.nodes)) {
+    if (!dropped.has(Number(id))) nodes[id] = { ...node, children: node.children.filter((c) => !dropped.has(c)) };
+  }
+  const kept = {};
+  for (const [id, s] of Object.entries(sources)) if (!dropped.has(Number(id))) kept[id] = s;
+  return { ...tree, nodes, roots: tree.roots.filter((id) => !dropped.has(id)), sources: kept };
+}
+
+/// `tree` with `source`'s still-running nodes settled `unknown` — `TraceTree::retire_source`.
+function retireSource(tree, source) {
+  const sources = tree.sources ?? {};
+  const nodes = { ...tree.nodes };
+  for (const [id, node] of Object.entries(tree.nodes)) {
+    if (node.status === "running" && sources[id] === source) nodes[id] = { ...node, status: "unknown" };
+  }
+  return { ...tree, nodes };
 }
 
 // --- selectors ---------------------------------------------------------------------

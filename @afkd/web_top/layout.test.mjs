@@ -20,7 +20,8 @@ import test from "node:test";
 
 import { fold, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, REFUSED_WHILE_QUITTING, SCOPES, all, glyphs, idOf, primary } from "./keymap.mjs";
-import { TREND_LADDER, bodyHeight as bodyHeightOf, formatElapsed, infoScrollMax, infoView, layout as layoutOf, peekFloorOffset, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { COL_WIDTH, COPIES_MARK, FAMILY_STATE_COL_WIDTH, TREND_LADDER, bodyHeight as bodyHeightOf, busyShare, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, peekFloorOffset, runMetrics, scrollOffset, serviceColWidth, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { URGENCY } from "./fold.mjs";
 import { newSession as bootSession, press } from "./session.mjs";
 import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, screenText } from "./testkit.mjs";
 
@@ -2440,3 +2441,98 @@ test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, 
 function unescapeRust(literal) {
   return literal.replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
 }
+
+// --- a multi-copy service is one row (ADR-0047 #8, as amended 2026-10-20) ----------------
+
+/// The family capture up to the auto pool's run: `selfdev.develop`'s copies 0 and 1 busy, its
+/// copy 2 idle, and the pool down to its copy 0.
+const familyBoard = () => foldCapture("family.jsonl", (f) => f.type === "event" && f.event === "run_started" && f.service === "backup.0");
+/// …and just after the pool minted its copy 1 (`meta.spawned`), which is still arming.
+const mintBoard = () => foldCapture("family.jsonl", (f) => f.type === "event" && f.event === "service_armed" && f.service === "backup.1");
+
+test("a fixed family is one row with its count and its busy share", () => {
+  const { board, at } = familyBoard();
+  const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.379" });
+  assertGrid(rows, 100, 30);
+  assertGolden("family-100x30.txt", rows);
+  const text = screenText(rows);
+  assert.ok(text.includes("selfdev.develop ×3") && text.includes("▶ Busy 2/3"), text);
+  assert.ok(!text.includes("develop.0"), "no copy has a row of its own");
+});
+
+test("an auto family mid-mint moves only its count and its state", () => {
+  const before = familyBoard();
+  const after = mintBoard();
+  const lines = ({ board, at }) => screenText(layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.379" })).split("\n");
+  const rows = layoutOf(after.board, { cols: 100, rows: 30, now: after.at + 1000, version: "0.2.379" });
+  assertGrid(rows, 100, 30);
+  assertGolden("pool-mint-100x30.txt", rows);
+  const [was, now] = [lines(before), lines(after)];
+  const changed = was.map((line, i) => i).filter((i) => was[i] !== now[i] && i > 3 && i < 24);
+  assert.deepEqual(changed.map((i) => now[i].trim().split(/\s+/).slice(0, 2).join(" ")), ["🈶 backup"], "only the pool's own line moved");
+  assert.ok(was[changed[0]].includes("backup ×1") && now[changed[0]].includes("backup ×2 ") && now[changed[0]].includes("Busy 1/2"));
+});
+
+test("a family board widens State out of Service's room, and only a family board does", () => {
+  // Above the stretch floor the columns are a pure function of the width, so every column right
+  // of State keeps its x and State starts two cells left; a board with no family keeps the
+  // positions it always had.
+  const header = ({ board, at }, cols) =>
+    screenText(layoutOf(board, { cols, rows: 30, now: at + 1000, version: "0.2.379" })).split("\n")[3];
+  for (const cols of [100, 140]) {
+    const family = header(familyBoard(), cols);
+    const plain = header(liveBoard(), cols);
+    assert.equal(family.indexOf("State") + (FAMILY_STATE_COL_WIDTH - COL_WIDTH.state), plain.indexOf("State"), `${cols}`);
+    for (const label of ["Trigger", "Last Activity", "Next Run"]) {
+      assert.equal(family.indexOf(label), plain.indexOf(label), `${cols}: ${label} stays put`);
+    }
+  }
+});
+
+test("the family State width is shell.rs's", { skip: NO_AFKD_SRC }, () => {
+  const rust = afkdSource("crates", "tui", "src", "shell.rs");
+  const constant = (name) => Number(new RegExp(`const ${name}: u16 = (\\d+);`).exec(rust)?.[1]);
+  assert.equal(constant("STATE_COL_WIDTH"), COL_WIDTH.state);
+  assert.equal(constant("FAMILY_STATE_COL_WIDTH"), FAMILY_STATE_COL_WIDTH);
+  // The extra comes off what is left for `Service` before either regime: above the stretch
+  // floor the remainder shrinks by it, below it the content-fit clamp's ceiling does.
+  const extra = FAMILY_STATE_COL_WIDTH - COL_WIDTH.state;
+  for (const content of [0, 20, 200]) {
+    assert.equal(serviceColWidth(content, 100, extra), serviceColWidth(content, 100, 0) - extra);
+  }
+  for (const cols of [80, 60, 40]) {
+    const room = serviceColWidth(10_000, cols, 0);
+    for (const content of [0, 12, room - extra, 200]) {
+      assert.equal(serviceColWidth(content, cols, extra), Math.min(Math.max(content, 8), Math.max(room - extra, 8)), `${cols}/${content}`);
+    }
+  }
+  // A name that fits what is left at 60 keeps its full width.
+  const fits = serviceColWidth(10_000, 60, 0) - extra;
+  assert.equal(serviceColWidth(fits, 60, extra), fits);
+});
+
+test("the copy count and busy share are family.rs's", { skip: NO_AFKD_SRC }, () => {
+  const rust = afkdSource("crates", "tui", "src", "family.rs");
+  assert.equal(/const COPIES_MARK: &str = "([^"]*)";/.exec(rust)?.[1], COPIES_MARK);
+  const share = rust.slice(rust.indexOf("fn busy_share("), rust.indexOf("\n}", rust.indexOf("fn busy_share(")));
+  assert.deepEqual([...share.matchAll(/format!\("([^"]*)"/g)].map(([, f]) => f), ["{busy}/{copies}"]);
+  assert.equal(busyShare(2, 3), "2/3");
+});
+
+test("the info breakdown is family.rs's wording", { skip: NO_AFKD_SRC }, () => {
+  const rust = afkdSource("crates", "tui", "src", "family.rs");
+  const at = rust.indexOf("fn copies_breakdown(");
+  const body = rust.slice(at, rust.indexOf("\n}", at));
+  for (const literal of ['"1 copy"', '"{n} copies"', '": "', '", "']) {
+    assert.ok(body.includes(literal), `copies_breakdown spells ${literal}`);
+  }
+  const model = afkdSource("crates", "tui", "src", "model.rs");
+  const labelAt = model.indexOf("pub fn label(self) -> &'static str {");
+  const labels = Object.fromEntries(
+    [...model.slice(labelAt, model.indexOf("\n    }", labelAt)).matchAll(/Badge::(\w+) => "([^"]+)"/g)].map(([, b, l]) => [b, l]),
+  );
+  assert.equal(copiesBreakdown({ copies: 3, busy: 2, states: [["Busy", 2], ["Idle", 1]] }), "3 copies: 2 busy, 1 idle");
+  assert.equal(copiesBreakdown({ copies: 1, busy: 0, states: [["Crashed", 1]] }), "1 copy: 1 crashed");
+  const every = copiesBreakdown({ copies: 8, busy: 1, states: URGENCY.map((b) => [b, 1]) });
+  assert.equal(every, `8 copies: ${URGENCY.map((b) => `1 ${labels[b].toLowerCase()}`).join(", ")}`);
+});
