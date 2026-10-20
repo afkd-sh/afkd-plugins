@@ -2486,14 +2486,15 @@ fn the_plugins_own_suites_run_under_node() {
     // its committed golden screens say it does, or a transcription the Rust has moved away
     // from reddens the same run the screen diffs do.
     //
-    // All seven are fixture-driven — every expectation comes off the recorded captures under
-    // `fixtures/` — so this leg also proves those files are still readable and still hold the
-    // variety each test opens by asserting. Two of them reach further still: `keymap.test.mjs`
-    // reads afkd's `crates/config/src/keymap.rs` and holds the page's transcription of
-    // `DEFAULT_KEYS` to it row for row, so a rebind in the Rust reddens the javascript in the
-    // same run; and
-    // `backfill.test.mjs` spawns the relay itself (`web_top --backfill …`), so the disk read is
-    // exercised as it ships rather than re-stated in javascript.
+    // The seven besides `sources.test.mjs` are fixture-driven — every expectation comes off the
+    // recorded captures under `fixtures/` — so this leg also proves those files are still
+    // readable and still hold the variety each test opens by asserting. `sources.test.mjs`
+    // checks that every afkd file the suites read is still where they read it, by name. Two of
+    // the seven reach further still: `keymap.test.mjs` reads afkd's `crates/lang/src/keymap.rs`
+    // and holds the page's transcription of `DEFAULT_KEYS` to it row for row, so a rebind in the
+    // Rust reddens the javascript in the same run; and `backfill.test.mjs` spawns the relay
+    // itself (`web_top --backfill …`), so the disk read is exercised as it ships rather than
+    // re-stated in javascript.
     if !node_available() {
         eprintln!("skipping: node is not on PATH, and the plugin's suites are javascript");
         return;
@@ -2507,6 +2508,7 @@ fn the_plugins_own_suites_run_under_node() {
         "paint.test.mjs",
         "session.test.mjs",
         "input.test.mjs",
+        "sources.test.mjs",
     ] {
         let suite = plugin_root().join(name);
         assert!(suite.is_file(), "{name} ships beside the module it covers");
@@ -2537,7 +2539,7 @@ fn the_plugins_own_suites_run_under_node() {
             .and_then(|n| n.trim().parse::<u32>().ok())
             .unwrap_or_else(|| panic!("node --test reported no pass count for {name}:\n{report}"));
     }
-    // A floor over all seven suites, so it only ever under-counts: a test added to any of them
+    // A floor over all eight suites, so it only ever under-counts: a test added to any of them
     // is not a reason to touch this number, and a suite that stopped running is.
     assert!(passed >= 112, "the suites really ran ({passed} tests)");
 }

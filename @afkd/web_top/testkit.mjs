@@ -29,14 +29,33 @@ const GOLDENS = join(HERE, "goldens");
 /// The afkd checkout `AFKD_SRC` names. afkd lives in a repository of its own, so a test that
 /// reads its Rust runs only where one is named, and skips everywhere else — the release
 /// workflow included — with [`NO_AFKD_SRC`] as its reason rather than failing on a missing file.
-const AFKD_SRC = process.env.AFKD_SRC ?? "";
+export const AFKD_SRC = process.env.AFKD_SRC ?? "";
 
 /// The `skip` option for a test that reads afkd's Rust: `false` with a checkout, the reason
 /// without one.
 export const NO_AFKD_SRC = AFKD_SRC === "" ? "AFKD_SRC names no afkd checkout to read the Rust from" : false;
 
-/// One of afkd's own source files, `parts` relative to the checkout's root.
+/// Every afkd file a suite reads, relative to the checkout's root and spelled with `/` as the
+/// docs cite them. `sources.test.mjs` holds each one to the checkout by name, so a file that
+/// moves in afkd is a test naming it rather than a module-load ENOENT in whichever suite read it.
+export const AFKD_SOURCES = Object.freeze([
+  "crates/app/src/proto.rs",
+  "crates/lang/src/keymap.rs",
+  "crates/tui/src/family.rs",
+  "crates/tui/src/keys.rs",
+  "crates/tui/src/model.rs",
+  "crates/tui/src/palette.rs",
+  "crates/tui/src/shell.rs",
+  "crates/tui/src/treeview.rs",
+]);
+
+/// One of afkd's own source files, `parts` relative to the checkout's root. It must be in
+/// [`AFKD_SOURCES`], so no read dodges the inventory.
 export function afkdSource(...parts) {
+  const path = parts.join("/");
+  if (!AFKD_SOURCES.includes(path)) {
+    throw new Error(`${path} is not in AFKD_SOURCES: list it there, so sources.test.mjs checks it is still in afkd`);
+  }
   return readFileSync(join(AFKD_SRC, ...parts), "utf8");
 }
 

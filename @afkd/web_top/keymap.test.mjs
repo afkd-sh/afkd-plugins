@@ -34,7 +34,7 @@ import {
 } from "./keymap.mjs";
 import { NO_AFKD_SRC, afkdSource } from "./testkit.mjs";
 
-const KEYMAP_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "config", "src", "keymap.rs");
+const KEYMAP_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "lang", "src", "keymap.rs");
 const KEYS_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "tui", "src", "keys.rs");
 
 // --- AC1: the transcription is the Rust table ---------------------------------------

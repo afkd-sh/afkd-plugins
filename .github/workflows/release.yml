@@ -35,9 +35,9 @@ jobs:
           node-version: '24'
 
       # A red suite must not publish, so every one of the plugin's suites runs here. The
-      # tests in them that read afkd's own Rust (`keymap.test.mjs`'s transcription checks and
-      # two in `layout.test.mjs`) skip themselves: afkd is a repository of its own, and no
-      # checkout of it is here for `AFKD_SRC` to name. They run with the drift gate under
+      # tests in them that read afkd's own Rust (the transcription checks and
+      # `sources.test.mjs`'s inventory) skip themselves: afkd is a repository of its own, and
+      # no checkout of it is here for `AFKD_SRC` to name. They run with the drift gate under
       # `drift/`, on a host that has an afkd.
       - name: The plugin's own suites
         working-directory: '@afkd/web_top'

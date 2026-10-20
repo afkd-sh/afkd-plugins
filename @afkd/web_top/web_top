@@ -222,7 +222,7 @@ ZERO_STAMP = {"year": 0, "month": 0, "day": 0, "hour": 0, "minute": 0, "second":
 
 
 def name_segment(name):
-    """A service name as its run-dir segment — `afkd_config::name_segment`.
+    """A service name as its run-dir segment — `afkd_lang::name_segment`.
 
     The wire name stays qualified (`ns::name`); only the lookup path is encoded, so this
     lands on the exact dir the daemon's `scratch_root` wrote.

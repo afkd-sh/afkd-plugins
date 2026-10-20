@@ -2,7 +2,7 @@
 //
 // The keymap is **not on the control wire** — `crates/app/src/proto.rs` carries no keys
 // field — so a companion never sees the operator's effective `Keymap`. What it can do is
-// transcribe the *defaults* verbatim: [`DEFAULT_KEYS`] below is `crates/config/src/keymap.rs`'s
+// transcribe the *defaults* verbatim: [`DEFAULT_KEYS`] below is `crates/lang/src/keymap.rs`'s
 // 51-row table, same scopes, same action names, same binding strings including the alternates
 // (`quit` is `q` or `ctrl-c`; `cancel` is `n` or `esc`). `keymap.test.mjs` reads the Rust table
 // and deep-equals it against this one, so a row gained, lost or rebound there is a failing test
@@ -35,7 +35,7 @@ export const SCOPES = [
   "confirm",
 ];
 
-/// `afkd_config`'s `DEFAULT_KEYS` (`crates/config/src/keymap.rs:285-346`), row for row and in
+/// `afkd_lang`'s `DEFAULT_KEYS` (`crates/lang/src/keymap.rs:289-350`), row for row and in
 /// table order. `binding` is the Rust's own spelling — a whitespace-separated run of
 /// alternative **atoms**, either of which fires — so the pinning test compares strings it did
 /// not have to normalise.

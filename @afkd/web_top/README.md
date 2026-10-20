@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.5.0 (companion)
+Installed @afkd/web_top 0.5.1 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -422,9 +422,9 @@ $ AFKD_SRC=/path/to/afkd cargo test
 The daemon is the `afkd` first on `PATH` — the install an operator runs, never a build — so
 the gate answers whether this page matches the afkd it will meet. `AFKD_SRC` names an afkd
 checkout for the checks that read afkd's own source: the keymap and palette transcriptions,
-the rail glyph table, the variation-selector scan, the index entry, and the `unicode-width`
-every width here is measured against. Without one those checks skip and say so, which is how
-the release workflow runs this directory's suites.
+the rail glyph table, the source inventory, the variation-selector scan, the index entry, and
+the `unicode-width` every width here is measured against. Without one those checks skip and
+say so, which is how the release workflow runs this directory's suites.
 
 ## What this card deliberately does not do
 
@@ -441,7 +441,7 @@ the release workflow runs this directory's suites.
   bug the first time an operator opens all and a new agent lands folded.
 - **The keymap is the stock one, and no `keys { … }` rebind is mirrored.** The keymap is not
   on the control wire, so `keymap.mjs` ships a transcription of afkd's `DEFAULT_KEYS` — all 51
-  rows, all eight scopes, alternates included — pinned to `crates/config/src/keymap.rs` by
+  rows, all eight scopes, alternates included — pinned to `crates/lang/src/keymap.rs` by
   `keymap.test.mjs`, so a rebind in the Rust is a failing test here rather than a page that
   stopped answering a key. What that buys is the rule it has to keep: an action with no chord
   renders **no hint at all** and takes no key — including the reload while the daemon is
