@@ -261,6 +261,51 @@ test("the relay's sanitizer and the page's agree byte for byte", { skip: SKIP_PY
   assert.notDeepEqual(served, raw, "the sanitizers are not the identity over this transcript");
 });
 
+// --- the relay's run-dir segment, afkd's ----------------------------------------------
+
+/**
+ * Loads the relay as a module and loads nothing else: its `main()` sits behind `__main__`, so
+ * the import is inert. Loaded rather than spawned through its CLI, as the other legs are,
+ * because `name_segment` has no CLI surface of its own.
+ */
+const SEGMENT_LOADER = `
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader("web_top_relay", sys.argv[1])
+relay = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(relay)
+print(json.dumps([relay.name_segment(n) for n in json.loads(sys.argv[2])], ensure_ascii=False))
+`;
+
+/** The relay's `name_segment` over each of `names`, in order. */
+function relayNameSegments(names) {
+  const out = execFileSync("python3", ["-I", "-c", SEGMENT_LOADER, join(HERE, "web_top"), JSON.stringify(names)], {
+    encoding: "utf8",
+  });
+  return JSON.parse(out);
+}
+
+test("the relay's name_segment is afkd's: the case fold alone", { skip: SKIP_PYTHON }, () => {
+  // The burst reads `<runs>/<segment>`, so a segment that differs from the one the daemon's
+  // `scratch_root` wrote reads an empty corpus, with nothing red. The twin of this table is
+  // `afkd_lang::name_segment`'s own test (`crates/lang/src/namespace.rs`), kept in step by
+  // hand: this suite runs without `AFKD_SRC`, so it cannot read the Rust. `::` is not special
+  // there any more, so it must not be here.
+  const table = [
+    ["a::b", "a::b"],
+    ["Afkd::Develop", "afkd::develop"],
+    ["selfdev.develop.0", "selfdev.develop.0"],
+    ["Selfdev.Develop.1", "selfdev.develop.1"],
+    [SERVICE, "ops.監視"],
+    ["OPS.監視", "ops.監視"],
+    ["MÜNCHEN.Bereitstellung", "münchen.bereitstellung"],
+    ["prune_runs", "prune_runs"],
+  ];
+  assert.deepEqual(
+    relayNameSegments(table.map(([name]) => name)),
+    table.map(([, segment]) => segment),
+  );
+});
+
 // --- AC1/AC4: a committed run replayed through the fold, rendered, diffed ------------
 
 /**

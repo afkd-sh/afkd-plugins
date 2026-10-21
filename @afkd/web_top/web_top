@@ -224,8 +224,8 @@ ZERO_STAMP = {"year": 0, "month": 0, "day": 0, "hour": 0, "minute": 0, "second":
 def name_segment(name):
     """A service name as its run-dir segment — `afkd_lang::name_segment`.
 
-    The wire name stays qualified (`ns::name`); only the lookup path is encoded, so this
-    lands on the exact dir the daemon's `scratch_root` wrote.
+    The segment is the `pkg.name` identity folded to lowercase and nothing else, mirroring
+    the Rust, so this lands on the exact dir the daemon's `scratch_root` wrote.
 
     One known, accepted divergence from the Rust, which folds through `str::to_lowercase`:
     that mapping has a context-sensitive rule for a **final** Greek capital sigma (`ΟΔΟΣ` →
@@ -235,7 +235,7 @@ def name_segment(name):
     and hand-rolling the rule would be a second spelling of a fold afkd itself does not
     special-case anywhere else.
     """
-    return name.lower().replace("::", ".")
+    return name.lower()
 
 
 def runs_readable(base):
