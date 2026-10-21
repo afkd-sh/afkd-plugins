@@ -14,8 +14,8 @@ Service          State                 Last Activity
   🔹 deep        ● Idle                           7s        
   🔹 spare       ● Idle                                     
                                                             
-Queue      Capacity             Parallelism   Held   Waiting
-🧵 heavy   ▮▮ ╎ ∙               2             2      1      
+Queue      Usage                   Capacity   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙                  2          2      1      
                                                             
                                                             
                                                             
@@ -46,7 +46,7 @@ rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbbbbnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -78,7 +78,7 @@ sssssssssssssssssDDDDDDDDDssssssssssssssssssssssssssssssssss
 ............................................................
 ............................................................
 ............................................................
-bbbbb......bbbbbbbb.............bbbbbbbbbbb...bbbb...bbbbbbb
+bbbbb......bbbbb...................bbbbbbbb...bbbb...bbbbbbb
 ...........bb...d...........................................
 ............................................................
 ............................................................

@@ -4671,8 +4671,8 @@ fn list_divergences(surface: &str, top: &Screen, plugin: &Screen, out: &mut Obse
 
 /// The `Queues` section: its labels, each label's origin, the lane-row count, and each
 /// column's cells — each surface sliced by **its own** header's spans, since a `Queue` column
-/// one surface fit wider would otherwise leak its tail into the other's `Capacity` span and
-/// report a `Capacity` difference that is really the `Queue` one.
+/// one surface fit wider would otherwise leak its tail into the other's `Usage` span and
+/// report a `Usage` difference that is really the `Queue` one.
 fn queue_divergences(top: &Screen, plugin: &Screen, out: &mut Observed) {
     let header = |screen: &Screen| {
         screen

@@ -14,8 +14,8 @@ Service                                                                        S
   🔹 deep                                        │  H/L          Expand all / collapse all groups            │                                     7s    59m 52s
   🔹 spare                                       │  v            Flat view (no group headers)                │                                           59m 47s
                                                  │  s            Start service                               │                                                  
-Queue      Capacity                              │  x            Stop service                                │                      Parallelism   Held   Waiting
-🧵 heavy   ▮▮ ╎ ∙                                │  t            Run now                                     │                      2             2      1      
+Queue      Usage                                 │  x            Stop service                                │                         Capacity   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙                                │  t            Run now                                     │                         2          2      1      
                                                  │  r            Restart service                             │                                                  
                                                  │  +            Widen the service's queue lane              │                                                  
                                                  │  -            Narrow the service's queue lane             │                                                  
@@ -60,7 +60,7 @@ rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbnnnnnnnnnnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn

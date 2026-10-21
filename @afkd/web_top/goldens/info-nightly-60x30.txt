@@ -3,7 +3,7 @@ afkd › ops.nightly · Queued
 Overview                                                    
 State                     ▷ Queued for 2s (waiting on heavy)
 Group                     ops                               
-Queue                     heavy (high) · parallelism 2      
+Queue                     heavy (high) · capacity 2         
 Next run                  none                              
                                                             
 Trigger                                                     

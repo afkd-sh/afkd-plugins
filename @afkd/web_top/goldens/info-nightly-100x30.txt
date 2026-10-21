@@ -4,8 +4,8 @@ Overview                                           Trigger
 State                     ▷ Queued for 2s          Kind                      interval               
                             (waiting on heavy)     Every                     1h                     
 Group                     ops                                                                       
-Queue                     heavy (high) ·           Activity                                         
-                          parallelism 2            Last activity             9s                     
+Queue                     heavy (high) · capacity  Activity                                         
+                          2                        Last activity             9s                     
 Next run                  none                     Avg run time              0s                     
                                                    Total run time            0s                     
 Usage                                                                                               

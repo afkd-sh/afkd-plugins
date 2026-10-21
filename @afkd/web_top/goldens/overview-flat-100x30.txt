@@ -13,8 +13,8 @@ Service                          State                 Trigger              Last
 🔹 deep                          ● Idle                Every 1h                        7s    59m 52s
 🔹 spare                         ● Idle                Every 1h                              59m 47s
                                                                                                     
-Queue      Capacity                                                     Parallelism   Held   Waiting
-🧵 heavy   ▮▮ ╎ ∙                                                       2             2      1      
+Queue      Usage                                                           Capacity   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙                                                          2          2      1      
                                                                                                     
                                                                                                     
                                                                                                     
@@ -45,7 +45,7 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -77,7 +77,7 @@ sssssssssssssssssssssssssssssssssDDDDDDDDDssssssssssssssssssssssssssssssssssssss
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................
-bbbbb......bbbbbbbb.....................................................bbbbbbbbbbb...bbbb...bbbbbbb
+bbbbb......bbbbb...........................................................bbbbbbbb...bbbb...bbbbbbb
 ...........bb...d...................................................................................
 ....................................................................................................
 ....................................................................................................

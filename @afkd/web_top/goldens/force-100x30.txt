@@ -14,7 +14,7 @@ Service                          State                 Trigger              Last
   🔹 deep         │    🧹 janitor                                               │            59m 54s
   🔹 spare        │                                                             │            59m 54s
                   │  Force kills the running work & abandons the wedged thread  │                   
-Queue      Capacit│  The service reclaims once the abandoned thread finishes    │sm   Held   Waiting
+Queue      Usage  │  The service reclaims once the abandoned thread finishes    │ty   Held   Waiting
 🧵 heavy   ▮▯     │                                                             │     1      0      
                   │  y force  n cancel                                          │                   
                   │                                                             │                   
@@ -46,7 +46,7 @@ rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
 rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnrnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbbbrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnrbbnnnbbbbnnnbbbbbbb
+bbbbbnnnnnnbbbbbnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnrbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnarnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnrnnbnlllllnnbnllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn

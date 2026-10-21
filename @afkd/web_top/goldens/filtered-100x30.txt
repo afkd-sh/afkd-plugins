@@ -8,8 +8,8 @@ Service                          State                 Trigger              Last
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
 └─ 🔷 vacuum                     ▶ Busy 5s             Every 1h                        5s           
                                                                                                     
-Queue      Capacity                                                     Parallelism   Held   Waiting
-🧵 heavy   ▮▮ ╎ ∙                                                       2             2      1      
+Queue      Usage                                                           Capacity   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙                                                          2          2      1      
                                                                                                     
                                                                                                     
                                                                                                     
@@ -40,7 +40,7 @@ rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -72,7 +72,7 @@ sssssssssssssssssssssssssssssssssBBBBBBBBBssssssssssssssssssssssssssssssssssssss
 .................................bbbbbbbbb..........................................................
 .................................bbbbbbbbb..........................................................
 ....................................................................................................
-bbbbb......bbbbbbbb.....................................................bbbbbbbbbbb...bbbb...bbbbbbb
+bbbbb......bbbbb...........................................................bbbbbbbb...bbbb...bbbbbbb
 ...........bb...d...................................................................................
 ....................................................................................................
 ....................................................................................................

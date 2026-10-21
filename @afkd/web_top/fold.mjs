@@ -186,8 +186,9 @@ function seedService(entry, now) {
     queue: toText(entry.queue),
     queuePriority: toText(entry.queue_priority),
     // Absent means the daemon sent none (a lane-less service, or a husk that learned its
-    // lane from a live event); `0` is a real width and must not read as absence.
-    queueParallelism: entry.queue_parallelism === undefined || entry.queue_parallelism === null
+    // lane from a live event); `0` is a real capacity and must not read as absence. The wire
+    // key keeps afkd's pre-rename spelling.
+    queueCapacity: entry.queue_parallelism === undefined || entry.queue_parallelism === null
       ? null
       : toNumber(entry.queue_parallelism, 0),
     orphan: entry.orphan === true,
@@ -1062,7 +1063,7 @@ const RELOAD_METADATA_KEYS = [
   "description",
   "queue",
   "queuePriority",
-  "queueParallelism",
+  "queueCapacity",
   "isPoller",
 ];
 
@@ -1526,8 +1527,8 @@ export function groups(board) {
  * The queue lanes, mirroring `QueueLane` / `DashboardModel::queue_lanes`. Sorted by lane
  * name, which for the resolved `package.name` spellings is the operator-visible order.
  *
- * `parallelism` is the **max** over members (a husk that learned its lane from a live event
- * reports none, and must not drag the lane's width down to nothing), `held` counts the
+ * `capacity` is the **max** over members (a husk that learned its lane from a live event
+ * reports none, and must not drag the lane's capacity down to nothing), `held` counts the
  * members holding a slot and `waiting` those at the door.
  *
  * A member holds a slot when it is `Busy` or `Checking`, **or** when it is `Stopping` with a
@@ -1544,13 +1545,13 @@ export function queues(board) {
     if (svc === undefined || svc.queue === "") continue;
     let lane = byName[svc.queue];
     if (lane === undefined) {
-      lane = { lane: svc.queue, members: [], parallelism: null, held: 0, waiting: 0 };
+      lane = { lane: svc.queue, members: [], capacity: null, held: 0, waiting: 0 };
       byName[svc.queue] = lane;
       lanes.push(lane);
     }
     lane.members.push(name);
-    if (svc.queueParallelism !== null) {
-      lane.parallelism = lane.parallelism === null ? svc.queueParallelism : Math.max(lane.parallelism, svc.queueParallelism);
+    if (svc.queueCapacity !== null) {
+      lane.capacity = lane.capacity === null ? svc.queueCapacity : Math.max(lane.capacity, svc.queueCapacity);
     }
     const draining = svc.badge === "Stopping" && svc.inFlightSince !== null;
     if (svc.badge === "Busy" || svc.badge === "Checking" || draining) lane.held += 1;

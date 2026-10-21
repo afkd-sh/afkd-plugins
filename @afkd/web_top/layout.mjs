@@ -1353,38 +1353,38 @@ const QUEUE_FENCE_LEAD_W = 2;
 /// floor pays for, never a bound on what is drawn.
 const QUEUE_BAR_MAX = 8;
 const QUEUE_WAIT_CELLS = 4 + 1;
-/// `layout::QUEUE_SLOTS_MIN` — folded from the three, so the width the field never goes below
+/// `layout::QUEUE_USAGE_MIN` — folded from the three, so the width the field never goes below
 /// is the width the three of them cost.
-const QUEUE_SLOTS_MIN = QUEUE_BAR_MAX + QUEUE_FENCE_W + QUEUE_WAIT_CELLS;
+const QUEUE_USAGE_MIN = QUEUE_BAR_MAX + QUEUE_FENCE_W + QUEUE_WAIT_CELLS;
 /// `layout::QUEUE_NAME_COL_MIN` — the `"Queue"` label plus one cell of breathing room.
 const QUEUE_NAME_COL_MIN = 6;
 /// `layout::QUEUE_COLUMN_ORDER` and its Title-case labels.
-const QUEUE_COLUMNS = ["Queue", "Capacity", "Parallelism", "Held", "Waiting"];
+const QUEUE_COLUMNS = ["Queue", "Usage", "Capacity", "Held", "Waiting"];
 
-/// `layout::queue_floor_cols` — what the section costs past its name column with `Capacity` at
+/// `layout::queue_floor_cols` — what the section costs past its name column with `Usage` at
 /// its own floor. Folded from the order rather than typed, so a sixth column cannot leave a
 /// stale constant behind.
 function queueFloorCols() {
-  const widths = [0, QUEUE_SLOTS_MIN, ...QUEUE_COLUMNS.slice(2).map(textWidth)];
+  const widths = [0, QUEUE_USAGE_MIN, ...QUEUE_COLUMNS.slice(2).map(textWidth)];
   return widths.reduce((a, b) => a + b, 0) + COLUMN_SPACING * (QUEUE_COLUMNS.length - 1);
 }
 
 /// `layout::queue_cols` — the section's two elastic widths: `Queue` is the content fit over
-/// the section's **own** lane identities, `Capacity` is the sink that takes everything the other
+/// the section's **own** lane identities, `Usage` is the sink that takes everything the other
 /// four and their gutters leave. The five and their four gutters sum to `cols` exactly.
 function queueCols(cols, widestLane) {
   const cap = Math.max(0, cols - queueFloorCols());
   const want = QUEUE_LANE_PREFIX_W + widestLane;
   const name = Math.min(Math.max(want, QUEUE_NAME_COL_MIN), Math.max(cap, QUEUE_NAME_COL_MIN));
-  const rest = queueFloorCols() - QUEUE_SLOTS_MIN;
-  const slots = Math.max(cols - (name + rest), QUEUE_SLOTS_MIN);
-  return { name, slots };
+  const rest = queueFloorCols() - QUEUE_USAGE_MIN;
+  const usage = Math.max(cols - (name + rest), QUEUE_USAGE_MIN);
+  return { name, usage };
 }
 
 /// The width of one section column at the folded elastic pair.
 function queueColumnWidth(label, cols) {
   if (label === "Queue") return cols.name;
-  if (label === "Capacity") return cols.slots;
+  if (label === "Usage") return cols.usage;
   return textWidth(label);
 }
 
@@ -1406,12 +1406,12 @@ function queueRun(n, budget) {
   return [0, null];
 }
 
-/// `layout::queue_bar_cells` — one cell per **holder**, and one per free slot the declared
-/// width still has, the wider of the two. A lane still draining a narrow holds more than it
-/// is wide and grows past its width rather than contradicting the `Held` cell beside it.
-function queueBarCells(parallelism, held, budget) {
-  const capacity = parallelism === null ? 0 : Math.max(0, Math.trunc(parallelism));
-  return queueRun(Math.max(capacity, held), budget);
+/// `layout::queue_bar_cells` — one cell per **holder**, and one per free place the declared
+/// capacity still has, the wider of the two. A lane still draining a narrow holds more than it
+/// is wide and grows past its capacity rather than contradicting the `Held` cell beside it.
+function queueBarCells(capacity, held, budget) {
+  const places = capacity === null ? 0 : Math.max(0, Math.trunc(capacity));
+  return queueRun(Math.max(places, held), budget);
 }
 
 /// One lane row's five cells at the section's elastic widths — `layout::queue_lane_line`,
@@ -1421,8 +1421,8 @@ function queueBarCells(parallelism, held, budget) {
 /// the terminal's is; its priority is the info view's `Queue` row's to print.
 function queueLaneCells(cols, lane) {
   const identity = truncateWidth(lane.lane, Math.max(0, cols.name - QUEUE_LANE_PREFIX_W));
-  const barBudget = Math.max(0, cols.slots - (QUEUE_FENCE_W + QUEUE_WAIT_CELLS));
-  const [cells, barHidden] = queueBarCells(lane.parallelism, lane.held, barBudget);
+  const barBudget = Math.max(0, cols.usage - (QUEUE_FENCE_W + QUEUE_WAIT_CELLS));
+  const [cells, barHidden] = queueBarCells(lane.capacity, lane.held, barBudget);
   const filled = Math.min(lane.held, cells);
   const field = [];
   if (filled > 0) field.push(cell(QUEUE_SLOT_HELD.repeat(filled), BADGE_STYLE.Busy));
@@ -1439,8 +1439,8 @@ function queueLaneCells(cols, lane) {
   const door = cells === 0 ? QUEUE_FENCE_LEAD : QUEUE_FENCE;
   const pipBudget =
     cells === 0
-      ? Math.max(0, cols.slots - QUEUE_FENCE_LEAD_W)
-      : Math.max(0, cols.slots - (barW + QUEUE_FENCE_W));
+      ? Math.max(0, cols.usage - QUEUE_FENCE_LEAD_W)
+      : Math.max(0, cols.usage - (barW + QUEUE_FENCE_W));
   const [dots, pipHidden] = queueRun(lane.waiting, pipBudget);
   if (dots > 0 || pipHidden !== null) {
     field.push(cell(door, { fg: "recede" }));
@@ -1448,11 +1448,11 @@ function queueLaneCells(cols, lane) {
     if (pipHidden !== null) pips += queueOverflowMark(pipHidden);
     field.push(cell(pips, BADGE_STYLE.Queued));
   }
-  const width = lane.parallelism === null ? "?" : String(lane.parallelism);
+  const number = lane.capacity === null ? "?" : String(lane.capacity);
   return [
     [cell(`${QUEUE_LANE_GLYPH} `), ...identityCells("", "", identity, "ink")],
     field,
-    [cell(width)],
+    [cell(number)],
     [cell(String(lane.held))],
     [cell(String(lane.waiting))],
   ];
@@ -2408,13 +2408,13 @@ function nextRunPhrase(svc, now) {
 }
 
 /// `infoview::overview_rows`' conditional `Queue` value: the daemon's resolved lane name, the
-/// level it waits at as a parenthetical, and the lane's **live** parallelism on a ` · ` suffix.
+/// level it waits at as a parenthetical, and the lane's **live** capacity on a ` · ` suffix.
 /// A level the daemon did not send drops the parenthetical rather than printing an empty one; a
-/// parallelism it did not send drops the suffix. A width of `0` is **not** that case — it is a
-/// width the lane holds, so it reads `· parallelism 0` (ADR-0079 §2h).
+/// capacity it did not send drops the suffix. A capacity of `0` is **not** that case — it is a
+/// capacity the lane holds, so it reads `· capacity 0` (ADR-0079 §2h).
 function queueValue(svc) {
   let lane = svc.queuePriority === "" ? svc.queue : `${svc.queue} (${svc.queuePriority})`;
-  if (svc.queueParallelism !== null) lane += ` · parallelism ${svc.queueParallelism}`;
+  if (svc.queueCapacity !== null) lane += ` · capacity ${svc.queueCapacity}`;
   return lane;
 }
 

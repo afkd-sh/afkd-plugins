@@ -121,7 +121,7 @@ test("a snapshot alone seeds one row per service, with its whole wire entry", ()
   );
   assert.ok(
     snapshot.services.filter((s) => s.queue !== "").length >= 2,
-    "…at least two on one lane, with levels and a live parallelism",
+    "…at least two on one lane, with levels and a live capacity",
   );
   assert.ok(
     snapshot.services.some((s) => s.runs_total > 0 && s.tokens > 0),
@@ -154,7 +154,7 @@ test("a snapshot alone seeds one row per service, with its whole wire entry", ()
     assert.equal(svc.group, entry.group, at);
     assert.equal(svc.queue, entry.queue, at);
     assert.equal(svc.queuePriority, entry.queue_priority, at);
-    assert.equal(svc.queueParallelism, entry.queue_parallelism ?? null, at);
+    assert.equal(svc.queueCapacity, entry.queue_parallelism ?? null, at);
     assert.equal(svc.confined, entry.confined, at);
     assert.equal(svc.orphan, entry.orphan, at);
     assert.equal(svc.stale, entry.stale, at);
@@ -956,7 +956,7 @@ test("the group rollup takes the latest activity and the oldest fire over its me
   assert.ok(rolled.some((g) => g.anyCrashed), "…and a crashed member is really in a group");
 });
 
-test("the queue lanes read held, waiting and the max parallelism", () => {
+test("the queue lanes read held, waiting and the max capacity", () => {
   const snapshot = readFixture("snapshot").find((f) => f.type === "meta" && f.meta === "snapshot");
   const onLanes = snapshot.services.filter((s) => s.queue !== "");
   assert.ok(onLanes.length >= 3, `the capture puts several services on a lane (${onLanes.length})`);
@@ -975,8 +975,8 @@ test("the queue lanes read held, waiting and the max parallelism", () => {
     const holds = (s) => s.state === "busy" || s.state === "checking" || (s.state === "stopping" && s.busy_ms > 0);
     assert.equal(lane.held, members.filter(holds).length, "held");
     assert.equal(lane.waiting, members.filter((s) => s.state === "queued").length, "waiting");
-    const widths = members.map((s) => s.queue_parallelism).filter((n) => n !== undefined);
-    assert.equal(lane.parallelism, widths.length === 0 ? null : Math.max(...widths), "the max over members");
+    const capacities = members.map((s) => s.queue_parallelism).filter((n) => n !== undefined);
+    assert.equal(lane.capacity, capacities.length === 0 ? null : Math.max(...capacities), "the max over members");
   }
   const heavy = lanes.find((l) => l.held > 0);
   assert.ok(heavy && heavy.waiting > 0, "a lane reads both its holders and its waiters");

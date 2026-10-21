@@ -53,7 +53,7 @@ Ten services, each there for something an assertion needs: a bare one with an `i
 `description`; four in the `ops` group — `ops.nightly`, `ops.sleeper`, `ops.broken` and
 `ops.vacuum`, some of them the ones named below — so a header has members to fold and roll up;
 three on one
-`queue heavy { parallelism 2 }` lane at `high` / `normal` / `low`; one carrying a
+`heavy :: queue { capacity 2 }` lane at `high` / `normal` / `low`; one carrying a
 whole-service `sandbox`, so its snapshot entry is `confined`; one whose `init` faults, so
 the board has a `crashed` service and a repeated crash alarm; two long `sleep` fires, so
 the lane can be filled and a third fire parks `queued`; a service that prints an

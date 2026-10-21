@@ -169,7 +169,7 @@ test("renders the whole overview at 100x30", () => {
   // The `Queues` section and its one filled lane.
   const queueHeader = lines.findIndex((l) => l.startsWith("Queue "));
   assert.ok(queueHeader > 0, "the `Queues` section has a header");
-  for (const label of ["Queue", "Capacity", "Parallelism", "Held", "Waiting"]) {
+  for (const label of ["Queue", "Usage", "Capacity", "Held", "Waiting"]) {
     assert.ok(lines[queueHeader].includes(label), `the section's ${label} column`);
   }
   // The lane by its name alone, as the terminal's section reads it: its `high` priority is
@@ -450,7 +450,7 @@ test("every right-flushed run ends where its header ends", () => {
   //   column; at 100 that is the pane's last column, the card's literal claim.
   // - The header's token/cost cluster — `planHeader` measures its pad, so it ends on the
   //   pane's last column whenever it is shown at all.
-  // - The `Queues` section's `Parallelism`/`Held`/`Waiting` — **not** right-flushed:
+  // - The `Queues` section's `Capacity`/`Held`/`Waiting` — **not** right-flushed:
   //   `queue_compose` pushes a cell and then its pad, so each value starts on its label's first
   //   column and the blanks after `Waiting` are correct. Asserted so, so a "fix" that flushed
   //   them right would redden here.
@@ -496,7 +496,7 @@ test("every right-flushed run ends where its header ends", () => {
     const queueHeader = rows.findIndex((row) => headerSpan(row, "Waiting") !== null);
     const lane = rows[queueHeader + 1];
     assert.ok(lane.map((c) => c.text).join("").startsWith("🧵 heavy"), "the `heavy` lane sits under its header");
-    for (const label of ["Parallelism", "Held", "Waiting"]) {
+    for (const label of ["Capacity", "Held", "Waiting"]) {
       const span = headerSpan(rows[queueHeader], label);
       assert.equal(firstInk(lane, ...span), span[0], `the lane's ${label} starts on its label at ${cols}`);
     }
@@ -814,7 +814,7 @@ test("the cursor on a queue lane", () => {
   const banded = rows.findIndex((row) => row.some((c) => c.bg === "selection"));
   assert.ok(screenText(rows).split("\n")[banded].includes("🧵 heavy"), "the band is on the lane");
   // A lane row's footer is the `queues` scope's two cells and no operator verb: a lane is not a
-  // card, and `h`/`l` there are the lane's own width keys.
+  // card, and `h`/`l` there are the lane's own capacity keys.
   const footer = footerOf(rows, 3).join("\n");
   for (const cell of ["h narrow", "l widen"]) assert.ok(footer.includes(cell), `the footer carries ${cell}`);
   for (const gone of ["s start", "t run now", "r restart"]) {
@@ -1571,24 +1571,24 @@ test("the Trigger section names the kind, then its structured keys", () => {
   assert.equal(valueOf(degraded, "Every"), null, "…and no structured row beside it");
 });
 
-test("the Queue row carries the lane, its level and its live parallelism", () => {
+test("the Queue row carries the lane, its level and its live capacity", () => {
   const { board, at } = liveBoard();
   const lane = layout(board, infoAt("ops.nightly", 100, 30, at));
-  assert.equal(valueOf(lane, "Queue"), "heavy (high) · parallelism 2");
+  assert.equal(valueOf(lane, "Queue"), "heavy (high) · capacity 2");
 
   // A lane-less service spends no row on one: the row's **presence** is the fact.
   const none = layout(board, infoAt("janitor", 100, 30, at));
   assert.equal(valueOf(none, "Queue"), null, "no lane, no `Queue` row at all");
 
-  // Zero is a real lane width (ADR-0079 §2h) — a paused lane — and must not read as silence.
-  const paused = moved(board, "ops.nightly", { queueParallelism: 0 });
-  assert.equal(valueOf(layout(paused, infoAt("ops.nightly", 100, 30, at)), "Queue"), "heavy (high) · parallelism 0");
-  // A width the daemon did not send drops the suffix, rather than printing a trailing ` · `.
-  const unknown = moved(board, "ops.nightly", { queueParallelism: null });
+  // Zero is a real lane capacity (ADR-0079 §2h) — a paused lane — and must not read as silence.
+  const paused = moved(board, "ops.nightly", { queueCapacity: 0 });
+  assert.equal(valueOf(layout(paused, infoAt("ops.nightly", 100, 30, at)), "Queue"), "heavy (high) · capacity 0");
+  // A capacity the daemon did not send drops the suffix, rather than printing a trailing ` · `.
+  const unknown = moved(board, "ops.nightly", { queueCapacity: null });
   assert.equal(valueOf(layout(unknown, infoAt("ops.nightly", 100, 30, at)), "Queue"), "heavy (high)");
   // …and a level it did not send drops the parenthetical rather than printing an empty one.
   const levelless = moved(board, "ops.nightly", { queuePriority: "" });
-  assert.equal(valueOf(layout(levelless, infoAt("ops.nightly", 100, 30, at)), "Queue"), "heavy · parallelism 2");
+  assert.equal(valueOf(layout(levelless, infoAt("ops.nightly", 100, 30, at)), "Queue"), "heavy · capacity 2");
 });
 
 test("a service with no description draws no About band", () => {

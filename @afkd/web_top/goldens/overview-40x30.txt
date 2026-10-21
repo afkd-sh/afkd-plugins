@@ -14,8 +14,8 @@ Service          State
   🔹 deep        ● Idle                 
   🔹 spare       ● Idle                 
                                         
-Queue    Capacity           Parallelism 
-🧵 he…   ▮▮ ╎ ∙             2           
+Queue    Usage              Capacity   H
+🧵 he…   ▮▮ ╎ ∙             2          2
                                         
                                         
                                         
@@ -46,7 +46,7 @@ rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnn
 rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnbbbbbbbbnnnnnnnnnnnbbbbbbbbbbbn
+bbbbbnnnnbbbbbnnnnnnnnnnnnnnbbbbbbbbnnnb
 nnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -78,7 +78,7 @@ sssssssssssssssssDDDDDDDDDssssssssssssss
 ........................................
 ........................................
 ........................................
-bbbbb....bbbbbbbb...........bbbbbbbbbbb.
+bbbbb....bbbbb..............bbbbbbbb...b
 .........bb...d.........................
 ........................................
 ........................................
