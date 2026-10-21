@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.6.0 (companion)
+Installed @afkd/web_top 0.6.1 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -274,7 +274,9 @@ already asked, and `Ctrl+R` is not, because the daemon's own reload summary owns
 The lane keys post no ack either: the daemon broadcasts the capacity the lane now holds to
 every dashboard, and that answer moves the lane's cards and its `Queues` row and flashes
 `Queue ops.heavy · capacity set to 3` (or `Queue ops.heavy paused` at 0) on every tab, whoever
-pressed the key.
+pressed the key. A refusal, whether the page's own or the daemon's, opens with `✕ ` as `afkd
+top`'s does (`✕ Queue ops.ghost does not exist`, `✕ Reload failed · …`), and a reload that
+applied reads bare.
 
 **Every tab is its own.** Each browser gets its own attach, so each gets its own cursor,
 needle and fold set. Nothing is persisted and nothing is pushed back to the daemon — `afkd

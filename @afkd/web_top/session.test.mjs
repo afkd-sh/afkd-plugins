@@ -3,10 +3,11 @@
 // Every board here is **folded from a recorded capture** under `fixtures/` at a fixed synthetic
 // clock — the rule `fixtures/README.md` states, and the reason a re-capture cannot quietly make
 // an assertion vacuous. Nothing hand-writes a wire frame, with two stated exceptions noted at
-// their own tests: `Meta::Error` appears in no capture (the recorder refuses to configure a
-// provider trigger, which is how you earn one), and neither does `Meta::ControlRefused` (it needs
-// a verb landing mid-quit on a service whose stop band has begun), so those arms are driven by
-// frames built from `proto.rs`'s shape and are called out as the hand-built frames they are.
+// their own tests: `Meta::ControlRefused` appears in no capture (it needs a verb landing mid-quit
+// on a service whose stop band has begun), so its arm is driven by a frame built from
+// `proto.rs`'s shape, and no capture holds a failed reload, so that one is `reload.jsonl`'s
+// recorded `meta.reloaded` with its `outcome` flipped to `failed` — the one-field edit
+// `proto.rs`'s own test makes. Both are called out as the hand-built frames they are.
 //
 // The board is folded from real captures for a second reason too: the gates this file asserts
 // are badge predicates, and a hand-made board would let the test pick badges that make its own
@@ -77,6 +78,20 @@ function liveBoard(file = "snapshot.jsonl") {
 /// The same capture folded whole, drain included.
 function drainedBoard(file = "snapshot.jsonl") {
   return foldCapture(file);
+}
+
+/// The first recorded `meta.<meta>` frame of `file`, with the non-empty message the footer
+/// flashes, so a re-capture that drops it is red rather than vacuous.
+function recordedMeta(file, meta) {
+  const frame = readFileSync(join(HERE, "fixtures", file), "utf8")
+    .split("\n")
+    .filter((l) => l !== "")
+    .map((l) => JSON.parse(l))
+    .find((f) => f.type === "meta" && f.meta === meta);
+  assert.notEqual(frame, undefined, `${file} still holds a meta.${meta}`);
+  assert.equal(typeof frame.message, "string", "…with the message the footer renders");
+  assert.notEqual(frame.message, "");
+  return frame;
 }
 
 /// A chord, spelled the way `keymap.mjs` spells one.
@@ -631,7 +646,7 @@ test("a draining daemon refuses only the reload, and every other key works as it
 test("a verb the quitting daemon turns away flashes its refusal over the ack", () => {
   // `top.rs`'s `ControlRefused` arm: the daemon answers a verb aimed at a service whose stop
   // band has begun with `meta.control_refused`, sent to the issuing connection alone, and the
-  // dashboard flashes its sentence. No capture carries one, so the frame is hand-built from
+  // dashboard flashes its sentence behind the refusal glyph, as a `DaemonError`. No capture carries one, so the frame is hand-built from
   // `proto.rs`'s shape — the test below pins that shape to the daemon's own wire literal.
   const { board, at } = drainedBoard();
   const sent = press(newSession(), board, key("s"), { now: at, bodyHeight: 20 });
@@ -640,7 +655,7 @@ test("a verb the quitting daemon turns away flashes its refusal over the ack", (
 
   const frame = { type: "meta", meta: "control_refused", service: "janitor", message: "The daemon is shutting down" };
   const refused = noteFrame(sent.session, frame, at + 4);
-  assert.equal(flashOf(refused, at + 4), frame.message, "the daemon's refusal overwrites the ack");
+  assert.equal(flashOf(refused, at + 4), REFUSED + frame.message, "the daemon's refusal overwrites the ack");
   assert.deepEqual({ ...refused, flash: sent.session.flash }, sent.session, "…and moves nothing but the flash");
   // It is not board state: the page folds no optimistic edge, so there is nothing to revert.
   const folded = fold(board, frame, at + 4);
@@ -661,7 +676,7 @@ test("control_refused is read off afkd's own wire literal", { skip: NO_AFKD_SRC 
   const frame = JSON.parse(literal[1]);
   assert.equal(typeof frame.message, "string");
   assert.notEqual(frame.message, "");
-  assert.equal(flashOf(noteFrame(newSession(), frame, BASE), BASE), frame.message);
+  assert.equal(flashOf(noteFrame(newSession(), frame, BASE), BASE), REFUSED + frame.message);
 });
 
 test("the drain frame drops the overlay, the modal and any filter typing", () => {
@@ -773,33 +788,44 @@ test("a press acknowledges the verbs nothing else on screen will", () => {
 
 test("the daemon's own three messages become the flash, and control_no_op does not", () => {
   // The frame half. `reload.jsonl` carries a real `meta.reloaded` — the fixture's own string,
-  // not one written here — so a re-capture cannot make this vacuous.
-  const line = readFileSync(join(HERE, "fixtures", "reload.jsonl"), "utf8")
-    .split("\n")
-    .map((l) => (l === "" ? null : JSON.parse(l)))
-    .find((f) => f !== null && f.type === "meta" && f.meta === "reloaded");
-  assert.notEqual(line, undefined, "reload.jsonl still holds a meta.reloaded");
-  assert.equal(typeof line.message, "string", "…with the message the footer renders");
-  assert.notEqual(line.message, "");
+  // not one written here — so a re-capture cannot make this vacuous. It applied, so it reads
+  // bare, as `Notice::Reload { failed: false }` does.
+  const line = recordedMeta("reload.jsonl", "reloaded");
+  assert.equal(line.outcome, "applied", "the recorded reload applied");
   assert.equal(flashOf(noteFrame(newSession(), line, BASE), BASE), line.message);
+  // No capture holds a failed reload, so this is the recorded one with **only** its `outcome`
+  // flipped, the edit `proto.rs`'s own test makes: the previous config is still active, and
+  // the line is a refusal. The outcome is read off the field, never off the prose.
+  const failed = { ...line, outcome: "failed" };
+  assert.equal(flashOf(noteFrame(newSession(), failed, BASE), BASE), REFUSED + line.message);
+  // An older daemon spells no outcome, and a newer one's additive word decodes as `Unknown`:
+  // `top.rs` claims neither as failed, so neither wears the glyph.
+  for (const outcome of [undefined, "deferred"]) {
+    assert.equal(flashOf(noteFrame(newSession(), { ...line, outcome }, BASE), BASE), line.message, `outcome ${outcome}`);
+  }
 
-  // `meta.error` appears in **no** capture: earning one means configuring a provider trigger,
-  // which `fixtures/README.md` says the recorder refuses to do. So this one frame is built from
-  // `proto.rs`'s `Meta::Error` shape and is called out here as the hand-built frame it is.
+  // `lane.jsonl` carries a real `meta.error`, the daemon's answer to a lane it does not have,
+  // and `top.rs` flashes every one as a `DaemonError`, behind the refusal glyph.
   //
-  // The daemon is no longer its only producer: the relay **composes** one of these when the
-  // runs base its backfill would read is missing or unreadable, so the flash an operator sees
-  // then is this arm. Its sentence is not copied here — that would be a second spelling to keep
-  // in step — because the drift gate's `drift.rs` asserts the shape the relay really writes (a `meta.error`
-  // naming the path, in this plugin's own voice) against a live daemon.
-  const error = { type: "meta", meta: "error", message: "no such service: nightlyy" };
-  assert.equal(flashOf(noteFrame(newSession(), error, BASE), BASE), error.message);
+  // The daemon is not its only producer: the relay **composes** one of these when the runs base
+  // its backfill would read is missing or unreadable, so the flash an operator sees then is
+  // this arm. Its sentence is not copied here — that would be a second spelling to keep in step
+  // — because the drift gate's `drift.rs` asserts the shape the relay really writes (a
+  // `meta.error` naming the path, in this plugin's own voice) against a live daemon.
+  const error = recordedMeta("lane.jsonl", "error");
+  assert.equal(flashOf(noteFrame(newSession(), error, BASE), BASE), REFUSED + error.message);
 
-  // `meta.control_refused` appears in no capture either: earning one means landing a verb
-  // mid-quit on a service whose stop band has begun. Hand-built from `proto.rs`'s
-  // `Meta::ControlRefused` shape, and pinned to its wire literal by its own AFKD_SRC test.
-  const refusal = { type: "meta", meta: "control_refused", service: "ops.nightly", message: "The daemon is shutting down" };
-  assert.equal(flashOf(noteFrame(newSession(), refusal, BASE), BASE), refusal.message);
+  // `meta.control_refused` appears in no capture: earning one means landing a verb mid-quit on
+  // a service whose stop band has begun. Hand-built from `proto.rs`'s `Meta::ControlRefused`
+  // shape, and pinned to its wire literal by its own AFKD_SRC test. Wide text and a long tail
+  // pass through untouched behind the glyph.
+  const refusal = {
+    type: "meta",
+    meta: "control_refused",
+    service: "ops.媒体-gpu",
+    message: "The daemon is shutting down — ops.媒体-gpu stays stopped until it is back",
+  };
+  assert.equal(flashOf(noteFrame(newSession(), refusal, BASE), BASE), REFUSED + refusal.message);
 
   // `meta.control_no_op` is deliberately **not** a flash: it exists to revert a pending
   // optimistic edge, and this page folds none. Asserted explicitly so the ignore has a guard
@@ -1022,9 +1048,9 @@ test("the daemon's lane answer is the flash, a pause named and an unknown lane i
     "Queue ops.heavy · capacity set to 2",
   ]);
   assert.ok(flashes.every((line) => !line.startsWith(REFUSED)), "a lane report is no refusal");
-  // The unknown lane comes back as the daemon's error, which the existing arm flashes.
+  // The unknown lane comes back as the daemon's error, which flashes as afkd top's refusal.
   const error = frames.find((f) => f.type === "meta" && f.meta === "error");
-  assert.equal(flashOf(noteFrame(newSession(), error, BASE), BASE), "Queue ops.ghost does not exist");
+  assert.equal(flashOf(noteFrame(newSession(), error, BASE), BASE), `${REFUSED}Queue ops.ghost does not exist`);
 
   // It overwrites whatever was up, as any flash does, and moves nothing else.
   const refused = press(newSession(), seed(), key("+"), { now: BASE, bodyHeight: 20 }).session;
@@ -1085,6 +1111,45 @@ test("the lane sentences are afkd top's own", { skip: NO_AFKD_SRC }, () => {
   );
   assert.equal(read(/Refusal::GroupNotQueue => "([^"]*)"/), LANE_REFUSALS.groupNotQueue());
   assert.equal(read(/Refusal::NothingSelected => "([^"]*)"/), LANE_REFUSALS.nothingSelected());
+});
+
+test("a daemon refusal wears afkd top's class glyph", { skip: NO_AFKD_SRC }, () => {
+  // `Notice::text`'s `DaemonError` and `Reload` arms, read off `notice.rs` and filled with the
+  // frame's own message, are what `noteFrame` must flash; rustfmt splits the `Reload` arms over
+  // lines, so their patterns are whitespace-tolerant.
+  const source = (file) => afkdSource("crates", ...file.split("/"));
+  const notice = source("tui/src/notice.rs");
+  const read = (text, pattern) => {
+    const hit = text.match(pattern);
+    assert.notEqual(hit, null, `afkd no longer matches ${pattern}`);
+    return hit[1];
+  };
+  const glyph = read(notice, /const REFUSED: &str = "([^"]*)";/);
+  assert.equal(glyph, REFUSED);
+  const fill = (template, message) => template.replace("{REFUSED}", glyph).replace("{message}", message);
+  const daemonError = read(notice, /Notice::DaemonError\(message\) => format!\("([^"]*)"\)/);
+  const reloadFailed = read(notice, /Notice::Reload \{\s*message,\s*failed: true,\s*\} => format!\("([^"]*)"\)/);
+  assert.match(notice, /Notice::Reload \{\s*message,\s*failed: false,\s*\} => message\.clone\(\)/);
+  // `top.rs` flashes `Meta::Error` as a `DaemonError`, and `model.rs` flashes a `ControlRefused`
+  // as one too; the second is read here, the first is the only arm `Meta::Error` has.
+  assert.match(
+    source("tui/src/model.rs"),
+    /ServiceEvent::ControlRefused \{ service, message \} => \{[\s\S]{0,600}?self\.flash\(Notice::DaemonError\(message\), at\)/,
+  );
+  // The failed reload below flips `outcome` to the word the daemon writes for `Failed`.
+  assert.match(
+    source("app/src/proto.rs"),
+    /#\[serde\(rename_all = "snake_case"\)\]\s*pub enum ReloadOutcome \{[^}]*?\bFailed,/,
+  );
+
+  const flash = (frame) => flashOf(noteFrame(newSession(), frame, BASE), BASE);
+  const error = recordedMeta("lane.jsonl", "error");
+  assert.equal(flash(error), fill(daemonError, error.message));
+  const refusal = { type: "meta", meta: "control_refused", service: "ops.媒体-gpu", message: "The daemon is shutting down" };
+  assert.equal(flash(refusal), fill(daemonError, refusal.message));
+  const reload = recordedMeta("reload.jsonl", "reloaded");
+  assert.equal(flash({ ...reload, outcome: "failed" }), fill(reloadFailed, reload.message));
+  assert.equal(flash(reload), reload.message, "an applied reload is `message.clone()`");
 });
 
 // --- the info page --------------------------------------------------------------------------

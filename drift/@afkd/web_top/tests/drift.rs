@@ -744,6 +744,121 @@ impl Wire {
     }
 }
 
+// --- the tap ---------------------------------------------------------------------------
+
+/// One attach's upstream half, the daemon end a client's lines are written to.
+type Upstream = Arc<Mutex<UnixStream>>;
+
+/// A line-faithful proxy in front of a **real** daemon's control socket, for the one thing no
+/// key of afkd top's can do: make it the asker of a command the daemon refuses. The daemon
+/// answers a refusal to the asking connection alone, so a leg runs afkd top with its state dir
+/// here ([`Tap::state_home`]) and writes the command onto afkd top's own upstream with
+/// [`Tap::inject`]. Every byte afkd top reads is the daemon's: that half is a pure copy.
+///
+/// Its `Drop` stops the accept loop, so a finished leg leaves no thread blocked on the socket.
+struct Tap {
+    dir: TempDir,
+    attached: Arc<Mutex<Option<Upstream>>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Tap {
+    /// Bind `<tap>/afkd/sock` and forward every attach on it to `daemon_sock`.
+    fn forwarding_to(daemon_sock: PathBuf) -> Tap {
+        let dir = TempDir::new().expect("a tempdir for the tap");
+        let state = dir.path().join("afkd");
+        std::fs::create_dir(&state).expect("the tap's state dir");
+        let listener = UnixListener::bind(state.join("sock")).expect("bind the tap's socket");
+        listener
+            .set_nonblocking(true)
+            .expect("a bounded accept, so the tap can be stopped");
+        let attached: Arc<Mutex<Option<Upstream>>> = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (latest, stopped) = (Arc::clone(&attached), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            while !stopped.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((client, _)) => {
+                        client
+                            .set_nonblocking(false)
+                            .expect("a blocking client half");
+                        let daemon =
+                            UnixStream::connect(&daemon_sock).expect("the tap reaches the daemon");
+                        *latest.lock().expect("the tap's attach") =
+                            Some(Tap::forward(client, daemon));
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                }
+            }
+        });
+        Tap {
+            dir,
+            attached,
+            stop,
+        }
+    }
+
+    /// Pump one attach both ways and hand back its upstream. The daemon's half is copied
+    /// byte for byte; the client's is written a whole line at a time under the upstream's
+    /// lock, so a line [`Tap::inject`] writes can never land inside one of the client's.
+    fn forward(client: UnixStream, daemon: UnixStream) -> Upstream {
+        let mut down = daemon.try_clone().expect("clone the daemon half");
+        let mut to_client = client.try_clone().expect("clone the client half");
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut down, &mut to_client);
+            let _ = to_client.shutdown(std::net::Shutdown::Write);
+        });
+        let upstream = Arc::new(Mutex::new(daemon));
+        let writer = Arc::clone(&upstream);
+        std::thread::spawn(move || {
+            let mut lines = BufReader::new(client);
+            let mut line = String::new();
+            while matches!(lines.read_line(&mut line), Ok(n) if n > 0) {
+                if writer
+                    .lock()
+                    .expect("the tap's upstream")
+                    .write_all(line.as_bytes())
+                    .is_err()
+                {
+                    return;
+                }
+                line.clear();
+            }
+            let _ = writer
+                .lock()
+                .expect("the tap's upstream")
+                .shutdown(std::net::Shutdown::Write);
+        });
+        upstream
+    }
+
+    /// The `XDG_STATE_HOME` that resolves afkd's socket to the tap's.
+    fn state_home(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Write `frame` onto the latest attach's upstream as one line, as if its client sent it.
+    fn inject(&self, frame: &serde_json::Value) {
+        let upstream = self
+            .attached
+            .lock()
+            .expect("the tap's attach")
+            .clone()
+            .expect("a client attached through the tap");
+        let mut upstream = upstream.lock().expect("the tap's upstream");
+        upstream
+            .write_all(format!("{frame}\n").as_bytes())
+            .expect("write the injected line");
+        upstream.flush().expect("flush the injected line");
+    }
+}
+
+impl Drop for Tap {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 // --- the legs --------------------------------------------------------------------------
 
 #[test]
@@ -5549,6 +5664,112 @@ fn a_lane_row_l_moves_the_lane_on_afkd_top_and_web_top_alike() {
     tui.send(b"G");
     tui.send(b"l");
     read_back(4, "afkd top", &mut frames);
+}
+
+/// A lane the ledger fixture does not declare, so the daemon refuses any command naming it.
+const GHOST_LANE: &str = "ops.ghost";
+
+/// `notice::REFUSED`, the class glyph afkd top opens every refusal line with.
+const REFUSED: &str = "✕ ";
+
+#[test]
+fn a_refused_command_flashes_the_daemons_error_alike_on_afkd_top_and_web_top() {
+    // A daemon refusal end to end, against a real daemon, from both ends. The daemon answers a
+    // lane it does not have with `meta.error`, to the asker alone, and no key of afkd top's
+    // names such a lane: so afkd top attaches through a [`Tap`], which writes the command onto
+    // its own upstream, and the page posts the same command through the relay. Each surface's
+    // flash is read off its screen and held equal to the other's, behind afkd top's glyph.
+    if !python3_available() {
+        eprintln!("skipping the refusal leg: python3 is not on PATH, and the relay is python");
+        return;
+    }
+    if !node_available() {
+        eprintln!(
+            "skipping the refusal leg: node is not on PATH, and the plugin's dispatch is javascript"
+        );
+        return;
+    }
+    let ops = ledger_ops();
+    let (_daemon, dir, port) = daemon_serving(
+        &Tree {
+            main: DRIFT_MAIN,
+            packages: &[("ops", &ops)],
+        },
+        "listen \"127.0.0.1:0\"\n",
+    );
+    let scratch = TempDir::new().expect("a tempdir for the capture");
+    let capture = scratch.path().join("frames.jsonl");
+
+    let mut sse = Sse::admitted(port);
+    let (id, welcome) = sse.handshake_with_welcome();
+    let version = welcome["daemon"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the welcome names the daemon's version: {welcome}"))
+        .to_string();
+    let mut frames: Vec<String> = Vec::new();
+    assert!(
+        sse.collect_frames(BUDGET, &mut frames, |f| f["meta"] == "snapshot"),
+        "the attach snapshot never arrived; the stream carried {frames:?}"
+    );
+
+    // afkd top asks: the command is written onto its own attach, so the answer is its own.
+    let tap = Tap::forwarding_to(state_dir(dir.path()).join("sock"));
+    let state_home = tap.state_home().to_str().expect("a UTF-8 tap path");
+    let tui = spawn_captured_sized(
+        dir.path(),
+        &["top"],
+        &[("XDG_STATE_HOME", state_home)],
+        DRIFT_COLS,
+        DRIFT_ROWS,
+    );
+    settled(&tui, "a board attached through the tap", |screen| {
+        screen.lane_capacity(LANE_NAME).as_deref() == Some("2")
+            && screen.footer_hints().len() >= FOOTER_HINT_FLOOR
+    });
+    let command =
+        serde_json::json!({"command": "queue_parallelism", "queue": GHOST_LANE, "parallelism": 3});
+    let mut line = command.clone();
+    line["type"] = serde_json::json!("command");
+    tap.inject(&line);
+    let terminal = settled(&tui, "afkd top's flash of the refusal", |screen| {
+        screen.footer_segment(REFUSED).is_some()
+    });
+
+    // The page asks the same thing through the relay, and renders what came back.
+    let mut body = command;
+    body["stream"] = serde_json::json!(id);
+    let (status, reply) = post_command(port, &body);
+    assert_eq!(status, 200, "POST /command queue_parallelism: {reply}");
+    assert!(
+        sse.collect_frames(BUDGET, &mut frames, |f| f["meta"] == "error"),
+        "the daemon's refusal never crossed the stream; it carried {frames:?}"
+    );
+    let error: serde_json::Value =
+        serde_json::from_str(frames.last().expect("the refusal")).expect("a frame is JSON");
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(GHOST_LANE),
+        "the daemon's refusal names the lane: {error}"
+    );
+    std::fs::write(&capture, frames.join("\n") + "\n").expect("write the captured frames");
+    let page = render_through_plugin(&plugin_root(), &capture, &version, "");
+
+    let screens = format!(
+        "--- afkd top, {DRIFT_COLS}x{DRIFT_ROWS} ---\n{}\n--- {NAME}, {DRIFT_COLS}x{DRIFT_ROWS} ---\n{}",
+        terminal.render(),
+        page.render()
+    );
+    let flashed = page.footer_segment(REFUSED);
+    assert_eq!(
+        flashed,
+        terminal.footer_segment(REFUSED),
+        "both surfaces flash one refusal:\n{screens}"
+    );
+    assert_eq!(
+        flashed,
+        Some(format!("{REFUSED}{message}")),
+        "…and it is the daemon's sentence behind afkd top's glyph:\n{screens}"
+    );
 }
 
 #[test]

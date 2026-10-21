@@ -280,7 +280,9 @@ function command(verb, service) {
 
 /// `notice::REFUSED` — the class glyph every refusal line opens with. afkd composes it into the
 /// flash's text (`Notice::text`), and the footer renders a flash as one string, so it is part of
-/// the message here too.
+/// the message here too. Every refusal reads this one constant: the lane gates below and the
+/// daemon's own three ([`noteFrame`]'s `meta.error`, `meta.control_refused` and a failed
+/// `meta.reloaded`).
 export const REFUSED = "✕ ";
 
 /// The three `Refusal` clauses (`notice.rs`) a lane key can meet, without the glyph: a service
@@ -1001,15 +1003,20 @@ function scrolled(session, rows, height, board) {
  * `fold()`:
  *
  * - `meta.reloaded` → its `message`. The reload key posts no ack of its own precisely because
- *   this line is the daemon's, and `afkd top` pins that.
- * - `meta.error` → its `message`, which `top.rs` flashes too. Without this arm an asynchronous
- *   daemon refusal would reach the tab on the stream and vanish; the relay's own non-2xx covers
- *   only a socket write that failed, which is a different failure.
- * - `meta.control_refused` → its `message`: a quitting daemon turning away a verb aimed at a
- *   service whose stop band has begun, which `top.rs` flashes too. It reaches only the tab that
- *   sent the verb, since each tab has its own attach, and it **overwrites** the press-time ack
- *   (`Starting janitor`) as `input.mjs`'s `send` does for a relay refusal. There is no edge to
- *   revert, because this page folds none.
+ *   this line is the daemon's, and `afkd top` pins that. A reload whose `outcome` is `failed`
+ *   kept the previous config, so it opens with [`REFUSED`] as `Notice::Reload { failed: true }`
+ *   does; an applied one reads bare, and so does an absent or unknown outcome, because
+ *   `top.rs` reads only `outcome == Failed` as a refusal. The outcome comes off the frame's
+ *   field, never off the prose.
+ * - `meta.error` → [`REFUSED`] and its `message`, which `top.rs` flashes as a `DaemonError`.
+ *   Without this arm an asynchronous daemon refusal would reach the tab on the stream and
+ *   vanish; the relay's own non-2xx covers only a socket write that failed, which is a
+ *   different failure.
+ * - `meta.control_refused` → [`REFUSED`] and its `message`: a quitting daemon turning away a
+ *   verb aimed at a service whose stop band has begun, which `model.rs` flashes as a
+ *   `DaemonError` too. It reaches only the tab that sent the verb, since each tab has its own
+ *   attach, and it **overwrites** the press-time ack (`Starting janitor`) as `input.mjs`'s
+ *   `send` does for a relay refusal. There is no edge to revert, because this page folds none.
  * - `meta.queue_parallelism` → [`laneNotice`]: a lane's capacity moved, by this tab, another
  *   tab, `afkd top` or a reload. The lane keys post no ack of their own, because this is the
  *   line that names what the lane really holds, and `top.rs` flashes it from the frame too.
@@ -1041,5 +1048,7 @@ export function noteFrame(session, frame, now) {
     return session;
   }
   const message = typeof frame.message === "string" ? frame.message : "";
-  return message === "" ? session : flashed(session, message, now);
+  if (message === "") return session;
+  const refused = frame.meta !== "reloaded" || frame.outcome === "failed";
+  return flashed(session, refused ? REFUSED + message : message, now);
 }
