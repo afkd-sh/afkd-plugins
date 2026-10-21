@@ -535,7 +535,7 @@ test("an invented type, an invented event tag and an extra field all fold to a n
 });
 
 test("every fixture replays end to end without throwing, ring bound included", () => {
-  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail"]) {
+  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail", "lane"]) {
     const frames = readFixture(name);
     assert.ok(frames.length > 0, `${name} is not empty`);
     assert.doesNotThrow(() => replay(frames), `${name} folds clean`);
@@ -980,6 +980,69 @@ test("the queue lanes read held, waiting and the max capacity", () => {
   }
   const heavy = lanes.find((l) => l.held > 0);
   assert.ok(heavy && heavy.waiting > 0, "a lane reads both its holders and its waiters");
+});
+
+test("a lane broadcast moves every card on its lane, the family row and the Queues row", () => {
+  // `lane.jsonl` asks for 3, 0 (the pause), 40 and an unknown lane, then reloads, and holds the
+  // daemon's own answers: 3, 0, 32 (its clamp, not the 40 that was asked) and the declared 2 the
+  // reload put back. The lane holds a two-copy family and a single service, beside one service
+  // on no lane.
+  const frames = readFixture("lane");
+  const { boards } = replay(frames);
+  const answers = frames
+    .map((frame, at) => ({ frame, at }))
+    .filter(({ frame }) => frame.type === "meta" && frame.meta === "queue_parallelism");
+  assert.deepEqual(answers.map(({ frame }) => frame.parallelism), [3, 0, 32, 2], "the daemon's answers, clamp and reload included");
+  assert.ok(frames.some((f) => f.type === "meta" && f.meta === "error"), "…and the unknown lane's refusal");
+
+  const seeded = boards[frames.findIndex((f) => f.type === "meta" && f.meta === "snapshot")];
+  const lane = answers[0].frame.queue;
+  const members = Object.values(seeded.services).filter((s) => s.queue === lane).map((s) => s.name);
+  const unlaned = Object.values(seeded.services).filter((s) => s.queue === "").map((s) => s.name);
+  assert.ok(members.length >= 3 && unlaned.length >= 1, "the capture has a lane of several and services on none");
+  assert.ok(Object.keys(seeded.families).length === 1, "…one of its members is a family");
+  const family = Object.values(seeded.families)[0];
+  assert.ok(family.members.every((name) => members.includes(name)), "…and that family sits on the lane");
+  assert.equal(queues(seeded)[0].capacity, 2, "the lane opens at its declared capacity");
+
+  for (const { frame, at } of answers) {
+    const board = boards[at];
+    for (const name of members) assert.equal(board.services[name].queueCapacity, frame.parallelism, `${name} takes ${frame.parallelism}`);
+    for (const name of unlaned) assert.equal(board.services[name].queueCapacity, seeded.services[name].queueCapacity, `${name} is on no lane and stays`);
+    assert.equal(rowRecord(board, family.base).queueCapacity, frame.parallelism, "the family row follows its copies");
+    assert.deepEqual(queues(board).map((l) => [l.lane, l.capacity]), [[lane, frame.parallelism]], "…and so does the Queues row");
+    assert.equal(board.frames.folded, boards[at - 1].frames.folded + 1, "the frame is folded, not ignored");
+  }
+});
+
+test("a lane broadcast naming no lane, an unknown lane or a malformed capacity moves nothing", () => {
+  // Built by editing the capture's own first answer, as the unknown-tag legs above do.
+  const frames = readFixture("lane");
+  const at = frames.findIndex((f) => f.type === "meta" && f.meta === "queue_parallelism");
+  const { board } = replay(frames.slice(0, at));
+  const answer = frames[at];
+  // `""` is how a card on no lane spells its lane, so it must not stamp them all, and a lane no
+  // card names folds to nothing. Both are well-formed, so they are folded rather than ignored.
+  for (const queue of ["", "ops.ghost"]) {
+    const next = fold(board, { ...copy(answer), queue }, 0);
+    assert.deepEqual(sansFrames(next), sansFrames(board), `${JSON.stringify(queue)} moves no card`);
+    assert.equal(next.frames.folded, board.frames.folded + 1);
+  }
+  // A frame serde would refuse — a capacity that is no `u32`, or a queue that is no string —
+  // takes the ignore path.
+  for (const edit of [
+    { parallelism: -1 },
+    { parallelism: 2.5 },
+    { parallelism: "3" },
+    { parallelism: true },
+    { parallelism: 4294967296 },
+    { parallelism: undefined },
+    { queue: 7 },
+  ]) {
+    const next = fold(board, { ...copy(answer), ...edit }, 0);
+    assert.deepEqual(sansFrames(next), sansFrames(board), `${JSON.stringify(edit)} moves nothing`);
+    assert.equal(next.frames.ignored, board.frames.ignored + 1, `${JSON.stringify(edit)} is ignored`);
+  }
 });
 
 test("a lane-mate stopped mid-run holds its slot until its run settles", () => {

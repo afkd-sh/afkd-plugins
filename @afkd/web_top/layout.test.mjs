@@ -1025,6 +1025,23 @@ const LIST_HELP_FLAT = LIST_HELP_GROUPED.filter((line) => !/Collapse group|Expan
       .replace("Flat view (no group headers)", "Grouped view"),
 );
 
+test("the overlay's lane rows are the keymap's descriptions, with no note beside them", () => {
+  // The overlay spells its rows in `helpLines` and `keymap.mjs` describes each action in
+  // `DESCRIPTIONS`; for the four lane keys the two must be one sentence, so neither can drift
+  // back to the note the relay used to need.
+  const { board, at } = liveBoard();
+  const options = { cols: 160, rows: 44, now: at + 1000, version: "0.2.123", help: true };
+  for (const grouped of [true, false]) {
+    const lines = popupLines(layoutOf(board, { ...options, grouped }));
+    for (const id of ["overview.queue_widen", "overview.queue_narrow", "queues.narrow", "queues.widen"]) {
+      const row = lines.find((line) => line.endsWith(`  ${DESCRIPTIONS[id]}`));
+      assert.notEqual(row, undefined, `${id}'s row is on the ${grouped ? "grouped" : "flat"} overlay`);
+      assert.equal(row.split(/ {2,}/)[0], primary(id), `…keyed by its own glyph`);
+      assert.equal(row.slice(row.indexOf(DESCRIPTIONS[id])), DESCRIPTIONS[id], "…with nothing after it");
+    }
+  }
+});
+
 test("the overlay is the terminal's own legend for the view underneath", () => {
   // `help::help_lines`, row for row: the list's keys then its four sigils, the fold rows only
   // while grouped, and the peek and view rows named for what the key does in the view on

@@ -74,7 +74,15 @@ STREAM_DRAIN_S = 1.0
 SERVICE_VERBS = ("start", "stop", "restart", "run", "abandon")
 GLOBAL_VERBS = ("reload", "status", "doctor", "validate")
 OPTIONAL_SERVICE_VERBS = ("runs",)
-VOCABULARY = SERVICE_VERBS + GLOBAL_VERBS + OPTIONAL_SERVICE_VERBS
+# `Command::QueueCapacity`, which names a lane and the capacity it should hold. The wire keeps
+# its pre-rename spelling, `queue_parallelism` with a `parallelism` field, and so does this.
+LANE_VERBS = ("queue_parallelism",)
+VOCABULARY = SERVICE_VERBS + GLOBAL_VERBS + OPTIONAL_SERVICE_VERBS + LANE_VERBS
+
+# The largest capacity the wire carries: the field is a `u32`. The relay checks the type and
+# nothing tighter. The daemon clamps into `0..=MAX_QUEUE_CAPACITY` and answers with what the
+# lane really holds, so a second bound here would only be a second copy to keep in step.
+WIRE_U32_MAX = 4294967295
 
 # What the listener serves out of its own directory, by extension. An allowlist rather than
 # a denylist: this process runs unconfined with the daemon's privileges, so the set of
@@ -1136,7 +1144,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         The frame is **composed** here rather than forwarded, so a client cannot smuggle a
         field of its own onto the wire, and a verb this relay does not know reaches the
-        socket as nothing at all.
+        socket as nothing at all. The lane verb carries a queue and a capacity rather than
+        a service, and its capacity must be a JSON integer the wire's `u32` can hold: a
+        bool, a float such as `2.0`, a string or a number out of range is refused, never
+        coerced.
         """
         verb = body.get("command")
         service = body.get("service")
@@ -1154,6 +1165,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.fault(400, "`%s` takes one service or none, not %r" % (verb, service))
                 return None
             return {"type": "command", "command": verb, "service": service}
+        if verb in LANE_VERBS:
+            queue = body.get("queue")
+            if not isinstance(queue, str) or not queue:
+                self.fault(400, "`%s` needs a queue" % verb)
+                return None
+            capacity = body.get("parallelism")
+            # `type() is int`, not `isinstance`: a JSON `true` decodes to a `bool`, which
+            # is an `int` subclass, and must not reach the wire as a capacity of 1.
+            if type(capacity) is not int or not 0 <= capacity <= WIRE_U32_MAX:
+                self.fault(400, "`%s` takes a parallelism from 0 to %d, not %r"
+                           % (verb, WIRE_U32_MAX, capacity))
+                return None
+            return {"type": "command", "command": verb, "queue": queue,
+                    "parallelism": capacity}
         self.fault(400, "the control wire has no command %r; it has %s"
                    % (verb, ", ".join(VOCABULARY)))
         return None

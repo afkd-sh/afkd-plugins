@@ -17,11 +17,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import { fold, seed } from "./fold.mjs";
+import { fold, queues, seed } from "./fold.mjs";
 import { rowKey, runMetrics, scrollOffset, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { REFUSED_WHILE_QUITTING } from "./keymap.mjs";
 import {
   FLASH_TIMEOUT,
+  LANE_REFUSALS,
+  REFUSED,
   flashOf,
+  laneNotice,
   needleOf,
   newSession as bootSession,
   noteFrame,
@@ -857,15 +861,17 @@ test("the scroll is the minimal clamp, and the session takes the same one", () =
 
 // --- precedence, from the input side ------------------------------------------------------------
 
-test("a lane row's h narrows the lane rather than folding a group — and this page takes neither", () => {
+test("a lane row's h narrows the lane rather than folding a group", () => {
   // The precedence AC the card states, observed through the dispatch rather than through
-  // `resolve` alone: on a lane row `h` is `queues.narrow`, which the relay has no verb for, so
-  // it is reported **unhandled** and folds nothing. Off a lane row the same key folds.
+  // `resolve` alone: on a lane row `h` is `queues.narrow`, which sends the lane command and
+  // folds nothing. Off a lane row the same key folds.
   const { board, at } = liveBoard();
   const onLane = { ...newSession(), cursor: { kind: "queue", key: "heavy" }, cursorRow: 14 };
   assert.equal(cursorOn(onLane, board).kind, "queue");
   const lane = press(onLane, board, key("h"), { now: at, bodyHeight: 20 });
-  assert.equal(lane.handled, false, "the lane verb has no relay command, so the key is not taken");
+  assert.equal(lane.handled, true, "the lane key is taken");
+  assert.equal(lane.commands.length, 1, "…and sends the lane command");
+  assert.equal(lane.commands[0].command, "queue_parallelism");
   assert.deepEqual([...lane.session.collapsed], [], "…and it did not fall through to the group fold");
   const onMember = { ...newSession(), cursor: { kind: "service", key: "ops.nightly" }, cursorRow: 2 };
   assert.deepEqual(
@@ -879,9 +885,10 @@ test("the actions this page has no surface for are inert and unprevented", () =>
   const { board, at } = liveBoard();
   // Every action `keymap.mjs` notes as unreachable here, pressed at its own primary chord.
   // Neither `i` nor `o` is among them any more — they open a service's info page and its run
-  // view — nor `v` and `b`, which flip the view and the busy lens; each partial boundary (a
-  // group header, a lane row) is asserted with the page's other keys below.
-  for (const chord of [key("+"), key("-"), key("q"), ctrl("c")]) {
+  // view — nor `v` and `b`, which flip the view and the busy lens, nor `+` and `-`, which move a
+  // lane; each partial boundary (a group header, a lane row) is asserted with the page's other
+  // keys below.
+  for (const chord of [key("q"), ctrl("c")]) {
     const out = press(newSession(), board, chord, { now: at, bodyHeight: 20 });
     assert.deepEqual(out.commands, [], `${chord.key} sends nothing`);
     assert.equal(out.handled, false, `${chord.key} is left to the browser`);
@@ -891,6 +898,193 @@ test("the actions this page has no surface for are inert and unprevented", () =>
   const unbound = press(newSession(), board, key("z"), { now: at, bodyHeight: 20 });
   assert.equal(unbound.handled, false);
   assert.deepEqual(unbound.commands, []);
+});
+
+// --- the lane keys -------------------------------------------------------------------------
+//
+// `top_command`'s lane arm, over `lane.jsonl`: `ops.heavy` at its declared 2, holding the
+// `ops.nightly` family (two copies) and `ops.vacuum`, beside `janitor` and `ops.solo` on no lane.
+
+/// A session with its cursor on the row `kind`/`name` names, on `board`'s rows.
+function onRow(board, kind, name, session = newSession()) {
+  const rows = rowsOf(session, board);
+  const at = rows.findIndex((row) => {
+    const own = rowKey(row);
+    return own !== null && own.kind === kind && own.key === name;
+  });
+  assert.notEqual(at, -1, `the board shows the ${kind} row ${name}`);
+  const placed = { ...session, cursor: { kind, key: name }, cursorRow: at };
+  assert.deepEqual(cursorOn(placed, board), { kind, key: name });
+  return placed;
+}
+
+/// The one lane command `chord` sends from `session`, asserting it acted and moved nothing else.
+function laneSent(session, board, chord, at) {
+  const out = press(session, board, chord, { now: at, bodyHeight: 20 });
+  assert.equal(out.handled, true, `${chord.key} is taken`);
+  assert.equal(out.commands.length, 1, `${chord.key} sends one command`);
+  // No ack and no optimistic edge: the number on screen is the daemon's until it answers.
+  assert.deepEqual(out.session, session, `${chord.key} moves nothing in the session`);
+  return out.commands[0];
+}
+
+test("l and h on a lane row ask for the lane's capacity one step either way, read over its members", () => {
+  const { board, at } = liveBoard("lane.jsonl");
+  const lane = queues(board).find((l) => l.lane === "ops.heavy");
+  assert.equal(lane.capacity, 2, "the capture's lane opens at its declared 2");
+  const session = onRow(board, "queue", "ops.heavy");
+  assert.deepEqual(laneSent(session, board, key("l"), at), { command: "queue_parallelism", queue: "ops.heavy", parallelism: 3 });
+  assert.deepEqual(laneSent(session, board, key("h"), at), { command: "queue_parallelism", queue: "ops.heavy", parallelism: 1 });
+  // The arrows are the same two actions.
+  assert.deepEqual(laneSent(session, board, key("right"), at).parallelism, 3);
+  assert.deepEqual(laneSent(session, board, key("left"), at).parallelism, 1);
+
+  // The lane row's number is the `max` over its members, so a member that reads lower does not
+  // drag it down — and `+` on that member steps from its own number, not the lane's.
+  const skewed = { ...board, services: { ...board.services, "ops.vacuum": { ...board.services["ops.vacuum"], queueCapacity: 1 } } };
+  assert.equal(queues(skewed).find((l) => l.lane === "ops.heavy").capacity, 2);
+  assert.equal(laneSent(onRow(skewed, "queue", "ops.heavy"), skewed, key("l"), at).parallelism, 3, "the lane row reads the max");
+  assert.equal(laneSent(onRow(skewed, "service", "ops.vacuum"), skewed, key("+"), at).parallelism, 2, "a card reads its own");
+});
+
+test("+ and - on a service ask from that service's own capacity, a family row included", () => {
+  const { board, at } = liveBoard("lane.jsonl");
+  for (const name of ["ops.vacuum", "ops.nightly"]) {
+    const session = onRow(board, "service", name);
+    assert.deepEqual(laneSent(session, board, key("+"), at), { command: "queue_parallelism", queue: "ops.heavy", parallelism: 3 });
+    assert.deepEqual(laneSent(session, board, key("-"), at), { command: "queue_parallelism", queue: "ops.heavy", parallelism: 1 });
+  }
+  // `+`/`-` on the lane row itself fall back to the lane, as afkd top's `selected_queue` does.
+  const row = onRow(board, "queue", "ops.heavy");
+  assert.equal(laneSent(row, board, key("+"), at).parallelism, 3);
+  assert.equal(laneSent(row, board, key("-"), at).parallelism, 1);
+});
+
+test("a capacity the daemon never sent reads as a lane of one, and narrowing a paused lane asks for 0", () => {
+  // The capture's own paused point: every frame before the clamped answer, so the lane holds 0.
+  const paused = foldCapture("lane.jsonl", { until: (f) => f.meta === "queue_parallelism" && f.parallelism === 32 });
+  assert.equal(queues(paused.board)[0].capacity, 0, "the lane is paused");
+  for (const [kind, name] of [["service", "ops.vacuum"], ["queue", "ops.heavy"]]) {
+    const session = onRow(paused.board, kind, name);
+    assert.equal(laneSent(session, paused.board, key(kind === "queue" ? "h" : "-"), paused.at).parallelism, 0, `${name} narrows to 0, not below`);
+    assert.equal(laneSent(session, paused.board, key(kind === "queue" ? "l" : "+"), paused.at).parallelism, 1, `${name} widens from 0`);
+  }
+
+  // A lane whose daemon sent no capacity at all — wire skew — has no number to step from, so it
+  // reads as the default lane of one: widen asks for 2 and narrow for 0.
+  const { board, at } = liveBoard("lane.jsonl");
+  const services = { ...board.services };
+  for (const [name, svc] of Object.entries(services)) if (svc.queue === "ops.heavy") services[name] = { ...svc, queueCapacity: null };
+  const unknown = { ...board, services };
+  assert.equal(queues(unknown)[0].capacity, null);
+  for (const [kind, name, widen, narrow] of [["service", "ops.vacuum", "+", "-"], ["queue", "ops.heavy", "l", "h"]]) {
+    const session = onRow(unknown, kind, name);
+    assert.equal(laneSent(session, unknown, key(widen), at).parallelism, 2, `${name} widens to 2`);
+    assert.equal(laneSent(session, unknown, key(narrow), at).parallelism, 0, `${name} narrows to 0`);
+  }
+});
+
+test("a lane key with no lane to act on flashes afkd top's refusal and sends nothing", () => {
+  const { board, at } = liveBoard("lane.jsonl");
+  const cases = [
+    [onRow(board, "service", "ops.solo"), board, "✕ ops.solo is not on a queue"],
+    [onRow(board, "service", "janitor"), board, "✕ janitor is not on a queue"],
+    [onRow(board, "group", "ops"), board, "✕ A group is not a queue"],
+    [newSession(), seed({ logLines: 2000 }), "✕ Nothing is selected"],
+  ];
+  for (const [session, on, sentence] of cases) {
+    for (const chord of [key("+"), key("-")]) {
+      const out = press(session, on, chord, { now: at, bodyHeight: 20 });
+      assert.deepEqual(out.commands, [], `${chord.key} sends nothing: ${sentence}`);
+      assert.equal(out.handled, true, "…and is taken, because it said why");
+      assert.equal(flashOf(out.session, at), sentence);
+      assert.equal(out.session.confirm, null, "a group header raises no modal");
+    }
+  }
+  // `h`/`l` on a group header are the group fold, not a lane key, so they stay what they were.
+  const header = onRow(board, "group", "ops");
+  assert.deepEqual([...press(header, board, key("h"), { now: at, bodyHeight: 20 }).session.collapsed], ["ops"]);
+});
+
+test("the daemon's lane answer is the flash, a pause named and an unknown lane its error", () => {
+  // Every flash here is read off a recorded frame of `lane.jsonl`, the daemon's own answers.
+  const frames = readFileSync(join(HERE, "fixtures", "lane.jsonl"), "utf8")
+    .split("\n")
+    .filter((l) => l !== "")
+    .map((l) => JSON.parse(l));
+  const answers = frames.filter((f) => f.type === "meta" && f.meta === "queue_parallelism");
+  assert.deepEqual(answers.map((f) => f.parallelism), [3, 0, 32, 2]);
+  const flashes = answers.map((f) => flashOf(noteFrame(newSession(), f, BASE), BASE));
+  assert.deepEqual(flashes, [
+    "Queue ops.heavy · capacity set to 3",
+    "Queue ops.heavy paused",
+    "Queue ops.heavy · capacity set to 32",
+    "Queue ops.heavy · capacity set to 2",
+  ]);
+  assert.ok(flashes.every((line) => !line.startsWith(REFUSED)), "a lane report is no refusal");
+  // The unknown lane comes back as the daemon's error, which the existing arm flashes.
+  const error = frames.find((f) => f.type === "meta" && f.meta === "error");
+  assert.equal(flashOf(noteFrame(newSession(), error, BASE), BASE), "Queue ops.ghost does not exist");
+
+  // It overwrites whatever was up, as any flash does, and moves nothing else.
+  const refused = press(newSession(), seed(), key("+"), { now: BASE, bodyHeight: 20 }).session;
+  const answered = noteFrame(refused, answers[0], BASE + 1);
+  assert.equal(flashOf(answered, BASE + 1), "Queue ops.heavy · capacity set to 3");
+  assert.deepEqual({ ...answered, flash: refused.flash }, refused);
+  // An empty lane name still decodes, so it still flashes as afkd top's does; a frame serde
+  // would refuse does not.
+  assert.equal(flashOf(noteFrame(newSession(), { ...answers[0], queue: "" }, BASE), BASE), "Queue  · capacity set to 3");
+  for (const edit of [{ parallelism: -1 }, { parallelism: 1.5 }, { parallelism: "3" }, { parallelism: 4294967296 }, { queue: null }]) {
+    const session = newSession();
+    assert.deepEqual(noteFrame(session, { ...answers[0], ...edit }, BASE), session, `${JSON.stringify(edit)} is no flash`);
+  }
+});
+
+test("the drain leaves the lane keys live, from the one table the footer reads", () => {
+  // afkd's `keys::REFUSED_WHILE_QUITTING` holds the reload alone (ADR-0026's 2026-10-07
+  // amendment): `top_command` sends a lane change during a quit and the daemon serves it. So
+  // each lane key on the drained capture sends exactly what it sends on that board undrained,
+  // and the parity is not two empty lists.
+  const { board, at } = drainedBoard("lane.jsonl");
+  assert.notEqual(board.quittingSince, null, "the capture really is drained");
+  const live = { ...board, quittingSince: null };
+  for (const id of ["overview.queue_widen", "overview.queue_narrow", "queues.narrow", "queues.widen"]) {
+    assert.ok(!REFUSED_WHILE_QUITTING.includes(id), `${id} is not in the drain's table`);
+  }
+  for (const [kind, name] of [["service", "ops.vacuum"], ["service", "ops.nightly"], ["queue", "ops.heavy"]]) {
+    for (const chord of kind === "queue" ? [key("h"), key("l"), key("+"), key("-")] : [key("+"), key("-")]) {
+      const drained = press(onRow(board, kind, name), board, chord, { now: at, bodyHeight: 20 });
+      const undrained = press(onRow(live, kind, name), live, chord, { now: at, bodyHeight: 20 });
+      assert.equal(drained.commands.length, 1, `${chord.key} on ${name} sends while draining`);
+      assert.deepEqual(drained.commands, undrained.commands, `…exactly what it sends live`);
+      assert.equal(drained.handled, undrained.handled);
+    }
+  }
+});
+
+test("the lane sentences are afkd top's own", { skip: NO_AFKD_SRC }, () => {
+  // `notice.rs` composes every one of these; each is read off its source and rendered with the
+  // same arguments, so a reworded line there is red here.
+  const notice = afkdSource("crates", "tui", "src", "notice.rs");
+  const read = (pattern) => {
+    const hit = notice.match(pattern);
+    assert.notEqual(hit, null, `notice.rs no longer matches ${pattern}`);
+    return hit[1];
+  };
+  const fill = (template, values) => template.replace(/\{(\w+)\}/g, (_, name) => String(values[name]));
+  assert.equal(read(/const REFUSED: &str = "([^"]*)";/), REFUSED);
+  const paused = read(/Notice::Lane \{ queue, capacity: 0 \} => format!\("([^"]*)"\)/);
+  const moved = read(/Notice::Lane \{ queue, capacity \} => \{\s*format!\("([^"]*)"\)/);
+  for (const capacity of [0, 1, 32]) {
+    const want = fill(capacity === 0 ? paused : moved, { queue: "ops.媒体-gpu", capacity });
+    assert.equal(laneNotice("ops.媒体-gpu", capacity), want);
+  }
+  assert.equal(
+    fill(read(/Refusal::NotOnAQueue \{ service \} => format!\("([^"]*)"\)/), { service: "ops.solo" }),
+    LANE_REFUSALS.notOnAQueue("ops.solo"),
+  );
+  assert.equal(read(/Refusal::GroupNotQueue => "([^"]*)"/), LANE_REFUSALS.groupNotQueue());
+  assert.equal(read(/Refusal::NothingSelected => "([^"]*)"/), LANE_REFUSALS.nothingSelected());
 });
 
 // --- the info page --------------------------------------------------------------------------

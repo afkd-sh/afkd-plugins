@@ -11,10 +11,12 @@
 // silent divergence.
 //
 //   node web_top_screen.mjs --plugin <dir> --frames <jsonl> --cols 100 --rows 30 \
-//                           --version <daemon version> --keys g
+//                           --version <daemon version> --keys g [--commands <jsonl>]
 //
 // `--plugin` is resolved at run time rather than hard-wired, so the leg's negative arm can
-// point this at a mutated copy of the tree without touching the shipped one.
+// point this at a mutated copy of the tree without touching the shipped one. `--commands`
+// names a file the command bodies the chords would post are written to, one JSON line each,
+// so a leg can post them to a real daemon itself.
 //
 // The output is one line per screen row, its fields separated by U+001F, one field per screen
 // **column**: a wide grapheme sits in its own field and the cell it covers is the empty field
@@ -23,7 +25,7 @@
 // `--cols` fields is a width bug in the renderer, and exits 2 with the row quoted rather than
 // printing a short row the diff would then blame on the terminal.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -106,14 +108,21 @@ const view = () => ({
   infoOffset: session.infoOffset,
   run: session.run,
 });
+const commands = [];
 for (const key of keys) {
   // A chord is `{ctrl, key}`, the shape `keymap.mjs` resolves — a bare string resolves to
   // nothing at all and every press would be a silent no-op. `--keys` carries one character
   // per press, so `ctrl` is always false here; a Ctrl chord would need a spelling of its own.
   //
-  // The commands a chord would post are dropped: this driver renders, it does not drive a
-  // daemon. The legs only ever send chords that move the cursor or open a view.
-  session = press(session, board, { ctrl: false, key }, { now, bodyHeight: bodyHeight(board, view()) }).session;
+  // This driver renders; it does not drive a daemon. The commands a chord would post are
+  // kept, and written to `--commands` when it is given, for the leg to post itself.
+  const out = press(session, board, { ctrl: false, key }, { now, bodyHeight: bodyHeight(board, view()) });
+  session = out.session;
+  commands.push(...out.commands);
+}
+const commandsPath = args.get("commands");
+if (commandsPath !== undefined && commandsPath !== "") {
+  writeFileSync(commandsPath, commands.map((body) => `${JSON.stringify(body)}\n`).join(""));
 }
 
 const SEPARATOR = "\u001f";

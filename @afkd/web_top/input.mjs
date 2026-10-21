@@ -92,8 +92,12 @@ function focused(element) {
 /// One posted command body — `{stream, command, service}`, all three fields, because the relay
 /// keys a command to **this** subscriber's own attach and 404s a body whose `stream` names
 /// none. A global verb carries no service: the relay composes a `Reload` frame from the verb
-/// alone, and a `service` key it did not ask for would be a field smuggled onto the wire.
+/// alone, and a `service` key it did not ask for would be a field smuggled onto the wire. The
+/// lane verb carries its `queue` and `parallelism` in place of a service.
 function bodyOf(streamId, command) {
+  if (command.command === "queue_parallelism") {
+    return { stream: streamId, command: command.command, queue: command.queue, parallelism: command.parallelism };
+  }
   return command.service === undefined
     ? { stream: streamId, command: command.command }
     : { stream: streamId, command: command.command, service: command.service };

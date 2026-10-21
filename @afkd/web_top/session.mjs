@@ -19,10 +19,10 @@
 //   were given. So they run under `node --test` with no browser underneath.
 // - **The board moves only on a frame.** Nothing here touches a badge. A verb is posted and
 //   the row changes when the daemon's answering event lands — which is what `afkd top` does
-//   for a fire, and what this page does for all six.
+//   for a fire, and what this page does for every verb it sends.
 
 import { HANDLED, REFUSED_WHILE_QUITTING, resolve } from "./keymap.mjs";
-import { copiesOf, rowNameOf, rowRecord } from "./fold.mjs";
+import { WIRE_U32_MAX, copiesOf, isWireU32, rowNameOf, rowRecord } from "./fold.mjs";
 import { peekFloorOffset, rowKey, runTreeNav, scrollOffset, visibleCards, visibleRows } from "./layout.mjs";
 
 /// `model::FLASH_TIMEOUT` — how long a transient footer message stays up. Long enough to read
@@ -274,6 +274,53 @@ function distinctRows(board, names) {
 /// One posted command body, in the shape `POST /command` composes a frame from.
 function command(verb, service) {
   return { command: verb, service };
+}
+
+// --- the lane verbs ----------------------------------------------------------------------
+
+/// `notice::REFUSED` — the class glyph every refusal line opens with. afkd composes it into the
+/// flash's text (`Notice::text`), and the footer renders a flash as one string, so it is part of
+/// the message here too.
+export const REFUSED = "✕ ";
+
+/// The three `Refusal` clauses (`notice.rs`) a lane key can meet, without the glyph: a service
+/// row on no lane, a group header, and nothing selected at all.
+export const LANE_REFUSALS = {
+  notOnAQueue: (service) => `${service} is not on a queue`,
+  groupNotQueue: () => "A group is not a queue",
+  nothingSelected: () => "Nothing is selected",
+};
+
+/// `Notice::Lane`'s line — what the daemon's `meta.queue_parallelism` flashes. `0` is the
+/// engine's declared pause rather than a capacity of zero, so it is named, not printed.
+export function laneNotice(queue, capacity) {
+  return capacity === 0 ? `Queue ${queue} paused` : `Queue ${queue} · capacity set to ${capacity}`;
+}
+
+/**
+ * The lane a lane key acts on at `row`, and the capacity that row is showing — `top_command`'s
+ * lane arm. A **service** row on a lane is read first (`+`/`-`), with the card's own capacity;
+ * a **lane** row in the `Queues` section is the fallback (`h`/`l`), with the lane's `max` over
+ * its members. A family row is its row record, so it names its base. A selection that names
+ * no lane is refused, with a clause saying what it is instead.
+ */
+function laneOf(row) {
+  if (row?.kind === "service") {
+    if (row.svc.queue === "") return { refusal: LANE_REFUSALS.notOnAQueue(row.svc.name) };
+    return { queue: row.svc.queue, capacity: row.svc.queueCapacity };
+  }
+  if (row?.kind === "queue") return { queue: row.lane.lane, capacity: row.lane.capacity };
+  if (row?.kind === "group") return { refusal: LANE_REFUSALS.groupNotQueue() };
+  return { refusal: LANE_REFUSALS.nothingSelected() };
+}
+
+/// The **absolute** capacity a lane key asks for: the number on screen, one step either way, so
+/// two dashboards pressing `+` in the same second converge rather than stacking. A row the
+/// daemon sent no capacity for reads as the default lane of one. There is no ceiling but the
+/// wire's: the daemon clamps into `0..=MAX_QUEUE_CAPACITY` and broadcasts what the lane holds.
+export function laneTarget(capacity, widen) {
+  const base = capacity ?? 1;
+  return widen ? Math.min(base + 1, WIRE_U32_MAX) : Math.max(0, base - 1);
 }
 
 /// `shell::fanout_confirm_modal`'s gate: 0 eligible targets is a silent no-op, exactly 1 **row**
@@ -889,6 +936,22 @@ export function press(session, board, chord, options) {
       // refusal here, so the browser keeps whatever it would have done with an `i`.
       if (row?.kind !== "service") return nothingToDo;
       return { session: { ...session, info: row.svc.name, infoOffset: 0 }, commands: [], handled: true };
+    case "overview.queue_widen":
+    case "overview.queue_narrow":
+    case "queues.narrow":
+    case "queues.widen": {
+      // `top_command`'s lane arm: one lane, never a fan-out, so a group header is refused
+      // rather than raising a modal. A refusal flashes and is handled, since the key acted. A
+      // send posts no ack and moves nothing: the daemon's `meta.queue_parallelism` is the
+      // report, and it reaches every tab, this one included.
+      const lane = laneOf(row);
+      if (lane.refusal !== undefined) {
+        return { session: flashed(session, REFUSED + lane.refusal, now), commands: [], handled: true };
+      }
+      const widen = id === "overview.queue_widen" || id === "queues.widen";
+      const parallelism = laneTarget(lane.capacity, widen);
+      return { session, commands: [{ command: "queue_parallelism", queue: lane.queue, parallelism }], handled: true };
+    }
     case "global.reload":
       // The one global verb: no selection needed, and no press-time ack — the daemon's own
       // `meta.reloaded.message` owns that line.
@@ -947,6 +1010,9 @@ function scrolled(session, rows, height, board) {
  *   sent the verb, since each tab has its own attach, and it **overwrites** the press-time ack
  *   (`Starting janitor`) as `input.mjs`'s `send` does for a relay refusal. There is no edge to
  *   revert, because this page folds none.
+ * - `meta.queue_parallelism` → [`laneNotice`]: a lane's capacity moved, by this tab, another
+ *   tab, `afkd top` or a reload. The lane keys post no ack of their own, because this is the
+ *   line that names what the lane really holds, and `top.rs` flashes it from the frame too.
  * - **`meta.control_no_op` deliberately does not flash.** It exists to revert a pending
  *   optimistic edge; this page folds none, and the terminal posts no message for it either.
  *
@@ -965,6 +1031,11 @@ export function noteFrame(session, frame, now) {
       confirm: null,
       filter: session.filter.mode === "typing" ? { mode: "off", needle: "" } : session.filter,
     };
+  }
+  if (frame.meta === "queue_parallelism") {
+    // Every frame serde decodes flashes, as `top.rs`'s arm does; one it would refuse does not.
+    if (typeof frame.queue !== "string" || !isWireU32(frame.parallelism)) return session;
+    return flashed(session, laneNotice(frame.queue, frame.parallelism), now);
   }
   if (frame.meta !== "reloaded" && frame.meta !== "error" && frame.meta !== "control_refused") {
     return session;

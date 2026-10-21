@@ -48,6 +48,11 @@ export const SEAM_GUARD_LINES = 256;
 /// later card draws, bounded so a tab left open overnight is not a memory leak.
 export const LOAD_HISTORY_CAPACITY = 120;
 
+/// The largest lane capacity the wire carries: `Command::QueueCapacity` and its broadcast hold
+/// it in a `u32`. A wider number is a frame serde refuses, so neither the fold nor the flash
+/// takes one.
+export const WIRE_U32_MAX = 4294967295;
+
 /// The coarse wire state word → the badge `afkd top` renders. The mirror of
 /// `top.rs::badge_from_state`, including its `_ => Idle` fallback: an unknown word reads
 /// `Idle` on the badge while the service's `state` still says verbatim what the daemon
@@ -933,8 +938,7 @@ function sameStamp(a, b) {
 // --- meta --------------------------------------------------------------------------
 
 /// The `Meta` variants that move the board. The rest — `control_no_op`,
-/// `status`/`runs`/`doctor`/`validate`, `queue_parallelism`, `error`, `control_refused` — take
-/// the ignore path.
+/// `status`/`runs`/`doctor`/`validate`, `error`, `control_refused` — take the ignore path.
 function foldMeta(board, frame, now) {
   switch (frame.meta) {
     case "snapshot": {
@@ -1003,6 +1007,34 @@ function foldMeta(board, frame, now) {
         ...board,
         load: { ...sample, history: history.slice(Math.max(0, history.length - LOAD_HISTORY_CAPACITY)) },
       });
+    }
+    case "queue_parallelism": {
+      // `Meta::QueueCapacity` — a lane's capacity moved, by this tab, another tab, `afkd top` or
+      // a reload putting the declared capacity back. `model.rs`'s `QueueCapacity` arm: the
+      // capacity is the **lane's**, so every card naming the lane takes it, and the `Queues` row
+      // follows because `queues()` reads its capacity off those cards. A lane no card names
+      // folds to nothing. The wire keeps the pre-rename spelling, `parallelism`.
+      //
+      // A frame serde would refuse — a queue that is not a string, a capacity that is not a
+      // `u32` — takes the ignore path. The empty name is **not** a lane: `""` is how an unqueued
+      // card spells "no lane", so one stray frame must not stamp a capacity onto every one.
+      const capacity = frame.parallelism;
+      if (typeof frame.queue !== "string" || !isWireU32(capacity)) return ignore(board);
+      const queue = frame.queue;
+      if (queue === "") return folded(board);
+      let next = board;
+      for (const name of Object.keys(board.services)) {
+        if (board.services[name].queue !== queue) continue;
+        next = withService(next, name, (svc) => {
+          svc.queueCapacity = capacity;
+          return svc;
+        });
+      }
+      // A family row copies its lane off its anchor copy, so it is refolded as afkd refolds every
+      // family after an event that names no service.
+      const families = {};
+      for (const [base, family] of Object.entries(next.families)) families[base] = refold(family, next.services);
+      return folded({ ...next, families });
     }
     case "reloaded": {
       // The whole reconcile verdict, not only the orphan/stale markers: an `added` service
@@ -1577,6 +1609,11 @@ function asArray(value) {
 
 function toText(value) {
   return typeof value === "string" ? value : "";
+}
+
+/// Whether `value` is a JSON integer a `u32` holds — what serde decodes the wire's capacity as.
+export function isWireU32(value) {
+  return Number.isInteger(value) && value >= 0 && value <= WIRE_U32_MAX;
 }
 
 function toNumber(value, fallback) {

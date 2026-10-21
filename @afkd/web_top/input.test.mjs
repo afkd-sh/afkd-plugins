@@ -272,9 +272,11 @@ test("preventDefault is called exactly when the press was handled", () => {
     ["v", {}, true],
     ["b", {}, true],
     ["Enter", {}, true],
+    // `+` moves a lane, and on the cursor's lane-less `janitor` it says so in the flash: either
+    // way it acted.
+    ["+", {}, true],
     // A bound key that resolves to an action with **no surface here** — it must not prevent, or
     // the page would eat a chord it does nothing with.
-    ["+", {}, false],
     ["q", {}, false],
     // An unbound key.
     ["z", {}, false],
@@ -338,6 +340,24 @@ test("a verb posts {stream, command, service} and a global verb posts no service
   grid.element.dispatch("keydown", keydown("j"));
   assert.equal(grid.posted.length, 2, "a cursor move is not a command");
   assert.ok(grid.painted > painted, "…but it does repaint, rather than waiting on the throttle");
+});
+
+test("a lane key posts {stream, command, queue, parallelism} and no service", () => {
+  // `lane.jsonl`'s `ops.vacuum` sits on `ops.heavy` at 2, so `+` asks for 3 and `-` for 1. The
+  // two lane fields are the frame's whole payload: a body that dropped them would reach the
+  // relay as a lane verb naming no lane, which it refuses.
+  const { board } = liveBoard("lane.jsonl");
+  const grid = wire({ board, session: { ...newSession(), cursor: { kind: "service", key: "ops.vacuum" }, cursorRow: 2 } });
+  grid.element.focus();
+  const widen = grid.element.dispatch("keydown", keydown("+"));
+  const narrow = grid.element.dispatch("keydown", keydown("-"));
+  assert.deepEqual(grid.posted, [
+    { stream: "9f1c", command: "queue_parallelism", queue: "ops.heavy", parallelism: 3 },
+    { stream: "9f1c", command: "queue_parallelism", queue: "ops.heavy", parallelism: 1 },
+  ]);
+  assert.deepEqual(Object.keys(grid.posted[0]), ["stream", "command", "queue", "parallelism"]);
+  assert.ok(widen.prevented && narrow.prevented, "both keys are this page's");
+  assert.equal(flashOf(grid.session, BASE), null, "and neither acknowledges itself: the daemon's answer will");
 });
 
 test("a confirmed fan-out posts one body per target, and exactly one", () => {

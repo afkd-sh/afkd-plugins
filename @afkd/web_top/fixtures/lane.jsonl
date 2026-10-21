@@ -1,0 +1,24 @@
+{"afkd":"welcome","proto":1,"daemon":"0.2.387","auth":"none"}
+{"type":"meta","meta":"snapshot","services":[{"name":"janitor","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🧹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3597944,"state_ms":2055,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops.nightly.0","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"夜間 — the wide one","queue":"ops.heavy","queue_priority":"normal","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3597944,"state_ms":2055,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops.nightly.1","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"夜間 — the wide one","queue":"ops.heavy","queue_priority":"normal","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3597944,"state_ms":2055,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops.vacuum","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"ops.heavy","queue_priority":"normal","queue_parallelism":2,"orphan":false,"stale":false,"next_ms":3597944,"state_ms":2055,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops.solo","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3597944,"state_ms":2055,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":2056}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":7813459968,"mem_total":32453844992,"rx_bps":3234,"tx_bps":2167}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":7819427840,"mem_total":32453844992,"rx_bps":6162,"tx_bps":18621}
+{"type":"meta","meta":"queue_parallelism","queue":"ops.heavy","parallelism":3}
+{"type":"meta","meta":"queue_parallelism","queue":"ops.heavy","parallelism":0}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":7819427840,"mem_total":32453844992,"rx_bps":1590,"tx_bps":1703}
+{"type":"meta","meta":"queue_parallelism","queue":"ops.heavy","parallelism":32}
+{"type":"meta","meta":"error","message":"Queue ops.ghost does not exist"}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":7821582336,"mem_total":32453844992,"rx_bps":6472,"tx_bps":63939}
+{"type":"meta","meta":"queue_parallelism","queue":"ops.heavy","parallelism":2}
+{"type":"meta","meta":"reloaded","message":"Config reloaded · 1 queue restored to declared capacity","outcome":"applied"}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":7821135872,"mem_total":32453844992,"rx_bps":5072,"tx_bps":3638}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"janitor"}
+{"type":"event","event":"service_stopping","service":"ops.nightly.0"}
+{"type":"event","event":"service_stopping","service":"ops.nightly.1"}
+{"type":"event","event":"service_stopping","service":"ops.solo"}
+{"type":"event","event":"service_stopping","service":"ops.vacuum"}
+{"type":"event","event":"service_paused","service":"janitor","paused":true}
+{"type":"event","event":"service_paused","service":"ops.nightly.0","paused":true}
+{"type":"event","event":"service_paused","service":"ops.nightly.1","paused":true}
+{"type":"event","event":"service_paused","service":"ops.solo","paused":true}
+{"type":"event","event":"service_paused","service":"ops.vacuum","paused":true}

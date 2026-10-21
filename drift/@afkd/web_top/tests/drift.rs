@@ -272,7 +272,12 @@ fn get(port: u16, path: &str) -> (u16, String, String) {
 
 /// `POST /command` with `body` — the exact shape the page's own client sends.
 fn post_command(port: u16, body: &serde_json::Value) -> (u16, String) {
-    let body = body.to_string();
+    post_body(port, &body.to_string())
+}
+
+/// [`post_command`] with the body's bytes as given, for a JSON spelling `serde_json` would not
+/// write itself — an exponent, say.
+fn post_body(port: u16, body: &str) -> (u16, String) {
     let (status, _, reply) = http(
         port,
         &format!(
@@ -1764,6 +1769,129 @@ fn a_fire_from_one_tab_arrives_on_every_stream() {
     assert!(
         !dir.path().join("never.txt").exists(),
         "a refused command wrote nothing to the socket: `never` ran"
+    );
+}
+
+#[test]
+fn the_lane_verb_is_composed_exactly_and_its_capacity_is_a_wire_u32() {
+    // The lane verb, against the stub: the one oracle that reads the exact frame the relay
+    // writes. `Command::QueueCapacity` keeps its pre-rename wire spelling, `queue_parallelism`
+    // with a `parallelism` field, and its capacity is a `u32`. So a body the daemon could not
+    // decode, or one carrying a field of its own, must never reach the socket. Every refused
+    // body is posted **before** any accepted one, so the first frame the stub reads proves
+    // that none of them got through.
+    if !python3_available() {
+        eprintln!("skipping: python3 is not on PATH, and the relay is python");
+        return;
+    }
+    let stub = Stub::spawn_with(serde_json::json!({"listen": "127.0.0.1:0"}));
+    stub.expect_hello_reply();
+    let port = stub.serving_port();
+    let mut sse = Sse::admitted(port);
+    let (event, payload) = sse.named(BUDGET);
+    assert_eq!(event, "stream", "the id comes first: {payload}");
+    let id = payload["id"].as_str().expect("the stream id").to_string();
+    let mut wire = stub.handshake(serde_json::json!({
+        "afkd": "welcome", "proto": 1, "daemon": "0.0.0-stub", "auth": "none"
+    }));
+    assert_eq!(sse.named(BUDGET).0, "welcome");
+
+    let lane =
+        |fields: &str| format!(r#"{{"stream":"{id}","command":"queue_parallelism"{fields}}}"#);
+    // Each refusal names its problem: the missing lane, or the capacity it was handed. Python's
+    // `repr` spells the value back, so `true` reads `True` and `2.0` stays a float.
+    for (fields, named) in [
+        (r#","parallelism":3"#, "needs a queue"),
+        (r#","queue":"","parallelism":3"#, "needs a queue"),
+        (r#","queue":5,"parallelism":3"#, "needs a queue"),
+        (r#","queue":"ops.heavy""#, "not None"),
+        (r#","queue":"ops.heavy","parallelism":null"#, "not None"),
+        (r#","queue":"ops.heavy","parallelism":true"#, "not True"),
+        (r#","queue":"ops.heavy","parallelism":2.0"#, "not 2.0"),
+        (r#","queue":"ops.heavy","parallelism":1e2"#, "not 100.0"),
+        (r#","queue":"ops.heavy","parallelism":"3""#, "not '3'"),
+        (r#","queue":"ops.heavy","parallelism":-1"#, "not -1"),
+        (
+            r#","queue":"ops.heavy","parallelism":4294967296"#,
+            "not 4294967296",
+        ),
+    ] {
+        let (status, body) = post_body(port, &lane(fields));
+        assert_eq!(status, 400, "{fields} is refused: {body}");
+        assert!(
+            body.contains("queue_parallelism") && body.contains(named),
+            "…with a sentence naming `{named}`: {body}"
+        );
+        if named != "needs a queue" {
+            assert!(
+                body.contains("from 0 to 4294967295"),
+                "…and the wire's range: {body}"
+            );
+        }
+    }
+
+    // The accepted body: a packaged, wide-glyph lane, and two fields of the client's own that
+    // must not ride along. The frame is the one `proto.rs` pins as afkd top's, as a value.
+    let (status, body) = post_body(
+        port,
+        &lane(r#","queue":"ops.媒体-gpu","parallelism":3,"service":"smuggled","extra":1"#),
+    );
+    assert_eq!(status, 200, "POST /command: {body}");
+    let frame = wire.recv();
+    assert_eq!(
+        frame,
+        serde_json::json!({
+            "type": "command", "command": "queue_parallelism",
+            "queue": "ops.媒体-gpu", "parallelism": 3
+        }),
+        "the relay composes the lane frame, and nothing a client added reaches the wire"
+    );
+    if let Some(afkd) = afkd_src() {
+        let proto =
+            std::fs::read_to_string(afkd.join("crates/app/src/proto.rs")).expect("read proto.rs");
+        let literal = proto
+            .split("r#\"")
+            .filter_map(|rest| rest.split_once("\"#").map(|(line, _)| line))
+            .find(|line| line.starts_with(r#"{"type":"command","command":"queue_parallelism""#))
+            .expect("proto.rs still pins the queue_parallelism command line");
+        let pinned: serde_json::Value = serde_json::from_str(literal).expect("the pin is JSON");
+        assert_eq!(
+            frame, pinned,
+            "the relay's frame is the wire line afkd top sends"
+        );
+    } else {
+        eprintln!("AFKD_SRC names no afkd checkout: the frame is not held to proto.rs's pin");
+    }
+    // The two ends of the range pass through unclamped: the daemon owns the bound of 32.
+    for capacity in [0_u64, 4_294_967_295] {
+        let (status, body) = post_body(
+            port,
+            &lane(&format!(r#","queue":"ops.heavy","parallelism":{capacity}"#)),
+        );
+        assert_eq!(status, 200, "{capacity} is a wire u32: {body}");
+        assert_eq!(
+            wire.recv(),
+            serde_json::json!({
+                "type": "command", "command": "queue_parallelism",
+                "queue": "ops.heavy", "parallelism": capacity
+            }),
+        );
+    }
+
+    // A verb outside the vocabulary is still refused, and the sentence lists the lane verb with
+    // the rest.
+    let (status, body) = post_body(
+        port,
+        &format!(
+            r#"{{"stream":"{id}","command":"queue_capacity","queue":"ops.heavy","parallelism":3}}"#
+        ),
+    );
+    assert_eq!(status, 400, "an unknown verb: {body}");
+    assert!(
+        body.contains("queue_capacity")
+            && body.contains("queue_parallelism")
+            && body.contains("restart"),
+        "…named beside the whole vocabulary: {body}"
     );
 }
 
@@ -3266,16 +3394,47 @@ fn screen_driver() -> PathBuf {
 /// `plugin` is a parameter rather than [`plugin_root`] so the negative arm can point this at
 /// a mutated copy without touching the shipped tree.
 fn render_through_plugin(plugin: &Path, frames: &Path, version: &str, keys: &str) -> Screen {
-    let out = Command::new("node")
-        .arg(screen_driver())
+    drive_plugin(plugin, frames, version, keys, None)
+}
+
+/// [`render_through_plugin`], keeping the command bodies `keys` would post: the driver writes
+/// them to a file beside `frames`, one JSON line each, and they come back decoded.
+fn press_through_plugin(
+    plugin: &Path,
+    frames: &Path,
+    version: &str,
+    keys: &str,
+) -> (Screen, Vec<serde_json::Value>) {
+    let path = frames.with_extension("commands.jsonl");
+    let screen = drive_plugin(plugin, frames, version, keys, Some(&path));
+    let commands = std::fs::read_to_string(&path)
+        .expect("the driver wrote the commands it was asked for")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a command body is JSON"))
+        .collect();
+    (screen, commands)
+}
+
+/// The one `node` run behind both: the screen, and the commands written to `commands` if named.
+fn drive_plugin(
+    plugin: &Path,
+    frames: &Path,
+    version: &str,
+    keys: &str,
+    commands: Option<&Path>,
+) -> Screen {
+    let mut node = Command::new("node");
+    node.arg(screen_driver())
         .args(["--plugin", &plugin.display().to_string()])
         .args(["--frames", &frames.display().to_string()])
         .args(["--cols", &DRIFT_COLS.to_string()])
         .args(["--rows", &DRIFT_ROWS.to_string()])
         .args(["--version", version])
-        .args(["--keys", keys])
-        .output()
-        .expect("run the plugin's renderer under node");
+        .args(["--keys", keys]);
+    if let Some(path) = commands {
+        node.args(["--commands", &path.display().to_string()]);
+    }
+    let out = node.output().expect("run the plugin's renderer under node");
     assert!(
         out.status.success(),
         "the plugin's renderer is red:\n{}{}",
@@ -4606,6 +4765,33 @@ impl Screen {
             .map(|at| self.grid[at].as_slice())
             .collect()
     }
+
+    /// The `Capacity` cell of the lane row that names `lane`, trimmed, read under the span the
+    /// `Queues` header's own label marks out. `None` when there is no such row or column. The
+    /// row's first segment is the lane's glyph and its name, one space apart.
+    fn lane_capacity(&self, lane: &str) -> Option<String> {
+        let header = segments(&self.grid[self.queue_header_row()?]);
+        let (_, span) = column_spans(&header, usize::from(DRIFT_COLS))
+            .into_iter()
+            .find(|(label, _)| label == "Capacity")?;
+        self.queue_rows()
+            .into_iter()
+            .find(|row| {
+                segments(row)
+                    .first()
+                    .is_some_and(|(name, _)| name.split_whitespace().last() == Some(lane))
+            })
+            .map(|row| cell_text(row, span).trim().to_string())
+    }
+
+    /// The footer's segment that opens with `prefix` — a flash, read off the footer rows alone,
+    /// so the `Queues` header's own `Queue` label can never stand in for one.
+    fn footer_segment(&self, prefix: &str) -> Option<String> {
+        (self.footer_start()..self.grid.len())
+            .flat_map(|at| segments(&self.grid[at]))
+            .map(|(text, _)| text)
+            .find(|text| text.starts_with(prefix))
+    }
 }
 
 /// Every field the two surfaces read differently, keyed `Surface · field`, each with a
@@ -5245,6 +5431,124 @@ fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
         "a stale entry is printed with the line that intended it: {}",
         fault.message
     );
+}
+
+/// The canonical name of the ledger fixture's lane: `heavy`, declared in the `ops` package.
+const LANE_NAME: &str = "ops.heavy";
+
+#[test]
+fn a_lane_row_l_moves_the_lane_on_afkd_top_and_web_top_alike() {
+    // The lane verb end to end, against a real daemon, from both ends. The page's `l` on the
+    // lane row is pressed through its own session seam and the body it would post is posted;
+    // then `afkd top`'s own `l`. After each, the daemon's log holds the control, and both
+    // surfaces show the lane's new capacity and flash afkd top's sentence for it — read off
+    // each screen and held equal to each other, not only to a literal.
+    if !python3_available() {
+        eprintln!("skipping the lane leg: python3 is not on PATH, and the relay is python");
+        return;
+    }
+    if !node_available() {
+        eprintln!(
+            "skipping the lane leg: node is not on PATH, and the plugin's dispatch is javascript"
+        );
+        return;
+    }
+    let ops = ledger_ops();
+    let (_daemon, dir, port) = daemon_serving(
+        &Tree {
+            main: DRIFT_MAIN,
+            packages: &[("ops", &ops)],
+        },
+        "listen \"127.0.0.1:0\"\n",
+    );
+    let scratch = TempDir::new().expect("a tempdir for the capture");
+    let capture = scratch.path().join("frames.jsonl");
+
+    let mut sse = Sse::admitted(port);
+    let (id, welcome) = sse.handshake_with_welcome();
+    let version = welcome["daemon"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the welcome names the daemon's version: {welcome}"))
+        .to_string();
+    let mut frames: Vec<String> = Vec::new();
+    assert!(
+        sse.collect_frames(BUDGET, &mut frames, |f| f["meta"] == "snapshot"),
+        "the attach snapshot never arrived; the stream carried {frames:?}"
+    );
+
+    // `afkd top` boots flat, so `G` lands both surfaces on the last selectable row: the lane.
+    let tui = spawn_captured_sized(dir.path(), &["top"], &[], DRIFT_COLS, DRIFT_ROWS);
+    let before = settled(&tui, "a board with the lane at its declared 2", |screen| {
+        screen.lane_capacity(LANE_NAME).as_deref() == Some("2")
+            && screen.footer_hints().len() >= FOOTER_HINT_FLOOR
+    });
+
+    // The page presses `G` then `l`, and posts the one body that comes back.
+    std::fs::write(&capture, frames.join("\n") + "\n").expect("write the captured frames");
+    let (page, commands) = press_through_plugin(&plugin_root(), &capture, &version, "Gl");
+    assert_eq!(
+        page.lane_capacity(LANE_NAME).as_deref(),
+        Some("2"),
+        "the page shows the declared 2 before the daemon answers:\n{}",
+        page.render()
+    );
+    assert_eq!(
+        commands,
+        [serde_json::json!({"command": "queue_parallelism", "queue": LANE_NAME, "parallelism": 3})],
+        "the page's `l` on the lane row asks for the capacity on screen plus one:\n{}\n{}",
+        before.render(),
+        page.render()
+    );
+    let mut body = commands[0].clone();
+    body["stream"] = serde_json::json!(id);
+    let (status, reply) = post_command(port, &body);
+    assert_eq!(status, 200, "POST /command queue_parallelism: {reply}");
+
+    // `n` is each round's capacity; `who` pressed the key.
+    let mut read_back = |n: u32, who: &str, frames: &mut Vec<String>| {
+        let log = wait_for_daemon_log(
+            dir.path(),
+            &format!("queue {LANE_NAME} capacity {n}"),
+            BUDGET,
+        );
+        assert!(
+            log.contains(&format!("queue {LANE_NAME} capacity {n}")),
+            "the daemon never logged {who}'s control:\n{log}"
+        );
+        assert!(
+            sse.collect_frames(BUDGET, frames, |f| f["meta"] == "queue_parallelism"
+                && f["parallelism"] == n),
+            "the daemon's answer to {who} never crossed the stream; it carried {frames:?}"
+        );
+        let flash = format!("Queue {LANE_NAME} · capacity set to {n}");
+        let terminal = settled(&tui, &format!("the lane at {n}, flashed"), |screen| {
+            screen.lane_capacity(LANE_NAME) == Some(n.to_string())
+                && screen.footer_segment("Queue ").as_deref() == Some(flash.as_str())
+        });
+        std::fs::write(&capture, frames.join("\n") + "\n").expect("write the captured frames");
+        let page = render_through_plugin(&plugin_root(), &capture, &version, "G");
+        let screens = format!(
+            "--- afkd top, {DRIFT_COLS}x{DRIFT_ROWS} ---\n{}\n--- {NAME}, {DRIFT_COLS}x{DRIFT_ROWS} ---\n{}",
+            terminal.render(),
+            page.render()
+        );
+        assert_eq!(
+            page.lane_capacity(LANE_NAME),
+            terminal.lane_capacity(LANE_NAME),
+            "after {who}'s `l` both surfaces read one capacity:\n{screens}"
+        );
+        assert_eq!(
+            page.footer_segment("Queue "),
+            terminal.footer_segment("Queue "),
+            "…and flash one sentence:\n{screens}"
+        );
+    };
+    read_back(3, "the page", &mut frames);
+
+    // `afkd top`'s own `l`: the page learns of it only from the daemon's broadcast.
+    tui.send(b"G");
+    tui.send(b"l");
+    read_back(4, "afkd top", &mut frames);
 }
 
 #[test]

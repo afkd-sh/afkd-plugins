@@ -36,6 +36,7 @@ import { NO_AFKD_SRC, afkdSource } from "./testkit.mjs";
 
 const KEYMAP_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "lang", "src", "keymap.rs");
 const KEYS_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "tui", "src", "keys.rs");
+const HELP_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "tui", "src", "help.rs");
 
 // --- AC1: the transcription is the Rust table ---------------------------------------
 
@@ -190,6 +191,42 @@ test("every action is described, and either handled or noted", () => {
   // Pinned in `ACTIONS` **table order**, which is what `keymap.mjs`'s own module-load check
   // compares against: an appended entry throws on import.
   assert.deepEqual(PARTIAL, ["overview.show_output", "overview.show_info"]);
+});
+
+// --- the lane keys ----------------------------------------------------------------------
+
+/// The four lane actions, and afkd top's legend line for each (`help::help_lines`).
+const LANE_LEGEND = {
+  "overview.queue_widen": "Widen the service's queue lane",
+  "overview.queue_narrow": "Narrow the service's queue lane",
+  "queues.narrow": "Narrow the queue lane at the cursor",
+  "queues.widen": "Widen the queue lane at the cursor",
+};
+
+test("the four lane keys are handled, carry no note and read afkd top's legend", () => {
+  for (const [id, line] of Object.entries(LANE_LEGEND)) {
+    assert.ok(ACTIONS.includes(id), `${id} is a row`);
+    assert.ok(HANDLED.has(id), `${id} is handled: the relay has a lane verb`);
+    assert.equal(NOTES[id], undefined, `${id} carries no note`);
+    assert.equal(DESCRIPTIONS[id], line, `${id} reads afkd top's legend`);
+  }
+});
+
+test("the lane legend is help.rs's own", { skip: NO_AFKD_SRC }, () => {
+  // `keys.hint(act::LIST_QUEUE_WIDEN, "Widen the service's queue lane")`: each `act::` constant
+  // is joined to its dotted id through `keys.rs` and `keymap.rs`, as the drain's test joins its.
+  const dsl = Object.fromEntries(
+    [...KEYMAP_RS.matchAll(/Scope::(\w+) => "([\w.]+)",/g)].map(([, variant, name]) => [variant, name]),
+  );
+  const legend = {};
+  for (const [, name, line] of HELP_RS.matchAll(/keys\.hint\(act::(\w+), "([^"]*)"\)/g)) {
+    const decl = KEYS_RS.match(new RegExp(`const ${name}: Action = \\(Scope::(\\w+), "([\\w_]+)"\\);`));
+    if (decl !== null) legend[`${dsl[decl[1]]}.${decl[2]}`] = line;
+  }
+  assert.ok(Object.keys(legend).length >= 10, `the help.rs read found only ${Object.keys(legend).length} hints`);
+  for (const id of Object.keys(LANE_LEGEND)) {
+    assert.equal(DESCRIPTIONS[id], legend[id], `${id} is described as help.rs lists it`);
+  }
 });
 
 test("the drain refuses exactly the actions keys.rs refuses", { skip: NO_AFKD_SRC }, () => {

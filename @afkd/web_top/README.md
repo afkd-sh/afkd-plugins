@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.5.4 (companion)
+Installed @afkd/web_top 0.6.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -81,7 +81,7 @@ range-checks either one in one place and says so in a sentence when it fails.
 | `GET /paint.mjs` | the **painter** — those cells as DOM text, and nothing else |
 | `GET /dashboard.css` | the palette, the grid's type and the embedded cell face |
 | `GET /stream` | this subscriber's own attach, as an event stream |
-| `POST /command` | `{"stream":"<id>","command":"run","service":"nightly"}` → one `command` frame |
+| `POST /command` | `{"stream":"<id>","command":"run","service":"nightly"}` → one `command` frame; a lane's capacity is `{"stream":"<id>","command":"queue_parallelism","queue":"ops.heavy","parallelism":3}` |
 
 The program takes one argument form of its own, for asking what a tab opening *now* would be
 served out of the run corpus:
@@ -114,6 +114,12 @@ and `error` (a wire line past the 64 KiB cap both ends hold).
 `POST /command` composes the frame itself from the verb and the service, so a client cannot
 smuggle a field onto the wire. A verb outside the control wire's vocabulary is a `400` and
 **nothing** is written to the socket; a `stream` id that names no open attach is a `404`.
+The lane verb keeps the wire's own pre-rename spelling, `queue_parallelism` with a
+`parallelism` field, and carries a lane instead of a service: a `queue` that is not a non-empty
+string, or a `parallelism` that is not a JSON integer from 0 to 4294967295 (the wire's `u32`),
+is a `400` naming the problem. A bool, a float such as `2.0` and a string are refused, never
+coerced. The relay does not clamp to the daemon's bound of 32: the daemon clamps, and answers
+with the capacity the lane really holds.
 
 ## How it behaves
 
@@ -238,7 +244,8 @@ does. `input.mjs` is the browser half, and the only file here that touches an ev
 | `v` | flip the list between the flat boot view — every service its own row, named in full — and the grouped tree; the cursor rides its row across |
 | `b` | the busy lens: only the services running something of their own (`Starting`, `Busy`, `Stopping`) and any `Crashed` one; `b busy ●` says it is on |
 | `Enter`/`Space` | open or close the selected service's **activity peek** — its run's active branch under its row — or fold the group header under the cursor |
-| `h`/`←`, `l`/`→` | fold and unfold a group — from a member too, which moves the cursor onto its header; grouped view only |
+| `h`/`←`, `l`/`→` | fold and unfold a group — from a member too, which moves the cursor onto its header; grouped view only. On a lane row in the `Queues` section they narrow and widen that lane instead |
+| `+` / `-` | widen or narrow the selected service's queue lane by one, from the capacity on screen; on a service with no lane, a group header or nothing they say why in the footer, as the terminal does |
 | `H` / `L` | fold every group, or open them all; grouped view only |
 | `/`, `Esc` | type a needle (the rows narrow as you type), and clear it |
 | `s` `x` `t` `r` | start, stop, run now and restart the selected service — or, on a group header, every eligible member behind a confirm |
@@ -260,10 +267,14 @@ reload. Everything else is `preventDefault`ed only when the page actually acted 
 
 **The board never moves optimistically.** A verb is posted to `POST /command` on this tab's
 own attach and the row changes when the daemon's answering event arrives — which is what
-`afkd top` does for a fire, and what this page does for all six. So a press that changes
+`afkd top` does for a fire, and what this page does for every verb. So a press that changes
 nothing on screen is acknowledged in the footer instead (`Run sent to nightly`, `Starting 3
 services`), on the terminal's own four-second flash timer; `abandon` is not, because the modal
 already asked, and `Ctrl+R` is not, because the daemon's own reload summary owns that line.
+The lane keys post no ack either: the daemon broadcasts the capacity the lane now holds to
+every dashboard, and that answer moves the lane's cards and its `Queues` row and flashes
+`Queue ops.heavy · capacity set to 3` (or `Queue ops.heavy paused` at 0) on every tab, whoever
+pressed the key.
 
 **Every tab is its own.** Each browser gets its own attach, so each gets its own cursor,
 needle and fold set. Nothing is persisted and nothing is pushed back to the daemon — `afkd
@@ -428,10 +439,9 @@ say so, which is how the release workflow runs this directory's suites.
 
 ## What this card deliberately does not do
 
-- **A few keys are bound and inert.** The two lane-width pairs resolve to an action this page
-  has nowhere to send, and `q` is another: a page cannot close itself, and `Ctrl+C` is the
-  browser's copy. They are listed in the `?` overlay and the footer exactly as the terminal lists
-  them, and reported unhandled, so the browser keeps them. `o` and `i` on a group header or a
+- **A few keys are bound and inert.** `q` is one: a page cannot close itself, and `Ctrl+C` is
+  the browser's copy. They are listed in the `?` overlay and the footer exactly as the terminal
+  lists them, and reported unhandled, so the browser keeps them. `o` and `i` on a group header or a
   lane row are a different shape of refusal, and are **partial**: `TreeOpen` and
   `toggle_info_view` both open on the selected *card*, so there is no subject.
 - **`H`/`L` in the tree are a blanket override, not a mode.** Both write an explicit override

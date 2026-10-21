@@ -60,7 +60,7 @@ the lane can be filled and a third fire parks `queued`; a service that prints an
 adversarial line set; one that exits non-zero; one nested workflow
 (`in_parallel` → `times` → `if`); and one removed by the reload.
 
-## The ten captures
+## The eleven captures
 
 | File | What was driven |
 |---|---|
@@ -73,6 +73,7 @@ adversarial line set; one that exits non-zero; one nested workflow
 | `backfill.jsonl` | One fire with the recorder attached **mid-fire**, so its `meta.snapshot` carries the service `busy` and the live frames are the second half of a run whose first half is already on disk. Recorded beside the two run corpora below, in the fourth session. |
 | `reload.jsonl` | A real reconcile: a running service removed (`orphaned`, then a `meta.dropped` when it stops), one whose display metadata drifted (`changed`), one whose recipe drifted while running (`stale`), one added (`added`), and the post-reload `order`. |
 | `packages.jsonl` | A v2 board of two packages and `main`: `claude.brownout` alone in `claude`, the `selfdev.develop` family (`instances 2`) and `selfdev.discuss` in `selfdev`, and a bare `janitor`; one copy of the family run by name, so its row goes busy. The board a grouped view spells member leaves on. |
+| `lane.jsonl` | One lane's capacity moved over the wire: `ops.heavy` at its declared 2, holding a two-copy family and a single service, asked for 3, 0 (the pause), 40 (answered 32, the daemon's clamp) and an unknown lane (answered by `meta.error`), then put back to 2 by a reload of the unchanged config. |
 | `family.jsonl` | Multi-copy services: an `instances 3` service with two of its copies run by name, so their logs and trees interleave and their trace ids collide, beside a single service in the same package; and an `instances auto` pool whose run mints a copy (`meta.spawned`), which is then stopped by name and retired (`meta.dropped`). |
 
 `meta.host_load` rides along in all of them.
@@ -210,6 +211,27 @@ a second line, then `sleep 3`) and `discuss` (icon `💬`). The session, in orde
 1. attach, then `run selfdev.develop.0` — the family row goes busy, one copy of two;
 2. the run finishes;
 3. the daemon takes its `SIGINT` with the recorder still attached.
+
+### The seventh session: lane capacity
+
+`lane.jsonl` was recorded on its own, the same way as the fifth, against `afkd 0.2.387` (debug,
+the worktree of card rFc4Df2G): a throwaway daemon started with `env -i` and an isolated `HOME`
+under `/tmp`, a v2 config with no provider trigger and an `every 1h` cadence everywhere, and the
+same recorder, so the file opens on the daemon's `welcome`. None of the earlier files was
+re-recorded, so no existing golden moved.
+
+Its config: `daemon.afkd` imports `ops` and declares `janitor` (icon `🧹`); `ops/ops.afkd`
+declares `heavy :: queue { capacity 2 }`, `nightly` (`queue heavy`, `instances 2`, a wide-glyph
+`description`), `vacuum` (`queue heavy`) and `solo` (no queue). The session, in order, every
+command sent on the recorder's own wire as `{"type":"command","command":"queue_parallelism",…}`:
+
+1. attach — the snapshot puts all three members of `ops.heavy` at 2;
+2. `ops.heavy` 3, 0 and 40 — each answered by a `meta.queue_parallelism` broadcast naming the
+   capacity the lane now holds: 3, 0 and **32**, the daemon's clamp rather than the 40 asked;
+3. `ops.ghost` 2 — answered to the asker alone with `meta.error` `Queue ops.ghost does not exist`;
+4. `reload` with the config unchanged — the daemon puts the declared 2 back, broadcasts it, and
+   says so in the reload summary;
+5. the daemon takes its `SIGINT` with the recorder still attached.
 
 ## What is *not* in here, and why nothing hand-writes it
 
