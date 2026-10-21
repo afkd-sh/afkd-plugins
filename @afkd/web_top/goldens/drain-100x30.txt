@@ -7,16 +7,16 @@ Service                          State                 Trigger              Last
 ├─ ▪️ nightly                    □ Stopped             Every 1h                        9s           
 ├─ 🔷 sleeper                    ■ Stopping 1s         Every 1h                        4s           
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
-└─ ⊟ 📦 db                                                                             1s           
-   └─ ▪️ vacuum                  □ Stopped             Every 1h                        1s           
+└─ ▪️ vacuum                     □ Stopped             Every 1h                        1s           
   ▪️ archivist                   □ Stopped             Every 1h                                     
   ▪️ noisy                       □ Stopped             Every 1h                                     
   ▪️ flaky                       □ Stopped             Every 1h                                     
   ▪️ deep                        □ Stopped             Every 1h                        7s           
   ▪️ spare                       □ Stopped             Every 1h                                     
                                                                                                     
-Queue      Slots                                                        Parallelism   Held   Waiting
+Queue      Capacity                                                     Parallelism   Held   Waiting
 🧵 heavy   ▮▯                                                           2             1      0      
+                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     
@@ -39,16 +39,16 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrmmmmmmmmmmnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnncccccccccccccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrrrrmmmmmmmmmnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
+rrrmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 rrmmmmmmmmmmmmnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 rrmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmmnnnnnnnnnnnnnmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+bbbbbnnnnnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnarnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -71,7 +71,6 @@ sssssssssssssssssssssssssssssssssDDDDDDDDDssssssssssssssssssssssssssssssssssssss
 .................................ddddddddd..........................................................
 ....................................................................................................
 .................................bbbbbbbbb..........................................................
-....................................................................................................
 .................................ddddddddd..........................................................
 .................................ddddddddd..........................................................
 .................................ddddddddd..........................................................
@@ -79,8 +78,9 @@ sssssssssssssssssssssssssssssssssDDDDDDDDDssssssssssssssssssssssssssssssssssssss
 .................................ddddddddd..........................................................
 .................................ddddddddd..........................................................
 ....................................................................................................
-bbbbb......bbbbb........................................................bbbbbbbbbbb...bbbb...bbbbbbb
+bbbbb......bbbbbbbb.....................................................bbbbbbbbbbb...bbbb...bbbbbbb
 ...........b........................................................................................
+....................................................................................................
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................

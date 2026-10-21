@@ -155,28 +155,26 @@ export function selectedIndex(session, rows, board) {
     return own !== null && own.kind === key.kind && own.key === key.key;
   });
   if (at !== -1) return at;
-  // The path to climb, gated on the key's referent still being visible at all: a service by
-  // its group, a header by its own path. A bare service, a lane and anything gone have no
-  // ancestry to climb, and fall through to the positional resort.
+  // The group to fall back into, gated on the key's referent still being visible at all: a
+  // service by its group, a header by its own name. A bare service, a lane and anything gone
+  // have no group, and fall through to the positional resort.
   let path = null;
   if (board !== undefined) {
     const cards = visibleCards(board, { filter: needleOf(session), busyOnly: session.busyOnly });
     if (key.kind === "service") {
       const card = cards.find((svc) => svc.name === key.key);
       path = card !== undefined && card.group !== "" ? card.group : null;
-    } else if (key.kind === "group" && cards.some((svc) => inSubtree(svc.group, key.key))) {
+    } else if (key.kind === "group" && cards.some((svc) => svc.group === key.key)) {
       path = key.key;
     }
   }
   if (path === null) return positional();
-  // 2. The nearest visible ancestor header — the path itself first, then each parent — and
-  // 3. the subtree's first member: which is how a header selected in the grouped tree lands
-  // on its first member when `v` goes flat, and finds its own row again on the way back.
-  for (let p = path; p !== ""; p = p.includes("::") ? p.slice(0, p.lastIndexOf("::")) : "") {
-    const header = rows.findIndex((row) => row.kind === "group" && row.path === p);
-    if (header !== -1) return header;
-  }
-  const member = rows.findIndex((row) => row.kind === "service" && inSubtree(row.svc.group, path));
+  // 2. The group's header, and 3. the group's first member: which is how a header selected
+  // in the grouped tree lands on its first member when `v` goes flat, and finds its own row
+  // again on the way back.
+  const header = rows.findIndex((row) => row.kind === "group" && row.path === path);
+  if (header !== -1) return header;
+  const member = rows.findIndex((row) => row.kind === "service" && row.svc.group === path);
   return member !== -1 ? member : positional();
 }
 
@@ -200,11 +198,6 @@ function canStop(badge) {
 }
 function canRun(badge) {
   return badge === "Idle";
-}
-
-/// `model::in_subtree` — a group path covers itself and every descendant, on `::` boundaries.
-function inSubtree(group, path) {
-  return group === path || group.startsWith(`${path}::`);
 }
 
 /// `top::command_for_card` — whether `verb` is eligible against one service, and nothing else:
@@ -232,16 +225,16 @@ function eligible(verb, svc) {
 }
 
 /// The services a row's verb reaches — `DashboardModel::selected_targets`: one card on a
-/// service row, every live copy on a multi-copy family's, every member of the subtree on a
-/// group header (the transitive reading ADR-0073 and the footer both use, copies included),
-/// none on a lane row or the section's header.
+/// service row, every live copy on a multi-copy family's, every member of the group on a group
+/// header (the set the footer reads too, copies included), none on a lane row or the section's
+/// header.
 function targetsOf(board, row) {
   if (row === undefined) return [];
   if (row.kind === "service") return copiesOf(board, row.svc);
   if (row.kind !== "group") return [];
   return board.order
     .map((name) => board.services[name])
-    .filter((svc) => svc !== undefined && inSubtree(svc.group, row.path));
+    .filter((svc) => svc !== undefined && svc.group === row.path);
 }
 
 /// `ack_flash`'s verbs, and the word each acknowledges with.

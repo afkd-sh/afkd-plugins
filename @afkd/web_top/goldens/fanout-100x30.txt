@@ -7,17 +7,17 @@ Service                          State                 Trigger              Last
 ├─ 🔹 nightly                    ▷ Queued 2s           Every 1h                        9s           
 ├─ 🔷 sleeper                    ▶ Busy 4s             Every 1h                        4s           
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
-└─ ⊟ 📦 db                           ┌ Stop 3 services? ──────┐                        5s           
-   └─ 🔷 vacuum                  ▶ Bu│                        │                        5s           
-  🔹 archivist                   ● Id│    🔹 ops::nightly     │                              59m 47s
-  🔹 noisy                       ● Id│    🔷 ops::sleeper     │                              59m 47s
-  🔹 flaky                       ● Id│    🔷 ops::db::vacuum  │                              59m 47s
-  🔹 deep                        ● Id│                        │                        7s    59m 52s
-  🔹 spare                       ● Id│  1 skipped             │                              59m 47s
-                                     │                        │                                     
-Queue      Slots                     │  y stop  n cancel      │         Parallelism   Held   Waiting
-🧵 heavy   ▮▮ ╎ ∙                    │                        │         2             2      1      
-                                     └────────────────────────┘                                     
+└─ 🔷 vacuum                     ▶ Busy┌ Stop 3 services? ──┐1h                        5s           
+  🔹 archivist                   ● Idle│                    │1h                              59m 47s
+  🔹 noisy                       ● Idle│    🔹 ops.nightly  │1h                              59m 47s
+  🔹 flaky                       ● Idle│    🔷 ops.sleeper  │1h                              59m 47s
+  🔹 deep                        ● Idle│    🔷 ops.vacuum   │1h                        7s    59m 52s
+  🔹 spare                       ● Idle│                    │1h                              59m 47s
+                                       │  1 skipped         │                                       
+Queue      Capacity                    │                    │           Parallelism   Held   Waiting
+🧵 heavy   ▮▮ ╎ ∙                      │  y stop  n cancel  │           2             2      1      
+                                       │                    │                                       
+                                       └────────────────────┘                                       
                                                                                                     
                                                                                                     
                                                                                                     
@@ -39,17 +39,17 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbbbbbbbbbbbbbbbbbrrrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaarnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiirnnlllllllllnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnrnnbnllllnnbnllllllnnnnnnrnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaarbbbbbbbbbbbbbbbbbbrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiirnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiirnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiirnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiirnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiirnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnlllllllllnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnrnnbnllllnnbnllllllnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -71,17 +71,17 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddd..........................ddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

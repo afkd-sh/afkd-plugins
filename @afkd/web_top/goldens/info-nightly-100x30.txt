@@ -1,4 +1,4 @@
-afkd › ops::nightly · Queued                                                                        
+afkd › ops.nightly · Queued                                                                         
                                                                                                     
 Overview                                           Trigger                                          
 State                     ▷ Queued for 2s          Kind                      interval               

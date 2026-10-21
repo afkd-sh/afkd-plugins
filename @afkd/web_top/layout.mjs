@@ -1050,19 +1050,13 @@ function groupIcon(path) {
   return path.endsWith(".conf") ? GROUP_CONF_ICON : GROUP_NS_ICON;
 }
 
-/// `layout::leaf_segment` — everything after the last `::`, or the whole string. The one leaf
-/// rule both display surfaces read: a nested header's spelled segment and a member row's own
-/// name.
-function leafSegment(name) {
-  const at = name.lastIndexOf("::");
-  return at === -1 ? name : name.slice(at + 2);
-}
-
-/// `layout::displayed_name` — a member sits under a header that already spells its namespace,
-/// so it shows only its leaf; a root row keeps its whole qualified name.
+/// `layout::displayed_name` — a member sits under a header that already spells its package, so
+/// it shows only what follows `<package>.` (`claude.brownout` reads `brownout` under `claude`);
+/// a root row keeps its whole qualified name. Only the package is stripped, so a pool copy's
+/// `.N` stays on its leaf (`selfdev.develop.0` reads `develop.0`, never `0`).
 function displayedName(svc, depth) {
   if (depth === 0 || svc.group === "") return svc.name;
-  const prefix = `${svc.group}::`;
+  const prefix = `${svc.group}.`;
   return svc.name.startsWith(prefix) ? svc.name.slice(prefix.length) : svc.name;
 }
 
@@ -1096,23 +1090,13 @@ function nextCell(svc, now) {
 
 /// The `Service` cell's cells: the tree connector at full weight
 /// (`shell::service_prefix_spans` — a stopped member's tint must not fade the group's guide),
-/// then the icon, the markers and the name, with the name's `::` separators receded
-/// (`shell::dim_separator_spans`).
+/// then the icon, the markers and the name. Nothing inside the name is styled apart, so a
+/// qualified name — its `.` included — is one cell in the row's tint.
 function identityCells(prefix, body, name, tint, count = "") {
   const cells = [];
   if (prefix !== "") cells.push(cell(prefix, { fg: "recede" }));
   if (body !== "") cells.push(cell(body, { fg: tint }));
-  let rest = name;
-  while (rest !== "") {
-    const at = rest.indexOf("::");
-    if (at === -1) {
-      cells.push(cell(rest, { fg: tint }));
-      break;
-    }
-    if (at > 0) cells.push(cell(rest.slice(0, at), { fg: tint }));
-    cells.push(cell("::", { fg: "recede" }));
-    rest = rest.slice(at + 2);
-  }
+  if (name !== "") cells.push(cell(name, { fg: tint }));
   // A multi-copy family's live copy count follows its name in the name's own tint.
   if (count !== "") cells.push(cell(count, { fg: tint }));
   return cells;
@@ -1137,7 +1121,7 @@ function stateText(svc, now) {
 }
 
 /// `DashboardModel::visible_cards`'s name axis — the `/` needle, matched as a substring over
-/// the **qualified** name so a member stays findable by the namespace its row no longer
+/// the **qualified** name so a member stays findable by the package its row no longer
 /// spells. One rule, read by the row build and by the rollup fold alike.
 function keptByFilter(name, filter) {
   return filter === "" || name.toLowerCase().includes(filter.toLowerCase());
@@ -1168,8 +1152,8 @@ export function visibleCards(board, options = {}) {
   return rowCards(board).filter((svc) => named(svc) && keptByLens(svc, busyOnly));
 }
 
-/// `DashboardModel::group_rollup` — the **transitive** fold (ADR-0073): every service in the
-/// subtree counts, so a parent header reflects a crash three levels down. Two aggregates and
+/// `DashboardModel::group_rollup` — every service whose package is the group counts, so a
+/// header reflects the crash of a member it hides when folded. Two aggregates and
 /// no state ladder: ADR-0066 is explicit that a group row shows **no** state badge in the
 /// resting case, and health is the one exception. The activity instant is the *maximum* —
 /// "this group was last alive X ago". The Rust folds a third aggregate, the oldest in-flight
@@ -1179,7 +1163,7 @@ function groupRollup(members, path) {
   let anyCrashed = false;
   let latestActivityAt = null;
   for (const svc of members) {
-    if (!inSubtree(svc.group, path)) continue;
+    if (svc.group !== path) continue;
     anyCrashed = anyCrashed || svc.badge === "Crashed";
     if (svc.lastActivityAt !== null) {
       latestActivityAt =
@@ -1192,12 +1176,12 @@ function groupRollup(members, path) {
 /// The visible row sequence — `DashboardModel::build_rows`. Unless `grouped` is set (`v`; the
 /// board boots **flat**, the ADR-0066 amendment) every surviving card is its own top-level
 /// row, flush to column 0 and spelling its whole qualified name, in config order. The
-/// **grouped** arm (ADR-0073) emits one header per namespace *segment*, its children
-/// (sub-namespace headers and member services alike) beneath it in first-appearance config
-/// order, and a bare un-namespaced service as a root peer row taking its place in that same
-/// sequence. Either way every visible service appears exactly once.
+/// **grouped** arm emits one header per package — packages are flat (lang-v2 §20.3), so a
+/// group is one level — its members beneath it in config order, and a bare service in `main`
+/// as a root peer row, headers and bare services in first-appearance config order. Either way
+/// every visible service appears exactly once.
 ///
-/// `collapsed` is the set of group paths whose descendants are folded away. It is the inverse
+/// `collapsed` is the set of groups whose members are folded away. It is the inverse
 /// of `DashboardModel`'s `expanded` set, and it starts empty for the reason the terminal's
 /// starts full: `seed_expanded_groups` opens every group the board boots with, so the first
 /// `v` of a session lands on an expanded tree. A non-empty `filter` — or the busy lens —
@@ -1211,54 +1195,48 @@ function buildRows(board, filter, collapsed, grouped, busyOnly, peeked) {
     // header is emitted, so `collapsed` has nothing to act on here.
     return cards.flatMap((svc) => [{ kind: "service", svc, depth: 0, prefix: "" }, ...peekRows(svc, peeked, [], "")]);
   }
-  // Insert: each card walks the `::` boundaries of its group, find-or-creating one node per
-  // prefix path, and lands as a leaf in the deepest node. Find-or-create appends on first
-  // sight, so children keep first-appearance order per level.
+  // Insert: each card find-or-creates the root entry for its group and lands among its
+  // members; a card in `main` (no group) lands straight at the root. Find-or-create appends
+  // on first sight, so the root keeps first-appearance config order.
   const roots = [];
-  const insert = (level, group, at, svc) => {
-    if (at >= group.length) {
-      level.push({ kind: "service", svc });
-      return;
+  for (const svc of cards) {
+    if (svc.group === "") {
+      roots.push({ kind: "service", svc });
+      continue;
     }
-    const sep = group.indexOf("::", at);
-    const end = sep === -1 ? group.length : sep;
-    const path = group.slice(0, end);
-    let node = level.find((e) => e.kind === "group" && e.path === path);
-    if (node === undefined) {
-      node = { kind: "group", path, children: [] };
-      level.push(node);
+    let group = roots.find((e) => e.kind === "group" && e.path === svc.group);
+    if (group === undefined) {
+      group = { kind: "group", path: svc.group, members: [] };
+      roots.push(group);
     }
-    insert(node.children, group, end + 2, svc);
-  };
-  for (const svc of cards) insert(roots, svc.group, 0, svc);
-  // Flatten: a DFS pre-order walk stamping each row's depth, its tree prefix and, for a
-  // header, the rollup its members fold to. A root row draws no connector, so its `last` is
-  // moot — pinned true, the spelling a bare top-level row has always carried.
+    group.members.push(svc);
+  }
+  // Flatten: headers and bare services at depth 0, members at depth 1 under their header's
+  // connector, `last` on the final one.
   const rows = [];
   const folded = (path) => filter === "" && !busyOnly && collapsed.has(path);
-  const walk = (level, depth, guides) => {
-    level.forEach((entry, i) => {
-      const last = depth === 0 || i + 1 === level.length;
-      const prefix = depth === 0 ? "" : guides.join("") + (last ? TREE_CONNECTOR_LAST : TREE_CONNECTOR_MID);
-      if (entry.kind === "service") {
-        // `layout::top_level_lead`, read "in exactly one place": a **top-level** service
-        // spends the two-cell chevron lead-in here, where the tree is walked, so its icon
-        // lands in the group-icon column. It is not synthesised downstream, because the run
-        // view's pinned header composes its own row with `layout::service_row`'s empty
-        // connector (`runHeaderCells`' `prefix: ""`) and that `""` has to reach the render.
-        rows.push({ kind: "service", svc: entry.svc, depth, prefix: depth === 0 ? TREE_TOP_LEVEL_INDENT : prefix });
-        // A peek hangs under its service with the columns a child of it would carry: every
-        // ancestor's, then the service's own — a continuation bar while a sibling follows.
-        const columns = depth === 0 ? [] : guides.concat([last ? TREE_GUIDE_BLANK : TREE_GUIDE_BAR]);
-        rows.push(...peekRows(entry.svc, peeked, columns, TREE_TOP_LEVEL_INDENT));
-      } else {
-        rows.push({ kind: "group", path: entry.path, depth, prefix, collapsed: folded(entry.path) });
-        if (folded(entry.path)) return;
-        walk(entry.children, depth + 1, depth === 0 ? [] : guides.concat([last ? TREE_GUIDE_BLANK : TREE_GUIDE_BAR]));
-      }
+  for (const entry of roots) {
+    if (entry.kind === "service") {
+      // `layout::top_level_lead`, read "in exactly one place": a **top-level** service
+      // spends the two-cell chevron lead-in here, where the tree is walked, so its icon
+      // lands in the group-icon column. It is not synthesised downstream, because the run
+      // view's pinned header composes its own row with `layout::service_row`'s empty
+      // connector (`runHeaderCells`' `prefix: ""`) and that `""` has to reach the render.
+      rows.push({ kind: "service", svc: entry.svc, depth: 0, prefix: TREE_TOP_LEVEL_INDENT });
+      rows.push(...peekRows(entry.svc, peeked, [], TREE_TOP_LEVEL_INDENT));
+      continue;
+    }
+    // A header sits at the root, so it draws no connector.
+    rows.push({ kind: "group", path: entry.path, depth: 0, prefix: "", collapsed: folded(entry.path) });
+    if (folded(entry.path)) continue;
+    entry.members.forEach((svc, i) => {
+      const last = i + 1 === entry.members.length;
+      rows.push({ kind: "service", svc, depth: 1, prefix: last ? TREE_CONNECTOR_LAST : TREE_CONNECTOR_MID });
+      // A peek hangs under its member with the column a child of it would carry: a
+      // continuation bar while a sibling follows.
+      rows.push(...peekRows(svc, peeked, [last ? TREE_GUIDE_BLANK : TREE_GUIDE_BAR], TREE_TOP_LEVEL_INDENT));
     });
-  };
-  walk(roots, 0, []);
+  }
   return rows;
 }
 
@@ -1292,7 +1270,7 @@ export function visibleRows(board, options = {}) {
 }
 
 /**
- * One row's identity — `model::row_key`: a group by its full path, a service by its qualified
+ * One row's identity — `model::row_key`: a group by its package, a service by its qualified
  * name, a lane by its canonical name, and `null` for the section's spacer and header, which
  * are the two rows the cursor may not sit on. The cursor holds one of these rather than an
  * index, so a fold that adds or drops a service cannot slide it onto a neighbour.
@@ -1311,13 +1289,13 @@ export function rowKey(row) {
 /// the `Service` column is measured against is exactly the one that renders.
 function identityOf(row) {
   if (row.kind === "group") {
-    // `layout::group_row_label`: the collapse chevron leads the icon and the **leaf** segment
-    // — a header's ancestors are the indent it hangs off. A header's name carries no health
-    // tint of its own: a crashed member surfaces through the `State` cell's own badge.
+    // `layout::group_row_label`: the collapse chevron leads the icon and the whole package.
+    // A header's name carries no health tint of its own: a crashed member surfaces through
+    // the `State` cell's own badge.
     return {
       prefix: row.prefix,
       body: `${row.collapsed ? TREE_CHEVRON_COLLAPSED : TREE_CHEVRON_EXPANDED} ${groupIcon(row.path)} `,
-      name: leafSegment(row.path),
+      name: row.path,
       tint: "ink",
     };
   }
@@ -1381,9 +1359,9 @@ const QUEUE_SLOTS_MIN = QUEUE_BAR_MAX + QUEUE_FENCE_W + QUEUE_WAIT_CELLS;
 /// `layout::QUEUE_NAME_COL_MIN` — the `"Queue"` label plus one cell of breathing room.
 const QUEUE_NAME_COL_MIN = 6;
 /// `layout::QUEUE_COLUMN_ORDER` and its Title-case labels.
-const QUEUE_COLUMNS = ["Queue", "Slots", "Parallelism", "Held", "Waiting"];
+const QUEUE_COLUMNS = ["Queue", "Capacity", "Parallelism", "Held", "Waiting"];
 
-/// `layout::queue_floor_cols` — what the section costs past its name column with `Slots` at
+/// `layout::queue_floor_cols` — what the section costs past its name column with `Capacity` at
 /// its own floor. Folded from the order rather than typed, so a sixth column cannot leave a
 /// stale constant behind.
 function queueFloorCols() {
@@ -1392,7 +1370,7 @@ function queueFloorCols() {
 }
 
 /// `layout::queue_cols` — the section's two elastic widths: `Queue` is the content fit over
-/// the section's **own** lane identities, `Slots` is the sink that takes everything the other
+/// the section's **own** lane identities, `Capacity` is the sink that takes everything the other
 /// four and their gutters leave. The five and their four gutters sum to `cols` exactly.
 function queueCols(cols, widestLane) {
   const cap = Math.max(0, cols - queueFloorCols());
@@ -1406,7 +1384,7 @@ function queueCols(cols, widestLane) {
 /// The width of one section column at the folded elastic pair.
 function queueColumnWidth(label, cols) {
   if (label === "Queue") return cols.name;
-  if (label === "Slots") return cols.slots;
+  if (label === "Capacity") return cols.slots;
   return textWidth(label);
 }
 
@@ -1942,7 +1920,7 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
   } else if (row !== undefined && row.kind === "group") {
     const members = board.order
       .map((name) => board.services[name])
-      .filter((svc) => svc !== undefined && inSubtree(svc.group, row.path));
+      .filter((svc) => svc !== undefined && svc.group === row.path);
     hints.push(...groupControlHints(keys, members));
     hints.push(BREAK);
     // The collapse hint names both `Enter` and the directional key, and the verb it names is
@@ -1982,12 +1960,6 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
   hints.push(...globals);
   if (affordance !== null) hints.push(affordance);
   return hints;
-}
-
-/// `model::in_subtree` — a group path covers itself and every descendant path, on `::`
-/// boundaries so `ops` never swallows `opsworks`.
-function inSubtree(group, path) {
-  return group === path || group.startsWith(`${path}::`);
 }
 
 // --- the body's height and its scroll ------------------------------------------------
@@ -3769,11 +3741,9 @@ export function layout(board, options) {
   const extra = familyExtra(board);
   for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols, extra);
   const laneCols = queueCols(cols, lanes.reduce((w, l) => Math.max(w, textWidth(l.lane)), 0));
-  // The rollups a header shows. `fold.mjs`'s `groups()` buckets by the **exact** group
-  // string and says so: "the fold has no tree to collapse into yet … the nesting belongs
-  // with the paint". This is the paint, so the transitive fold (ADR-0073 — a crash three
-  // levels down still surfaces on the root header that hides it) happens here, over the
-  // filtered card set the rows were built from, mirroring `DashboardModel::group_rollup`.
+  // The rollups a header shows, folded here over the filtered card set the rows were built
+  // from — not `fold.mjs`'s unfiltered `groups()` — mirroring `DashboardModel::group_rollup`:
+  // a crash in a folded group still surfaces on the header that hides it.
   const members = visibleCards(board, { filter, busyOnly });
   const rollups = {};
   for (const row of listRows) {

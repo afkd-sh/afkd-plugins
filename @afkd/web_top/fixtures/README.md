@@ -7,13 +7,19 @@ cannot quietly make an assertion vacuous, and a frame shape this fold has never 
 seen — or a run-dir layout the daemon has never actually written — cannot sneak into the
 suite as a guess.
 
-Two edits were made to them since, each following a rename in afkd that changed no shape.
+Three edits were made to them since, each following a rename in afkd that changed no shape.
 afkd 0.2.171 renamed four event tags, so `fire_started`, `fire_ok`, `fire_failed` and
 `service_next_fire` were rewritten in place to `run_started`, `run_ok`, `run_failed` and
 `service_next_run` — the exact quoted tag, never a bare `fire`, so no service name or log line
 moved. And afkd 0.2.173 joins a namespaced name's run-dir segments with `.` rather than `__`, so
 the one service dir in each `runs*/` tree was moved from `ops__監視` to `ops.監視`, its contents
-untouched.
+untouched. And afkd's v2 config spells a service `package.name`, a package being one flat
+group (lang-v2 §3.6, §20.3), so the v1 identities were rewritten in place: `ops::nightly`,
+`ops::broken`, `ops::sleeper`, `tree::retried` and `ops::監視` to `ops.nightly`, `ops.broken`,
+`ops.sleeper`, `tree.retried` and `ops.監視`, and the two-level `ops::db::vacuum` (group
+`ops::db`) to `ops.vacuum` (group `ops`). Only exact JSON string values that equal an identity
+or a group moved; the log lines, which carry the tag the daemon printed (`[ops::nightly]`), and
+the run logs under `runs*/` were left as recorded.
 
 They ride into every operator's plugin directory on `afkd install`, so they stay small —
 about 100 KB for all of them.
@@ -44,8 +50,9 @@ and a `usage` block, so `agent_finished` carries confirmed turns, cost and token
 ### The config's shape, and why
 
 Ten services, each there for something an assertion needs: a bare one with an `icon` and a
-`description`; a namespaced `ops::nightly`; a **two-level** `ops::db::vacuum` (which is what
-makes the flat-vs-transitive group assertion non-vacuous); three on one
+`description`; four in the `ops` group — `ops.nightly`, `ops.sleeper`, `ops.broken` and
+`ops.vacuum`, some of them the ones named below — so a header has members to fold and roll up;
+three on one
 `queue heavy { parallelism 2 }` lane at `high` / `normal` / `low`; one carrying a
 whole-service `sandbox`, so its snapshot entry is `confined`; one whose `init` faults, so
 the board has a `crashed` service and a repeated crash alarm; two long `sleep` fires, so
@@ -53,7 +60,7 @@ the lane can be filled and a third fire parks `queued`; a service that prints an
 adversarial line set; one that exits non-zero; one nested workflow
 (`in_parallel` → `times` → `if`); and one removed by the reload.
 
-## The nine captures
+## The ten captures
 
 | File | What was driven |
 |---|---|
@@ -65,6 +72,7 @@ adversarial line set; one that exits non-zero; one nested workflow
 | `loud-fail.jsonl` | One service whose `run_cmd` prints eight lines and **exits 3**, so a `cmd` leaf closes `failed` with its own output attributed to it. That pairing exists nowhere else in the corpus: `noise.jsonl`'s failing fire and `deep-fail.jsonl`'s failing leaves all close with **zero** node-tagged ring lines, which renders `with_bodies`' auto-expand arm — a failed leaf showing its output unasked — true and invisible. Its stderr line also lands *third* in the ring though the shell printed it last, which is the real interleaving of two pipes and the reason the body is asserted in ring order. |
 | `backfill.jsonl` | One fire with the recorder attached **mid-fire**, so its `meta.snapshot` carries the service `busy` and the live frames are the second half of a run whose first half is already on disk. Recorded beside the two run corpora below, in the fourth session. |
 | `reload.jsonl` | A real reconcile: a running service removed (`orphaned`, then a `meta.dropped` when it stops), one whose display metadata drifted (`changed`), one whose recipe drifted while running (`stale`), one added (`added`), and the post-reload `order`. |
+| `packages.jsonl` | A v2 board of two packages and `main`: `claude.brownout` alone in `claude`, the `selfdev.develop` family (`instances 2`) and `selfdev.discuss` in `selfdev`, and a bare `janitor`; one copy of the family run by name, so its row goes busy. The board a grouped view spells member leaves on. |
 | `family.jsonl` | Multi-copy services: an `instances 3` service with two of its copies run by name, so their logs and trees interleave and their trace ids collide, beside a single service in the same package; and an `instances auto` pool whose run mints a copy (`meta.spawned`), which is then stopped by name and retired (`meta.dropped`). |
 
 `meta.host_load` rides along in all of them.
@@ -124,8 +132,9 @@ three home variables cleared, one service on an `every 1h` cadence fired by name
 socket, no provider trigger. None of the earlier files was re-recorded, so no existing golden
 moved.
 
-Its config is one service, `ops::監視` — namespaced and wide-glyph on purpose, so the `::` to
-`.` run-dir encoding and a CJK path segment are on the path of every read — over one workflow:
+Its config is one service, `ops::監視` (now `ops.監視`, the name its run dir always had) —
+namespaced and wide-glyph on purpose, so the run-dir encoding and a CJK path segment are on the
+path of every read — over one workflow:
 an `in_parallel` of a loud command and a quiet one, then an `if run_cmd "true" { … }`, then a
 third command. The loud one prints the adversarial line set a quarter of a second apart (SGR,
 an OSC residue, an embedded `\r`, tabs, `U+202E`, CJK, an emoji, a zero-width space); the
@@ -184,6 +193,23 @@ and a second line, then `sleep 3`) and `review` (one copy), and in the main pack
 3. the three runs finish, then `stop backup.1` — the copy is dropped on the retire edge
    (`meta.dropped`);
 4. the daemon takes its `SIGINT` with the recorder still attached.
+
+### The sixth session: packages
+
+`packages.jsonl` was recorded on its own, the same way as the fifth, against `afkd 0.2.382`
+(debug, the worktree of card OzkBHL3y): a throwaway daemon started with `env -i` and an isolated
+`HOME` under `/tmp`, a v2 config with no provider trigger and an `every 1h` cadence everywhere,
+and the same recorder, so the file opens on the daemon's `welcome`. None of the earlier files was
+re-recorded, so no existing golden moved.
+
+Its config is the dashboard's own example: `daemon.afkd` imports `claude` and `selfdev` and
+declares `janitor` (icon `🧹`); `claude/claude.afkd` declares `brownout` (icon `🔋`); and
+`selfdev/selfdev.afkd` declares `develop` (icon `🛠`, `instances 2`; a `printf` of a CJK line and
+a second line, then `sleep 3`) and `discuss` (icon `💬`). The session, in order:
+
+1. attach, then `run selfdev.develop.0` — the family row goes busy, one copy of two;
+2. the run finishes;
+3. the daemon takes its `SIGINT` with the recorder still attached.
 
 ## What is *not* in here, and why nothing hand-writes it
 

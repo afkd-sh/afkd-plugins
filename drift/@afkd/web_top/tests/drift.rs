@@ -85,38 +85,79 @@ fn next_minor(version: &str) -> String {
 
 // --- the fixtures ------------------------------------------------------------------
 
-/// Two services the relay has to carry.
-///
-/// The fired one is **namespaced and wide-glyph on purpose**: its name has to survive the
-/// snapshot frame, a `POST /command` body, the frame the relay composes from it and the
-/// daemon's own `[name]`-prefixed log lines — and its `group` is a prefix of its own
-/// qualified name. `never` is the negative control nothing ever fires, so a command that
-/// must not reach the wire has a file on disk to be absent.
-const SERVICES: &str = r#"service ops::監視 {
-  description "ウェブ — the wide one"
-  trigger none
-  run {
-    run_cmd "touch fired.txt"
-    run_cmd "echo ライン one"
-  }
+/// A v2 config tree: `daemon.afkd`'s whole text, and each package's name with the whole text
+/// of its `<package>/<package>.afkd`. Every file spells its own imports, so what a leg loads is
+/// exactly what it reads here.
+struct Tree<'a> {
+    main: &'a str,
+    packages: &'a [(&'a str, &'a str)],
 }
 
-service never {
-  trigger none
-  run { run_cmd "touch never.txt" }
+/// Two services the relay has to carry.
+///
+/// The fired one is **packaged and wide-glyph on purpose**: its name has to survive the
+/// snapshot frame, a `POST /command` body, the frame the relay composes from it and the
+/// daemon's own `[name]`-prefixed log lines — and its `group` is a prefix of its own
+/// qualified name. A v2 name is ASCII, so the wide glyphs ride its description and the line
+/// it prints. `never` is the negative control nothing ever fires, so a command that must not
+/// reach the wire has a file on disk to be absent.
+const SERVICES: Tree = Tree {
+    main: r#"import "core"; import "core:manual"
+
+import "ops"
+
+never :: service(manual) {
+  on_run(run: core.Run) {
+    $ touch never.txt
+  }
 }
-"#;
+"#,
+    packages: &[(
+        "ops",
+        r#"import "core"; import "core:manual"
+
+kanshi :: service(manual) {
+  description "ウェブ — the wide one"
+
+  on_run(run: core.Run) {
+    $ touch fired.txt
+    $ echo ライン one
+  }
+}
+"#,
+    )],
+};
 
 /// `layout::WARN_ICON` — the icon a service wears once a fire of its since the last arm has
 /// failed, which is how a leg waits for a surface to have folded that failure.
 const WARN_ICON: &str = "🔸";
 
 /// The fired service's fully-qualified name, as the wire carries it.
-const BUSY: &str = "ops::監視";
+const BUSY: &str = "ops.kanshi";
 
-/// `SERVICES` plus a `plugin` block naming the shipped relay.
-fn config_with_block(body: &str) -> String {
-    format!("{SERVICES}\nplugin {NAME} {{\n{body}}}\n")
+/// A home whose config directory holds `tree` and nothing else.
+fn v2_home_with(tree: &Tree) -> TempDir {
+    let home = TempDir::new().expect("tempdir");
+    let config = config_dir(home.path());
+    std::fs::create_dir_all(&config).expect("mk the config dir");
+    std::fs::write(daemon_afkd(home.path()), tree.main).expect("write daemon.afkd");
+    for (package, body) in tree.packages {
+        let dir = config.join(package);
+        std::fs::create_dir_all(&dir).expect("mk the package dir");
+        std::fs::write(dir.join(format!("{package}.afkd")), body).expect("write the package");
+    }
+    home
+}
+
+/// A home holding `tree`, with the shipped relay installed and `settings` as its settings
+/// file: under a v2 config installing is what runs it (lang-v2 §16.1), so this is the whole of
+/// what a daemon spawned here needs.
+fn relay_home(tree: &Tree, settings: &str) -> TempDir {
+    let home = v2_home_with(tree);
+    let (out, err, code) = install_relay(home.path());
+    assert_eq!(code, Some(0), "installing the shipped relay: {out}{err}");
+    write_settings_file(home.path(), settings);
+    home
 }
 
 /// Install the shipped relay into `home` through the real verb.
@@ -181,12 +222,10 @@ fn serving_port(text: &str) -> Option<u16> {
         .and_then(|digits| digits.parse().ok())
 }
 
-/// Start a headless daemon over `config` with the relay installed, and wait for the page it
-/// serves. Returns the daemon, its `$HOME`, and the port the relay bound.
-fn daemon_serving(config: &str) -> (StreamingDaemon, TempDir, u16) {
-    let dir = dir_with_config(config);
-    let (out, err, code) = install_relay(dir.path());
-    assert_eq!(code, Some(0), "installing the shipped relay: {out}{err}");
+/// Start a headless daemon over `tree` with the relay installed under `settings`, and wait for
+/// the page it serves. Returns the daemon, its `$HOME`, and the port the relay bound.
+fn daemon_serving(tree: &Tree, settings: &str) -> (StreamingDaemon, TempDir, u16) {
+    let dir = relay_home(tree, settings);
     let daemon = spawn_headless_streaming(dir.path(), &[]);
     let port = relay_port(dir.path());
     (daemon, dir, port)
@@ -705,8 +744,8 @@ impl Wire {
 #[test]
 fn the_verbs_accept_the_shipped_manifest() {
     // AC1, in both directions. `install` places the tree, `plugins` reads the manifest
-    // back, `validate` takes a block naming every declared setting and refuses one it does
-    // not declare, and
+    // back, `validate` takes a settings file naming every declared setting (a key it does
+    // not declare is `a_v2_settings_file_the_manifest_refuses_never_starts_the_relay`'s), and
     // `doctor` is the surface that sees the plugin: silent and **green** while the manifest
     // is sound, and the thing that names the file the moment it is not.
     //
@@ -715,7 +754,7 @@ fn the_verbs_accept_the_shipped_manifest() {
     // tools") — so a companion row in a green `doctor` would mean editing a crate, which
     // this card forbids. Ungated on python: installing runs nothing, which is the same
     // claim as "no toolchain on the host".
-    let dir = dir_with_config(SERVICES);
+    let dir = v2_home_with(&SERVICES);
     let (out, err, code) = install_relay(dir.path());
     assert_eq!(code, Some(0), "{out}{err}");
 
@@ -779,11 +818,11 @@ fn the_verbs_accept_the_shipped_manifest() {
         "the executable bit survives the install"
     );
 
-    // Every declared setting validates, and a key the manifest does not declare does not.
-    let full = config_with_block(
-        "  listen \"127.0.0.1:8771\"\n  max_clients 4\n  runs_dir \"/tmp/afkd-runs\"\n  log_lines 500\n",
+    // Every declared setting validates.
+    write_settings_file(
+        dir.path(),
+        "listen \"127.0.0.1:8771\"\nmax_clients 4\nruns_dir \"/tmp/afkd-runs\"\nlog_lines 500\n",
     );
-    std::fs::write(main_conf(dir.path()), &full).expect("write the config");
     let ok = run_subcommand_args(dir.path(), &["validate"]);
     assert_eq!(
         ok.status.code(),
@@ -798,24 +837,9 @@ fn the_verbs_accept_the_shipped_manifest() {
         "a sound manifest leaves `doctor` green"
     );
 
-    std::fs::write(
-        main_conf(dir.path()),
-        config_with_block("  lisen \"127.0.0.1:8771\"\n"),
-    )
-    .expect("write the config");
-    let typo = run_subcommand_args(dir.path(), &["validate"]);
-    let report =
-        String::from_utf8_lossy(&typo.stdout).into_owned() + &String::from_utf8_lossy(&typo.stderr);
-    assert_eq!(typo.status.code(), Some(1), "a typo'd key is a refusal");
-    assert!(
-        report.contains("`lisen`") && report.contains("`listen`"),
-        "…naming the key it did not know and the one it meant: {report}"
-    );
-
     // …and the other half of the doctor clause: skew the **placed** manifest's `proto` and
     // `doctor` is the surface that names the file. That is the whole of what `doctor` can
     // say about a companion today, and it is a positive claim rather than a shed one.
-    std::fs::write(main_conf(dir.path()), &full).expect("write the config");
     let manifest = placed.join("afkd-plugin.toml");
     let skewed = std::fs::read_to_string(&manifest)
         .expect("the placed manifest")
@@ -826,7 +850,9 @@ fn the_verbs_accept_the_shipped_manifest() {
         + &String::from_utf8_lossy(&broken.stderr);
     assert_eq!(broken.status.code(), Some(1), "a skewed manifest is a red");
     assert!(
-        report.contains(&manifest.display().to_string()) && report.contains("speaks 1 and 2"),
+        report.contains(&manifest.display().to_string())
+            && report.contains("declares plugin protocol 99")
+            && report.contains("requires manifest v2 (proto = 2)"),
         "…naming the manifest and both versions: {report}"
     );
 }
@@ -840,13 +866,12 @@ const V2_MAIN: &str = "\
      tick :: service(interval) {\n  every 1h\n\n  on_run(run: core.Run) {\n    $ true\n  }\n}\n\n\
      hello :: service(manual) {\n  on_run(run: core.Run) {\n    $ echo ライン one\n  }\n}\n";
 
-/// A home whose config directory holds [`V2_MAIN`] and nothing else — no `afkd.conf` for the
-/// daemon to read instead.
+/// A home whose config directory holds [`V2_MAIN`] and nothing else.
 fn v2_home() -> TempDir {
-    let home = TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(config_dir(home.path())).expect("mk the config dir");
-    std::fs::write(daemon_afkd(home.path()), V2_MAIN).expect("write daemon.afkd");
-    home
+    v2_home_with(&Tree {
+        main: V2_MAIN,
+        packages: &[],
+    })
 }
 
 /// `<config dir>/plugins/@afkd/web_top.afkd` — the relay's settings under a v2 config,
@@ -1392,7 +1417,7 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
         eprintln!("SKIP: tar is not on PATH");
         return;
     }
-    let dir = dir_with_config(SERVICES);
+    let dir = v2_home_with(&SERVICES);
     let packing = TempDir::new().expect("a packing dir");
     let tarball = serve_tarball("afkd-web_top.tar.gz", pack_release(packing.path(), None));
     let index = serve_index(&index_listing(&tarball.url));
@@ -1523,7 +1548,7 @@ fn the_daemon_runs_the_relay_and_the_stream_climbs() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let (daemon, dir, port) = daemon_serving(&config_with_block("  listen \"127.0.0.1:0\"\n"));
+    let (daemon, dir, port) = daemon_serving(&SERVICES, "listen \"127.0.0.1:0\"\n");
 
     let (status, head, page) = get(port, "/");
     assert_eq!(status, 200, "GET /: {page}");
@@ -1614,9 +1639,8 @@ fn two_subscribers_each_get_their_own_snapshot_and_the_third_is_refused() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let (_daemon, _dir, port) = daemon_serving(&config_with_block(
-        "  listen \"127.0.0.1:0\"\n  max_clients 2\n",
-    ));
+    let (_daemon, _dir, port) =
+        daemon_serving(&SERVICES, "listen \"127.0.0.1:0\"\nmax_clients 2\n");
 
     let mut first = Sse::admitted(port);
     let id_first = first.handshake();
@@ -1682,7 +1706,7 @@ fn a_fire_from_one_tab_arrives_on_every_stream() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let (_daemon, dir, port) = daemon_serving(&config_with_block("  listen \"127.0.0.1:0\"\n"));
+    let (_daemon, dir, port) = daemon_serving(&SERVICES, "listen \"127.0.0.1:0\"\n");
 
     let mut one = Sse::admitted(port);
     let id_one = one.handshake();
@@ -1755,10 +1779,7 @@ fn killing_the_daemon_ends_every_stream_and_a_restart_reconnects() {
         return;
     }
     let port = free_loopback_port();
-    let config = config_with_block(&format!("  listen \"127.0.0.1:{port}\"\n"));
-    let dir = dir_with_config(&config);
-    let (out, err, code) = install_relay(dir.path());
-    assert_eq!(code, Some(0), "installing the shipped relay: {out}{err}");
+    let dir = relay_home(&SERVICES, &format!("listen \"127.0.0.1:{port}\"\n"));
 
     let first = spawn_headless_streaming(dir.path(), &[]);
     assert_eq!(
@@ -1817,7 +1838,7 @@ fn the_static_allowlist_serves_three_extensions_and_nothing_else() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let (_daemon, dir, port) = daemon_serving(&config_with_block("  listen \"127.0.0.1:0\"\n"));
+    let (_daemon, dir, port) = daemon_serving(&SERVICES, "listen \"127.0.0.1:0\"\n");
 
     // A file with an **allowlisted extension** outside the plugin directory, placed where
     // a traversal would really reach it: the tree is installed at
@@ -2092,7 +2113,7 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
         eprintln!("skipping: node is not on PATH, and the render half needs it");
         return;
     }
-    let (_daemon, dir, port) = daemon_serving(&config_with_block("  listen \"127.0.0.1:0\"\n"));
+    let (_daemon, dir, port) = daemon_serving(&SERVICES, "listen \"127.0.0.1:0\"\n");
 
     // One fire, run to completion, on a subscriber this leg then leaves open as the sender.
     let mut driver = Sse::admitted(port);
@@ -2104,7 +2125,7 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
     );
     assert_eq!(status, 200, "POST /command: {body}");
     driver.frame_matching(BUDGET, |f| f["event"] == "run_ok");
-    let corpus = runs_root(dir.path()).join("ops.監視");
+    let corpus = runs_root(dir.path()).join("ops.kanshi");
     assert!(
         corpus.is_dir(),
         "the fire left a run corpus at {}",
@@ -2140,7 +2161,7 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
     );
 
     // The tree: a replayed `opened` for the first fire's own node, naming the service
-    // verbatim — wide glyphs and namespace intact through the `::` → `.` dir encoding.
+    // verbatim — its package intact through the `package.name` run dir.
     let opened: Vec<&serde_json::Value> = frames
         .iter()
         .filter(|f| f["type"] == "backfill" && f["event"]["op"] == "opened")
@@ -2203,10 +2224,18 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
 
     // …and the page really draws it. The collected JSONL is exactly what a browser's fold
     // would have seen, rendered through the plugin's own modules with `o` into the run view of
-    // the flat board's first row — the service — then `Tab` onto the tree pane.
+    // the service's row on the flat board — the snapshot's order, which is the board's — then
+    // `Tab` onto the tree pane.
+    let row = frames[0]["services"]
+        .as_array()
+        .expect("the snapshot carries a services array")
+        .iter()
+        .position(|s| s["name"] == BUSY)
+        .unwrap_or_else(|| panic!("the snapshot lists {BUSY}: {:#}", frames[0]));
+    let open = format!("{}o", "j".repeat(row));
     let jsonl = dir.path().join("late-attach.jsonl");
     std::fs::write(&jsonl, format!("{}\n", raw.join("\n"))).expect("write the collected frames");
-    let log_pane = render_through_plugin(&plugin_root(), &jsonl, "0.0.0", "o");
+    let log_pane = render_through_plugin(&plugin_root(), &jsonl, "0.0.0", &open);
     let log_text = (0..usize::from(DRIFT_ROWS))
         .map(|at| log_pane.row_text(at))
         .collect::<Vec<_>>()
@@ -2216,7 +2245,7 @@ fn a_late_attach_is_served_the_finished_run_off_disk_before_any_live_frame() {
         "the run view's log pane is not empty:\n{}",
         log_pane.render()
     );
-    let tree_pane = render_through_plugin(&plugin_root(), &jsonl, "0.0.0", "o\t");
+    let tree_pane = render_through_plugin(&plugin_root(), &jsonl, "0.0.0", &format!("{open}\t"));
     let tree_text = (0..usize::from(DRIFT_ROWS))
         .map(|at| tree_pane.row_text(at))
         .collect::<Vec<_>>()
@@ -2244,9 +2273,10 @@ fn an_unreadable_runs_dir_starts_anyway_says_so_once_and_flashes_every_tab() {
         return;
     }
     let missing = "/nonexistent/afkd-web_top/does-not-exist";
-    let (daemon, dir, port) = daemon_serving(&config_with_block(&format!(
-        "  listen \"127.0.0.1:0\"\n  runs_dir \"{missing}\"\n"
-    )));
+    let (daemon, dir, port) = daemon_serving(
+        &SERVICES,
+        &format!("listen \"127.0.0.1:0\"\nruns_dir \"{missing}\"\n"),
+    );
 
     // It came up, and it serves.
     let (status, _, page) = get(port, "/");
@@ -2337,20 +2367,16 @@ fn a_runs_dir_that_appears_after_the_daemon_started_is_served() {
         eprintln!("skipping: python3 is not on PATH, and the relay is python");
         return;
     }
-    let dir = dir_with_config(
-        config_with_block("  listen \"127.0.0.1:0\"\n  runs_dir \"RUNS\"\n").as_str(),
-    );
+    let dir = v2_home_with(&SERVICES);
     let late = dir.path().join("late-runs");
-    let config = std::fs::read_to_string(main_conf(dir.path())).expect("read the config");
-    std::fs::write(
-        main_conf(dir.path()),
-        config.replace("RUNS", &late.display().to_string()),
-    )
-    .expect("point the block at the late base");
-    assert!(!late.exists(), "the base really is absent at start");
-
     let (out, err, code) = install_relay(dir.path());
     assert_eq!(code, Some(0), "installing the shipped relay: {out}{err}");
+    write_settings_file(
+        dir.path(),
+        &format!("listen \"127.0.0.1:0\"\nruns_dir \"{}\"\n", late.display()),
+    );
+    assert!(!late.exists(), "the base really is absent at start");
+
     let _daemon = spawn_headless_streaming(dir.path(), &[]);
     let port = relay_port(dir.path());
 
@@ -2557,52 +2583,83 @@ const DRIFT_ROWS: u16 = 30;
 ///
 /// - `janitor` — a custom `icon` and a cadence, so the `Service` cell opens with a glyph
 ///   each surface has to measure for itself and the `Trigger`/`Next Run` cells are full;
-/// - `ops::監視` — namespaced **and** wide-glyph, so a name either side mis-measures pushes
-///   its own row's later cells out of the spans the column header marks out. It is also the
-///   one the **run-view** leg fires, which is what its `run` block is shaped for and why the
-///   block is what it is: the nested `times` puts a non-last container at depth 1 so its
-///   children carry the `│  ` guide rail — a flat tree would let the depth claim pass
-///   vacuously — and the failing `seq 1 6` is both the `✗` beside the `✓`s and a leaf whose
-///   six tagged lines auto-expand to `BODY_ELIDE` body rows plus a `… 1 more` elision. Every
-///   line it prints is sized under [`LOG_MESSAGE_BUDGET`], so neither log pane wraps;
-/// - `ops::backup` — the group's second member, so both tree connectors are on screen, and
+/// - `ops.kanshi` — packaged, with a wide-glyph description, so the grouped arm spells its
+///   leaf under the `ops` header and the flat arm its whole name — each surface strips the
+///   package for itself, and a name either side mis-spells pushes its own row's later cells
+///   out of the spans the column header marks out. It is also the one the **run-view** leg
+///   fires, which is what its `on_run` is shaped for and why it is what it is: a proc call
+///   opens a node, so `outer` calling `inner` puts a non-last container on the tree with a
+///   container under it, whose children carry the `│  ` guide rail — a flat tree would let
+///   the depth claim pass vacuously — and the failing `seq 1 6` is both the `✗` beside the
+///   `✓`s and a leaf whose six tagged lines auto-expand to `BODY_ELIDE` body rows plus a
+///   `… 1 more` elision. Every line it prints is sized under [`LOG_MESSAGE_BUDGET`], so
+///   neither log pane wraps;
+/// - `ops.backup` — the group's second member, so both tree connectors are on screen, and
 ///   an operator `icon` on a base with no emoji presentation sequence ([`OPERATOR_ICON`]), so
 ///   a VS16 the terminal ignores is measured by both surfaces;
-/// - `never` — `trigger none`, and the one the leg stops, so a second badge (`□ Stopped`)
-///   and a `1 down` segment of the header are on the board.
+/// - `never` — `manual`, and the one the leg stops, so a second badge (`□ Stopped`) and a
+///   `1 down` segment of the header are on the board.
 ///
-/// No `queue` block: with no lanes configured neither surface draws a `Queues` section, so
-/// the one part of the overview the plugin diverges on by design is absent by construction
-/// rather than suppressed. [`ledger_config`] adds the lane back for the ledger leg
+/// No `queue`: with no lanes configured neither surface draws a `Queues` section, so the one
+/// part of the overview the plugin diverges on by design is absent by construction rather
+/// than suppressed. [`ledger_config`] adds the lane back for the ledger leg
 /// ([`web_tops_divergences_from_afkd_top_are_exactly_the_ledgers`]), which holds that
 /// divergence to [`LEDGER`].
-const DRIFT_SERVICES: &str = r#"service janitor {
-  icon "🧹"
-  description "sweeps the floor"
-  trigger interval { every "1h" }
-  run { run_cmd "true" }
-}
+const DRIFT_SERVICES: Tree = Tree {
+    main: DRIFT_MAIN,
+    packages: &[("ops", DRIFT_OPS)],
+};
 
-service ops::監視 {
-  description "ウェブ — the wide one"
-  trigger interval { every "1h" }
-  run {
-    times 2 {
-      times 1 { run_cmd "echo ライン deep" }
-    }
-    run_cmd "seq 1 6 && false"
+/// [`DRIFT_SERVICES`]' `daemon.afkd`: the two services in `main`.
+const DRIFT_MAIN: &str = r#"import "core"; import "core:interval"; import "core:manual"
+
+import "ops"
+
+janitor :: service(interval) {
+  icon        "🧹"
+  description "sweeps the floor"
+  every       1h
+
+  on_run(run: core.Run) {
+    $ true
   }
 }
 
-service ops::backup {
-  icon "★️"
-  trigger interval { every "1h" }
-  run { run_cmd "true" }
+never :: service(manual) {
+  on_run(run: core.Run) {
+    $ true
+  }
+}
+"#;
+
+/// [`DRIFT_SERVICES`]' `ops` package.
+const DRIFT_OPS: &str = r#"import "core"; import "core:interval"
+
+kanshi :: service(interval) {
+  description "ウェブ — the wide one"
+  every       1h
+
+  on_run(run: core.Run) {
+    outer()
+    $ seq 1 6 && false
+  }
 }
 
-service never {
-  trigger none
-  run { run_cmd "true" }
+outer :: proc() {
+  inner()
+}
+
+inner :: proc() {
+  $ echo ライン deep
+}
+
+backup :: service(interval) {
+  icon  "★️"
+  every 1h
+
+  on_run(run: core.Run) {
+    $ true
+  }
 }
 "#;
 
@@ -2621,7 +2678,7 @@ const FOOTER_HINT_FLOOR: usize = 12;
 /// One reconstructed screen as **columns**: `grid[row][col]` is that cell's contents, and a
 /// wide glyph's covered cell is the empty string beside it.
 ///
-/// Columns rather than characters because a char-index slice cannot survive `監視` or `🧹`:
+/// Columns rather than characters because a char-index slice cannot survive `🧹` or `★️`:
 /// the terminal's grid and the plugin's own `textWidth` both put a wide glyph in one cell
 /// and leave the next empty, and this is the one shape in which the two are comparable.
 struct Screen {
@@ -2863,7 +2920,7 @@ fn column_spans(header: &[(String, usize)], cols: usize) -> Vec<(String, (usize,
 
 /// One column's cell off a row as its *content*: the slice its column header's span marks
 /// out, trimmed, its internal whitespace collapsed, its readings normalised. The floors and
-/// row lookups read this ([`badges`], [`has_countdown`], the `├` and `監視` finds), and so
+/// row lookups read this ([`badges`], [`has_countdown`], the `├` and `kanshi` finds), and so
 /// does the ledger's `Queues` compare; an overview cell is *compared* through
 /// [`column_cell`].
 fn cell_text(row: &[String], (from, to): (usize, usize)) -> String {
@@ -2923,7 +2980,7 @@ fn badges(rows: &[&[String]], spans: &[(String, (usize, usize))]) -> Vec<String>
 
 /// Whether any service row carries a `Next Run` countdown — the floor that keeps
 /// [`column_cell`]'s edge claim from comparing two blank cells and calling them aligned.
-/// [`DRIFT_SERVICES`] declares three `every "1h"` services, so one is always counting down.
+/// [`DRIFT_SERVICES`] declares three `every 1h` services, so one is always counting down.
 fn has_countdown(rows: &[&[String]], spans: &[(String, (usize, usize))]) -> bool {
     rows.iter()
         .any(|row| !cell_text(row, span_of(spans, "Next Run")).is_empty())
@@ -3243,7 +3300,7 @@ fn render_through_plugin(plugin: &Path, frames: &Path, version: &str, keys: &str
 /// `pub(crate)`, and held to the source by its membership in [`VARIATION_GLYPHS`].
 const STOPPED_ICON: &str = "\u{25AA}\u{FE0F}";
 
-/// `ops::backup`'s `icon` in [`DRIFT_SERVICES`]: an operator icon on a base with **no** emoji
+/// `ops.backup`'s `icon` in [`DRIFT_SERVICES`]: an operator icon on a base with **no** emoji
 /// presentation sequence, so `unicode-width` ignores the selector and it measures one cell
 /// (FdK5ONtJ). Held to the fixture by [`drift`]'s floor on it.
 const OPERATOR_ICON: &str = "\u{2605}\u{FE0F}";
@@ -3662,8 +3719,7 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         );
         return;
     }
-    let config = format!("{DRIFT_SERVICES}\nplugin {NAME} {{\n  listen \"127.0.0.1:0\"\n}}\n");
-    let (_daemon, dir, port) = daemon_serving(&config);
+    let (_daemon, dir, port) = daemon_serving(&DRIFT_SERVICES, "listen \"127.0.0.1:0\"\n");
     let scratch = TempDir::new().expect("a tempdir for the capture");
 
     // One stream serves all three duties — the snapshot, the stop's own events, and the
@@ -3773,7 +3829,7 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     assert!(
         fault.contains(&format!("--- afkd top, {DRIFT_COLS}x{DRIFT_ROWS} ---"))
             && fault.contains(&format!("--- {NAME}, {DRIFT_COLS}x{DRIFT_ROWS} ---"))
-            && fault.matches("監視").count() == 2,
+            && fault.matches("kanshi").count() == 2,
         "the failure prints both screens, so a drift is diagnosable from the output alone: {fault}"
     );
 
@@ -3822,7 +3878,7 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     );
 
     // The fourth arm: FdK5ONtJ restored — every VS16 cluster two cells, whatever its base.
-    // `ops::backup`'s `★️` is one cell in the terminal, which ignores the selector on a base
+    // `ops.backup`'s `★️` is one cell in the terminal, which ignores the selector on a base
     // with no emoji presentation sequence, so the widened icon pushes that row's name out.
     let widened = before.replace(VS16_RULE, r#"if (cluster.includes("\u{FE0F}")) return 2;"#);
     std::fs::write(&layout, &widened).expect("write the mutated layout module");
@@ -3862,7 +3918,7 @@ const LOG_STAMP_W: usize = 13;
 const LOG_MESSAGE_BUDGET: usize = DRIFT_COLS as usize - 1 - LOG_STAMP_W;
 
 /// What has to be on the run view before agreeing with the renderer means anything, the
-/// same discipline the overview leg's floors carry. The fixture's nested `times` puts six
+/// same discipline the overview leg's floors carry. The fixture's nested proc calls put four
 /// nodes on the tree and the failed leaf's auto-expanded body six more under it; its output
 /// plus the supervisor's own `[RUN]`/`[OK]`/`[ERR]` brackets fill the log. Both are floors,
 /// so a step added to the fixture is not a reason to touch them.
@@ -4095,7 +4151,7 @@ fn run_drift(
                 "{whose}'s pane overflowed its viewport — its scrollbar gutter reads {gutter:?}, so the footer reader can no longer find where the body stops{both}"
             ));
         }
-        if !cell_text(&screen.grid[RUN_HEADER_ROW], span_of(spans, "Service")).contains("監視") {
+        if !cell_text(&screen.grid[RUN_HEADER_ROW], span_of(spans, "Service")).contains("kanshi") {
             return Err(format!(
                 "{whose}'s run header does not name the fired service, so the two cursors never landed on the same row{both}"
             ));
@@ -4125,7 +4181,7 @@ fn run_drift(
                 .any(|row| segments(row).iter().any(|(_, at)| *at >= 3))
             {
                 return Err(format!(
-                    "every tree row's ink starts at column 0, so a flat tree would pass the depth claim vacuously; the fixture nests a `times` inside a `times` for exactly this{both}"
+                    "every tree row's ink starts at column 0, so a flat tree would pass the depth claim vacuously; the fixture nests a proc call inside a proc call for exactly this{both}"
                 ));
             }
         }
@@ -4218,8 +4274,7 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
         eprintln!("skipping the run-view drift leg: node is not on PATH, and the plugin's renderer is javascript");
         return;
     }
-    let config = format!("{DRIFT_SERVICES}\nplugin {NAME} {{\n  listen \"127.0.0.1:0\"\n}}\n");
-    let (_daemon, dir, port) = daemon_serving(&config);
+    let (_daemon, dir, port) = daemon_serving(&DRIFT_SERVICES, "listen \"127.0.0.1:0\"\n");
     let scratch = TempDir::new().expect("a tempdir for the capture");
 
     let mut sse = Sse::admitted(port);
@@ -4308,7 +4363,7 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     let steps = terminal
         .service_rows()
         .iter()
-        .position(|row| cell_text(row, span_of(&spans, "Service")).contains("監視"))
+        .position(|row| cell_text(row, span_of(&spans, "Service")).contains("kanshi"))
         .expect("the fired service is on the settled board");
     let keys = format!("g{}o", "j".repeat(steps));
 
@@ -4384,8 +4439,8 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     });
     assert!(
         top_half.contains(&format!("--- afkd top, {DRIFT_COLS}x{DRIFT_ROWS} ---"))
-            && top_half.contains("監視")
-            && plugin_half.contains("監視"),
+            && top_half.contains("kanshi")
+            && plugin_half.contains("kanshi"),
         "the failure prints both screens, so a drift is diagnosable from the output alone: {fault}"
     );
 }
@@ -4480,43 +4535,54 @@ fn intent_at(entry: &Divergence) -> String {
     }
 }
 
-/// The lane [`ledger_config`] declares. A bare `queue heavy` resolves to the `normal`
-/// priority, which neither surface's `Queues` section prints.
+/// The lane [`ledger_ops`] declares, in the `ops` package — a package service cannot name a
+/// lane in `main`, which no package imports (lang-v2 §3.2) — so its identity is `ops.heavy`.
+/// A bare `queue heavy` resolves to the `normal` priority, which neither surface's `Queues`
+/// section prints.
 const LANE: &str = "heavy";
 
 /// The service the ledger leg opens the info view on, and the keys that get both surfaces
-/// there from the grouped board's first row — `janitor`, the `ops` header, `監視`, `backup`,
-/// the grouped order the two share.
+/// there from the grouped board's first row — `janitor`, `never`, the `ops` header, `kanshi`,
+/// `backup`, the grouped order the two share.
 ///
-/// `ops::backup` because it is the lane's member, so the conditional `Queue` row is on the
+/// `ops.backup` because it is the lane's member, so the conditional `Queue` row is on the
 /// page, and because the terminal's stacked boxes then just fit a 30-row screen (rows 2–27):
-/// `janitor`'s and `監視`'s `About` band pushes `Total run time` off the bottom. A row the
+/// `janitor`'s and `kanshi`'s `About` band pushes `Total run time` off the bottom. A row the
 /// terminal grows there clips a field off the end, which reads here as one-sided on the
 /// plugin — red, with both screens printed.
-const INFO_SERVICE: &str = "ops::backup";
-const INFO_KEYS: &str = "gjjji";
+const INFO_SERVICE: &str = "ops.backup";
+const INFO_KEYS: &str = "gjjjji";
 
 /// The floors the ledger closes on and the terminal's captures wait for, the drift leg's
-/// discipline: the flat arm lists the fixture's four services, and `ops::backup`'s info view
+/// discipline: the flat arm lists the fixture's four services, and `ops.backup`'s info view
 /// carries sixteen fields in five sections on the terminal and fifteen on the page. Floors,
 /// so a field added to the fixture is not a reason to touch them.
 const FLAT_ROW_FLOOR: usize = 4;
 const INFO_FIELD_FLOOR: usize = 14;
 const INFO_SECTIONS: usize = 5;
 
-/// [`DRIFT_SERVICES`] with the one thing the drift leg keeps off its board: a lane, so both
-/// surfaces draw a `Queues` section and the info view a `Queue` row.
-fn ledger_config() -> String {
-    const OPENER: &str = "service ops::backup {\n";
+/// [`DRIFT_SERVICES`]' `ops` package with the one thing the drift leg keeps off its board: a
+/// lane, so both surfaces draw a `Queues` section and the info view a `Queue` row.
+fn ledger_ops() -> String {
+    const OPENER: &str = "backup :: service(interval) {\n";
+    const IMPORTS: &str = "import \"core\"; import \"core:interval\"\n\n";
     // A fixture edit that renamed the service would otherwise drop the lane in silence, and
     // the `Queues` section would then go uncompared for a reason neither surface is at.
     assert_eq!(
-        DRIFT_SERVICES.matches(OPENER).count(),
+        DRIFT_OPS.matches(OPENER).count(),
         1,
-        "`DRIFT_SERVICES` opens `ops::backup` once; the ledger's lane is no longer aimed at it"
+        "`DRIFT_OPS` opens `backup` once; the ledger's lane is no longer aimed at it"
     );
-    let services = DRIFT_SERVICES.replace(OPENER, &format!("{OPENER}  queue {LANE}\n"));
-    format!("queue {LANE} {{\n  parallelism 2\n}}\n\n{services}\nplugin {NAME} {{\n  listen \"127.0.0.1:0\"\n}}\n")
+    assert!(
+        DRIFT_OPS.starts_with(IMPORTS),
+        "`DRIFT_OPS` opens on its imports, which the lane goes after"
+    );
+    let services = DRIFT_OPS.replace(OPENER, &format!("{OPENER}  queue {LANE}\n"));
+    services.replacen(
+        IMPORTS,
+        &format!("{IMPORTS}{LANE} :: queue {{ capacity 2 }}\n\n"),
+        1,
+    )
 }
 
 impl Screen {
@@ -4605,8 +4671,8 @@ fn list_divergences(surface: &str, top: &Screen, plugin: &Screen, out: &mut Obse
 
 /// The `Queues` section: its labels, each label's origin, the lane-row count, and each
 /// column's cells — each surface sliced by **its own** header's spans, since a `Queue` column
-/// one surface fit wider would otherwise leak its tail into the other's `Slots` span and
-/// report a `Slots` difference that is really the `Queue` one.
+/// one surface fit wider would otherwise leak its tail into the other's `Capacity` span and
+/// report a `Capacity` difference that is really the `Queue` one.
 fn queue_divergences(top: &Screen, plugin: &Screen, out: &mut Observed) {
     let header = |screen: &Screen| {
         screen
@@ -5019,7 +5085,14 @@ fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
         );
         return;
     }
-    let (_daemon, dir, port) = daemon_serving(&ledger_config());
+    let ops = ledger_ops();
+    let (_daemon, dir, port) = daemon_serving(
+        &Tree {
+            main: DRIFT_MAIN,
+            packages: &[("ops", &ops)],
+        },
+        "listen \"127.0.0.1:0\"\n",
+    );
     let scratch = TempDir::new().expect("a tempdir for the capture");
 
     // The overview leg's order, for its reasons: the snapshot lands before the stop, so the
@@ -5143,8 +5216,8 @@ fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
     });
     assert!(
         top_half.contains(&format!("--- afkd top, {DRIFT_COLS}x{DRIFT_ROWS} ---"))
-            && top_half.contains("監視")
-            && plugin_half.contains("監視")
+            && top_half.contains("kanshi")
+            && plugin_half.contains("kanshi")
             && plugin_half.contains("Faults"),
         "the failure prints both surfaces' screens, so it is diagnosable from the output alone: {}",
         fault.message

@@ -1,22 +1,22 @@
 afkd 0.2.123 · ● Running 12s · 8 up · 2 down                    1.6k tok · $0.04
 CPU      ▁▁▁   1% · Mem      ▁▁▁ 1.5G/31G · Net ↓    ▆▁▁  717/s ↑    ▂▁▁  959/s 
                                                                                 
-Service           State                 Last Activity   Next Run                
-  🧹 janitor      □ Stopped                                                     
-⊟ 📦 ops          ✕ Crashed                        4s                           
-├─ 🔹 nightly     ▷ Queued 2s                      9s                           
-├─ 🔷 sleeper     ▶ Busy 4s                        4s                           
-├─ 🔸 broken      ✕ Crashed                                                     
-└─ ⊟ 📦 db                                         5s                           
-   └─ 🔷 vacuum   ▶ Busy 5s                        5s                           
-  🔹 archivist    ● Idle                                 59m 47s                
-  🔹 noisy        ● Idle                                 59m 47s                
-  🔹 flaky        ● Idle                                 59m 47s                
-  🔹 deep         ● Idle                           7s    59m 52s                
-  🔹 spare        ● Idle                                 59m 47s                
+Service          State                 Last Activity   Next Run                 
+  🧹 janitor     □ Stopped                                                      
+⊟ 📦 ops         ✕ Crashed                        4s                            
+├─ 🔹 nightly    ▷ Queued 2s                      9s                            
+├─ 🔷 sleeper    ▶ Busy 4s                        4s                            
+├─ 🔸 broken     ✕ Crashed                                                      
+└─ 🔷 vacuum     ▶ Busy 5s                        5s                            
+  🔹 archivist   ● Idle                                 59m 47s                 
+  🔹 noisy       ● Idle                                 59m 47s                 
+  🔹 flaky       ● Idle                                 59m 47s                 
+  🔹 deep        ● Idle                           7s    59m 52s                 
+  🔹 spare       ● Idle                                 59m 47s                 
                                                                                 
-Queue      Slots                                    Parallelism   Held   Waiting
+Queue      Capacity                                 Parallelism   Held   Waiting
 🧵 heavy   ▮▮ ╎ ∙                                   2             2      1      
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -33,22 +33,22 @@ t run now  - narrow     Enter peek    b busy ○                  q quit
 nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbbnnnnnnnnnnnnnnnn
-rrmmmmmmmmmmnnnnnnmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnn
+bbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbbnnnnnnnnnnnnnnnnn
+rrmmmmmmmmmmnnnnnmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrrnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
+bbbbbnnnnnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbbbbnnnbbbbnnnbbbbbbb
 nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -65,22 +65,22 @@ bnlllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnn
 ................................................................................
 ddddddddddd......dddddddddddddd..........dddddddddddddd........dddddddd.........
 ................................................................................
-bbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb................
-ssssssssssssssssssDDDDDDDDDsssssssssssssssssssssssssssssssssssssssssssssssssssss
-..................bbbbbbbbb.....................................................
-..................ddddddddddd...................................................
-..................bbbbbbbbb.....................................................
-..................bbbbbbbbb.....................................................
-................................................................................
-..................bbbbbbbbb.....................................................
-................................................................................
+bbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb.................
+sssssssssssssssssDDDDDDDDDssssssssssssssssssssssssssssssssssssssssssssssssssssss
+.................bbbbbbbbb......................................................
+.................ddddddddddd....................................................
+.................bbbbbbbbb......................................................
+.................bbbbbbbbb......................................................
+.................bbbbbbbbb......................................................
 ................................................................................
 ................................................................................
 ................................................................................
 ................................................................................
 ................................................................................
-bbbbb......bbbbb....................................bbbbbbbbbbb...bbbb...bbbbbbb
+................................................................................
+bbbbb......bbbbbbbb.................................bbbbbbbbbbb...bbbb...bbbbbbb
 ...........bb...d...............................................................
+................................................................................
 ................................................................................
 ................................................................................
 ................................................................................

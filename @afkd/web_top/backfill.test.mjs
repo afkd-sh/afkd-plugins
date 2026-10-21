@@ -29,9 +29,9 @@ import { BASE, STEP, assertGolden, assertGrid, paneBody, readCapture, screenText
 
 const HERE = import.meta.dirname;
 
-/// The one service every fixture in this suite was recorded for — namespaced and wide-glyph,
-/// so the `::` to `.` run-dir encoding and a CJK name are on the path of every read here.
-const SERVICE = "ops::監視";
+/// The one service every fixture in this suite was recorded for — packaged and wide-glyph, so a
+/// `package.name` run dir and a CJK name are on the path of every read here.
+const SERVICE = "ops.監視";
 
 /// The recorded run this suite's log assertions are about — the newest dir of both corpora,
 /// and the one the tail anchors on.

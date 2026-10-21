@@ -105,10 +105,14 @@ test("a snapshot alone seeds one row per service, with its whole wire entry", ()
   for (const want of ["armed", "busy", "queued", "stopped", "crashed"]) {
     assert.ok(states.has(want), `the snapshot carries a \`${want}\` service (has ${[...states]})`);
   }
-  assert.ok(
-    snapshot.services.some((s) => s.group === "ops") && snapshot.services.some((s) => s.group === "ops::db"),
-    "…a namespaced service and a two-level one",
+  assert.deepEqual(
+    [...new Set(snapshot.services.map((s) => s.group))].sort(),
+    ["", "ops"],
+    "…a package and the main package, and nothing nested",
   );
+  for (const svc of snapshot.services.filter((s) => s.group !== "")) {
+    assert.ok(svc.name.startsWith(`${svc.group}.`), `${svc.name} is spelled \`${svc.group}.<name>\``);
+  }
   assert.ok(snapshot.services.some((s) => s.group === ""), "…and a bare one at the top level");
   assert.ok(snapshot.services.some((s) => s.confined), "…one confined");
   assert.ok(
@@ -794,7 +798,7 @@ test("an event naming a service the board never saw folds to nothing", () => {
   const snapshot = frames.find((f) => f.type === "meta" && f.meta === "snapshot");
   const board = fold(seed(), snapshot, 1_000);
   for (const frame of frames.filter((f) => f.type === "event" || f.type === "log" || f.type === "trace")) {
-    const stranger = { ...copy(frame), service: "nobody::here" };
+    const stranger = { ...copy(frame), service: "nobody.here" };
     const after = fold(board, stranger, 2_000);
     assert.deepEqual(sansFrames(after), sansFrames(board), `${frame.event ?? frame.type} for an unknown service`);
     assert.equal(after.frames.folded, board.frames.folded + 1, "…understood, not ignored");
@@ -950,25 +954,6 @@ test("the group rollup takes the latest activity and the oldest fire over its me
     .filter((ms) => ms !== undefined);
   assert.ok(new Set(ages).size >= 2, `${spread.group}'s members carry different activity ages (${ages})`);
   assert.ok(rolled.some((g) => g.anyCrashed), "…and a crashed member is really in a group");
-});
-
-test("a nested group does not count toward its parent — the stated flat-bucketing divergence", () => {
-  // `afkd top`'s own rollup is transitive (`in_subtree`), and this one is not: it buckets by
-  // the exact `group` string, because there is no tree to collapse into until the card that
-  // paints one. Pinned rather than left to be discovered.
-  const snapshot = readFixture("snapshot").find((f) => f.type === "meta" && f.meta === "snapshot");
-  const nested = snapshot.services.find((s) => s.group.includes("::"));
-  assert.ok(nested, "the capture has a two-level namespace");
-  const parent = nested.group.slice(0, nested.group.indexOf("::"));
-  assert.ok(
-    snapshot.services.some((s) => s.group === parent),
-    `…whose parent \`${parent}\` is itself a group on the board`,
-  );
-
-  const rolled = groups(fold(seed(), snapshot, 1_000));
-  const parentBucket = rolled.find((g) => g.group === parent);
-  assert.ok(!parentBucket.members.includes(nested.name), `${nested.name} is not a member of ${parent}`);
-  assert.deepEqual(rolled.find((g) => g.group === nested.group).members, [nested.name]);
 });
 
 test("the queue lanes read held, waiting and the max parallelism", () => {

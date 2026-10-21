@@ -1,0 +1,33 @@
+{"afkd":"welcome","proto":1,"daemon":"0.2.382","auth":"none"}
+{"type":"meta","meta":"snapshot","services":[{"name":"claude.brownout","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"claude","icon":"🔋","description":"backs off when the account's window runs low","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3592675,"state_ms":7324,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"janitor","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"","icon":"🧹","description":"sweeps the scratch tree between passes","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3592675,"state_ms":7324,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"selfdev.develop.0","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"selfdev","icon":"🛠","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3592675,"state_ms":7324,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"selfdev.develop.1","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"selfdev","icon":"🛠","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3592675,"state_ms":7324,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"selfdev.discuss","state":"armed","trigger_label":"Every 1h","trigger_detail":"interval · every 1h","trigger_fields":[["every","1h"]],"confined":false,"busy_ms":0,"group":"selfdev","icon":"💬","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"next_ms":3592675,"state_ms":7324,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":7325}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6568787968,"mem_total":32453844992,"rx_bps":6684,"tx_bps":4742}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6575718400,"mem_total":32453844992,"rx_bps":3390,"tx_bps":1703}
+{"type":"event","event":"run_started","service":"selfdev.develop.0"}
+{"type":"trace","service":"selfdev.develop.0","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"printf '%s\\n' \"開発 — the develop copy builds\" \"second line\"","detail":""},"at":{"year":2026,"month":10,"day":20,"hour":23,"minute":39,"second":48,"millis":953}}}
+{"type":"log","service":"selfdev.develop.0","stream":"stderr","line":"[selfdev.develop.0] [RUN] run_cmd: printf '%s\\n' \"開発 — the develop copy builds\" \"second line\""}
+{"type":"log","service":"selfdev.develop.0","stream":"stdout","line":"[selfdev.develop.0] [printf] 開発 — the develop copy builds","node":1}
+{"type":"log","service":"selfdev.develop.0","stream":"stdout","line":"[selfdev.develop.0] [printf] second line","node":1}
+{"type":"log","service":"selfdev.develop.0","stream":"stderr","line":"[selfdev.develop.0] [OK] run_cmd: printf '%s\\n' \"開発 — the develop copy builds\" \"second line\" (exit 0, 0ms)"}
+{"type":"trace","service":"selfdev.develop.0","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":0,"out":{"out":"lines","n":2}}}
+{"type":"trace","service":"selfdev.develop.0","event":{"op":"opened","node":{"id":2,"kind":"cmd","label":"sleep 3","detail":""},"at":{"year":2026,"month":10,"day":20,"hour":23,"minute":39,"second":48,"millis":955}}}
+{"type":"log","service":"selfdev.develop.0","stream":"stderr","line":"[selfdev.develop.0] [RUN] run_cmd: sleep 3"}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6574985216,"mem_total":32453844992,"rx_bps":1626,"tx_bps":799}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6574075904,"mem_total":32453844992,"rx_bps":2312,"tx_bps":1067}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6574194688,"mem_total":32453844992,"rx_bps":3209,"tx_bps":14150}
+{"type":"log","service":"selfdev.develop.0","stream":"stderr","line":"[selfdev.develop.0] [OK] run_cmd: sleep 3 (exit 0, 3.00s)"}
+{"type":"trace","service":"selfdev.develop.0","event":{"op":"closed","id":2,"status":"ok","elapsed_ms":3001,"out":{"out":"lines","n":0}}}
+{"type":"event","event":"run_ok","service":"selfdev.develop.0","elapsed_ms":3002}
+{"type":"event","event":"service_next_run","service":"selfdev.develop.0","next_ms":3599999}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6572388352,"mem_total":32453844992,"rx_bps":1572,"tx_bps":865}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":6573015040,"mem_total":32453844992,"rx_bps":2846,"tx_bps":1811}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"claude.brownout"}
+{"type":"event","event":"service_stopping","service":"janitor"}
+{"type":"event","event":"service_stopping","service":"selfdev.discuss"}
+{"type":"event","event":"service_paused","service":"claude.brownout","paused":true}
+{"type":"event","event":"service_paused","service":"janitor","paused":true}
+{"type":"event","event":"service_paused","service":"selfdev.discuss","paused":true}
+{"type":"event","event":"service_stopping","service":"selfdev.develop.0"}
+{"type":"event","event":"service_stopping","service":"selfdev.develop.1"}
+{"type":"event","event":"service_paused","service":"selfdev.develop.0","paused":true}
+{"type":"event","event":"service_paused","service":"selfdev.develop.1","paused":true}

@@ -151,28 +151,25 @@ test("renders the whole overview at 100x30", () => {
     assert.ok(lines[3].includes(label), `the column header carries ${label}`);
   }
   // Every one of the capture's ten services, each on exactly one row. The needle is the
-  // **leaf**, because a member row drops the namespace its header already carries.
+  // **leaf**, because a member row drops the package its header already carries.
   assert.equal(Object.keys(board.services).length, 10, "the capture still holds its ten services");
-  for (const name of Object.keys(board.services)) {
-    const leaf = name.includes("::") ? name.slice(name.lastIndexOf("::") + 2) : name;
+  for (const [name, svc] of Object.entries(board.services)) {
+    const leaf = svc.group === "" ? name : name.slice(svc.group.length + 1);
     assert.equal(lines.filter((l) => l.includes(leaf)).length, 1, `${name} has exactly one row`);
   }
   // The confined one wears nothing on its row, as `afkd top`'s list row does not: the info
   // view's `Sandbox` field is where confinement is spelled.
   assert.ok(Object.values(board.services).some((svc) => svc.confined), "the capture still holds a confined service");
   assert.equal(lines.filter((l) => l.includes("🔒")).length, 0, "no list row carries a confinement marker");
-  // Both group headers, including the nested one — the two-level `ops::db` is what makes the
-  // transitive rollup non-vacuous.
-  assert.ok(lines.some((l) => l.includes("⊟ 📦 ops")), "the `ops` header");
-  assert.ok(lines.some((l) => l.includes("⊟ 📦 db")), "the nested `db` header");
-  // The nested header's own rollup: a crash in `ops::broken` surfaces on `ops`, and the
+  // The one group header, and its rollup: a crash in `ops.broken` surfaces on `ops`, and the
   // busiest member's activity reaches the header it hangs under.
+  assert.equal(lines.filter((l) => l.includes("📦")).length, 1, "the `ops` header, and no other");
   const opsRow = lines.find((l) => l.includes("⊟ 📦 ops"));
-  assert.match(opsRow, /✕ Crashed/, "the crash three rows down surfaces on the header");
+  assert.match(opsRow, /✕ Crashed/, "the crash rows down surfaces on the header");
   // The `Queues` section and its one filled lane.
   const queueHeader = lines.findIndex((l) => l.startsWith("Queue "));
   assert.ok(queueHeader > 0, "the `Queues` section has a header");
-  for (const label of ["Queue", "Slots", "Parallelism", "Held", "Waiting"]) {
+  for (const label of ["Queue", "Capacity", "Parallelism", "Held", "Waiting"]) {
     assert.ok(lines[queueHeader].includes(label), `the section's ${label} column`);
   }
   // The lane by its name alone, as the terminal's section reads it: its `high` priority is
@@ -314,8 +311,8 @@ test("sheds right to left as the width falls", () => {
 
     // Nothing clips a service name to nothing: every service still spells at least its first
     // grapheme, at every width the ladder walks.
-    for (const name of Object.keys(board.services)) {
-      const leaf = name.includes("::") ? name.slice(name.lastIndexOf("::") + 2) : name;
+    for (const [name, svc] of Object.entries(board.services)) {
+      const leaf = svc.group === "" ? name : name.slice(svc.group.length + 1);
       assert.ok(lines.some((l) => l.includes(leaf)), `${name} still reads whole at ${cols}`);
     }
   }
@@ -363,8 +360,8 @@ test("a wide name costs its cells and moves nothing", () => {
   // taken for four cells it would cost twenty-four and the row would overrun.
   assert.equal(textWidth("監視サービス"), 12);
   assert.equal(textWidth("abcdefghijkl"), 12);
-  const wide = layout(renamed(board, "ops::nightly", "ops::監視サービス"), opts);
-  const ascii = layout(renamed(board, "ops::nightly", "ops::abcdefghijkl"), opts);
+  const wide = layout(renamed(board, "ops.nightly", "ops.監視サービス"), opts);
+  const ascii = layout(renamed(board, "ops.nightly", "ops.abcdefghijkl"), opts);
   assertGrid(wide, 100, 30);
   assertGrid(ascii, 100, 30);
 
@@ -387,7 +384,7 @@ test("a wide name costs its cells and moves nothing", () => {
 
   // A VS16 sequence in a name is the other half of the class: two cells by emoji presentation
   // rather than by its base scalar, which is *one* (Ambiguous).
-  const vs16 = layout(renamed(board, "ops::nightly", "ops::▪️probe"), opts);
+  const vs16 = layout(renamed(board, "ops.nightly", "ops.▪️probe"), opts);
   assertGrid(vs16, 100, 30);
 });
 
@@ -485,10 +482,10 @@ test("every right-flushed run ends where its header ends", () => {
     }
     if (cols === 100) {
       assert.equal(lastInk(header, ...headerSpan(header, "Next Run")), cols - 1, "`Next Run` ends on the pane's last column");
-      // Non-vacuity: five countdowns and six ages (two on group headers), every one narrower
-      // than its column, so a left-flushed cell misses its header's edge on each.
+      // Non-vacuity: five countdowns and five ages (one on the group header), every one
+      // narrower than its column, so a left-flushed cell misses its header's edge on each.
       assert.equal(checked["Next Run"], 5, "every countdown was checked");
-      assert.equal(checked["Last Activity"], 6, "every age was checked");
+      assert.equal(checked["Last Activity"], 5, "every age was checked");
     }
 
     const top = rows[0];
@@ -761,10 +758,10 @@ test("durations spell the two largest units", () => {
 // arm and a screen that agreed with itself on one of them would say nothing about the others.
 
 test("the cursor on a service row mid-board", () => {
-  // Row 7 is `archivist` — a root peer below the whole `ops` subtree, so the band sits past
-  // two group headers and the nesting, where an off-by-one in the row sequence would show.
+  // Row 6 is `archivist` — a root peer below the whole `ops` group, so the band sits past a
+  // group header and its members, where an off-by-one in the row sequence would show.
   const { board, at } = liveBoard();
-  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 7 });
+  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 6 });
   assertGrid(rows, 100, 30);
   assertGolden("cursor-service-100x30.txt", rows);
   const lines = screenText(rows).split("\n");
@@ -778,7 +775,7 @@ test("the cursor on a service row mid-board", () => {
   }
 });
 
-test("the cursor on a group header, with its subtree folded away", () => {
+test("the cursor on a group header, with its members folded away", () => {
   // The fold and the group footer arm in one screen: `ops` is collapsed, so its chevron flips,
   // its four members are gone, and the footer names `expand` rather than `collapse` — the verb
   // the key would do **next**.
@@ -796,12 +793,12 @@ test("the cursor on a group header, with its subtree folded away", () => {
   const text = screenText(rows);
   assert.ok(text.includes("⊞ 📦 ops"), "the folded header wears the squared plus");
   assert.ok(!text.includes("⊟ 📦 ops"), "…and not the squared minus");
-  for (const gone of ["nightly", "sleeper", "broken", "vacuum", "⊟ 📦 db"]) {
-    assert.ok(!text.includes(gone), `${gone} is folded away, header and all`);
+  for (const gone of ["nightly", "sleeper", "broken", "vacuum"]) {
+    assert.ok(!text.includes(gone), `${gone} is folded away`);
   }
   assert.ok(text.includes("janitor") && text.includes("archivist"), "the root peers stay");
-  // The group row still carries its transitive rollup: a crash three levels down surfaces on
-  // the header that is now hiding it, which is the whole point of folding transitively.
+  // The group row still carries its rollup: a member's crash surfaces on the header that is
+  // now hiding it, which is the whole point of rolling a group up.
   const header = screenText(rows).split("\n").find((l) => l.includes("⊞ 📦 ops"));
   assert.match(header, /✕ Crashed/, "the hidden crash still reaches the header");
   const footer = footerOf(rows, 3).join("\n");
@@ -811,7 +808,7 @@ test("the cursor on a group header, with its subtree folded away", () => {
 
 test("the cursor on a queue lane", () => {
   const { board, at } = liveBoard();
-  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 14 });
+  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 13 });
   assertGrid(rows, 100, 30);
   assertGolden("cursor-lane-100x30.txt", rows);
   const banded = rows.findIndex((row) => row.some((c) => c.bg === "selection"));
@@ -1046,7 +1043,7 @@ test("the overlay is the terminal's own legend for the view underneath", () => {
   for (const key of ["k/↑  j/↓", "Enter/Space", "Ctrl+R", "?"]) assert.ok(keyCells.includes(key), `${key} is a whitened key`);
   assert.ok(!keyCells.includes("🪦"), "a sigil is not a key");
   // The info page's own three rows, and each run-view pane's.
-  const info = layout(board, infoAt("ops::nightly", 160, 44, at, { help: true }));
+  const info = layout(board, infoAt("ops.nightly", 160, 44, at, { help: true }));
   assert.deepEqual(popupLines(info), ["", "i/Esc  Back to list", "q      Quit", "?      Close help", ""]);
   const run = liveBoard("trace-burst.jsonl");
   const state = runState("deep");
@@ -1135,16 +1132,16 @@ test("every popup owns exactly one gutter row and two gutter columns at each end
   // the frame does — so the geometry must not move with the content.
   //
   // The box is found by its **cells**, not by scanning for a corner glyph: a tree connector
-  // spells `└─ ` too, and a text scan would find the `ops::db` row before the border.
+  // spells `└─ ` too, and a text scan would find a member row before the border.
   const { board, at } = liveBoard();
   const names = [
-    "ops::a-very-long-service-name-that-runs-past-any-reasonable-column",
-    "ops::監視サービス",
-    "ops::café́",
-    "ops::x",
+    "ops.a-very-long-service-name-that-runs-past-any-reasonable-column",
+    "ops.監視サービス",
+    "ops.café́",
+    "ops.x",
   ];
   for (const name of names) {
-    const moved = renamed(board, "ops::nightly", name);
+    const moved = renamed(board, "ops.nightly", name);
     const confirm = { verb: "run", targets: [name], skipped: 0 };
     const rows = layout(moved, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", confirm });
     assertGrid(rows, 100, 30);
@@ -1287,12 +1284,12 @@ test("a flash owns the footer for four seconds and reverts byte for byte", () =>
   const { board, at } = liveBoard();
   const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 7 };
   const before = layout(board, options);
-  const flashed = layout(board, { ...options, flash: "Run sent to ops::nightly" });
+  const flashed = layout(board, { ...options, flash: "Run sent to ops.nightly" });
   assertGrid(flashed, 100, 30);
   // The flash **is** the footer, at precedence 2: one line, replacing the contextual legend
   // rather than sitting under it.
   const footer = footerOf(flashed, 1)[0];
-  assert.ok(footer.startsWith("Run sent to ops::nightly"), "the flash is the footer's own line");
+  assert.ok(footer.startsWith("Run sent to ops.nightly"), "the flash is the footer's own line");
   assert.ok(!screenText(flashed).includes("? help"), "…and the contextual hints are not beside it");
   // A footer of one row leaves the body two rows taller, which is why expiry has to revert
   // exactly rather than approximately.
@@ -1302,7 +1299,7 @@ test("a flash owns the footer for four seconds and reverts byte for byte", () =>
     "with no flash the screen is the one it was before, byte for byte",
   );
   // Precedence 1 beats it: while typing, the prompt owns the footer.
-  const typing = layout(board, { ...options, flash: "Run sent to ops::nightly", typing: "night" });
+  const typing = layout(board, { ...options, flash: "Run sent to ops.nightly", typing: "night" });
   assertGrid(typing, 100, 30);
   const prompt = footerOf(typing, 1)[0];
   assert.ok(prompt.startsWith("/ filter: night_"), "the prompt, with its own key glyph and its caret");
@@ -1416,12 +1413,12 @@ const INFO_HEADERS = ["Overview", "Trigger", "Activity", "Usage", "Health"];
 
 test("i opens a service's page with all five sections", () => {
   const { board, at } = liveBoard();
-  const rows = layout(board, infoAt("ops::nightly", 100, 30, at));
+  const rows = layout(board, infoAt("ops.nightly", 100, 30, at));
   assertGrid(rows, 100, 30);
   assertGolden("info-nightly-100x30.txt", rows);
   const lines = screenText(rows).split("\n");
 
-  assert.equal(lines[0].trimEnd(), "afkd › ops::nightly · Queued", "the title names the card and its state");
+  assert.equal(lines[0].trimEnd(), "afkd › ops.nightly · Queued", "the title names the card and its state");
   // Every section header, once, bold, in §1's order — read off the **cells**, so a value that
   // happened to spell `Health` could not stand in for the header.
   const headers = rows.flatMap((row, i) =>
@@ -1450,8 +1447,8 @@ test("i opens a service's page with all five sections", () => {
 
 test("two columns when the surface is wide, one when it is narrow", () => {
   const { board, at } = liveBoard();
-  const wide = layout(board, infoAt("ops::nightly", 100, 30, at));
-  const narrow = layout(board, infoAt("ops::nightly", 60, 30, at));
+  const wide = layout(board, infoAt("ops.nightly", 100, 30, at));
+  const narrow = layout(board, infoAt("ops.nightly", 60, 30, at));
   assertGrid(narrow, 60, 30);
   assertGolden("info-nightly-60x30.txt", narrow);
 
@@ -1475,8 +1472,8 @@ test("two columns when the surface is wide, one when it is narrow", () => {
 
   // The boundary, walked rather than asserted at one width: two columns at exactly 100, one at
   // 99, which is `shell::INFO_TWO_COL_MIN_WIDTH` and not a number this file chose.
-  assert.equal(new Set(headerOrigins(layout(board, infoAt("ops::nightly", 100, 40, at)))).size, 2);
-  assert.equal(new Set(headerOrigins(layout(board, infoAt("ops::nightly", 99, 40, at)))).size, 1);
+  assert.equal(new Set(headerOrigins(layout(board, infoAt("ops.nightly", 100, 40, at)))).size, 2);
+  assert.equal(new Set(headerOrigins(layout(board, infoAt("ops.nightly", 99, 40, at)))).size, 1);
 });
 
 test("no value is clipped at any width", () => {
@@ -1484,7 +1481,7 @@ test("no value is clipped at any width", () => {
   // a multi-word trigger key and a value with no space in it at all — a board URL, which is the
   // one token wider than any column here, so the hard break is exercised rather than described.
   const { board, at } = liveBoard();
-  const adversarial = moved(renamed(board, "ops::nightly", "ops::監視サービス"), "ops::監視サービス", {
+  const adversarial = moved(renamed(board, "ops.nightly", "ops.監視サービス"), "ops.監視サービス", {
     description: "掃除します 🧹 between passes, and keeps the scratch tree small enough to walk",
     triggerDetail: "trello_card · board https://trello.com/b/Vt2SxD9n/foodlab",
     triggerFields: [
@@ -1497,7 +1494,7 @@ test("no value is clipped at any width", () => {
   // label column leaves four cells for a value and the wrapping is extreme, which is the point:
   // extreme and **lossless** is the property, and a viewport that cut it off would hide that.
   for (const cols of [100, 60, 30]) {
-    const options = infoAt("ops::監視サービス", cols, 200, at);
+    const options = infoAt("ops.監視サービス", cols, 200, at);
     const rows = layout(adversarial, options);
     assertGrid(rows, cols, 200);
     const text = screenText(rows);
@@ -1509,7 +1506,7 @@ test("no value is clipped at any width", () => {
     }
     // The band is not a row, so it is checked on its own: it wraps whole, scheme and all.
     assert.ok(
-      text.replace(/\s+/gu, "").includes(adversarial.services["ops::監視サービス"].description.replace(/\s+/gu, "")),
+      text.replace(/\s+/gu, "").includes(adversarial.services["ops.監視サービス"].description.replace(/\s+/gu, "")),
       `the About band wraps whole at ${cols}`,
     );
   }
@@ -1518,7 +1515,7 @@ test("no value is clipped at any width", () => {
 test("the page scrolls rather than truncating", () => {
   // A 24-row terminal, the height the single-column form really overflows at.
   const { board, at } = liveBoard();
-  const options = infoAt("ops::nightly", 60, 24, at);
+  const options = infoAt("ops.nightly", 60, 24, at);
   const max = infoScrollMax(board, options);
   assert.ok(max > 0, "the single-column page overflows a 24-row viewport");
   const top = layout(board, options);
@@ -1526,25 +1523,25 @@ test("the page scrolls rather than truncating", () => {
 
   // One row of offset drops exactly the first body row and reveals exactly one new one — the
   // page moves by a row, it does not re-lay out.
-  const one = layout(board, infoAt("ops::nightly", 60, 24, at, { infoOffset: 1 }));
+  const one = layout(board, infoAt("ops.nightly", 60, 24, at, { infoOffset: 1 }));
   assertGrid(one, 60, 24);
   assert.deepEqual(body(one).slice(0, -1), body(top).slice(1), "offset 1 is the same page, one row down");
 
   // The last reachable offset shows the final body row: nothing below the fold is unreachable,
   // which is the whole claim a scrolling surface makes.
-  const last = layout(board, infoAt("ops::nightly", 60, 24, at, { infoOffset: max }));
+  const last = layout(board, infoAt("ops.nightly", 60, 24, at, { infoOffset: max }));
   assertGrid(last, 60, 24);
   assert.ok(body(last).some((l) => l.startsWith("Sandbox")), "the final row is reachable");
   // …and an offset past the end is clamped rather than blanking the page.
-  const past = layout(board, infoAt("ops::nightly", 60, 24, at, { infoOffset: max + 50 }));
+  const past = layout(board, infoAt("ops.nightly", 60, 24, at, { infoOffset: max + 50 }));
   assert.deepEqual(screenText(past), screenText(last), "an over-scrolled offset clamps to the last page");
   // A page that fits does not scroll at all.
-  assert.equal(infoScrollMax(board, infoAt("ops::nightly", 100, 40, at)), 0);
+  assert.equal(infoScrollMax(board, infoAt("ops.nightly", 100, 40, at)), 0);
 });
 
 test("the Trigger section names the kind, then its structured keys", () => {
   const { board, at } = liveBoard();
-  const rows = layout(board, infoAt("ops::nightly", 100, 30, at));
+  const rows = layout(board, infoAt("ops.nightly", 100, 30, at));
   assert.equal(valueOf(rows, "Kind"), "interval", "the bare kind, off the flat detail's lead segment");
   assert.equal(valueOf(rows, "Every"), "1h", "…then the config key on its own row, value verbatim");
   assert.ok(!screenText(rows).includes("interval · every 1h"), "and not the ` · `-joined line");
@@ -1552,7 +1549,7 @@ test("the Trigger section names the kind, then its structured keys", () => {
   // A multi-word key and a URL value — the prettified label, and the value **untrimmed**: §1's
   // lowercase-data exemption says a structured trigger value is echoed from the config, so
   // `trim_url_tail`'s `…/b/…` shortening is deliberately not transcribed here.
-  const trello = moved(board, "ops::nightly", {
+  const trello = moved(board, "ops.nightly", {
     triggerDetail: "trello_card · board foodlab · pick_from Up for Grabs",
     triggerFields: [
       ["board", "https://trello.com/b/Vt2SxD9n/foodlab"],
@@ -1560,7 +1557,7 @@ test("the Trigger section names the kind, then its structured keys", () => {
       ["require_member", "false"],
     ],
   });
-  const structured = layout(trello, infoAt("ops::nightly", 100, 30, at));
+  const structured = layout(trello, infoAt("ops.nightly", 100, 30, at));
   assert.equal(valueOf(structured, "Kind"), "trello_card");
   assert.ok(sameText(valueOf(structured, "Board"), "https://trello.com/b/Vt2SxD9n/foodlab"), "scheme and host kept");
   assert.equal(valueOf(structured, "Pick from"), "Up for Grabs", "`pick_from` → `Pick from`, value verbatim");
@@ -1568,15 +1565,15 @@ test("the Trigger section names the kind, then its structured keys", () => {
 
   // The fallback: a kind outside the expansion set (or an older daemon) sends no fields, and the
   // section degrades to a lone `Kind` row carrying the flat line. That is the wire contract.
-  const flat = moved(board, "ops::nightly", { triggerFields: [] });
-  const degraded = layout(flat, infoAt("ops::nightly", 100, 30, at));
+  const flat = moved(board, "ops.nightly", { triggerFields: [] });
+  const degraded = layout(flat, infoAt("ops.nightly", 100, 30, at));
   assert.equal(valueOf(degraded, "Kind"), "interval · every 1h", "the flat detail line");
   assert.equal(valueOf(degraded, "Every"), null, "…and no structured row beside it");
 });
 
 test("the Queue row carries the lane, its level and its live parallelism", () => {
   const { board, at } = liveBoard();
-  const lane = layout(board, infoAt("ops::nightly", 100, 30, at));
+  const lane = layout(board, infoAt("ops.nightly", 100, 30, at));
   assert.equal(valueOf(lane, "Queue"), "heavy (high) · parallelism 2");
 
   // A lane-less service spends no row on one: the row's **presence** is the fact.
@@ -1584,14 +1581,14 @@ test("the Queue row carries the lane, its level and its live parallelism", () =>
   assert.equal(valueOf(none, "Queue"), null, "no lane, no `Queue` row at all");
 
   // Zero is a real lane width (ADR-0079 §2h) — a paused lane — and must not read as silence.
-  const paused = moved(board, "ops::nightly", { queueParallelism: 0 });
-  assert.equal(valueOf(layout(paused, infoAt("ops::nightly", 100, 30, at)), "Queue"), "heavy (high) · parallelism 0");
+  const paused = moved(board, "ops.nightly", { queueParallelism: 0 });
+  assert.equal(valueOf(layout(paused, infoAt("ops.nightly", 100, 30, at)), "Queue"), "heavy (high) · parallelism 0");
   // A width the daemon did not send drops the suffix, rather than printing a trailing ` · `.
-  const unknown = moved(board, "ops::nightly", { queueParallelism: null });
-  assert.equal(valueOf(layout(unknown, infoAt("ops::nightly", 100, 30, at)), "Queue"), "heavy (high)");
+  const unknown = moved(board, "ops.nightly", { queueParallelism: null });
+  assert.equal(valueOf(layout(unknown, infoAt("ops.nightly", 100, 30, at)), "Queue"), "heavy (high)");
   // …and a level it did not send drops the parenthetical rather than printing an empty one.
-  const levelless = moved(board, "ops::nightly", { queuePriority: "" });
-  assert.equal(valueOf(layout(levelless, infoAt("ops::nightly", 100, 30, at)), "Queue"), "heavy · parallelism 2");
+  const levelless = moved(board, "ops.nightly", { queuePriority: "" });
+  assert.equal(valueOf(layout(levelless, infoAt("ops.nightly", 100, 30, at)), "Queue"), "heavy · parallelism 2");
 });
 
 test("a service with no description draws no About band", () => {
@@ -1605,7 +1602,7 @@ test("a service with no description draws no About band", () => {
 
   // The one with none: no header, and the band costs **zero** rows rather than an empty box —
   // the first section header sits exactly where the banded page's sits, minus the band's rows.
-  const without = layout(board, infoAt("ops::nightly", 100, 30, at));
+  const without = layout(board, infoAt("ops.nightly", 100, 30, at));
   const plain = screenText(without).split("\n");
   assert.ok(!plain.includes("About".padEnd(100)), "no band");
   assert.equal(banded.findIndex((l) => l.startsWith("Overview")), 5);
@@ -1659,7 +1656,7 @@ test("the page and the list read one value for one datum", () => {
   // page fold the same three anchors, so they are read off **both rendered surfaces** over one
   // fixture board rather than against two hand-written expectations.
   const { board, at } = liveBoard();
-  const name = "ops::nightly";
+  const name = "ops.nightly";
   const listRows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
   const page = layout(board, infoAt(name, 100, 30, at));
   const listRow = listRows.find((row) => row.map((c) => c.text).join("").includes("nightly"));
@@ -1695,7 +1692,7 @@ test("a viewport too short for the info page still composes a whole screen", () 
   for (const cols of [100, 60]) {
     for (const height of [1, 3, 5, 8, 14]) {
       assertGrid(layout(board, infoAt("janitor", cols, height, at)), cols, height);
-      assertGrid(layout(board, infoAt("ops::nightly", cols, height, at)), cols, height);
+      assertGrid(layout(board, infoAt("ops.nightly", cols, height, at)), cols, height);
     }
   }
 });
@@ -1720,11 +1717,11 @@ test("the overlays still outrank the info page", () => {
   // overlay rise over the info page exactly as they rise over the list. An overlay that only
   // rose over one of them would be an overlay the operator can hide behind.
   const { board, at } = liveBoard();
-  const help = layout(board, infoAt("ops::nightly", 160, 44, at, { help: true }));
+  const help = layout(board, infoAt("ops.nightly", 160, 44, at, { help: true }));
   assertGrid(help, 160, 44);
   assert.ok(popupLines(help).includes("i/Esc  Back to list"), "the `?` overlay is up over the page, with the page's own keys");
-  const confirm = layout(board, infoAt("ops::nightly", 100, 30, at, {
-    confirm: { verb: "abandon", targets: ["ops::sleeper"], skipped: 0 },
+  const confirm = layout(board, infoAt("ops.nightly", 100, 30, at, {
+    confirm: { verb: "abandon", targets: ["ops.sleeper"], skipped: 0 },
   }));
   assertGrid(confirm, 100, 30);
   assert.ok(screenText(confirm).includes("Force"), "and so is the confirm modal");
@@ -1734,8 +1731,8 @@ test("a flash still owns the info page's footer", () => {
   // The footer's precedence is the terminal's: a daemon refusal must not be buried by a legend,
   // so the flash outranks the info hints and the hints come back byte for byte when it expires.
   const { board, at } = liveBoard();
-  const quiet = layout(board, infoAt("ops::nightly", 100, 30, at));
-  const flashed = layout(board, infoAt("ops::nightly", 100, 30, at, { flash: "reloaded: 1 changed" }));
+  const quiet = layout(board, infoAt("ops.nightly", 100, 30, at));
+  const flashed = layout(board, infoAt("ops.nightly", 100, 30, at, { flash: "reloaded: 1 changed" }));
   assertGrid(flashed, 100, 30);
   const lastOf = (screen) => screenText(screen).split("\n").at(-1);
   assert.equal(lastOf(flashed).trimEnd(), "reloaded: 1 changed");
@@ -1746,11 +1743,11 @@ test("a wide glyph on the info page costs the cells it costs", () => {
   // The same twelve-cell pair the list's own width test uses: measured by `length` a CJK name
   // would cost six and every row would run short; taken for four cells it would overrun.
   const { board, at } = liveBoard();
-  const wide = renamed(board, "ops::nightly", "ops::監視サービス");
-  const ascii = renamed(board, "ops::nightly", "ops::abcdefghijkl");
+  const wide = renamed(board, "ops.nightly", "ops.監視サービス");
+  const ascii = renamed(board, "ops.nightly", "ops.abcdefghijkl");
   for (const cols of [100, 60]) {
-    const a = layout(wide, infoAt("ops::監視サービス", cols, 30, at));
-    const b = layout(ascii, infoAt("ops::abcdefghijkl", cols, 30, at));
+    const a = layout(wide, infoAt("ops.監視サービス", cols, 30, at));
+    const b = layout(ascii, infoAt("ops.abcdefghijkl", cols, 30, at));
     assertGrid(a, cols, 30);
     assertGrid(b, cols, 30);
     // With the two names cut out of the title, the two screens are the **same** text: every
@@ -1759,10 +1756,10 @@ test("a wide glyph on the info page costs the cells it costs", () => {
     assert.equal(strip(a), strip(b), `a wide name moves nothing at ${cols} cells`);
   }
   // …and a value carrying a wide grapheme breaks on a **cell** boundary, never inside a cluster.
-  const cjk = moved(board, "ops::nightly", {
+  const cjk = moved(board, "ops.nightly", {
     triggerFields: [["pick_from", "監視サービスの担当者を選ぶ列 Up for Grabs"]],
   });
-  const rows = layout(cjk, infoAt("ops::nightly", 100, 30, at));
+  const rows = layout(cjk, infoAt("ops.nightly", 100, 30, at));
   assertGrid(rows, 100, 30);
   assert.ok(sameText(valueOf(rows, "Pick from"), "監視サービスの担当者を選ぶ列 Up for Grabs"), "the value reads whole");
 });
@@ -1869,7 +1866,7 @@ test("a narrow run tree sheds OUT and keeps its status column", () => {
   // gutter is widest and its budget smallest — the deepest rows elide first.
   const deep = liveBoard("deep-fail.jsonl");
   const elided = paneBody(
-    layout(deep.board, { ...options, cols: 40, now: deep.at + 1000, run: runState("tree::retried") }),
+    layout(deep.board, { ...options, cols: 40, now: deep.at + 1000, run: runState("tree.retried") }),
   );
   const cargo = elided.find((l) => l.includes("Bash cargo"));
   assert.ok(cargo !== undefined, "the long tool call is on screen");
@@ -2123,7 +2120,7 @@ test("a collapsed parent never buries a failure, and an agent folds unless it di
   // anywhere below a root, so without it all three ship unguarded.
   const { board, at } = liveBoard("deep-fail.jsonl");
   const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" };
-  const svc = "tree::retried";
+  const svc = "tree.retried";
   const tree = board.services[svc].tree;
   // The capture's own shape, asserted off the fold before anything is rendered against it — a
   // re-capture that lost one of the three would fail here rather than silently pass below.
@@ -2441,6 +2438,70 @@ test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, 
 function unescapeRust(literal) {
   return literal.replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
 }
+
+// --- a package is a group, and its members spell their leaf --------------------------------
+
+/// The package capture mid-run: `selfdev.develop.0` busy, so its family row is too.
+const packagesBoard = () => foldCapture("packages.jsonl", (f) => f.type === "event" && f.event === "run_ok");
+
+test("a package's members show their leaf under its header, and nothing in a name recedes", () => {
+  // `layout::displayed_name`: a v2 identity is `package.name`, its group the package, so under
+  // the package's header a member spells only what follows `<package>.` — `brownout` under
+  // `claude`, the `develop ×2` family under `selfdev` — while a `main` service (`janitor`)
+  // stands bare at the root and the flat board spells every name whole. And
+  // `shell::service_prefix_spans`: nothing inside a name is styled apart, so the `.` of a
+  // qualified name is not receded.
+  const { board, at } = packagesBoard();
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.382" };
+  const grouped = layoutOf(board, { ...options, grouped: true });
+  assertGrid(grouped, 100, 30);
+  assertGolden("packages-grouped-100x30.txt", grouped);
+  const flat = layoutOf(board, { ...options, grouped: false });
+  assertGrid(flat, 100, 30);
+  assertGolden("packages-flat-100x30.txt", flat);
+
+  // The list rows: the lines under the column header, down to the blank that ends the list.
+  const listOf = (rows) => {
+    const header = rows.findIndex((row) => headerSpan(row, "Service") !== null);
+    const out = [];
+    for (let r = header + 1; rows[r].map((c) => c.text).join("").trim() !== ""; r++) out.push(rows[r]);
+    return out;
+  };
+  // A row's `Service` cell as it reads: its text up to the gap before `State`.
+  const cells = (rows) => listOf(rows).map((row) => screenText([row]).trim().split("  ")[0]);
+  assert.deepEqual(cells(grouped), [
+    "⊟ 📦 claude",
+    "└─ 🔋 brownout",
+    "🧹 janitor",
+    "⊟ 📦 selfdev",
+    "├─ 🛠 develop ×2",
+    "└─ 💬 discuss",
+  ]);
+  assert.deepEqual(cells(flat), ["🔋 claude.brownout", "🧹 janitor", "🛠 selfdev.develop ×2", "💬 selfdev.discuss"]);
+  for (const identity of ["claude.brownout", "selfdev.develop", "selfdev.discuss"]) {
+    assert.ok(!cells(grouped).some((cell) => cell.includes(identity)), `no grouped row spells ${identity} whole`);
+  }
+
+  // Every name is one cell, in the tint its icon wears, and neither it nor a family's count
+  // after it recedes — the `.` of a qualified one included.
+  const spelled = [
+    [grouped, ["brownout", "janitor", "develop", "discuss"]],
+    [flat, ["claude.brownout", "janitor", "selfdev.develop", "selfdev.discuss"]],
+  ];
+  for (const [rows, names] of spelled) {
+    const services = listOf(rows).filter((row) => !row.some((c) => c.text.includes("📦")));
+    assert.equal(services.length, names.length);
+    services.forEach((row, i) => {
+      const at = row.findIndex((c) => c.text === names[i]);
+      assert.notEqual(at, -1, `${names[i]} is one cell: ${JSON.stringify(row.slice(0, 4))}`);
+      assert.equal(row[at].fg, row[at - 1].fg, `${names[i]} wears its icon's tint`);
+      for (const c of row.slice(at, at + 2)) {
+        assert.notEqual(c.fg, "recede", `nothing in ${names[i]} recedes: ${JSON.stringify(c)}`);
+        assert.ok(!c.dim, `nothing in ${names[i]} is dim: ${JSON.stringify(c)}`);
+      }
+    });
+  }
+});
 
 // --- a multi-copy service is one row (ADR-0047 #8, as amended 2026-10-20) ----------------
 

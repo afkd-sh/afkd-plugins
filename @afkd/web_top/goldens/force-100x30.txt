@@ -7,16 +7,16 @@ Service                          State                 Trigger              Last
 ├─ 🔹 nightly                    ● Idle                Every 1h                              59m 54s
 ├─ 🔷 sleeper                    ▶ Busy 2s             Every 1h                        2s           
 ├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
-└─ ⊟ 📦 db        ┌ Force-stop ─────────────────────────────────────────────────┐                   
-   └─ 🔹 vacuum   │                                                             │            59m 54s
-  🔹 archivist    │  Force-stop 1 stuck service?                                │            59m 54s
-  🔹 noisy        │                                                             │      1s    59m 58s
-  🔸 flaky        │    🧹 janitor                                               │      1s    59m 58s
-  🔹 deep         │                                                             │            59m 54s
-  🔹 spare        │  Force kills the running work & abandons the wedged thread  │            59m 54s
-                  │  The service reclaims once the abandoned thread finishes    │                   
-Queue      Slots  │                                                             │sm   Held   Waiting
-🧵 heavy   ▮▯     │  y force  n cancel                                          │     1      0      
+└─ 🔹 vacuum      ┌ Force-stop ─────────────────────────────────────────────────┐            59m 54s
+  🔹 archivist    │                                                             │            59m 54s
+  🔹 noisy        │  Force-stop 1 stuck service?                                │      1s    59m 58s
+  🔸 flaky        │                                                             │      1s    59m 58s
+  🔹 deep         │    🧹 janitor                                               │            59m 54s
+  🔹 spare        │                                                             │            59m 54s
+                  │  Force kills the running work & abandons the wedged thread  │                   
+Queue      Capacit│  The service reclaims once the abandoned thread finishes    │sm   Held   Waiting
+🧵 heavy   ▮▯     │                                                             │     1      0      
+                  │  y force  n cancel                                          │                   
                   │                                                             │                   
                   └─────────────────────────────────────────────────────────────┘                   
                                                                                                     
@@ -39,16 +39,16 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnrbbbbbbbbbbbbrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
+rrrnnnnnnnnnnnnnnnrbbbbbbbbbbbbrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnrrrrrrr
+rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
 rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
 rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
 rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
 rrnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnrrrrrrr
-rrnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnrnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnrnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnarnnnnnrnnbnlllllnnbnllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllllnnrnnnnnnnnnnnnnnnnnnn
+bbbbbnnnnnnbbbbbbbrnnlllllllllllllllllllllllllllllllllllllllllllllllllllllllnnnnrbbnnnbbbbnnnbbbbbbb
+nnnnnnnnnnnarnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnrnnbnlllllnnbnllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn

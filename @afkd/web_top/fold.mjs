@@ -1467,18 +1467,16 @@ function retireSource(tree, source) {
  * inside the reducer would recompute and re-copy them on every frame of an attach burst for
  * a value only a renderer reads.
  *
- * Two things it deliberately does **not** do, both recorded here so a later diff against a
- * real `afkd top` attributes a mismatch to this file rather than hunting it in the fold:
+ * It buckets by the **exact** `group` string, as `group_rollup` does: a group is one package
+ * (packages are flat, lang-v2 §20.3). A service whose group is `""` is a top-level row and a
+ * member of no group at all.
  *
- * - **No aggregate state word, and no ladder.** The aggregate afkd has is `anyCrashed`, and
- *   ADR-0066 is explicit that this is a refusal rather than an omission: "A group row shows
- *   **no** state badge in the resting case. The one exception: if a member is `Crashed` …
- *   Health is surfaced; ordinary running/stopped state is not."
- * - **Flat bucketing, not transitive.** `group_rollup` gathers members with `in_subtree`, so
- *   `ops` rolls up `ops::db::vacuum` too; this buckets by the **exact** `group` string. The
- *   fold has no tree to collapse into yet (this module paints nothing), a flat map is the
- *   honest shape for a JSON dump, and the nesting belongs with the paint. A service whose
- *   group is `""` is a top-level row and a member of no group at all.
+ * One thing it deliberately does **not** do, recorded here so a later diff against a real
+ * `afkd top` attributes a mismatch to this file rather than hunting it in the fold: **no
+ * aggregate state word, and no ladder.** The aggregate afkd has is `anyCrashed`, and ADR-0066
+ * is explicit that this is a refusal rather than an omission: "A group row shows **no** state
+ * badge in the resting case. The one exception: if a member is `Crashed` … Health is
+ * surfaced; ordinary running/stopped state is not."
  */
 export function groups(board) {
   const buckets = [];
@@ -1526,7 +1524,7 @@ export function groups(board) {
 
 /**
  * The queue lanes, mirroring `QueueLane` / `DashboardModel::queue_lanes`. Sorted by lane
- * name, which for the resolved `a::b` spellings is the operator-visible order.
+ * name, which for the resolved `package.name` spellings is the operator-visible order.
  *
  * `parallelism` is the **max** over members (a husk that learned its lane from a live event
  * reports none, and must not drag the lane's width down to nothing), `held` counts the

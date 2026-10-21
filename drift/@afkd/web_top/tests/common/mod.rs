@@ -27,8 +27,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tempfile::TempDir;
-
 /// The `afkd` this gate holds the plugin to: the first one on `PATH`, the install the
 /// operator's own daemon runs. It is never built here — a plugin is checked against the afkd
 /// it will meet — so a host without one fails every leg that needs it, and says why.
@@ -76,11 +74,6 @@ pub(crate) fn state_dir(home: &Path) -> PathBuf {
 /// The run corpus root under a temp `$HOME` — `<state dir>/runs`.
 pub(crate) fn runs_root(home: &Path) -> PathBuf {
     state_dir(home).join("runs")
-}
-
-/// The default main config under a temp `$HOME` — `<config dir>/afkd.conf`.
-pub(crate) fn main_conf(home: &Path) -> PathBuf {
-    config_dir(home).join("afkd.conf")
 }
 
 /// The daemon's v2 entry file under a temp `$HOME` — `<config dir>/daemon.afkd`.
@@ -234,19 +227,6 @@ fn reap_within(child: &mut Child, budget: Duration) -> bool {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-/// A directory that doubles as the controlled `$HOME`, seeded with the **default**
-/// config at `<dir>/.config/afkd/afkd.conf` (ADR-0020 §2, ADR-0075). The no-`[PATH]`
-/// spawn helpers point `HOME` at this dir, so `afkd run`/`validate` resolve the default
-/// to this seeded file while the run's CWD stays `dir` (where sentinels/artifacts
-/// land), keeping these suites independent of the developer's real `$HOME`.
-pub(crate) fn dir_with_config(config: &str) -> TempDir {
-    let dir = TempDir::new().expect("tempdir");
-    let conf = main_conf(dir.path());
-    std::fs::create_dir_all(conf.parent().expect("has parent")).expect("mk the config dir");
-    std::fs::write(&conf, config).expect("write default config");
-    dir
 }
 
 /// The read/write **master** end of a pseudo-terminal whose slave is the spawned

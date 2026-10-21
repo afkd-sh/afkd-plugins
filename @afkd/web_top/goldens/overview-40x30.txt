@@ -1,22 +1,22 @@
 afkd 0.2.123 · ● Running 12s · 8/10 up  
 CPU   1% · Mem 1.5G/31G                 
                                         
-Service           State                 
-  🧹 janitor      □ Stopped             
-⊟ 📦 ops          ✕ Crashed             
-├─ 🔹 nightly     ▷ Queued 2s           
-├─ 🔷 sleeper     ▶ Busy 4s             
-├─ 🔸 broken      ✕ Crashed             
-└─ ⊟ 📦 db                              
-   └─ 🔷 vacuum   ▶ Busy 5s             
-  🔹 archivist    ● Idle                
-  🔹 noisy        ● Idle                
-  🔹 flaky        ● Idle                
-  🔹 deep         ● Idle                
-  🔹 spare        ● Idle                
+Service          State                  
+  🧹 janitor     □ Stopped              
+⊟ 📦 ops         ✕ Crashed              
+├─ 🔹 nightly    ▷ Queued 2s            
+├─ 🔷 sleeper    ▶ Busy 4s              
+├─ 🔸 broken     ✕ Crashed              
+└─ 🔷 vacuum     ▶ Busy 5s              
+  🔹 archivist   ● Idle                 
+  🔹 noisy       ● Idle                 
+  🔹 flaky       ● Idle                 
+  🔹 deep        ● Idle                 
+  🔹 spare       ● Idle                 
                                         
-Queue    Slots              Parallelism 
+Queue    Capacity           Parallelism 
 🧵 he…   ▮▮ ╎ ∙             2           
+                                        
                                         
                                         
                                         
@@ -33,22 +33,22 @@ Queue    Slots              Parallelism
 nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnn
-rrmmmmmmmmmmnnnnnnmmmmmmmmmnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnn
-rrrnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrrrrnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
-rrnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnn
+bbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnn
+rrmmmmmmmmmmnnnnnmmmmmmmmmnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnn
+rrrnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnn
+rrrnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnn
+rrnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnbbbbbnnnnnnnnnnnnnnbbbbbbbbbbbn
+bbbbbnnnnbbbbbbbbnnnnnnnnnnnbbbbbbbbbbbn
 nnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -65,22 +65,22 @@ bnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 ........................................
 dddd....ddddddd.........................
 ........................................
-bbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...
-ssssssssssssssssssDDDDDDDDDsssssssssssss
-..................bbbbbbbbb.............
-..................ddddddddddd...........
-..................bbbbbbbbb.............
-..................bbbbbbbbb.............
-........................................
-..................bbbbbbbbb.............
-........................................
+bbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb....
+sssssssssssssssssDDDDDDDDDssssssssssssss
+.................bbbbbbbbb..............
+.................ddddddddddd............
+.................bbbbbbbbb..............
+.................bbbbbbbbb..............
+.................bbbbbbbbb..............
 ........................................
 ........................................
 ........................................
 ........................................
 ........................................
-bbbbb....bbbbb..............bbbbbbbbbbb.
+........................................
+bbbbb....bbbbbbbb...........bbbbbbbbbbb.
 .........bb...d.........................
+........................................
 ........................................
 ........................................
 ........................................

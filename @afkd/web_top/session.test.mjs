@@ -108,11 +108,11 @@ function cursorOn(session, board) {
 test("j and k walk every selectable row, in the sequence that paints", () => {
   const { board } = liveBoard();
   const rows = rowsOf(newSession(), board);
-  // The capture's own sequence: ten services, two group headers, the section's spacer and
+  // The capture's own sequence: ten services, one group header, the section's spacer and
   // header, and one lane. The two unselectable rows are what make this non-trivial.
   const selectable = rows.map((r, i) => [rowKey(r), i]).filter(([k]) => k !== null);
-  assert.equal(rows.length, 15, "the capture still lays out fifteen rows");
-  assert.equal(selectable.length, 13, "…thirteen of which take the cursor");
+  assert.equal(rows.length, 14, "the capture still lays out fourteen rows");
+  assert.equal(selectable.length, 12, "…twelve of which take the cursor");
   assert.deepEqual(
     rows.filter((r) => rowKey(r) === null).map((r) => r.kind),
     ["spacer", "queuesHeader"],
@@ -197,38 +197,38 @@ test("the cursor is a row identity, so an ambient fold does not slide it", () =>
 
 // --- the folds --------------------------------------------------------------------------
 
-test("h folds a member's parent and moves the cursor onto it; l unfolds", () => {
-  // Driven on the two-level `ops::db` nesting, so a fold of a fold is exercised rather than one
-  // flat header.
+test("h folds a member's group and moves the cursor onto it; l unfolds", () => {
+  // Driven on the last of `ops`'s four members, so the cursor has rows to climb past.
   const { board } = liveBoard();
-  const onVacuum = { ...newSession(), cursor: { kind: "service", key: "ops::db::vacuum" }, cursorRow: 6 };
-  assert.deepEqual(cursorOn(onVacuum, board), { kind: "service", key: "ops::db::vacuum" });
+  const onVacuum = { ...newSession(), cursor: { kind: "service", key: "ops.vacuum" }, cursorRow: 6 };
+  assert.deepEqual(cursorOn(onVacuum, board), { kind: "service", key: "ops.vacuum" });
 
   const folded = press(onVacuum, board, key("h"), { now: BASE, bodyHeight: 20 }).session;
-  assert.deepEqual([...folded.collapsed], ["ops::db"], "h collapses the member's own parent");
-  assert.deepEqual(cursorOn(folded, board), { kind: "group", key: "ops::db" }, "…and lands on it");
+  assert.deepEqual([...folded.collapsed], ["ops"], "h collapses the member's own group");
+  assert.deepEqual(cursorOn(folded, board), { kind: "group", key: "ops" }, "…and lands on it");
   const names = rowsOf(folded, board).map((r) => rowKey(r)?.key ?? "");
-  assert.ok(!names.includes("ops::db::vacuum"), "the member is gone from the row set");
-  assert.ok(names.includes("ops::db"), "its header is not");
+  assert.ok(!names.includes("ops.vacuum"), "the member is gone from the row set");
+  assert.ok(names.includes("ops"), "its header is not");
   // The header wears the collapsed chevron, which is the only thing on screen saying so.
-  assert.equal(rowsOf(folded, board).find((r) => r.kind === "group" && r.path === "ops::db").collapsed, true);
+  assert.equal(rowsOf(folded, board).find((r) => r.kind === "group" && r.path === "ops").collapsed, true);
 
-  // `h` again, now on the header, folds the *grandparent*, and the cursor follows there too.
+  // `h` again, now on the header, keeps it folded and the cursor where it is.
   const outer = press(folded, board, key("h"), { now: BASE, bodyHeight: 20 }).session;
-  assert.deepEqual([...outer.collapsed].sort(), ["ops::db"], "a header folds itself, already folded");
+  assert.deepEqual([...outer.collapsed].sort(), ["ops"], "a header folds itself, already folded");
+  assert.deepEqual(cursorOn(outer, board), { kind: "group", key: "ops" });
   // `l` on the folded header unfolds it again, and the member comes back.
   const open = press(folded, board, key("l"), { now: BASE, bodyHeight: 20 }).session;
   assert.deepEqual([...open.collapsed], []);
-  assert.ok(rowsOf(open, board).some((r) => rowKey(r)?.key === "ops::db::vacuum"));
+  assert.ok(rowsOf(open, board).some((r) => rowKey(r)?.key === "ops.vacuum"));
   // `l` from a **member** of an already-open group is not a silent no-op: it moves the cursor
   // onto that group's header, which is `expand_selected_group`'s own stated behaviour.
   const lifted = press(onVacuum, board, key("l"), { now: BASE, bodyHeight: 20 });
   assert.deepEqual([...lifted.session.collapsed], [], "nothing folds");
-  assert.deepEqual(cursorOn(lifted.session, board), { kind: "group", key: "ops::db" }, "…the cursor lifts");
+  assert.deepEqual(cursorOn(lifted.session, board), { kind: "group", key: "ops" }, "…the cursor lifts");
   // `←`/`→` are the same two actions.
   assert.deepEqual(
     [...press(onVacuum, board, key("left"), { now: BASE, bodyHeight: 20 }).session.collapsed],
-    ["ops::db"],
+    ["ops"],
   );
 });
 
@@ -240,7 +240,7 @@ test("Enter folds a group header and opens a service row's peek", () => {
   assert.equal(shut.handled, true);
   // Everything under `ops` is gone; the root peers are not.
   const names = rowsOf(shut.session, board).map((r) => rowKey(r)?.key ?? "");
-  assert.ok(!names.some((n) => n.startsWith("ops::")), "the whole subtree folds, not one level");
+  assert.ok(!names.some((n) => n.startsWith("ops.")), "every member folds");
   assert.ok(names.includes("janitor") && names.includes("ops"), "the peers and the header stay");
   // `Space` is the alternate, and toggles back.
   const open = press(shut.session, board, key("space"), { now: BASE, bodyHeight: 20 });
@@ -268,7 +268,7 @@ test("the board boots flat, and v flips it without losing the cursor", () => {
   const flat = press(onOps, board, key("v"), { now: BASE, bodyHeight: 20 });
   assert.equal(flat.handled, true);
   assert.equal(flat.session.grouped, false);
-  assert.deepEqual(cursorOn(flat.session, board), { kind: "service", key: "ops::nightly" }, "the header's first member");
+  assert.deepEqual(cursorOn(flat.session, board), { kind: "service", key: "ops.nightly" }, "the header's first member");
   const back = press(flat.session, board, key("v"), { now: BASE, bodyHeight: 20 });
   assert.deepEqual(cursorOn(back.session, board), { kind: "group", key: "ops" }, "…and the header again");
   assert.deepEqual(back.session.collapsed, onOps.collapsed, "the fold set rode the round trip untouched");
@@ -299,13 +299,13 @@ test("b lenses the board, and the cursor finds its row again when it lifts", () 
 test("H folds every group and L opens them all", () => {
   const { board } = liveBoard();
   const all = type(newSession(), board, [key("G"), key("H")]).session;
-  assert.deepEqual([...all.collapsed].sort(), ["ops", "ops::db"], "every group path, nested included");
+  assert.deepEqual([...all.collapsed].sort(), ["ops"], "every group");
   const names = rowsOf(all, board).map((r) => rowKey(r)?.key ?? "");
-  assert.ok(!names.some((n) => n.includes("::")), "no member of any group survives");
+  assert.ok(!names.some((n) => n.startsWith("ops.")), "no member of any group survives");
   // The cursor was on the last row (a lane), which H did not hide, so it stays there.
   assert.deepEqual(cursorOn(all, board), { kind: "queue", key: "heavy" });
   // A cursor H *does* hide settles onto a row that still exists rather than onto nothing.
-  const inside = { ...newSession(), cursor: { kind: "service", key: "ops::db::vacuum" }, cursorRow: 6 };
+  const inside = { ...newSession(), cursor: { kind: "service", key: "ops.vacuum" }, cursorRow: 6 };
   const hidden = press(inside, board, key("H"), { now: BASE, bodyHeight: 20 }).session;
   assert.notEqual(cursorOn(hidden, board), null);
   assert.ok(rowsOf(hidden, board).some((r) => {
@@ -316,12 +316,12 @@ test("H folds every group and L opens them all", () => {
   // The bulk twins do **not** rewrite the cursor's key: a member `H` folded away resolves
   // straight back onto itself once `L` re-opens its header. That is the whole reason the
   // cursor is a row identity rather than an index, so it is asserted over the round trip.
-  const onMember = { ...newSession(), cursor: { kind: "service", key: "ops::db::vacuum" }, cursorRow: 6 };
+  const onMember = { ...newSession(), cursor: { kind: "service", key: "ops.vacuum" }, cursorRow: 6 };
   const roundTrip = type(onMember, board, [key("H"), key("L")]).session;
   assert.deepEqual([...roundTrip.collapsed], []);
   assert.deepEqual(
     cursorOn(roundTrip, board),
-    { kind: "service", key: "ops::db::vacuum" },
+    { kind: "service", key: "ops.vacuum" },
     "H then L leaves the cursor exactly where it was",
   );
 
@@ -357,7 +357,7 @@ test("the footer's gated hints track the selected row's own badge", () => {
         row.kind === "service"
           ? [row.svc]
           : row.kind === "group"
-            ? board.order.map((n) => board.services[n]).filter((s) => s !== undefined && inSubtree(s.group, row.path))
+            ? board.order.map((n) => board.services[n]).filter((s) => s !== undefined && s.group === row.path)
             : [];
       const some = (f) => members.some(f);
       const wedged = some((m) => m.badge === "Stopping");
@@ -402,9 +402,6 @@ const layoutModule = await import("./layout.mjs");
 function canStop(badge) {
   return ["Starting", "Idle", "Queued", "Checking", "Busy"].includes(badge);
 }
-function inSubtree(group, path) {
-  return group === path || group.startsWith(`${path}::`);
-}
 
 // --- AC3: a verb is posted, and the board does not move ------------------------------------
 
@@ -415,7 +412,7 @@ test("t on an armed service fires, and the row moves only when the daemon's even
   const { board, at } = foldCapture(file, {
     until: (f) => f.type === "event" && f.event === "run_started",
   });
-  const name = "ops::nightly";
+  const name = "ops.nightly";
   assert.equal(board.services[name].badge, "Idle", "the capture's target is armed before the fire");
 
   const session = { ...newSession(), cursor: { kind: "service", key: name }, cursorRow: 2 };
@@ -504,10 +501,10 @@ test("a group verb over more than one member gates, and one member acts directly
   const raised = press(onOps, board, key("r"), { now: at, bodyHeight: 20 });
   assert.deepEqual(raised.commands, [], "a fan-out sends nothing until it is confirmed");
   assert.equal(raised.session.confirm.verb, "restart");
-  assert.ok(raised.session.confirm.targets.length > 1, "…over the subtree, transitively");
-  assert.ok(
-    raised.session.confirm.targets.includes("ops::db::vacuum"),
-    "including the member two levels down — the transitive reading ADR-0073 uses",
+  assert.deepEqual(
+    raised.session.confirm.targets,
+    ["ops.nightly", "ops.sleeper", "ops.broken", "ops.vacuum"],
+    "…over every member of the group, and nothing outside it",
   );
   const confirmed = press(raised.session, board, key("y"), { now: at, bodyHeight: 20 });
   assert.deepEqual(
@@ -518,24 +515,22 @@ test("a group verb over more than one member gates, and one member acts directly
   assert.equal(flashOf(confirmed.session, at), `Restarting ${confirmed.commands.length} services`);
 
   // A group with exactly one eligible member acts directly — the gate is about a *set*, not
-  // about the row kind. `ops::db` holds one service.
-  const onDb = { ...newSession(), cursor: { kind: "group", key: "ops::db" }, cursorRow: 5 };
-  const direct = press(onDb, board, key("r"), { now: at, bodyHeight: 20 });
+  // about the row kind. Of `ops`'s members only the crashed `ops.broken` can take `s`.
+  const direct = press(onOps, board, key("s"), { now: at, bodyHeight: 20 });
   assert.equal(direct.session.confirm, null, "one eligible member raises no modal");
-  assert.deepEqual(direct.commands, [{ command: "restart", service: "ops::db::vacuum" }]);
-  assert.equal(flashOf(direct.session, at), "Restarting ops::db::vacuum", "…and the ack names it");
+  assert.deepEqual(direct.commands, [{ command: "start", service: "ops.broken" }]);
+  assert.equal(flashOf(direct.session, at), "Starting ops.broken", "…and the ack names it");
 
   // The ineligible members are counted rather than silently dropped, so the shorter list in
-  // the modal does not read as a bug.
-  const onOpsStart = press(onOps, board, key("s"), { now: at, bodyHeight: 20 });
-  if (onOpsStart.session.confirm !== null) {
-    const shown = onOpsStart.session.confirm;
-    assert.equal(
-      shown.targets.length + shown.skipped,
-      board.order.map((n) => board.services[n]).filter((s) => inSubtree(s.group, "ops")).length,
-      "displayed + skipped is the whole subtree",
-    );
-  }
+  // the modal does not read as a bug: `x` reaches three of the four, the crashed one skipped.
+  const shown = press(onOps, board, key("x"), { now: at, bodyHeight: 20 }).session.confirm;
+  assert.notEqual(shown, null, "three eligible members raise the modal");
+  assert.equal(shown.skipped, 1, "…and count the one they skip");
+  assert.equal(
+    shown.targets.length + shown.skipped,
+    board.order.map((n) => board.services[n]).filter((s) => s.group === "ops").length,
+    "displayed + skipped is the whole group",
+  );
 });
 
 // --- the filter ------------------------------------------------------------------------
@@ -799,7 +794,7 @@ test("the daemon's own three messages become the flash, and control_no_op does n
   // `meta.control_refused` appears in no capture either: earning one means landing a verb
   // mid-quit on a service whose stop band has begun. Hand-built from `proto.rs`'s
   // `Meta::ControlRefused` shape, and pinned to its wire literal by its own AFKD_SRC test.
-  const refusal = { type: "meta", meta: "control_refused", service: "ops::nightly", message: "The daemon is shutting down" };
+  const refusal = { type: "meta", meta: "control_refused", service: "ops.nightly", message: "The daemon is shutting down" };
   assert.equal(flashOf(noteFrame(newSession(), refusal, BASE), BASE), refusal.message);
 
   // `meta.control_no_op` is deliberately **not** a flash: it exists to revert a pending
@@ -872,7 +867,7 @@ test("a lane row's h narrows the lane rather than folding a group — and this p
   const lane = press(onLane, board, key("h"), { now: at, bodyHeight: 20 });
   assert.equal(lane.handled, false, "the lane verb has no relay command, so the key is not taken");
   assert.deepEqual([...lane.session.collapsed], [], "…and it did not fall through to the group fold");
-  const onMember = { ...newSession(), cursor: { kind: "service", key: "ops::nightly" }, cursorRow: 2 };
+  const onMember = { ...newSession(), cursor: { kind: "service", key: "ops.nightly" }, cursorRow: 2 };
   assert.deepEqual(
     [...press(onMember, board, key("h"), { now: at, bodyHeight: 20 }).session.collapsed],
     ["ops"],
@@ -920,10 +915,10 @@ test("i opens the selected service's page, and i or Esc closes it", () => {
 
 test("the page follows the cursor, and a group or a lane has none to open", () => {
   const { board } = liveBoard();
-  // Walked to a member of a nested group, so the name the page holds is the qualified one.
+  // Walked to a member of a group, so the name the page holds is the qualified one.
   const onMember = type(newSession(), board, [key("j"), key("j")]).session;
-  assert.deepEqual(cursorOn(onMember, board), { kind: "service", key: "ops::nightly" });
-  assert.equal(press(onMember, board, key("i"), { now: BASE, bodyHeight: 20 }).session.info, "ops::nightly");
+  assert.deepEqual(cursorOn(onMember, board), { kind: "service", key: "ops.nightly" });
+  assert.equal(press(onMember, board, key("i"), { now: BASE, bodyHeight: 20 }).session.info, "ops.nightly");
 
   // `toggle_info_view` opens on `selected_card()`, so a group header and a lane row have no
   // subject — the key is a no-op there and is reported **unhandled**, so the browser keeps it.
