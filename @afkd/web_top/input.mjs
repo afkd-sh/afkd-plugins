@@ -12,6 +12,9 @@
 // the chords a browser reserves are an explicit table below rather than a fallthrough: afkd's
 // `Ctrl+R` is intercepted, and `Ctrl+T`/`Ctrl+W`/`Ctrl+L`/`Ctrl+N`/`Ctrl+C`/`F5` are left to
 // the browser untouched.
+//
+// **The seam is the desktop's.** A touch device gets none at all (`installDesktopKeys`): its
+// page is a read-only status list, with no key handled and nothing ever posted.
 
 import { flash, press, scrollInfo } from "./session.mjs";
 
@@ -115,10 +118,11 @@ function bodyOf(streamId, command) {
  * - `post(body)` → `Promise<{ok, message}>`; the `POST /command` call.
  * - `now()` — the clock the flash is stamped against.
  * - `repaint()` — draw, rather than waiting on the throttle a key press should outrun.
+ * - `signal` — an optional `AbortSignal` that removes every listener installed here at once.
  */
-export function installKeys({ element, read, write, post, now, repaint }) {
+export function installKeys({ element, read, write, post, now, repaint, signal }) {
   element.focus();
-  element.addEventListener("pointerdown", () => element.focus());
+  element.addEventListener("pointerdown", () => element.focus(), { signal });
   element.addEventListener("keydown", (event) => {
     if (!focused(element)) return;
     if (reserved(RESERVED.left, event)) return;
@@ -134,7 +138,7 @@ export function installKeys({ element, read, write, post, now, repaint }) {
     if (out.handled || take) event.preventDefault();
     for (const command of out.commands) send(command, streamId, { read, write, post, now, repaint });
     repaint();
-  });
+  }, { signal });
   // The info page's scroll gesture. It is the **wheel** rather than a key because the `info`
   // scope binds no nav action and inventing one would make `keymap.mjs`'s transcription of
   // afkd's table a lie; a wheel is a browser affordance, the same register as the `RESERVED`
@@ -151,7 +155,29 @@ export function installKeys({ element, read, write, post, now, repaint }) {
     write(next);
     event.preventDefault();
     repaint();
-  });
+  }, { signal });
+}
+
+/**
+ * The key seam, installed only while the device's primary pointer is fine. `touch` is the
+ * `(pointer: coarse)` media query — anything with `matches` and a `change` event. A touch
+ * screen gets no listener and no focus, so nothing on a phone reacts to a key or posts a
+ * command; a device that changes its mind (a tablet docked to a keyboard) gains or loses the
+ * whole seam, exactly once either way. The other dependencies are `installKeys`' own.
+ */
+export function installDesktopKeys({ touch, ...keys }) {
+  let installed = null;
+  const apply = () => {
+    if (touch.matches && installed !== null) {
+      installed.abort();
+      installed = null;
+    } else if (!touch.matches && installed === null) {
+      installed = new AbortController();
+      installKeys({ ...keys, signal: installed.signal });
+    }
+  };
+  apply();
+  touch.addEventListener("change", apply);
 }
 
 /// One wheel event in **rows**, honouring `WheelEvent.deltaMode`: `0` is pixels (a line is the

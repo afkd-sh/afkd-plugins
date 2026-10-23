@@ -1964,12 +1964,26 @@ fn the_lane_verb_is_composed_exactly_and_its_capacity_is_a_wire_u32() {
     if let Some(afkd) = afkd_src() {
         let proto =
             std::fs::read_to_string(afkd.join("crates/app/src/proto.rs")).expect("read proto.rs");
-        let literal = proto
-            .split("r#\"")
-            .filter_map(|rest| rest.split_once("\"#").map(|(line, _)| line))
-            .find(|line| line.starts_with(r#"{"type":"command","command":"queue_parallelism""#))
+        // The pin is a `format!` template over the test's own `lane`, so its braces are
+        // doubled and the queue is that binding — the last one spelled before the pin.
+        let template = r#"{{"type":"command","command":"queue_parallelism""#;
+        let at = proto
+            .find(template)
             .expect("proto.rs still pins the queue_parallelism command line");
-        let pinned: serde_json::Value = serde_json::from_str(literal).expect("the pin is JSON");
+        let literal = proto[at..]
+            .split_once("\"#")
+            .map(|(line, _)| line)
+            .expect("the pin is a raw string");
+        let lane = proto[..at]
+            .rsplit_once("let lane = \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(lane, _)| lane)
+            .expect("proto.rs binds the lane its pin names");
+        let line = literal
+            .replace("{{", "{")
+            .replace("}}", "}")
+            .replace("{lane}", lane);
+        let pinned: serde_json::Value = serde_json::from_str(&line).expect("the pin is JSON");
         assert_eq!(
             frame, pinned,
             "the relay's frame is the wire line afkd top sends"
@@ -3582,7 +3596,7 @@ const OPERATOR_ICON: &str = "\u{2605}\u{FE0F}";
 /// Every variation-selector glyph afkd top's source (`crates/tui/src`) or web_top's
 /// (`@afkd/web_top/*.mjs`) spells, by name — the set
 /// `every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top` checks.
-const VARIATION_GLYPHS: [&str; 16] = [
+const VARIATION_GLYPHS: [&str; 15] = [
     "\u{21BB}\u{FE0E}",
     "\u{2225}\u{FE0E}",
     "\u{2298}\u{FE0E}",
@@ -3597,7 +3611,6 @@ const VARIATION_GLYPHS: [&str; 16] = [
     "\u{2713}\u{FE0E}",
     "\u{2717}\u{FE0E}",
     "\u{2744}\u{FE0F}",
-    "\u{1F56F}\u{FE0F}",
     "\u{1F578}\u{FE0F}",
 ];
 

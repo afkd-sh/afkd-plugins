@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.6.1 (companion)
+Installed @afkd/web_top 0.7.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -282,6 +282,16 @@ applied reads bare.
 needle and fold set. Nothing is persisted and nothing is pushed back to the daemon — `afkd
 top` makes folds daemon-held with a `view` frame, and sending one would make two tabs share
 one cursor.
+
+## On a phone
+
+A device whose primary pointer is coarse — a touch screen — gets a plain, live, read-only status
+list instead: the title bar, the column header and every service flat, each with its live state,
+the columns shed to the width as the terminal's would, the connection notice on a line of its
+own below them, and the page scrolling natively with a swipe. There are no keys, cursor, views,
+`Queues` section, host-load strip or footer, and nothing is ever posted to `/command`, so a phone
+cannot change what the daemon is doing. The keys, views and verbs above are desktop-only, and
+the device decides rather than the width: a narrow desktop window still gets the terminal grid.
 
 ## The info page
 

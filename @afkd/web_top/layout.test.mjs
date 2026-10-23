@@ -18,9 +18,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import { fold, seed } from "./fold.mjs";
+import { fold, queues, rowCards, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, REFUSED_WHILE_QUITTING, SCOPES, all, glyphs, idOf, primary } from "./keymap.mjs";
-import { COL_WIDTH, COPIES_MARK, FAMILY_STATE_COL_WIDTH, TREND_LADDER, bodyHeight as bodyHeightOf, busyShare, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, peekFloorOffset, runMetrics, scrollOffset, serviceColWidth, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { COL_WIDTH, COPIES_MARK, FAMILY_STATE_COL_WIDTH, TREND_LADDER, bodyHeight as bodyHeightOf, busyShare, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, runMetrics, scrollOffset, serviceColWidth, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
 import { URGENCY } from "./fold.mjs";
 import { newSession as bootSession, press } from "./session.mjs";
 import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, screenText } from "./testkit.mjs";
@@ -2613,4 +2613,118 @@ test("the info breakdown is family.rs's wording", { skip: NO_AFKD_SRC }, () => {
   assert.equal(copiesBreakdown({ copies: 1, busy: 0, states: [["Crashed", 1]] }), "1 copy: 1 crashed");
   const every = copiesBreakdown({ copies: 8, busy: 1, states: URGENCY.map((b) => [b, 1]) });
   assert.equal(every, `8 copies: ${URGENCY.map((b) => `1 ${labels[b].toLowerCase()}`).join(", ")}`);
+});
+
+// --- the phone's status list ------------------------------------------------------------
+//
+// A touch device gets `layout(board, { status: true })`: the title bar, the column header and
+// every service flat, as tall as the board rather than the viewport, and nothing else but the
+// connection notice. No recorded capture is taller than a real phone, so "longer than the
+// screen" is taken against the `rows` the layout is handed, which it does not read.
+
+/// The status list's options on a phone in portrait: 46 cells across.
+function statusAt(at, extra = {}) {
+  return { status: true, cols: 46, now: at + 1000, version: "0.2.123", ...extra };
+}
+
+test("a phone lists every service flat under the title bar and the column header", () => {
+  const { board, at } = liveBoard();
+  const rows = layoutOf(board, statusAt(at, { rows: 8 }));
+  const cards = rowCards(board);
+  assert.equal(cards.length, 10, "the capture's whole board, longer than the eight rows handed in");
+  assertGrid(rows, 46, 3 + cards.length);
+  assertGolden("status-46x13.txt", rows);
+  const lines = screenText(rows).split("\n");
+  assert.ok(lines[0].startsWith("afkd 0.2.123 · ● Running"), lines[0]);
+  assert.equal(lines[1].trim(), "", "a spacer under the title bar");
+  assert.deepEqual(lines[2].trim().split(/\s+/), ["Service", "State"], "portrait sheds to the two columns");
+  const body = lines.slice(3, 3 + cards.length);
+  body.forEach((line, i) => {
+    assert.notEqual(line[0], " ", `${line.trim()} starts at column 0`);
+    assert.equal(line.split(/\s+/)[1], cards[i].name, "one row per service, its whole name, in config order");
+  });
+  for (const chrome of [/^CPU /u, /^Queue /u, /🧵/u, /\? help/u]) {
+    assert.ok(!lines.some((l) => chrome.test(l)), `no ${chrome}: no load strip, Queues section or footer`);
+  }
+  assert.ok(rows.flat().every((c) => c.bg === null), "no row wears the selection band");
+});
+
+test("a phone's list is as tall as its services, whatever rows it is handed", () => {
+  // `snapshot` carries a lane, so the missing `Queues` rows are a real absence; `family` folds
+  // three copies into one row; `packages` is a board of packages, which a phone never groups.
+  const boards = [
+    ["snapshot", liveBoard()],
+    ["family", familyBoard()],
+    ["packages", packagesBoard()],
+  ];
+  for (const [name, { board, at }] of boards) {
+    const want = 3 + rowCards(board).length;
+    for (const height of [1, 8, 30, 500]) {
+      const rows = layoutOf(board, statusAt(at, { rows: height }));
+      assertGrid(rows, 46, want);
+      const text = screenText(rows);
+      assert.ok(!text.includes("📦") && !text.includes("├─"), `${name}: no group header or connector`);
+    }
+  }
+  assert.ok(queues(liveBoard().board).length > 0, "the snapshot has a lane a phone leaves out");
+});
+
+test("a phone's connection notice is a line of its own below the services", () => {
+  const { board, at } = liveBoard();
+  const bare = layoutOf(board, statusAt(at));
+  for (const notice of [
+    "the daemon closed this stream; reload to reconnect",
+    // A refusal is the daemon's own sentence: wide CJK and emoji, longer than the screen.
+    "refused: 接続を拒否しました 🚫 the relay could not reach the daemon's control socket",
+  ]) {
+    const rows = layoutOf(board, statusAt(at, { notice }));
+    assertGrid(rows, 46, bare.length + 1);
+    assert.deepEqual(rows.slice(0, -1), bare, "every service row is still there, untouched");
+    const last = rows.at(-1);
+    assert.deepEqual(last, noticeRow(notice, 46).filter((c) => c.width > 0), "the notice row the desktop overwrites with");
+    assert.equal(last[0].fg, "legend");
+    assert.ok(notice.startsWith(last[0].text.replace(/…$/u, "")), "the notice, truncated to the width at most");
+  }
+  assert.deepEqual(layoutOf(board, statusAt(at, { notice: "" })), bare, "no notice, no line");
+});
+
+test("a phone draws the desktop's own flat rows, at every width it sheds to", () => {
+  // The parity the card asks for: one icon, badge and elapsed per service on either surface.
+  // The desktop's flat list is drawn with no cursor, so its rows carry no band either.
+  const { board, at } = liveBoard();
+  for (const cols of [46, 60, 100]) {
+    const phone = layoutOf(board, statusAt(at, { cols }));
+    const desk = layoutOf(board, { cols, rows: 60, now: at + 1000, version: "0.2.123", grouped: false, selected: -1 });
+    const n = rowCards(board).length;
+    assert.deepEqual(phone[0], desk[0], `${cols}: the title bar`);
+    assert.deepEqual(phone[2], desk[3], `${cols}: the column header`);
+    assert.deepEqual(phone.slice(3, 3 + n), desk.slice(4, 4 + n), `${cols}: the service rows`);
+  }
+  const header = screenText(layoutOf(board, statusAt(at, { cols: 100 }))).split("\n")[2];
+  assert.ok(header.includes("Trigger") && header.includes("Next Run"), "a landscape phone gets the columns that fit");
+});
+
+test("no session state reaches a phone, and its elapseds still tick", () => {
+  const { board, at } = liveBoard();
+  const plain = layoutOf(board, statusAt(at));
+  const session = {
+    selected: 0,
+    offset: 3,
+    grouped: true,
+    collapsed: new Set(["ops"]),
+    filter: "ops",
+    busyOnly: true,
+    peeked: new Set(["deep"]),
+    typing: "op",
+    flash: "Run sent to janitor",
+    help: true,
+    info: "janitor",
+    run: runState("janitor"),
+    confirm: { verb: "stop", targets: ["ops.nightly"], skipped: 0 },
+  };
+  assert.deepEqual(layoutOf(board, statusAt(at, session)), plain, "no cursor, fold, filter, lens, peek, view or overlay");
+  const later = screenText(layoutOf(board, statusAt(at, { now: at + 4000 }))).split("\n");
+  const busy = screenText(plain).split("\n").findIndex((l) => l.includes("▶ Busy 4s"));
+  assert.ok(busy > 2, "the capture has a service busy for 4s");
+  assert.ok(later[busy].includes("▶ Busy 7s"), later[busy]);
 });

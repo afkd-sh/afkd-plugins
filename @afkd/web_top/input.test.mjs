@@ -16,7 +16,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { fold, seed } from "./fold.mjs";
-import { RESERVED, chordOf, installKeys } from "./input.mjs";
+import { RESERVED, chordOf, installDesktopKeys, installKeys } from "./input.mjs";
 import { DEFAULT_KEYS } from "./keymap.mjs";
 import { infoScrollMax } from "./layout.mjs";
 import { flashOf, newSession } from "./session.mjs";
@@ -44,7 +44,9 @@ function keydown(key, { ctrl = false, alt = false, meta = false } = {}) {
 
 /// The stub element: listeners by type, a focus that moves its document's `activeElement`, and
 /// nothing else. No layout, no cascade, no event system — `input.mjs` needs none of those, and
-/// a stub that offered them would let it start depending on one.
+/// a stub that offered them would let it start depending on one. A listener added with a
+/// `signal` is gone once that signal aborts, which is the one part of `addEventListener`'s
+/// options the seam spends.
 function element() {
   const el = {
     listeners: {},
@@ -52,16 +54,44 @@ function element() {
     focus() {
       el.ownerDocument.activeElement = el;
     },
-    addEventListener(type, handler) {
-      (el.listeners[type] ??= []).push(handler);
+    addEventListener(type, handler, options) {
+      (el.listeners[type] ??= []).push({ handler, signal: options?.signal });
+    },
+    /// The listeners still installed, by type — an aborted one is not.
+    live() {
+      const out = {};
+      for (const [type, all] of Object.entries(el.listeners)) {
+        const kept = all.filter((l) => l.signal?.aborted !== true);
+        if (kept.length > 0) out[type] = kept.length;
+      }
+      return out;
     },
     /// Deliver one event, as the browser would, and hand it back for its `prevented` bit.
     dispatch(type, event) {
-      for (const handler of el.listeners[type] ?? []) handler(event);
+      for (const { handler, signal } of el.listeners[type] ?? []) {
+        if (signal?.aborted !== true) handler(event);
+      }
       return event;
     },
   };
   return el;
+}
+
+/// The stub `(pointer: coarse)` query: `matches`, and a `change` event `flip` fires, which is
+/// all of a `MediaQueryList` the seam reads.
+function media(matches) {
+  const query = {
+    matches,
+    listeners: [],
+    addEventListener(type, handler) {
+      if (type === "change") query.listeners.push(handler);
+    },
+    flip(next) {
+      query.matches = next;
+      for (const handler of query.listeners) handler({ matches: next });
+    },
+  };
+  return query;
 }
 
 /// The capture's live board — the same fixture `layout.test.mjs` and `session.test.mjs` render.
@@ -87,7 +117,9 @@ const VIEWPORT = { cols: 60, rows: 16 };
  * `post` resolves to acceptance unless a test hands `reply` something else, which is the
  * relay-refused arm.
  */
-function wire({ board, session = newSession(), reply = { ok: true, message: "" } } = {}) {
+/// With `touch`, the seam goes in through `installDesktopKeys` behind that query, as the shell
+/// installs it.
+function wire({ board, session = newSession(), reply = { ok: true, message: "" }, touch = null } = {}) {
   const el = element();
   const state = {
     element: el,
@@ -97,7 +129,7 @@ function wire({ board, session = newSession(), reply = { ok: true, message: "" }
     /// The promises the handler started, so a test can await the reply arm rather than sleep.
     inflight: [],
   };
-  installKeys({
+  const keys = {
     element: el,
     read: () => ({
       session: state.session,
@@ -126,7 +158,9 @@ function wire({ board, session = newSession(), reply = { ok: true, message: "" }
     repaint: () => {
       state.painted += 1;
     },
-  });
+  };
+  if (touch === null) installKeys(keys);
+  else installDesktopKeys({ touch, ...keys });
   return state;
 }
 
@@ -505,4 +539,96 @@ test("a wheel while the grid is not focused does nothing at all", () => {
   const event = grid.element.dispatch("wheel", wheel(120));
   assert.equal(event.prevented, false, "no interception");
   assert.equal(grid.session.infoOffset, 0, "no scroll");
+});
+
+// --- a touch device: the seam is the desktop's ----------------------------------------------
+
+/// The presses that would move a desktop page: run, stop and the fan-out, the open, afkd's
+/// reload — each one a post or a state change with the cursor on an armed service. Fresh each
+/// call, so no event's `prevented` bit carries over from another dispatch.
+const desktopPresses = () => [keydown("t"), keydown("s"), keydown("x"), keydown("Enter"), keydown("r", { ctrl: true })];
+
+/// A session with the cursor on the capture's first armed service, where `t` really runs.
+function onArmed(board) {
+  const armed = Object.values(board.services).find((s) => s.badge === "Idle");
+  assert.notEqual(armed, undefined, "the capture holds an armed service");
+  return { ...newSession(), cursor: { kind: "service", key: armed.name }, cursorRow: 0 };
+}
+
+test("a touch device gets no seam: no listener, no focus, nothing posted", () => {
+  const { board } = liveBoard();
+  const session = onArmed(board);
+  const phone = wire({ board, session, touch: media(true) });
+  assert.deepEqual(phone.element.listeners, {}, "not one listener of any kind");
+  assert.equal(phone.element.ownerDocument.activeElement, null, "…and the grid never took focus");
+  // Even a grid a tap had focused would answer nothing, because there is nothing listening.
+  phone.element.ownerDocument.activeElement = phone.element;
+  for (const press of desktopPresses()) {
+    assert.equal(phone.element.dispatch("keydown", press).prevented, false, `${press.key} is not taken`);
+  }
+  const info = wire({ board, session: { ...newSession(), info: "janitor" }, touch: media(true) });
+  info.element.ownerDocument.activeElement = info.element;
+  assert.equal(info.element.dispatch("wheel", wheel(120)).prevented, false, "a wheel is the browser's");
+  for (const grid of [phone, info]) {
+    assert.deepEqual(grid.posted, [], "nothing is posted to the relay");
+    assert.equal(grid.painted, 0, "nothing repaints off a key");
+  }
+  assert.deepEqual(phone.session, session, "no session state moved");
+  // The same presses on a desktop, so the silence above is the seam's absence and not the
+  // presses: `t` runs the armed service and Ctrl+R reloads.
+  const desk = wire({ board, session, touch: media(false) });
+  for (const press of [keydown("t"), keydown("r", { ctrl: true })]) desk.element.dispatch("keydown", press);
+  assert.deepEqual(desk.posted.map((b) => b.command), ["run", "reload"]);
+});
+
+test("the seam follows the pointer, and is installed once each time", () => {
+  const { board } = liveBoard();
+  const touch = media(true);
+  const grid = wire({ board, session: onArmed(board), touch });
+  // A tablet docked to a keyboard: the pointer turns fine, the seam goes in and takes focus.
+  touch.flip(false);
+  assert.deepEqual(grid.element.live(), { pointerdown: 1, keydown: 1, wheel: 1 });
+  assert.equal(grid.element.ownerDocument.activeElement, grid.element, "the grid holds the keyboard");
+  grid.element.dispatch("keydown", keydown("t"));
+  assert.equal(grid.posted.length, 1, "t runs the service");
+  // …and undocked again: every listener goes, and nothing a key or a wheel does reaches the
+  // relay, focused or not.
+  touch.flip(true);
+  assert.deepEqual(grid.element.live(), {}, "the whole seam is removed");
+  for (const press of desktopPresses()) assert.equal(grid.element.dispatch("keydown", press).prevented, false);
+  assert.equal(grid.element.dispatch("wheel", wheel(120)).prevented, false);
+  assert.equal(grid.posted.length, 1, "nothing more was posted");
+  // A third flip installs exactly one seam again, not a second beside a stale first.
+  touch.flip(false);
+  assert.deepEqual(grid.element.live(), { pointerdown: 1, keydown: 1, wheel: 1 });
+  grid.element.dispatch("keydown", keydown("t"));
+  assert.equal(grid.posted.length, 2, "one t, one body");
+  // A change that changes nothing installs nothing.
+  touch.flip(false);
+  assert.deepEqual(grid.element.live(), { pointerdown: 1, keydown: 1, wheel: 1 });
+});
+
+test("the shell reaches the relay only through the desktop seam", () => {
+  // `top.mjs` boots a whole browser at import, so it is held by its source instead: one media
+  // query decides, the seam is installed behind it and nowhere else, the one `/command` sits in
+  // the `post` that seam is handed, and a phone paints the status list.
+  const code = (file) =>
+    readFileSync(join(HERE, file), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+  const shell = code("top.mjs");
+  assert.match(shell, /matchMedia\("\(pointer: coarse\)"\)/u, "the device decides, not the width");
+  assert.equal(shell.match(/\binstallDesktopKeys\(/gu)?.length, 1, "the seam is installed once, behind the query");
+  assert.equal(shell.match(/\binstallKeys\(/gu), null, "and never directly");
+  assert.equal(shell.match(/"\/command"/gu)?.length, 1, "one path to the relay's command endpoint");
+  assert.match(shell, /layout\(board, \{ status: true\b/u, "a phone paints the status list");
+  // The stylesheet lets a phone scroll while the screen stays out of flow: `body`'s
+  // `white-space: pre` turns `index.html`'s newlines into line boxes a static screen would sit
+  // below.
+  const css = code("dashboard.css");
+  assert.match(css, /html\.status \{[^}]*overflow-y: auto;/u, "a phone's document scrolls");
+  const freed = /html\.status #screen \{([^}]*)\}/u.exec(css)?.[1] ?? "";
+  assert.match(freed, /bottom: auto;/u, "the screen lets go of its bottom edge");
+  assert.doesNotMatch(freed, /position/u, "…and nothing else");
+  assert.match(/#screen \{([^}]*)\}/u.exec(css)?.[1] ?? "", /position: absolute;/u, "the screen stays out of flow");
 });

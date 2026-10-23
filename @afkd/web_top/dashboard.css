@@ -56,10 +56,11 @@
 
 html {
   background: var(--term-bg);
-  /* The grid is clipped, never scrolled: the layout already shed and clipped itself to the
-     viewport it was told about, so anything past this edge is a glyph the visitor's font drew
-     wider than the terminal budgets for it — not content to reach. Both elements, because a
-     `body` that clips still leaves the document scrollable. */
+  /* On a desktop the grid is clipped, never scrolled: the layout already shed and clipped
+     itself to the viewport it was told about, so anything past this edge is a glyph the
+     visitor's font drew wider than the terminal budgets for it — not content to reach. Both
+     elements, because a `body` that clips still leaves the document scrollable. A phone's
+     status list is the one exception (`html.status`, below). */
   overflow: hidden;
 }
 
@@ -85,18 +86,41 @@ body {
   text-size-adjust: none;
 }
 
-/* The screen. It fills the viewport and clips: the layout already shed and clipped itself to
-   the grid it was told about, so anything reaching this edge is a bug, not a scrollbar.
+/* The screen. On a desktop it fills the viewport and clips: the layout already shed and
+   clipped itself to the grid it was told about, so anything reaching this edge is a bug, not a
+   scrollbar.
  *
  * Pinned out of flow rather than given `height: 100vh`, because the probe beside it is a
  * *span*: the newline between the two in `index.html` is a text node, and a text node in a
  * block container opens an anonymous line box — one cell of it — that pushed the whole screen
  * down a row and left the last one hanging past the fold. Driving the real page is what found
- * that; `inset: 0` makes it unreachable rather than fixing it once by deleting a newline. */
+ * that; `inset: 0` makes it unreachable rather than fixing it once by deleting a newline. The
+ * phone's status list keeps it out of flow for the same reason and only lets go of its bottom
+ * edge. */
 #screen {
   position: absolute;
   inset: 0;
   overflow: hidden;
+}
+
+/* The phone's status list, which `top.mjs` marks on the root of a touch device. It shows every
+   service rather than the screenful a terminal would, so the document scrolls where the
+   desktop clips — vertically only, because its rows are composed to the viewport's width and
+   only the vertical axis has content to reach.
+ *
+ * The screen stays absolute, pinned top-left, and is freed at the bottom alone, so its height
+ * is its rows'. With no positioned ancestor its containing block is the initial one, so its box
+ * is the viewport's scrollable overflow; the root's `overflow-y` propagates to the viewport,
+ * which scrolls it. `body`'s own clip does not reach it, because a box whose containing block
+ * is outside the clipping element is not clipped by it, and with the root no longer `visible`
+ * that clip stays on `body` rather than passing to the viewport. */
+html.status {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+html.status #screen {
+  bottom: auto;
 }
 
 /* No focus ring, the browser's or one of the page's own: `afkd top` frames nothing, and the

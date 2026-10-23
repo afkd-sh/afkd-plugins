@@ -843,6 +843,18 @@ function columnRenderWidth(key, content, cols, extra = 0) {
   return COL_WIDTH[key];
 }
 
+/// The columns visible at `cols` and each one's render width, with `Service` fitted to the
+/// widest identity among `measured`. The list and the phone's status list both size through
+/// here, so the two cannot disagree on a column at the same width.
+function columnPlan(board, measured, cols) {
+  const content = measured.reduce((w, row) => Math.max(w, textWidth(identityText(row))), 0);
+  const visible = visibleColumns(cols);
+  const widths = {};
+  const extra = familyExtra(board);
+  for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols, extra);
+  return { visible, widths };
+}
+
 // --- a multi-copy family's wording --------------------------------------------------
 //
 // `crates/tui/src/family.rs`, the wording's one home there and here.
@@ -3693,12 +3705,20 @@ function runFrame(plan) {
  *   the handshake frame (it is not a wire frame), so the shell reads it off the `welcome`
  *   event and hands it in here, exactly as it reads `log_lines` off `stream` and hands it to
  *   `seed()`. Absent, the prefix is a bare `afkd · `.
+ * - `status` — lay out the phone's read-only status list instead (`statusFrame`). It is the
+ *   one mode that is not `rows` tall: it reads only `cols`, `now`, `version` and `notice`, and
+ *   returns one row per service under the title bar and the column header.
+ * - `notice` — the connection's state, read by the status list alone, which gives it a line of
+ *   its own below the services. The desktop shell overwrites its last row with `noticeRow`.
  *
  * **The body scrolls, the popups do not.** The body takes what the pinned bands leave and is
  * sliced from `offset`; a popup is centered on the finished frame and clipped to it, with
  * everything behind it receded (`shell::render_popup`).
  */
 export function layout(board, options) {
+  // The phone's status list is decided before anything else, so no other view and no overlay
+  // can reach a touch screen whatever session state the shell hands in.
+  if (options.status === true) return statusFrame(board, options);
   const cols = Math.max(1, Math.trunc(options.cols));
   const rows = Math.max(1, Math.trunc(options.rows));
   // The info page replaces the list, but not the overlays: the confirm modal and the `?`
@@ -3734,12 +3754,7 @@ export function layout(board, options) {
   // group were open, over the needle's survivors alone, in the view that renders. Neither a
   // fold nor the busy lens may reflow the column under an operator who never touched a key;
   // the view flag does, because flat names are wider than the grouped tree's leaves.
-  const measured = visibleRows(board, { filter, grouped, peeked });
-  const content = measured.reduce((w, row) => Math.max(w, textWidth(identityText(row))), 0);
-  const visible = visibleColumns(cols);
-  const widths = {};
-  const extra = familyExtra(board);
-  for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols, extra);
+  const { visible, widths } = columnPlan(board, visibleRows(board, { filter, grouped, peeked }), cols);
   const laneCols = queueCols(cols, lanes.reduce((w, l) => Math.max(w, textWidth(l.lane)), 0));
   // The rollups a header shows, folded here over the filtered card set the rows were built
   // from — not `fold.mjs`'s unfiltered `groups()` — mirroring `DashboardModel::group_rollup`:
@@ -3803,6 +3818,40 @@ function withOverlays(frame, board, options, cols, rows) {
   }
   if (options.help === true) return renderPopup(frame, helpOverlay(options, board.quittingSince !== null), cols, rows);
   return frame;
+}
+
+/// The connection's own state as one row of `cols` cells, in the legend tone. Measured in cells
+/// like every other row on the page: a daemon's refusal is its own sentence and can carry
+/// anything, and a `slice` by UTF-16 unit would let one wide grapheme overrun the grid.
+export function noticeRow(text, cols) {
+  const fitted = truncateWidth(text, cols);
+  const pad = " ".repeat(Math.max(0, cols - textWidth(fitted)));
+  return [cell(fitted, { fg: "legend" }), cell(pad)];
+}
+
+/// The phone's status list: the title bar, a spacer, the column header and every service flat,
+/// then the connection notice on a line of its own when there is one. It is as tall as its
+/// content rather than the viewport — the page scrolls instead of the layout clipping — so
+/// `rows` is not read. No session state reaches it either: there is no cursor, fold, filter,
+/// lens, peek, view or overlay on a phone, only the board's own rows. The rows are
+/// `buildRows`' flat arm, the list's own boot view minus the `Queues` section, and the columns
+/// shed through `columnPlan`, so a phone and a desktop at one width draw one row alike.
+function statusFrame(board, options) {
+  const cols = Math.max(1, Math.trunc(options.cols));
+  const now = options.now;
+  const rows = buildRows(board, "", new Set(), false, false, new Set());
+  const { visible, widths } = columnPlan(board, rows, cols);
+  const screen = [
+    fitRow(planHeader(headerView(board, now, options.version ?? ""), cols), cols),
+    fitRow([], cols),
+    fitRow(columnHeaderCells(visible, widths), cols),
+  ];
+  // Only service rows come out of the flat arm, so neither the lane columns nor a group's
+  // rollups are ever read.
+  for (const row of rows) screen.push(fitRow(bodyRowCells(row, visible, widths, null, {}, now, cols), cols));
+  const notice = options.notice ?? "";
+  if (notice !== "") screen.push(fitRow(noticeRow(notice, cols), cols));
+  return screen;
 }
 
 /// The column header row — the visible labels in their own columns, painted bold, the same

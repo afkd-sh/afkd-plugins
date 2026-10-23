@@ -8,16 +8,23 @@
 // `document` or `window`. `session.mjs` is the third pure module (this tab's cursor, folds,
 // filter, modal, overlay and flash) and `input.mjs` the key seam, which reaches the DOM only
 // through the one element it is handed.
+//
+// A touch device gets the phone's status list instead: every service flat with its live state,
+// laid out as tall as it is and scrolled by the page, with no key seam and no `POST /command`.
 
 import { fold, seed } from "./fold.mjs";
-import { installKeys } from "./input.mjs";
-import { bodyHeight, cell, infoScrollMax, layout, runMetrics, textWidth, truncateWidth } from "./layout.mjs";
+import { installDesktopKeys } from "./input.mjs";
+import { bodyHeight, infoScrollMax, layout, noticeRow, runMetrics } from "./layout.mjs";
 import { paint } from "./paint.mjs";
 import { flashOf, needleOf, newSession, noteFrame, rowsOf, selectedIndex, typingOf } from "./session.mjs";
 
 const probe = document.getElementById("probe");
 const glyphProbe = document.getElementById("glyph-probe");
 const screen = document.getElementById("screen");
+/// Whether this is a phone. The device decides, not the width: a primary pointer that is
+/// coarse is a touch screen with no keyboard to drive the grid, while a narrow desktop window
+/// still has one and keeps behaving like a narrow terminal.
+const touch = window.matchMedia("(pointer: coarse)");
 
 /// The probe's own length in cells, so the advance is a hundredth of a measured run rather
 /// than one glyph's rounded box.
@@ -126,17 +133,19 @@ function view(cols, rows, now) {
 /// Lay the board out at whatever the viewport currently measures and paint it.
 function render() {
   const { cols, rows, advance } = grid();
-  const rendered = layout(board, view(cols, rows, performance.now()));
-  // The connection's own state is not board state — the fold paints nothing and knows nothing
-  // about a socket — so it is overwritten onto the screen's last row, where a terminal would
-  // put a flash. It is the one string on the page the layout did not produce.
-  if (notice !== "" && rendered.length > 0) {
-    // Measured in cells like every other row on the page: a daemon's refusal is its own
-    // sentence and can carry anything, and a `slice` by UTF-16 unit would let one wide
-    // grapheme overrun the grid it is the last row of.
-    const text = truncateWidth(notice, cols);
-    const pad = " ".repeat(Math.max(0, cols - textWidth(text)));
-    rendered[rendered.length - 1] = [cell(text, { fg: "legend" }), cell(pad)];
+  let rendered;
+  if (touch.matches) {
+    // The status list is as tall as its services and the document scrolls it, so only the
+    // width is the viewport's — read off the root's client box, which a scrollbar narrows
+    // where `innerWidth` does not.
+    const width = advance > 0 ? Math.max(1, Math.floor(document.documentElement.clientWidth / advance)) : cols;
+    rendered = layout(board, { status: true, cols: width, now: performance.now(), version, notice });
+  } else {
+    rendered = layout(board, view(cols, rows, performance.now()));
+    // The connection's own state is not board state — the fold paints nothing and knows
+    // nothing about a socket — so it is overwritten onto the screen's last row, where a
+    // terminal would put a flash. It is the one string on the page the layout did not place.
+    if (notice !== "" && rendered.length > 0) rendered[rendered.length - 1] = noticeRow(notice, cols);
   }
   // A probe with no layout yet has no cell to measure a glyph against, so it shrinks none.
   paint(screen, rendered, advance > 0 ? (text, classes) => measure(text, classes, advance) : null);
@@ -228,9 +237,25 @@ document.fonts.addEventListener("loadingdone", () => {
   drawn.clear();
   render();
 });
-render();
+/// Follow the device: a phone's screen takes no focus, so a tap neither focuses nor highlights
+/// it, and the root wears `status` so the stylesheet lets the document scroll. Registered
+/// before the key seam's own listener, so a switch to a fine pointer has the `tabindex` back
+/// before that seam focuses the screen.
+function applyMode() {
+  document.documentElement.classList.toggle("status", touch.matches);
+  if (touch.matches) {
+    screen.removeAttribute("tabindex");
+    screen.blur();
+  } else {
+    screen.setAttribute("tabindex", "0");
+  }
+  render();
+}
+touch.addEventListener("change", applyMode);
+applyMode();
 
-installKeys({
+installDesktopKeys({
+  touch,
   element: screen,
   read: () => {
     const { cols, rows } = grid();

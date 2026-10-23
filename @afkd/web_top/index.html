@@ -18,6 +18,6 @@
      `autofocus` hands it the keyboard on load, so a page that just opened is already
      pressable. Keys are captured, never stolen — `input.mjs` reads a keydown only while this
      element is the document's active one, so the address bar and every browser chord keep
-     working. -->
+     working. A touch device takes no keys: `top.mjs` drops the `tabindex` there. -->
 <div id="screen" tabindex="0" autofocus></div>
 <script type="module" src="/top.mjs"></script>

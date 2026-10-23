@@ -1,0 +1,43 @@
+afkd 0.2.123 · ● Running 12s · 8 up · 2 down  
+                                              
+Service          State                        
+🧹 janitor       □ Stopped                    
+🔹 ops.nightly   ▷ Queued 2s                  
+🔷 ops.sleeper   ▶ Busy 4s                    
+🔸 ops.broken    ✕ Crashed                    
+🔷 ops.vacuum    ▶ Busy 5s                    
+🔹 archivist     ● Idle                       
+🔹 noisy         ● Idle                       
+🔹 flaky         ● Idle                       
+🔹 deep          ● Idle                       
+🔹 spare         ● Idle                       
+
+── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
+nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnnnnnnnn
+mmmmmmmmmmnnnnnnnmmmmmmmmmnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnn
+
+── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
+..............................................
+..............................................
+bbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb..........
+.................ddddddddd....................
+.................ddddddddddd..................
+.................bbbbbbbbb....................
+.................bbbbbbbbb....................
+.................bbbbbbbbb....................
+..............................................
+..............................................
+..............................................
+..............................................
+..............................................
