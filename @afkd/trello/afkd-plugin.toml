@@ -1,10 +1,9 @@
 name = "@afkd/trello"
-version = "0.5.0"
+version = "0.6.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
-build = "cargo build --release --locked"
-exec = "target/release/afkd-trello"
+exec = "afkd-trello"
 
 # The item a run claims, `trello.Card` in a config: every slot is passed it, and every
 # action takes it first. afkd carries `id` (the short link) and `key` (afkd's claim key)

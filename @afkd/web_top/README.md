@@ -26,12 +26,14 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.7.0 (companion)
+Installed @afkd/web_top 0.8.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
 Under a v2 config — a `main.afkd` — installing is what runs it: no config line names a
-companion. Its settings live beside its install directory, in
+companion. What lands in `plugins/@afkd/web_top/` is what the relay serves and runs — the
+manifest, `web_top`, the page, its stylesheet and the modules it loads — and none of the
+suites, fixtures or goldens below. Its settings live beside its install directory, in
 `plugins/@afkd/web_top.afkd`:
 
 ```text
@@ -434,9 +436,10 @@ Whether it *says* so depends on which kind of "cannot be read" it is:
 ## Against a real afkd
 
 Everything above is held to afkd by the drift gate beside this directory, in
-[`drift/@afkd/web_top`](../../drift/@afkd/web_top). It installs this tree into a throwaway
-`$HOME`, runs it under a real daemon, and diffs the page's screen against the one `afkd top`
-paints on a PTY of the same size, cell for cell. Run it from the repository root:
+[`drift/@afkd/web_top`](../../drift/@afkd/web_top). It installs the release
+`tools/pack-release` stages, exactly what an operator gets, into a throwaway `$HOME`, runs it
+under a real daemon, and diffs the page's screen against the one `afkd top` paints on a PTY
+of the same size, cell for cell. Run it from the repository root:
 
 ```console
 $ AFKD_SRC=/path/to/afkd cargo test

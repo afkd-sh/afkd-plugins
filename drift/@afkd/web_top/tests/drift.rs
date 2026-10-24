@@ -160,9 +160,59 @@ fn relay_home(tree: &Tree, settings: &str) -> TempDir {
     home
 }
 
-/// Install the shipped relay into `home` through the real verb.
+/// What the release ships, every path relative to the plugin: [`staged_release`] stages
+/// exactly these, and the workflow's archive listing is the same list.
+const RELEASE_TREE: [&str; 11] = [
+    "afkd-plugin.toml",
+    "dashboard.css",
+    "fold.mjs",
+    "index.html",
+    "input.mjs",
+    "keymap.mjs",
+    "layout.mjs",
+    "paint.mjs",
+    "session.mjs",
+    "top.mjs",
+    "web_top",
+];
+
+/// Stage the release `tools/pack-release` packs under `dst` — the relay, the page, its
+/// stylesheet and the modules it loads, and none of the suites, fixtures or goldens — and
+/// return the staged `afkd-web_top/`.
+fn staged_release(dst: &Path) -> PathBuf {
+    let status = Command::new(plugin_root().join("../../tools/pack-release"))
+        .arg("web_top")
+        .arg(dst)
+        .status()
+        .expect("run tools/pack-release");
+    assert!(status.success(), "tools/pack-release web_top");
+    dst.join("afkd-web_top")
+}
+
+/// Every path under `dir`, relative and sorted, directories included.
+fn tree_of(dir: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("a directory entry").path();
+            let rel = path.strip_prefix(root).expect("under root");
+            out.push(rel.to_string_lossy().into_owned());
+            if path.is_dir() {
+                walk(root, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+/// Install the shipped relay into `home` through the real verb, from the staged release: the
+/// tree an operator's install places, not the checkout with its suites.
 fn install_relay(home: &Path) -> (String, String, Option<i32>) {
-    let out = run_subcommand_args(home, &["install", &plugin_root().display().to_string()]);
+    let staging = TempDir::new().expect("a staging dir");
+    let release = staged_release(staging.path());
+    let out = run_subcommand_args(home, &["install", &release.display().to_string()]);
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -902,29 +952,26 @@ fn the_verbs_accept_the_shipped_manifest() {
         "…under the shape the daemon runs: {row}"
     );
 
-    // The tree is placed whole, two levels down, with the program still executable — and
-    // there is no build step, so what is placed is what runs.
+    // Exactly the release is placed, two levels down, with the program still executable —
+    // and there is no build step, so what is placed is what runs. The fold, the keymap, the
+    // layout, the session, the key seam, the painter and the stylesheet travel with it: a
+    // page whose `import` lands on a 404 is a blank screen. The suites, the recorded
+    // captures, the golden screens and the README do not: they are this repository's, and
+    // an operator's plugins directory is not where they belong.
     let placed = plugins_root(dir.path()).join("@afkd").join("web_top");
-    for leaf in [
-        "afkd-plugin.toml",
+    assert_eq!(
+        tree_of(&placed),
+        RELEASE_TREE,
+        "the install placed exactly the release"
+    );
+    for absent in [
         "README.md",
-        "index.html",
-        "top.mjs",
-        // The fold, the keymap, the layout, the session, the key seam, the painter, the
-        // stylesheet, the recorded captures and the golden screens all travel with the
-        // plugin: a shipped file nothing asserts is installed can silently stop shipping,
-        // and a page whose `import` lands on a 404 is a blank screen.
-        "fold.mjs",
-        "keymap.mjs",
-        "layout.mjs",
-        "session.mjs",
-        "input.mjs",
-        "paint.mjs",
-        "dashboard.css",
-        "fixtures/snapshot.jsonl",
-        "goldens/overview-100x30.txt",
+        "fixtures",
+        "goldens",
+        "testkit.mjs",
+        "fold.test.mjs",
     ] {
-        assert!(placed.join(leaf).is_file(), "the install placed {leaf}");
+        assert!(!placed.join(absent).exists(), "the install placed {absent}");
     }
     let exec = placed.join("web_top");
     use std::os::unix::fs::PermissionsExt;
@@ -1369,15 +1416,15 @@ fn copy_tree(src: &Path, dst: &Path) {
     }
 }
 
-/// Pack the **shipped** plugin tree the way `.github/workflows/release.yml` does: one
-/// top-level `afkd-web_top/` directory and nothing else, mode bits carried.
+/// Pack the **shipped** release the way `.github/workflows/release.yml` does: what
+/// `tools/pack-release` stages, under one top-level `afkd-web_top/` directory and nothing
+/// else, mode bits carried.
 ///
 /// `version` rewrites the packed manifest's version line, which is how the update leg gets
 /// a genuinely newer artifact at the same address without a second server.
 fn pack_release(at: &Path, version: Option<&str>) -> Vec<u8> {
     let staged = at.join(format!("pack-{}", version.unwrap_or("shipped")));
-    let wrapper = staged.join("afkd-web_top");
-    copy_tree(&plugin_root(), &wrapper);
+    let wrapper = staged_release(&staged);
     if let Some(version) = version {
         let manifest = wrapper.join("afkd-plugin.toml");
         let bumped = std::fs::read_to_string(&manifest)
@@ -1395,6 +1442,44 @@ fn pack_release(at: &Path, version: Option<&str>) -> Vec<u8> {
         .expect("run tar");
     assert!(packed.success(), "tar refused to pack the shipped tree");
     std::fs::read(staged.join("afkd-web_top.tar.gz")).expect("read the archive")
+}
+
+/// Every file the page at `/` loads off the relay on `port`: the stylesheet and module
+/// `page` names, then each `from "./x.mjs"` of every module served, followed until nothing
+/// new is named. Each must answer 200 under its own content type, so a file missing from the
+/// install fails the walk.
+fn page_closure(port: u16, page: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for attr in ["href=\"/", "src=\"/"] {
+        for piece in page.split(attr).skip(1) {
+            let leaf = piece.split('"').next().unwrap_or_default();
+            if leaf.ends_with(".css") || leaf.ends_with(".mjs") {
+                found.push(format!("/{leaf}"));
+            }
+        }
+    }
+    let mut next = 0;
+    while next < found.len() {
+        let path = found[next].clone();
+        next += 1;
+        let (status, head, body) = get(port, &path);
+        assert_eq!(status, 200, "GET {path} off the installed relay: {body}");
+        let kind = match path.ends_with(".css") {
+            true => "text/css",
+            false => "text/javascript",
+        };
+        assert!(
+            head.contains(kind),
+            "GET {path} is served as {kind}: {head}"
+        );
+        for piece in body.split("from \"./").skip(1) {
+            let path = format!("/{}", piece.split('"').next().unwrap_or_default());
+            if !found.contains(&path) {
+                found.push(path);
+            }
+        }
+    }
+    found
 }
 
 /// A loopback server that keeps answering `/<leaf>` with **whatever bytes it holds now**,
@@ -1528,11 +1613,10 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
     // The publishing claim end to end, with nothing of this repo reachable but the two
     // things a stranger's host can reach: an index, and a tarball at the address it names.
     //
-    // The fixture is the **actual shipped relay** — 72 files, a 179 KB `layout.mjs`, 27
-    // golden screens, a recorded run corpus two directories deep with a CJK segment in its
-    // path, a `@scope/leaf` name whose `@` is in every archived path, and a program with a
-    // shebang and an executable bit. That is the adversarial input for a tarball round-trip;
-    // a two-file placeholder would prove none of it.
+    // The fixture is the **actual shipped release** — the relay and its page, a 179 KB
+    // `layout.mjs` among the modules, a `@scope/leaf` name whose `@` is in every archived
+    // path, and a program with a shebang and an executable bit. That is the adversarial
+    // input for a tarball round-trip; a two-file placeholder would prove none of it.
     if !tar_available() {
         eprintln!("SKIP: tar is not on PATH");
         return;
@@ -1560,28 +1644,14 @@ fn installs_by_name_through_the_published_index_and_updates_from_the_same_url() 
     );
     assert_eq!(tarball.hits(), 1, "…and fetches the asset it named");
 
-    // The tree is placed whole, under the scope, with the archive's own wrapper stepped
-    // through rather than planted — and the program still executable, since there is no
-    // build step and what is placed is what the daemon runs.
+    // Exactly the archive's contents are placed, under the scope, with its own wrapper
+    // stepped through rather than planted — and the program still executable, since there
+    // is no build step and what is placed is what the daemon runs.
     let placed = plugins_root(dir.path()).join("@afkd").join("web_top");
-    for leaf in [
-        "afkd-plugin.toml",
-        "web_top",
-        "index.html",
-        "top.mjs",
-        "layout.mjs",
-        "session.mjs",
-        "fixtures/snapshot.jsonl",
-        "goldens/overview-100x30.txt",
-    ] {
-        assert!(
-            placed.join(leaf).is_file(),
-            "the install placed {leaf} out of the archive"
-        );
-    }
-    assert!(
-        !placed.join("afkd-web_top").exists(),
-        "the archive's one wrapper directory is stepped through, not placed"
+    assert_eq!(
+        tree_of(&placed),
+        RELEASE_TREE,
+        "the install placed exactly the archive's contents"
     );
     use std::os::unix::fs::PermissionsExt;
     let mode = |path: &Path| {
@@ -1701,6 +1771,13 @@ fn the_daemon_runs_the_relay_and_the_stream_climbs() {
             "the module listens for the `{event}` event the relay deals"
         );
     }
+    // The page still loads from the slim install: everything `index.html` names, and every
+    // module `top.mjs` imports, transitively, answers 200 off the installed relay.
+    let loaded = page_closure(port, &page);
+    assert!(
+        loaded.iter().filter(|path| path.ends_with(".mjs")).count() >= 7,
+        "the walk reached every module the page loads: {loaded:?}"
+    );
 
     // The live half.
     let mut sse = Sse::admitted(port);
@@ -2668,11 +2745,11 @@ fn a_runs_dir_that_appears_after_the_daemon_started_is_served() {
 
 #[test]
 fn the_plugin_tree_imports_nothing_outside_the_standard_library() {
-    // AC7. The manifest declares no `build` line, so the tree installs on a host with no
-    // toolchain — which is only true while every import resolves out of the standard
-    // library. The allowlist is written here rather than derived, so a new import is a
-    // deliberate edit to this file and not a silent dependency; when python3 is present the
-    // interpreter's own `sys.stdlib_module_names` is the real oracle on top.
+    // AC7. afkd never builds a plugin, so the relay runs on a host with no toolchain —
+    // which is only true while every import resolves out of the standard library. The
+    // allowlist is written here rather than derived, so a new import is a deliberate edit to
+    // this file and not a silent dependency; when python3 is present the interpreter's own
+    // `sys.stdlib_module_names` is the real oracle on top.
     const ALLOWED: &[&str] = &[
         "http",
         "json",

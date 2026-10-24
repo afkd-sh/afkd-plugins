@@ -1,0 +1,72 @@
+#!/bin/sh
+# Stage the finished release of one plugin: `tools/pack-release <leaf> <out-dir> [<binary>]`
+# writes `<out-dir>/afkd-<leaf>/` holding what `@afkd/<leaf>` runs, and nothing else.
+#
+# afkd never builds a plugin: it places what the archive holds, as it is. So this is the one
+# list of what ships, used by the release workflows, which tar what it stages, and by the
+# drift gates, which install it. A compiled plugin ships its manifest, its binary (given
+# here, built for one platform, placed as `afkd-<leaf>`) and its `skills/`; web_top ships
+# its manifest, the relay, the page, its stylesheet and the modules the page loads. Sources,
+# tests, fixtures, goldens, Cargo files, READMEs and build output stay behind.
+#
+# Mode bits ride (`cp -p`): a skill's scripts are run as they arrive, and so is the relay.
+set -eu
+
+usage() {
+	echo "usage: tools/pack-release <trello|github|gitlab|gitea> <out-dir> <binary>" >&2
+	echo "       tools/pack-release web_top <out-dir>" >&2
+	exit 2
+}
+
+[ $# -ge 2 ] || usage
+leaf=$1
+out=$2
+root=$(cd "$(dirname "$0")/.." && pwd)
+src="$root/@afkd/$leaf"
+dst="$out/afkd-$leaf"
+
+case $leaf in
+trello | github | gitlab | gitea)
+	[ $# -eq 3 ] || usage
+	binary=$3
+	[ -f "$binary" ] || {
+		echo "pack-release: no binary at $binary" >&2
+		exit 1
+	}
+	;;
+web_top)
+	[ $# -eq 2 ] || {
+		echo "pack-release: web_top has no binary to ship" >&2
+		exit 2
+	}
+	;;
+*)
+	echo "pack-release: no plugin @afkd/$leaf to pack" >&2
+	exit 2
+	;;
+esac
+
+if [ -e "$dst" ]; then
+	echo "pack-release: $dst already exists" >&2
+	exit 1
+fi
+mkdir -p "$dst"
+cp -p "$src/afkd-plugin.toml" "$dst/"
+
+case $leaf in
+web_top)
+	# The page, its stylesheet, and `top.mjs` with every module it imports, transitively.
+	# A module added later and not listed here 404s in the drift gate's import walk.
+	for file in web_top index.html dashboard.css top.mjs fold.mjs input.mjs keymap.mjs \
+		layout.mjs paint.mjs session.mjs; do
+		cp -p "$src/$file" "$dst/"
+	done
+	;;
+*)
+	cp "$binary" "$dst/afkd-$leaf"
+	chmod 755 "$dst/afkd-$leaf"
+	cp -pR "$src/skills" "$dst/skills"
+	# Bytecode a local `python3` run left behind is this host's, not the plugin's.
+	find "$dst/skills" -name __pycache__ -type d -prune -exec rm -rf {} +
+	;;
+esac

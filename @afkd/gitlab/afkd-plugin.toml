@@ -1,10 +1,9 @@
 name = "@afkd/gitlab"
-version = "0.6.0"
+version = "0.7.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
-build = "cargo build --release --locked"
-exec = "target/release/afkd-gitlab"
+exec = "afkd-gitlab"
 
 # The items a run claims, one handle type per kind: every slot of the kind is passed its
 # item, and every action on it takes it first. afkd carries `id` (the number) and `key`

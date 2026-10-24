@@ -18,7 +18,7 @@ differently are listed [at the end](#where-it-differs-from-the-built-in). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
 [config language v2](https://afkd.sh/docs/lang-v2/) for the configs that use it.
 
-It is a Rust program, built from source when it is installed.
+It is a Rust program, released as a finished binary.
 
 ## Install it
 
@@ -26,15 +26,21 @@ It is a Rust program, built from source when it is installed.
 $ afkd install @afkd/github
 ```
 
-From a checkout of this repository, name the directory instead:
+afkd downloads the release built for this host's platform — `x86_64-linux` or
+`aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
+is: the manifest, the `afkd-github` binary and its `skills/`, nothing else. Nothing is
+compiled on your host, and no Rust toolchain is needed there. Installing by name needs
+**afkd 0.2.414 or newer**, the first that fills in the platform; with it, `afkd update
+@afkd/github` also moves a copy an older afkd built from source onto the finished release.
+
+From a checkout of this repository, build and pack it the way the release does, then name
+the packed directory:
 
 ```console
-$ afkd install /path/to/afkd-plugins/@afkd/github
+$ cargo build --release --locked --manifest-path @afkd/github/Cargo.toml
+$ tools/pack-release github /tmp/afkd-release @afkd/github/target/release/afkd-github
+$ afkd install /tmp/afkd-release/afkd-github
 ```
-
-afkd copies the tree and runs `cargo build --release --locked` in it, so the host needs a
-Rust toolchain — the one afkd itself was installed with is enough. The first build fetches
-the crates `Cargo.lock` pins (`ureq`, `serde`, `serde_json` and theirs).
 
 Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
 sends with a claim: this is a manifest v2 plugin, which a

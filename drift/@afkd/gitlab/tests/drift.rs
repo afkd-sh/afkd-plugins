@@ -1,5 +1,5 @@
 //! The gate that holds the **shipped `@afkd/gitlab` plugin** — a manifest v2 provider whose
-//! kinds are `service(gitlab)` and `service(gitlab.mr)`, built from source at install time —
+//! kinds are `service(gitlab)` and `service(gitlab.mr)`, shipped as a finished binary —
 //! to a real afkd: the `afkd` first on `PATH`, the installed one and never a build, since a
 //! plugin is checked against the afkd it will meet ([`bin_path`]).
 //!
@@ -27,6 +27,8 @@ mod common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use common::fake::{FakeGitlab, TOKEN};
@@ -45,49 +47,71 @@ fn plugin_root() -> PathBuf {
     std::fs::canonicalize(root).expect("the shipped plugin resolves")
 }
 
-/// Copy `src` onto `dst` recursively, leaving out `skip`'s names at the top level and every
-/// `__pycache__` below it. `std::fs::copy` carries the source's mode on Unix, so the skill's
-/// scripts stay executable, as the release's `cp -a` keeps them.
-fn copy_tree(src: &Path, dst: &Path, skip: &[&str]) {
-    std::fs::create_dir_all(dst).expect("mk dst");
-    for entry in std::fs::read_dir(src).expect("read src") {
-        let entry = entry.expect("a directory entry");
-        let name = entry.file_name();
-        if skip.iter().any(|s| name == **s) || name == "__pycache__" {
-            continue;
-        }
-        let (from, to) = (entry.path(), dst.join(&name));
-        if from.is_dir() {
-            copy_tree(&from, &to, &[]);
-        } else {
-            std::fs::copy(&from, &to).expect("copy");
-        }
-    }
+/// The plugin's binary, built once per test binary the way the release builds it —
+/// `cargo build --release --locked` in the plugin's own directory, for this host rather than
+/// musl — since afkd never builds a plugin and a release ships it finished. An inherited
+/// target-directory override would send the binary away from where this reads it.
+fn built_binary() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let status = Command::new("cargo")
+            .args(["build", "--release", "--locked", "--quiet"])
+            .current_dir(plugin_root())
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .status()
+            .expect("run cargo");
+        assert!(status.success(), "the plugin builds");
+        plugin_root().join("target/release/afkd-gitlab")
+    })
 }
 
-/// Stage the tree the release tarball holds — the plugin without its `target/` — under
-/// `dst`, and return the staged root. Installing the live checkout instead would hand afkd
-/// whatever this host last built there.
+/// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
+/// the skill, exactly what the release archive holds — and return the staged root.
 fn stage(dst: &Path) -> PathBuf {
-    let staged = dst.join("gitlab");
-    copy_tree(&plugin_root(), &staged, &["target"]);
-    for present in [
-        "afkd-plugin.toml",
+    let status = Command::new(plugin_root().join("../../tools/pack-release"))
+        .arg("gitlab")
+        .arg(dst)
+        .arg(built_binary())
+        .status()
+        .expect("run tools/pack-release");
+    assert!(status.success(), "tools/pack-release gitlab");
+    let staged = dst.join("afkd-gitlab");
+    for present in ["afkd-plugin.toml", "afkd-gitlab", "skills/gitlab/SKILL.md"] {
+        assert!(staged.join(present).exists(), "the release holds {present}");
+    }
+    for absent in [
         "Cargo.toml",
         "Cargo.lock",
         "src",
-        "skills/gitlab/SKILL.md",
+        "tests",
+        "README.md",
+        "target",
     ] {
         assert!(
-            staged.join(present).exists(),
-            "the staged copy holds {present}"
+            !staged.join(absent).exists(),
+            "the release holds no {absent}"
         );
     }
-    assert!(
-        !staged.join("target").exists(),
-        "the staged copy holds no target/"
-    );
     staged
+}
+
+/// Every path under `dir`, relative and sorted, directories included.
+fn tree_of(dir: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("a directory entry").path();
+            let rel = path.strip_prefix(root).expect("under root");
+            out.push(rel.to_string_lossy().into_owned());
+            if path.is_dir() {
+                walk(root, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
 }
 
 /// `afkd install <root>` into `home`, failing the leg with the full report unless the
@@ -609,11 +633,15 @@ fn install_leg_places_the_plugin_and_runs_one_issue_and_one_mr_through_it() {
     let stage_dir = TempDir::new().expect("tempdir");
     let staged = stage(stage_dir.path());
     install(home.path(), &staged);
-    let exec = plugins_root(home.path())
-        .join(NAME)
-        .join("target/release/afkd-gitlab");
+    let placed = plugins_root(home.path()).join(NAME);
+    assert_eq!(
+        tree_of(&placed),
+        tree_of(&staged),
+        "what lands is exactly the release's contents"
+    );
+    let exec = placed.join("afkd-gitlab");
     let mode = std::fs::metadata(&exec)
-        .unwrap_or_else(|e| panic!("the install built {}: {e}", exec.display()))
+        .unwrap_or_else(|e| panic!("the install placed {}: {e}", exec.display()))
         .permissions()
         .mode();
     assert!(mode & 0o111 != 0, "{} is executable", exec.display());

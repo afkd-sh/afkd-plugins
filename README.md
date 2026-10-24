@@ -33,7 +33,12 @@ suites on every push, and a red suite does not publish.
 ## Installing
 
 Plugins here are published as per-plugin release tarballs and listed in afkd's
-plugin index, so a name is enough:
+plugin index, so a name is enough. A release is finished and holds only what the
+plugin runs: the four compiled plugins publish one archive per platform (x86_64
+and aarch64 Linux, a static binary each) beside their manifest and skill, and
+web_top the relay, the page and its modules. afkd never builds a plugin, so no
+operator's host needs a toolchain. `tools/pack-release` is the one list of what
+each release ships.
 
 ```
 afkd install @afkd/web_top

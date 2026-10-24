@@ -124,25 +124,22 @@ fn setting_tables(declared: &[Declared]) -> Vec<BTreeMap<String, String>> {
 
 /// The manifest's top level carries the plugin's fixed fields, at protocol 2.
 #[test]
-fn the_manifest_names_the_plugin_and_how_it_builds() {
+fn the_manifest_names_the_plugin_and_its_finished_binary() {
     let tables = tables(MANIFEST);
     let top = &tables[0].1;
     for (key, value) in [
         ("name", "@afkd/gitlab"),
         ("shape", "provider"),
         ("source", "https://github.com/afkd-sh/afkd-plugins"),
-        ("build", "cargo build --release --locked"),
-        ("exec", "target/release/afkd-gitlab"),
+        ("exec", env!("CARGO_PKG_NAME")),
         ("version", env!("CARGO_PKG_VERSION")),
     ] {
         assert_eq!(top[key], quoted(value), "{key}");
     }
     assert_eq!(top["proto"], crate::wire::PROTO.to_string());
-    // `exec` names what `build` produces: the crate's own binary.
-    assert_eq!(
-        top["exec"],
-        quoted(&format!("target/release/{}", env!("CARGO_PKG_NAME")))
-    );
+    // The release ships the crate's binary finished, beside the manifest; afkd never builds
+    // a plugin, and refuses a manifest that asks it to.
+    assert!(!top.contains_key("build"), "{top:?}");
     // No proto 1 table survives, nor the hooks slots replaced: afkd refuses a v2
     // manifest carrying one.
     for obsolete in ["trigger", "trigger.block", "worker", "command", "kind.hook"] {

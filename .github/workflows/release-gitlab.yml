@@ -1,15 +1,21 @@
 # Cut the release `afkd install @afkd/gitlab` fetches.
 #
 # afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose `@afkd/gitlab`
-# entry names this repository's `releases/download/gitlab/afkd-gitlab.tar.gz`. afkd cannot
-# install a subdirectory of a monorepo — its git leg requires the manifest at the clone root,
-# and its tarball leg steps through exactly one wrapper directory — so the installable
-# artifact is this per-plugin tarball, whose single top-level directory is the plugin itself.
-# It ships source, not a binary: the manifest's `build` compiles it on the operator's host.
+# entry names this repository's `releases/download/gitlab/afkd-gitlab-{platform}.tar.gz`, and
+# fills `{platform}` with the host's `<arch>-<os>` before the download. So this workflow ships
+# a finished binary per platform, never source: each archive holds the manifest, a static musl
+# build of the plugin for one CPU (it runs on any Linux of that CPU, whatever its glibc) and
+# the skill, and nothing else. afkd never builds a plugin and places what the archive holds,
+# so no operator's host needs a toolchain. afkd cannot install a subdirectory of a monorepo —
+# its git leg requires the manifest at the clone root, and its tarball leg steps through
+# exactly one wrapper directory — so each archive's single top-level directory is the plugin.
 #
 # The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
-# source URL it recorded at install time and never re-reads the index, so one unchanging
-# address is the only way an already-installed operator reaches the next version.
+# `{platform}` URL it recorded at install time and never re-reads the index, so the fixed tag
+# behind that one template is how an already-installed operator reaches the next version.
+#
+# A `workflow_dispatch` on a branch runs everything up to the release itself, which only main
+# publishes: that is how a change to this file is proven on real runners before it ships.
 name: Release @afkd/gitlab
 
 on:
@@ -26,62 +32,111 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       # A red suite must not publish, so the plugin's own suite — its unit tests and the wire
-      # contract suite against the loopback fake GitLab — runs here, `--locked` as afkd's own
-      # install builds it. The drift gate under `drift/` needs an afkd on PATH, so it runs on a
+      # contract suite against the loopback fake GitLab — runs here, `--locked` as the release
+      # build below is. The drift gate under `drift/` needs an afkd on PATH, so it runs on a
       # host that has one, not here.
       - name: The plugin's own suite
         working-directory: '@afkd/gitlab'
         run: cargo test --locked
 
-      # `cp -a` then `tar`, so the mode bits ride: the skill's scripts are run as they arrive.
-      # The suite above built `target/` inside the plugin, and the copy must not carry it: it
-      # is one runner's build, and afkd builds the plugin afresh on the host it lands on.
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          # Native runners for both CPUs, so `ring`'s C builds with the runner's own musl-gcc
+          # and no cross toolchain.
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+      ASSET: afkd-gitlab-${{ matrix.arch }}-linux.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - name: musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build
+        working-directory: '@afkd/gitlab'
+        run: cargo build --release --locked --target "$TARGET"
+
+      # A binary tied to this runner's glibc would refuse to start on an older host, so the
+      # link is asserted rather than trusted. Read from a file: under the runner's `pipefail`,
+      # a `grep -q` that stops reading early can fail its writer on SIGPIPE.
+      - name: The binary is static
+        run: |
+          file -b "@afkd/gitlab/target/$TARGET/release/afkd-gitlab" > kind
+          cat kind
+          grep -Eq 'statically linked|static-pie linked' kind
+          rm kind
+
       - name: Pack
         run: |
-          cp -a '@afkd/gitlab' afkd-gitlab
-          rm -rf afkd-gitlab/target
-          tar czf afkd-gitlab.tar.gz afkd-gitlab
-          # Assert the shape rather than trust it. One top-level directory and no more — a
-          # second entry would be placed verbatim instead of unwrapped. The manifest is what
-          # afkd reads and the lockfile is what its `--locked` build needs. A `target/` would
-          # ship this runner's build. The listing is read from a file: under the runner's
-          # `pipefail`, a `grep -q` that stops reading early can fail `tar` on SIGPIPE, and a
-          # `! pipeline` never trips `-e`.
-          tar tzf afkd-gitlab.tar.gz > listing
-          roots=$(cut -d/ -f1 listing | sort -u)
-          test "$roots" = "afkd-gitlab"
-          grep -qx 'afkd-gitlab/afkd-plugin.toml' listing
-          grep -qx 'afkd-gitlab/Cargo.lock' listing
-          if grep '^afkd-gitlab/target\(/\|$\)' listing; then
-            echo "the tarball ships a target/" >&2
-            exit 1
-          fi
-          rm listing
+          tools/pack-release gitlab out "@afkd/gitlab/target/$TARGET/release/afkd-gitlab"
+          tar czf "$ASSET" -C out afkd-gitlab
+          # Assert the shape exactly rather than trust it: the expected listing is built from
+          # the repository, not from what was packed — the manifest, the binary, and every
+          # file git tracks under `skills/` with its directories, under one top-level
+          # `afkd-gitlab/` — so a stray file and a missing one are both red.
+          {
+            echo 'afkd-gitlab/afkd-plugin.toml'
+            echo 'afkd-gitlab/afkd-gitlab'
+            git ls-files -- '@afkd/gitlab/skills' | sed 's|^@afkd/gitlab/|afkd-gitlab/|'
+          } | awk -F/ '{ dir = ""; for (i = 1; i < NF; i++) { dir = dir $i "/"; print dir } print }' \
+            | LC_ALL=C sort -u > expected
+          tar tzf "$ASSET" | LC_ALL=C sort > listing
+          diff expected listing
           # Unpacked, not read off the listing: `test -x` after extraction is the same
           # question afkd's own unpack answers, asked the same way.
-          mkdir -p shape && tar xzf afkd-gitlab.tar.gz -C shape
-          test -x shape/afkd-gitlab/skills/gitlab/post_comment.py
-          rm -rf shape afkd-gitlab
+          mkdir shape && tar xzf "$ASSET" -C shape
+          test -x shape/afkd-gitlab/afkd-gitlab
+          for script in shape/afkd-gitlab/skills/gitlab/*.py; do test -x "$script"; done
+          rm -rf shape out expected listing
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
 
       # Delete-then-create, because a tag is unique and the replacement cannot be made
       # first. The brief 404 window on the download URL is a loud, retryable failure for an
-      # `afkd update` that races it.
+      # `afkd update` that races it. Both platforms go up in one create, so the tag never
+      # holds one without the other.
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/gitlab/afkd-plugin.toml')
           test -n "$version"
+          assets="assets/afkd-gitlab-x86_64-linux.tar.gz assets/afkd-gitlab-aarch64-linux.tar.gz"
+          ls -l $assets
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
-          # the notes name the afkd it needs: 0.2.241 is the first that hands a slot the
-          # handle fields this plugin sends with a claim (0.2.197 brought the handle types
-          # and slot signatures this manifest declares).
-          printf '`afkd install @afkd/gitlab`, or `afkd update @afkd/gitlab` if you already have it.\n\nNeeds afkd 0.2.241 or newer (the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          # the notes name the afkd it needs: 0.2.414 is the first that fills in `{platform}`
+          # and refuses a `build` line (0.2.241 brought the handle fields a claim carries).
+          printf '`afkd install @afkd/gitlab`, or `afkd update @afkd/gitlab` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.414 or newer (the platform archive, no build step; the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete gitlab --yes --cleanup-tag || true
-          gh release create gitlab --target "$GITHUB_SHA" --title "@afkd/gitlab $version" --notes-file notes.md afkd-gitlab.tar.gz
+          gh release create gitlab --target "$GITHUB_SHA" --title "@afkd/gitlab $version" --notes-file notes.md $assets

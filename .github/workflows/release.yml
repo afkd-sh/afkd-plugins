@@ -5,11 +5,16 @@
 # afkd cannot install a subdirectory of a monorepo — its git leg requires the manifest at
 # the clone root, and its tarball leg steps through exactly one wrapper directory — so the
 # installable artifact is this per-plugin tarball, whose single top-level directory is the
-# plugin itself.
+# plugin itself. It holds only what the relay serves and runs — the manifest, the relay, the
+# page, its stylesheet and the modules the page loads — and none of the suites, fixtures,
+# goldens or README: afkd places what the archive holds, as it is, and builds nothing.
 #
 # The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
 # source URL it recorded at install time and never re-reads the index, so one unchanging
 # address is the only way an already-installed operator reaches the next version.
+#
+# A `workflow_dispatch` on a branch runs everything up to the release itself, which only main
+# publishes: that is how a change to this file is proven on a real runner before it ships.
 name: Release @afkd/web_top
 
 on:
@@ -26,7 +31,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  pack:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,23 +48,45 @@ jobs:
         working-directory: '@afkd/web_top'
         run: node --test *.test.mjs
 
-      # `cp -a` then `tar`, so the mode bits ride: afkd places what the archive holds and
-      # there is no build step, so `web_top` has to arrive executable or the daemon cannot
-      # start it. One top-level directory and no more — that is what afkd steps through.
+      # `tools/pack-release` stages what ships, keeping the mode bits: afkd places what the
+      # archive holds and there is no build step, so `web_top` has to arrive executable or
+      # the daemon cannot start it. One top-level directory and no more — that is what afkd
+      # steps through.
       - name: Pack
         run: |
-          cp -a '@afkd/web_top' afkd-web_top
-          tar czf afkd-web_top.tar.gz afkd-web_top
-          # Assert the shape rather than trust it: a second top-level entry would be placed
-          # verbatim instead of unwrapped, and a lost +x is a companion that never starts.
-          roots=$(tar tzf afkd-web_top.tar.gz | cut -d/ -f1 | sort -u)
-          test "$roots" = "afkd-web_top"
+          tools/pack-release web_top out
+          tar czf afkd-web_top.tar.gz -C out afkd-web_top
+          # Assert the shape exactly rather than trust it: a second top-level entry would be
+          # placed verbatim instead of unwrapped, a stray file is a suite or a fixture shipped
+          # to every operator, and a missing module is a page that never loads.
+          printf '%s\n' afkd-web_top/ afkd-web_top/afkd-plugin.toml afkd-web_top/web_top \
+            afkd-web_top/index.html afkd-web_top/dashboard.css afkd-web_top/top.mjs \
+            afkd-web_top/fold.mjs afkd-web_top/input.mjs afkd-web_top/keymap.mjs \
+            afkd-web_top/layout.mjs afkd-web_top/paint.mjs afkd-web_top/session.mjs \
+            | LC_ALL=C sort > expected
+          tar tzf afkd-web_top.tar.gz | LC_ALL=C sort > listing
+          diff expected listing
           # Unpacked, not read off the listing: `test -x` after extraction is the same
           # question afkd's own unpack answers, asked the same way.
           mkdir -p shape && tar xzf afkd-web_top.tar.gz -C shape
           test -x shape/afkd-web_top/web_top
-          test -f shape/afkd-web_top/afkd-plugin.toml
-          rm -rf shape
+          rm -rf shape out expected listing
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: afkd-web_top.tar.gz
+          path: afkd-web_top.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: pack
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: afkd-web_top.tar.gz
 
       # Delete-then-create, because a tag is unique and the replacement cannot be made
       # first. The brief 404 window on the download URL is a loud, retryable failure for an

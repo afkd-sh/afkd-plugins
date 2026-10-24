@@ -80,17 +80,12 @@ pub(crate) fn plugins_root(home: &Path) -> PathBuf {
 /// resolves — and writes — inside its temp dir. Every spawn helper in this module routes
 /// through it.
 ///
-/// It clears cargo's target-directory overrides too: `afkd install` builds this plugin with
-/// `cargo build`, and an inherited `CARGO_TARGET_DIR` would send that build's output away
-/// from the `target/release/afkd-github` its `exec` names. `RUSTUP_HOME` and `CARGO_HOME`
-/// stay: the pinned `$HOME` hides `~/.rustup` and `~/.cargo`, and the ones rustup's cargo
-/// proxy exported into this test are what let that build find a toolchain at all.
+/// afkd never builds the plugin, so nothing it spawns runs cargo: the harness builds the
+/// binary itself, in the gate's `built_binary`, before anything is installed.
 pub(crate) fn clear_layout_env(cmd: &mut Command) -> &mut Command {
     cmd.env_remove("AFKD_HOME")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_STATE_HOME")
-        .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_TARGET_DIR")
 }
 
 /// Arm `PR_SET_PDEATHSIG(SIGKILL)` on `cmd` so the **kernel** SIGKILLs the spawned

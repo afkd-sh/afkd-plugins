@@ -1,6 +1,6 @@
 [package]
 name = "afkd-gitea"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 publish = false
 description = "The @afkd/gitea trigger plugin: Gitea issues and pull-request reviews as afkd units, over the plugin wire"
@@ -9,13 +9,15 @@ description = "The @afkd/gitea trigger plugin: Gitea issues and pull-request rev
 name = "afkd-gitea"
 path = "src/main.rs"
 
-# Three dependencies and no afkd crate: afkd's crates are unpublished, and this builds on an
-# operator's host at `afkd install` time.
+# Three dependencies and no afkd crate: afkd's crates are unpublished. This repository's
+# release workflow builds it as a static musl binary and ships it finished; no operator's host
+# ever compiles it.
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "3"
 
-# Its own workspace, so the repository's root workspace (the drift gates) never captures it
-# and `target/` lands inside the plugin directory, where `exec` expects it.
+# Its own workspace, so the repository's root workspace (the drift gates) never captures it.
+# `target/` is local build output that never ships: `tools/pack-release` copies the binary out
+# of it.
 [workspace]
