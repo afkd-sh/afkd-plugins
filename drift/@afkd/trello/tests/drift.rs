@@ -6,6 +6,8 @@
 //! - The **install** leg installs the tree the release tarball holds and runs one card
 //!   through it on a real daemon, its slots' actions crossing as `call`s on the card each
 //!   is passed and its slots reading every field the card's handle declares.
+//! - The **two lists** leg claims, on a real daemon, a card from the second of the two
+//!   lists its `pick_from` names, past a held card in the first.
 //! - The **outage** leg fails a card through both its attempts while Trello is out of
 //!   reach, and holds the card to its failed state once Trello is back: both attempt notes
 //!   on it, in Backlog with the Problem label, its claim released.
@@ -176,6 +178,12 @@ fn seed() -> (FakeTrello, String) {
 /// never does cannot wedge it — which is what lets the test see the claim and the run
 /// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each.
 fn service(home: &Path, base_url: &str) -> String {
+    service_drawing(home, base_url, r#"pick_from     "Up for Grabs""#)
+}
+
+/// [`service`], drawing its cards as `intake` says: the `pick_from` line, and any gate
+/// written under it.
+fn service_drawing(home: &Path, base_url: &str, intake: &str) -> String {
     format!(
         r#"import "core"
 import "@afkd/trello"
@@ -185,7 +193,7 @@ widgets :: service(trello) {{
   base_url      "{base_url}"
   api_key       "{KEY}"
   token         "{TOKEN}"
-  pick_from     "Up for Grabs"
+  {intake}
   poll_interval 1s
   max_attempts  1
 
@@ -396,6 +404,70 @@ fn drive_one_card(home: &Path) {
     );
 }
 
+/// The two lists [`claim_from_the_second_list`] draws from, in the order its `pick_from`
+/// names them.
+const FIRST_LIST: &str = "Bakgrundsvideor";
+const SECOND_LIST: &str = "Hjälpvideor 🎬";
+
+/// A service whose `pick_from` names two lists, on a real daemon: the first list's only
+/// card carries the label `without_label` holds back, so the card in the second list is
+/// the one **claimed**, `on_claim` moves it on, and once its run is released it is
+/// **finished** into Review; the held card is never claimed, and the daemon drains clean.
+fn claim_from_the_second_list(home: &Path) {
+    let fake = FakeTrello::start();
+    for list in [FIRST_LIST, SECOND_LIST, "In Progress", "Review"] {
+        fake.list(list);
+    }
+    let held = fake.card(
+        FIRST_LIST,
+        "H3ldB4ck",
+        "Bakgrund: stadsvy i skymning — väntar på klipp",
+        "",
+    );
+    fake.label(&held, "afkd/hold");
+    let card = fake.card(SECOND_LIST, SHORT_LINK, TITLE, BODY);
+    write_config(
+        home,
+        &service_drawing(
+            home,
+            fake.base_url(),
+            &format!(
+                "pick_from     \"{FIRST_LIST}\", \"{SECOND_LIST}\"\n  without_label \"afkd/hold\""
+            ),
+        ),
+    );
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the two-list service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    wait_for(
+        home,
+        &fake,
+        &card,
+        &daemon,
+        "the second list's card is claimed",
+        || claimed(&fake, &card) && fake.list_of(&card) == "In Progress",
+    );
+    std::fs::write(home.join("release"), "").expect("release the run");
+    wait_for(home, &fake, &card, &daemon, "the card is finished", || {
+        fake.list_of(&card) == "Review" && !claimed(&fake, &card)
+    });
+    assert!(
+        fake.comments(&held).is_empty() && fake.list_of(&held) == FIRST_LIST,
+        "the held card is never claimed:\n{}",
+        dump(home, &fake, &held, &daemon)
+    );
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// Why both attempts of the failing service fail: the outage's own sentence.
 const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network went away 🚨";
 
@@ -563,6 +635,14 @@ fn install_leg_places_the_plugin_and_runs_one_card_through_it() {
         .mode();
     assert!(mode & 0o111 != 0, "{} is executable", exec.display());
     drive_one_card(home.path());
+}
+
+#[test]
+fn two_lists_leg_claims_a_card_from_the_second_list() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    claim_from_the_second_list(home.path());
 }
 
 #[test]

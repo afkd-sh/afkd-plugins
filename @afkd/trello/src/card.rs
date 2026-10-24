@@ -77,9 +77,9 @@ const PARK_MARKER: &str = "[afkd-park]";
 /// off again on the next claim. Spelled in title case because a board label is furniture
 /// a person reads next to `Problem`.
 ///
-/// It also does the finding: Trello claims strictly from `pick_from`, so a parked card
-/// sitting anywhere else is somewhere nothing looks, and the badge rides the card record,
-/// which makes "which cards are parked?" one small board read a beat.
+/// It also does the finding: Trello claims strictly from `pick_from`'s lists, so a parked
+/// card sitting anywhere else is somewhere nothing looks, and the badge rides the card
+/// record, which makes "which cards are parked?" one small board read a beat.
 const AWAITING_LABEL: &str = "Awaiting Reply";
 
 /// How many badged cards one beat reads in full, from a rotating cursor. A bound, not a
@@ -106,6 +106,16 @@ pub(crate) struct Unit {
     /// afkd's own member id, taken from the posted claim's author: the self identity the
     /// brief and the feedback delta key on, and the backstop's last-speaker diff matches.
     self_author: String,
+    /// The `pick_from` list the card was claimed from, when it is not the first one
+    /// named; `None` for the first, and for a card the parked sweep claimed.
+    source: Option<Source>,
+}
+
+/// One `pick_from` list, resolved for a poll.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Source {
+    id: String,
+    name: String,
 }
 
 impl Unit {
@@ -124,13 +134,24 @@ impl Unit {
     pub(crate) fn card(&self) -> &Card {
         &self.card
     }
+
+    /// The claim-journal key afkd keeps this unit under ([`card_key`]).
+    fn key(&self) -> String {
+        card_key(
+            &self.card.id,
+            &self.claim_id,
+            self.source.as_ref().map(|s| s.id.as_str()),
+        )
+    }
 }
 
 /// One card's finish that never reached the board (ADR-0059): what is still owed, so a
 /// later `release` of the key finishes it rather than re-running the agent.
 struct PendingFinish {
-    /// The journal key the `release` arrives with, `<card_id>#<claim_id>`.
+    /// The journal key the `release` arrives with ([`card_key`]).
     key: String,
+    /// The name of the list a give-up returns the card to, for its line.
+    returns_to: String,
     /// The card itself: its title for the log lines, its id for every call.
     card: Card,
     /// Whether the [`AWAITING_LABEL`] **badge** a park owes is still unwritten. The badge
@@ -226,8 +247,8 @@ pub(crate) enum Delivery {
 pub(crate) struct TrelloUnits {
     board: Box<dyn BoardClient>,
     board_id: String,
-    /// Source list new work is claimed from.
-    pick_from: String,
+    /// The source lists new work is claimed from, in the order written.
+    pick_from: Vec<String>,
     require_member: Option<MemberRef>,
     require_label: Option<String>,
     without_label: Vec<String>,
@@ -366,7 +387,7 @@ impl TrelloUnits {
         }))
     }
 
-    /// The parked-card sweep, run **ahead of** the `pick_from` resolve on every beat: ask
+    /// The parked-card sweep, run **ahead of** the `pick_from` resolves on every beat: ask
     /// the board which of its open cards carry [`AWAITING_LABEL`], and re-claim the first
     /// one a human has answered — wherever on the board it sits.
     ///
@@ -460,7 +481,7 @@ impl TrelloUnits {
             }
             // Routed through the ordinary claim, which takes the badge off and hands back
             // an ordinary fresh unit — whose `on_claim` afkd runs, as for any other.
-            match self.attempt_claim(full, diag, clock)? {
+            match self.attempt_claim(full, None, diag, clock)? {
                 ClaimRound::Won(unit) => return Ok(ParkScan::Claimed(unit)),
                 ClaimRound::Lost => continue,
             }
@@ -492,7 +513,9 @@ impl TrelloUnits {
     }
 
     /// Claim the next card via the comment lock: the parked sweep first, then the source
-    /// list's first card that passes every gate and wins its claim race.
+    /// lists in the order `pick_from` names them, and in each the first card that passes
+    /// every gate and wins its claim race. Every name resolves before any list is read, so
+    /// a name the board lacks fails the poll even while an earlier list holds work.
     ///
     /// Unset gates resolve nothing and read no comments, so the default path asks the
     /// board exactly what it always did. The gates run strictly before the claim comment
@@ -504,7 +527,7 @@ impl TrelloUnits {
     /// The whole scan runs under [`ScanBudget`]: past it, the beat ends idle and the rest
     /// of the list waits for the next poll. So it does, before a claim is posted, once
     /// less than [`CLAIM_RESERVE`](crate::common::CLAIM_RESERVE) of the call's budget is
-    /// left. A claim already under way always finishes.
+    /// left, and before a later list is read. A claim already under way always finishes.
     pub(crate) fn try_claim_next(
         &self,
         diag: &dyn Diag,
@@ -519,90 +542,119 @@ impl TrelloUnits {
             ParkScan::Spent => return Ok(None),
             ParkScan::Nothing => {}
         }
-        let list_id = self.board.resolve_list(&self.board_id, &self.pick_from)?;
-        let cards = self.board.list_cards(&list_id)?;
-        // Resolve each gate's identities once per poll, never per card.
+        let sources = self
+            .pick_from
+            .iter()
+            .map(|name| {
+                Ok(Source {
+                    id: self.board.resolve_list(&self.board_id, name)?,
+                    name: name.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, BoardError>>()?;
+        // Each gate's identities, resolved once per poll and never per card or per list:
+        // after the first list read, where a lone list has always asked for them.
+        let mut gates = None;
+        for (at, source) in sources.iter().enumerate() {
+            if at > 0 && budget.spent() {
+                return Ok(None);
+            }
+            let cards = self.board.list_cards(&source.id)?;
+            let (required_member, discuss) = match &gates {
+                Some(gates) => gates,
+                None => gates.insert(self.resolve_gates()?),
+            };
+            // The first list is the key's default, so only a later one rides in it.
+            let source = (at > 0).then_some(source);
+            for card in cards {
+                if budget.spent() {
+                    return Ok(None);
+                }
+                if let Some(member_id) = required_member {
+                    if !card.members.contains(member_id) {
+                        continue;
+                    }
+                }
+                // Deny first: a card carrying any excluded label is skipped regardless of
+                // the other gates, so deny wins over `require_label`.
+                if self.without_label.iter().any(|l| card.labels.contains(l)) {
+                    continue;
+                }
+                if let Some(label) = &self.require_label {
+                    if !card.labels.contains(label) {
+                        continue;
+                    }
+                }
+                // Is this card parked? Read off the free `card.labels`, and the gate on
+                // everything the ownership rule below costs.
+                let badged = card.labels.iter().any(|l| l == AWAITING_LABEL);
+                // The only gate that reads a clock: a card younger than `min_age` is
+                // skipped this poll. Above the `discuss_with` arm, which costs a comment
+                // read.
+                if !self.min_age.is_zero() {
+                    let created_at = match card.created_at {
+                        Some(t) => t,
+                        None => self.board.card_created_at(&card.id)?,
+                    };
+                    if age_of(created_at) < self.min_age {
+                        continue;
+                    }
+                }
+                // The comments the remaining gates read: free when the board nested them,
+                // and otherwise fetched only for a gate that needs the whole thread —
+                // `discuss_with`, and the ownership rule on a *badged* card.
+                let fetched;
+                let comments: Option<&[Comment]> =
+                    match (&card.comments, discuss.is_some() || badged) {
+                        (Some(nested), _) => Some(nested.as_slice()),
+                        (None, true) => {
+                            fetched = self.board.card_comments(&card.id)?;
+                            Some(&fetched)
+                        }
+                        (None, false) => None,
+                    };
+                // Someone holds this card's lease: step over it.
+                if comments.is_some_and(|cs| has_live_claim(cs, self.claim_lifetime)) {
+                    continue;
+                }
+                // Parked, and somebody else's: leave the badge on it, silently.
+                if badged && comments.is_some_and(|cs| self.parked_elsewhere(cs)) {
+                    continue;
+                }
+                if let (Some(gate), Some(cs)) = (discuss, comments) {
+                    if !discuss_tail_passes(cs, gate) {
+                        continue;
+                    }
+                }
+                // The gates' own reads may have spent the reserve: post nothing this late.
+                if budget.claim_reserve_short() {
+                    return Ok(None);
+                }
+                // A parked card whose parker this config no longer runs falls free here
+                // too, so the takeover narrates here too — the sweep's line.
+                if badged {
+                    if let Some(line) = comments.and_then(|cs| self.orphan_takeover(&card, cs)) {
+                        diag.narrate(&line);
+                    }
+                }
+                match self.attempt_claim(card, source, diag, clock)? {
+                    ClaimRound::Won(unit) => return Ok(Some(*unit)),
+                    // Someone else won this card; try the next candidate.
+                    ClaimRound::Lost => continue,
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The intake gates' identities for one poll: the `require_member` member id, and the
+    /// resolved `discuss_with` gate.
+    fn resolve_gates(&self) -> Result<(Option<String>, Option<DiscussGate>), BoardError> {
         let required_member = match &self.require_member {
             None => None,
             Some(who) => Some(self.board.resolve_member(&self.board_id, who)?),
         };
-        let discuss = self.resolve_discuss_gate()?;
-        for card in cards {
-            if budget.spent() {
-                return Ok(None);
-            }
-            if let Some(member_id) = &required_member {
-                if !card.members.contains(member_id) {
-                    continue;
-                }
-            }
-            // Deny first: a card carrying any excluded label is skipped regardless of the
-            // other gates, so deny wins over `require_label`.
-            if self.without_label.iter().any(|l| card.labels.contains(l)) {
-                continue;
-            }
-            if let Some(label) = &self.require_label {
-                if !card.labels.contains(label) {
-                    continue;
-                }
-            }
-            // Is this card parked? Read off the free `card.labels`, and the gate on
-            // everything the ownership rule below costs.
-            let badged = card.labels.iter().any(|l| l == AWAITING_LABEL);
-            // The only gate that reads a clock: a card younger than `min_age` is skipped
-            // this poll. Above the `discuss_with` arm, which costs a comment read.
-            if !self.min_age.is_zero() {
-                let created_at = match card.created_at {
-                    Some(t) => t,
-                    None => self.board.card_created_at(&card.id)?,
-                };
-                if age_of(created_at) < self.min_age {
-                    continue;
-                }
-            }
-            // The comments the remaining gates read: free when the board nested them,
-            // and otherwise fetched only for a gate that needs the whole thread —
-            // `discuss_with`, and the ownership rule on a *badged* card.
-            let fetched;
-            let comments: Option<&[Comment]> = match (&card.comments, discuss.is_some() || badged) {
-                (Some(nested), _) => Some(nested.as_slice()),
-                (None, true) => {
-                    fetched = self.board.card_comments(&card.id)?;
-                    Some(&fetched)
-                }
-                (None, false) => None,
-            };
-            // Someone holds this card's lease: step over it.
-            if comments.is_some_and(|cs| has_live_claim(cs, self.claim_lifetime)) {
-                continue;
-            }
-            // Parked, and somebody else's: leave the badge on it, silently.
-            if badged && comments.is_some_and(|cs| self.parked_elsewhere(cs)) {
-                continue;
-            }
-            if let (Some(gate), Some(cs)) = (&discuss, comments) {
-                if !discuss_tail_passes(cs, gate) {
-                    continue;
-                }
-            }
-            // The gates' own reads may have spent the reserve: post nothing this late.
-            if budget.claim_reserve_short() {
-                return Ok(None);
-            }
-            // A parked card whose parker this config no longer runs falls free here too,
-            // so the takeover narrates here too — the sweep's line.
-            if badged {
-                if let Some(line) = comments.and_then(|cs| self.orphan_takeover(&card, cs)) {
-                    diag.narrate(&line);
-                }
-            }
-            match self.attempt_claim(card, diag, clock)? {
-                ClaimRound::Won(unit) => return Ok(Some(*unit)),
-                // Someone else won this card; try the next candidate.
-                ClaimRound::Lost => continue,
-            }
-        }
-        Ok(None)
+        Ok((required_member, self.resolve_discuss_gate()?))
     }
 
     /// Race one candidate for the comment lock: post a claim, settle so a rival's earlier
@@ -616,6 +668,7 @@ impl TrelloUnits {
     fn attempt_claim(
         &self,
         card: Card,
+        source: Option<&Source>,
         diag: &dyn Diag,
         clock: &dyn Clock,
     ) -> Result<ClaimRound, BoardError> {
@@ -669,6 +722,7 @@ impl TrelloUnits {
             comments,
             delivered_upto: delivered,
             self_author,
+            source: source.cloned(),
         })))
     }
 
@@ -804,7 +858,7 @@ impl TrelloUnits {
                 named(&owed.card),
                 outbox::span(now.saturating_duration_since(owed.since)),
                 owed.what(),
-                self.pick_from
+                owed.returns_to
             ));
             return None;
         }
@@ -847,14 +901,15 @@ impl TrelloUnits {
     /// or [`RETRY_FOR`] has gone by — after which the card takes the reversal below.
     ///
     /// **Otherwise it is a crash victim**, or a unit afkd handed back unrun: prune the
-    /// `[afkd-claim]` comment and move the card back to the **bottom** of `pick_from`, so
-    /// a repeatedly-crashing card cannot starve the queue head. Best-effort: a board
+    /// `[afkd-claim]` comment and move the card back to the **bottom** of the list it was
+    /// claimed from — the first `pick_from` list for a key that names none — so a
+    /// repeatedly-crashing card cannot starve the queue head. Best-effort: a board
     /// failure is diagnosed and the key still released, so a persistently-failing board
     /// cannot loop the reap.
     ///
     /// `None` for a key with no `#`, which names nothing releasable.
     pub(crate) fn release_stale(&self, key: &str, now: Instant, diag: &dyn Diag) -> Option<bool> {
-        let (card_id, claim_id) = split_card_key(key)?;
+        let (card_id, claim_id, list_id) = split_card_key(key)?;
         if let Some(owed) = self.take_pending(key) {
             if let Some(verdict) = self.retry_pending(owed, claim_id, now, diag) {
                 return Some(verdict);
@@ -863,8 +918,16 @@ impl TrelloUnits {
         if let Err(e) = self.board.delete_comment(card_id, claim_id) {
             diag.err(&e);
         }
-        match self.board.resolve_list(&self.board_id, &self.pick_from) {
-            Ok(list_id) => {
+        // With no `pick_from` at all there is no list to return it to: the claim is pruned.
+        let list_id = match list_id {
+            Some(list_id) => Some(Ok(list_id.to_string())),
+            None => self
+                .pick_from
+                .first()
+                .map(|name| self.board.resolve_list(&self.board_id, name)),
+        };
+        match list_id {
+            Some(Ok(list_id)) => {
                 if let Err(e) = self
                     .board
                     .move_card(card_id, &list_id, ListPosition::Bottom)
@@ -872,7 +935,8 @@ impl TrelloUnits {
                     diag.err(&e);
                 }
             }
-            Err(e) => diag.err(&e),
+            Some(Err(e)) => diag.err(&e),
+            None => {}
         }
         Some(true)
     }
@@ -893,7 +957,7 @@ impl TrelloUnits {
     /// spine read off it:
     ///
     /// - `id`: the sanitized short link (the run-name component);
-    /// - `key`: `<card_id>#<claim_id>` (the claim-journal key);
+    /// - `key`: the claim-journal key ([`card_key`]);
     /// - `fields`: the card's title, url and label names, as the claiming read saw them;
     /// - `thread`: the raw short link, stable across every claim (ADR-0067);
     /// - `seen`: the claim-read comment ids, which the brief already carries;
@@ -903,7 +967,7 @@ impl TrelloUnits {
     pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
         WireUnit {
             id: sanitize(&unit.card.short_link),
-            key: card_key(&unit.card.id, &unit.claim_id),
+            key: unit.key(),
             fields: CardFields {
                 title: unit.card.title.clone(),
                 url: unit.card.url.clone(),
@@ -1065,7 +1129,11 @@ impl TrelloUnits {
         let delivered = !release_owed;
         if !delivered {
             self.remember_pending(PendingFinish {
-                key: card_key(&unit.card.id, &unit.claim_id),
+                key: unit.key(),
+                returns_to: unit.source.as_ref().map_or_else(
+                    || self.pick_from.first().cloned().unwrap_or_default(),
+                    |source| source.name.clone(),
+                ),
                 card: unit.card.clone(),
                 park: park_owed,
                 park_marker: marker_owed,
@@ -1111,15 +1179,26 @@ fn instance_base(name: &str) -> Option<&str> {
 }
 
 /// The claim-journal key for a card's in-flight claim (ADR-0059): the card id (the
-/// move-back subject at reap) and the claim comment id (the prune target), joined by `#`.
-fn card_key(card_id: &str, claim_id: &str) -> String {
-    format!("{card_id}#{claim_id}")
+/// move-back subject at reap), the claim comment id (the prune target) and, for a card
+/// claimed from a `pick_from` list after the first, that list's id (where the reversal
+/// returns it), joined by `#`. A first-list claim names no list, so its key is
+/// `<card_id>#<claim_id>` whatever else `pick_from` names.
+fn card_key(card_id: &str, claim_id: &str, list_id: Option<&str>) -> String {
+    match list_id {
+        Some(list_id) => format!("{card_id}#{claim_id}#{list_id}"),
+        None => format!("{card_id}#{claim_id}"),
+    }
 }
 
-/// Split a [`card_key`] back into its `(card_id, claim_id)`. `None` if the key carries no
-/// `#`. Splits on the *first* `#` (a card id has none).
-fn split_card_key(key: &str) -> Option<(&str, &str)> {
-    key.split_once('#')
+/// Split a [`card_key`] back into its `(card_id, claim_id, list_id)`. `None` if the key
+/// carries no `#`. Splits on the first two `#` (no Trello id has one), and an empty list
+/// part names no list.
+fn split_card_key(key: &str) -> Option<(&str, &str, Option<&str>)> {
+    let (card_id, rest) = key.split_once('#')?;
+    Some(match rest.split_once('#') {
+        Some((claim_id, list_id)) => (card_id, claim_id, Some(list_id).filter(|l| !l.is_empty())),
+        None => (card_id, rest, None),
+    })
 }
 
 /// Map a card's comments into the view the claim decision reads: the **post** time
@@ -1607,7 +1686,7 @@ mod tests {
             base_url: crate::client::TRELLO_BASE.into(),
             api_key: "k".into(),
             token: "t".into(),
-            pick_from: "Up for Grabs".into(),
+            pick_from: vec!["Up for Grabs".into()],
             ..BoardConfig::default()
         }
     }
@@ -1825,7 +1904,7 @@ mod tests {
         fn beat(&self, max: u32, attempt: impl FnMut(&Path) -> Facts) -> Option<String> {
             let unit = self.poll()?;
             let run = self.run(&unit, max, attempt);
-            (!run.delivered).then(|| card_key(&unit.card.id, &unit.claim_id))
+            (!run.delivered).then(|| unit.key())
         }
 
         /// afkd's `release` of one journal key.
@@ -2523,13 +2602,215 @@ mod tests {
         assert!(h.board.comments_on("card1").is_empty());
     }
 
+    // --- Several `pick_from` lists ---
+
+    /// A `pick_from` naming two lists: `Ideas 💡` first, then the suite's `Up for Grabs`.
+    fn two_lists_cfg() -> BoardConfig {
+        BoardConfig {
+            pick_from: vec!["Ideas 💡".into(), "Up for Grabs".into()],
+            ..cfg()
+        }
+    }
+
+    /// `card1` in `Up for Grabs`, the second list, and an empty `Ideas 💡` beside it.
+    fn seed_two_lists(board: &MockBoard) {
+        seed_source_card(board, "card1");
+        board.add_list("Ideas 💡");
+    }
+
+    /// The lists are read in the order written, each from the top, and a gate means the
+    /// same in each: the first list's assigned card wins over the second's, past the
+    /// unassigned card at its head; and once the first holds only that card, the second's
+    /// assigned card is claimed rather than held up behind it.
+    #[test]
+    fn pick_from_scans_its_lists_in_order_with_the_gates_in_each() {
+        let h = Harness::new(
+            BoardConfig {
+                require_member: Some(MemberRef::SelfMember),
+                ..two_lists_cfg()
+            },
+            "me",
+        )
+        .with_hooks(hooks(vec![move_to("In Progress")], vec![], vec![]));
+        seed_two_lists(&h.board);
+        h.board.add_card(
+            "Ideas 💡",
+            "idea1",
+            "Ingen tilldelad ännu: ett långt kortnamn som ingen har tagit 🎬",
+            "",
+        );
+        h.board
+            .add_card("Ideas 💡", "idea2", "Vår: hjälpvideo för bokning", "Body");
+        h.board.seed_card_member("idea2", SELF_ID);
+        h.board.seed_card_member("card1", SELF_ID);
+        h.board.set_clock(1000);
+
+        assert_eq!(h.poll_claim().as_deref(), Some("idea2"), "A before B");
+        assert_eq!(
+            h.poll_claim().as_deref(),
+            Some("card1"),
+            "B when A holds no eligible card"
+        );
+        assert_eq!(h.poll_claim(), None);
+        assert!(h.board.comments_on("idea1").is_empty());
+        // The member resolves once a poll, however many lists the poll reads.
+        assert_eq!(h.board.resolve_count(), 3);
+    }
+
+    /// The source list rides in the journal key, so a card the plugin puts back goes to
+    /// the list it was claimed from: a second-list card's key names that list, and its
+    /// reversal moves it there with no resolve; a first-list card's key is the lone-list
+    /// key it always was, and its reversal resolves the first name.
+    #[test]
+    fn a_card_claimed_from_a_later_list_is_put_back_in_that_list() {
+        let h = Harness::new(two_lists_cfg(), "me").with_hooks(hooks(
+            vec![move_to("In Progress")],
+            vec![],
+            vec![],
+        ));
+        seed_two_lists(&h.board);
+        h.board.set_clock(1000);
+
+        let unit = h.poll().expect("claimed from the second list");
+        let key = h.units.wire_unit(&unit).key;
+        assert_eq!(key, "card1#c1000#Up for Grabs");
+        let before = (h.board.actions().len(), h.board.calls().len());
+        assert_eq!(h.release(&key), Some(true));
+        assert_eq!(h.board.calls()[before.1..], ["delete comment", "move card"]);
+        assert_eq!(
+            h.board.actions()[before.0..],
+            [
+                Action::DeleteComment {
+                    card: "card1".into(),
+                    comment: "c1000".into(),
+                },
+                Action::Move {
+                    card: "card1".into(),
+                    list: "Up for Grabs".into(),
+                    position: ListPosition::Bottom,
+                },
+            ],
+        );
+
+        // A first-list card keeps the lone-list key and goes back to the first list.
+        h.board.add_card("Ideas 💡", "idea1", "Förslag 💡", "Body");
+        h.board.set_clock(2000);
+        let unit = h.poll().expect("claimed from the first list");
+        let key = h.units.wire_unit(&unit).key;
+        assert_eq!(key, "idea1#c2000");
+        assert_eq!(h.release(&key), Some(true));
+        assert_eq!(
+            h.board.actions().last(),
+            Some(&Action::Move {
+                card: "idea1".into(),
+                list: "Ideas 💡".into(),
+                position: ListPosition::Bottom,
+            }),
+        );
+    }
+
+    /// An owed finish given up on returns the card to the list it was claimed from, and
+    /// the give-up line names that list.
+    #[test]
+    fn a_given_up_finish_returns_a_later_list_card_to_its_own_list() {
+        let h = Harness::new(two_lists_cfg(), "me");
+        seed_two_lists(&h.board);
+        h.board.set_clock(1000);
+        h.board.fail("delete comment");
+        let held = h.beat(1, |_| fault("boom")).expect("held");
+        assert_eq!(held, "card1#c1000#Up for Grabs");
+
+        h.board.fail_status("delete comment", 403);
+        h.clock.advance(Duration::from_secs(60));
+        assert_eq!(h.release(&held), Some(true));
+        assert!(h.diag.errs().contains(
+            &"giving up on the finish for card \"Title\" (card1) after 1m: the claim release \
+              still owed — trello delete comment: board returned status 403; returning it to \
+              \"Up for Grabs\""
+                .to_string()
+        ));
+        assert_eq!(
+            h.board.actions().last(),
+            Some(&Action::Move {
+                card: "card1".into(),
+                list: "Up for Grabs".into(),
+                position: ListPosition::Bottom,
+            }),
+        );
+    }
+
+    /// Every name resolves before any list is read, so a name the board lacks fails the
+    /// poll naming it, even while an earlier list holds a claimable card.
+    #[test]
+    fn pick_from_names_a_list_the_board_lacks_and_the_poll_fails_naming_it() {
+        let h = Harness::new(
+            BoardConfig {
+                pick_from: vec!["Up for Grabs".into(), "Nirgendwo 🚫".into()],
+                ..cfg()
+            },
+            "me",
+        );
+        seed_source_card(&h.board, "card1");
+        h.board.set_clock(1000);
+
+        let e = h.try_claim().err().expect("the poll fails");
+        assert_eq!(
+            e.to_string(),
+            "trello resolve list: no list named 'Nirgendwo 🚫'"
+        );
+        assert!(!h.board.calls().contains(&"list cards"));
+        assert!(h.board.comments_on("card1").is_empty());
+    }
+
+    /// With no `pick_from` there is no list to draw from: the poll reads none and is
+    /// idle, not a fault, and a reversal only prunes the claim.
+    #[test]
+    fn without_pick_from_the_poll_reads_no_list_and_a_reversal_only_prunes() {
+        let h = Harness::new(
+            BoardConfig {
+                pick_from: Vec::new(),
+                ..cfg()
+            },
+            "me",
+        );
+        seed_source_card(&h.board, "card1");
+        h.board.set_clock(1000);
+
+        assert!(h.try_claim().expect("not a fault").is_none());
+        assert_eq!(h.board.calls(), ["board cards"]);
+        h.board.seed_comment("card1", "c1", &claim_text("me"), 500);
+        assert_eq!(h.release("card1#c1"), Some(true));
+        assert_eq!(
+            h.board.actions(),
+            [Action::DeleteComment {
+                card: "card1".into(),
+                comment: "c1".into(),
+            }],
+        );
+        assert!(h.diag.errs().is_empty());
+    }
+
     // --- The journal key and `release` (ADR-0059) ---
 
     #[test]
     fn card_key_round_trips_through_split() {
-        assert_eq!(card_key("card1", "claim1"), "card1#claim1");
-        assert_eq!(split_card_key("card1#claim1"), Some(("card1", "claim1")));
+        assert_eq!(card_key("card1", "claim1", None), "card1#claim1");
+        assert_eq!(
+            split_card_key("card1#claim1"),
+            Some(("card1", "claim1", None))
+        );
         assert_eq!(split_card_key("garbage"), None);
+        // A later list's id rides as a third part.
+        let key = card_key("card1", "claim1", Some("5f2a9c0e1b"));
+        assert_eq!(key, "card1#claim1#5f2a9c0e1b");
+        assert_eq!(
+            split_card_key(&key),
+            Some(("card1", "claim1", Some("5f2a9c0e1b")))
+        );
+        assert_eq!(
+            split_card_key("card1#claim1#"),
+            Some(("card1", "claim1", None))
+        );
     }
 
     /// The key afkd journals is `card#claim`, both halves the reaper needs, and a clean
@@ -2572,10 +2853,7 @@ mod tests {
         let unit = h.poll().expect("claimed");
         let before = h.board.actions().len();
 
-        assert_eq!(
-            h.release(&card_key(&unit.card.id, &unit.claim_id)),
-            Some(true)
-        );
+        assert_eq!(h.release(&unit.key()), Some(true));
         assert_eq!(
             h.board.actions()[before..],
             [
@@ -3648,6 +3926,7 @@ mod tests {
             comments: vec![],
             delivered_upto: UNIX_EPOCH,
             self_author: SELF_ID.into(),
+            source: None,
         }
     }
 
@@ -3658,6 +3937,7 @@ mod tests {
             comments,
             delivered_upto: UNIX_EPOCH,
             self_author: self_id.into(),
+            source: None,
         }
     }
 
@@ -5444,7 +5724,7 @@ mod tests {
         let discuss = Harness::on_board(
             Arc::clone(&board),
             BoardConfig {
-                pick_from: "Discussion".into(),
+                pick_from: vec!["Discussion".into()],
                 ..park_cfg()
             },
             "me",
@@ -5489,7 +5769,7 @@ mod tests {
         let discuss = Harness::on_board(
             Arc::clone(&board),
             BoardConfig {
-                pick_from: "Discussion".into(),
+                pick_from: vec!["Discussion".into()],
                 ..park_cfg()
             },
             "me",
@@ -6384,6 +6664,40 @@ mod tests {
                 .count(),
             20,
             "the twenty-first card is never posted to"
+        );
+    }
+
+    /// A scan that spends its budget on the first list never reads the next: twenty
+    /// rival-held cards fill it, and the claimable card in the second list waits.
+    #[test]
+    fn a_scan_spent_on_one_list_reads_no_later_list() {
+        let h = Harness::new(two_lists_cfg(), "me");
+        seed_two_lists(&h.board);
+        for n in 0..20 {
+            let id = format!("idea{n:02}");
+            h.board.add_card("Ideas 💡", &id, "Title", "Body");
+            h.board
+                .seed_comment(&id, &format!("rival{n}"), &claim_text("rival"), 500);
+        }
+        h.board.set_clock(1000);
+
+        assert!(h.poll().is_none());
+        assert_eq!(h.clock.sleeps().len(), 20);
+        assert_eq!(
+            h.board
+                .calls()
+                .iter()
+                .filter(|c| **c == "list cards")
+                .count(),
+            1
+        );
+        assert!(h.board.comments_on("card1").is_empty());
+        assert_eq!(
+            h.diag.errs(),
+            [
+                "trello poll: the scan ran past its 20s budget; the rest of it waits for the \
+              next poll"
+            ]
         );
     }
 

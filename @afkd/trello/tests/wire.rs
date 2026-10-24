@@ -662,6 +662,84 @@ fn release_reverses_a_crashed_claim_and_reads_every_key_shape() {
     plugin.finish();
 }
 
+// --- several `pick_from` lists ---
+
+/// A second source list beside the suite's board, its card claimable; the board's own card
+/// in `Up for Grabs` is held back by a `without_label` gate. Returns the list's id and its
+/// card's id.
+fn second_list(b: &Board) -> (String, String) {
+    b.fake.label(&b.card, "afkd/hold");
+    let list = b.fake.list("Hjälpvideor 🎬");
+    let card = b.fake.card(
+        "Hjälpvideor 🎬",
+        "Hj4lpV1d",
+        "Hjälpvideo: så bokar du — steg för steg 🎬",
+        "Två minuter, utan musik.\n\nManus i kommentarerna.",
+    );
+    (list, card)
+}
+
+/// The suite's settings with `pick_from` naming two lists, in the shape afkd lowers a
+/// list setting to — one entry holding both names — and the gate that holds the first
+/// list's card back.
+fn two_list_settings(fake: &FakeTrello) -> Value {
+    let mut settings = settings(fake);
+    settings["pick_from"] = json!([["Up for Grabs", "Hjälpvideor 🎬"]]);
+    settings["without_label"] = json!([["afkd/hold"]]);
+    settings
+}
+
+/// With nothing claimable in the first list, the poll claims from the second, and the
+/// key names the list the card came from.
+#[test]
+fn pick_from_names_two_lists_and_claims_from_the_second() {
+    let b = board();
+    let (list, card) = second_list(&b);
+    let mut plugin = Plugin::armed(two_list_settings(&b.fake));
+
+    let unit = claim_one(&mut plugin);
+    assert_eq!(unit["id"], "Hj4lpV1d");
+    let claim = claims(&b.fake, &card);
+    assert_eq!(claim.len(), 1, "one claim, ours");
+    assert_eq!(
+        unit["key"],
+        format!("{card}#{}#{list}", claim[0].id),
+        "the key names the second list"
+    );
+    assert!(claims(&b.fake, &b.card).is_empty());
+    assert_eq!(b.fake.list_of(&card), "In Progress");
+    assert_eq!(b.fake.list_of(&b.card), "Up for Grabs");
+    plugin.finish();
+}
+
+/// The source list rides in the journal key, so a fresh process — the restart after a
+/// crash — returns a card claimed from the second list to the bottom of that list, not
+/// to the first.
+#[test]
+fn release_after_a_restart_returns_a_second_list_card_to_its_list() {
+    let b = board();
+    let (_, card) = second_list(&b);
+    let queued = b.fake.card("Hjälpvideor 🎬", "Qu3u3d00", "Nästa video", "");
+    let mut before = Plugin::armed(two_list_settings(&b.fake));
+    let unit = claim_one(&mut before);
+    assert_eq!(unit["id"], "Hj4lpV1d");
+    assert_eq!(b.fake.list_of(&card), "In Progress");
+    before.finish();
+
+    let mut after = Plugin::armed(two_list_settings(&b.fake));
+    assert_eq!(
+        after.call(json!({"call": "release", "key": unit["key"]})),
+        json!({"released": true})
+    );
+    assert!(claims(&b.fake, &card).is_empty());
+    assert_eq!(b.fake.cards_in("Hjälpvideor 🎬"), [queued, card]);
+    assert_eq!(
+        b.fake.cards_in("Up for Grabs"),
+        std::slice::from_ref(&b.card)
+    );
+    after.finish();
+}
+
 // --- finish, per outcome, and the hook afkd runs after it ---
 
 /// A clean finish moves nothing: it posts one `[afkd-ran]` watermark carrying the

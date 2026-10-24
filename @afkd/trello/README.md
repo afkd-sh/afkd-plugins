@@ -128,7 +128,7 @@ starts, finishes, or fails. Its secrets stay with the plugin and the run.
 | `api_key`        | `string`       | Trello API key; required               |
 | `token`          | `string`       | Trello token; required                 |
 | `base_url`       | `string`       | API base; defaults to the public Trello API (a test/overseer seam) |
-| `pick_from`      | `string`       | list new cards are drawn from          |
+| `pick_from`      | `list[string]` | the lists new cards are drawn from, in the order written; one name or several |
 | `require_member` | `string`       | `"me"` or a username: only claim cards this member is already on; default unset (the head card is claimed) |
 | `require_label`  | `string`       | only claim cards carrying the named label; default unset (no label filter) |
 | `without_label`  | `list[string]` | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
@@ -214,12 +214,20 @@ remove); a *member* who is not on the board is an error either way. `move_to` is
 action whose effect is positional rather than additive — it re-lists the card at the
 target's `top` or `bottom` — so two `move_to`s leave the card wherever the last one put it.
 
-**Cadence.** **Polls** the board every `poll_interval` and fires for cards in `pick_from`;
-a service works **one card at a time, to completion**, and `max_attempts` bounds the
-retries per card. The slots move, complete, or archive the card as work starts, finishes,
-or fails.
+**Cadence.** **Polls** the board every `poll_interval` and fires for cards in
+`pick_from`'s lists; a service works **one card at a time, to completion**, and
+`max_attempts` bounds the retries per card. The slots move, complete, or archive the card
+as work starts, finishes, or fails.
 
-**Intake.** By default the poll claims the card at the head of `pick_from`. With
+**Intake.** `pick_from` names one list or several, `pick_from "To Do"` or
+`pick_from "Ideas", "To Do"`. The poll goes through them in the order written, each from
+the top, and claims the first card that passes every gate below; the gates mean the same in
+every list. A name the board has no list for fails the poll, naming it. A card the plugin
+puts back — its run crashed, or afkd handed it back unrun — goes to the bottom of the list
+it was claimed from, so a card that keeps crashing cannot starve the head of the queue.
+
+By default the poll claims the first card it comes to, the head of the first list that
+holds one. With
 `require_member` set, it claims the **first eligible** card instead — the first one the
 named member is already on — so an unassigned card at the top of the list does not block
 the ones under it. `require_label` is the label mirror: it claims only cards carrying a
@@ -298,6 +306,28 @@ groom :: service(trello) {
   on_claim(card: trello.Card) { trello.add_member(card) }
 
   work_dir "/srv/acme/widgets"
+  on_run(run: core.Run, card: trello.Card) {
+    $ cat $AFKD_SCRATCH_DIR/task.md
+  }
+}
+```
+
+A board whose lists are all worked alike needs one service for all of them: `pick_from`
+names each list, and this one discusses every card where it sits, in either list, with no
+moves.
+
+```conf
+import "core"
+import "@afkd/trello"
+
+discuss :: service(trello) {
+  board        "https://trello.com/b/REPLACE_ME/board"
+  api_key      "REPLACE_ME"
+  token        "REPLACE_ME"
+  pick_from    "Bakgrundsvideor", "Hjälpvideor 🎬"
+  discuss_with [ "anyone" ]
+
+  work_dir "/srv/acme/videos"
   on_run(run: core.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }

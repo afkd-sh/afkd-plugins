@@ -65,8 +65,9 @@ pub(crate) struct BoardConfig {
     pub(crate) api_key: String,
     /// Token used to reach the board.
     pub(crate) token: String,
-    /// Named list new tasks are drawn from (empty when not given).
-    pub(crate) pick_from: String,
+    /// The named lists new tasks are drawn from, in the order written; empty when not
+    /// given.
+    pub(crate) pick_from: Vec<String>,
     /// The intake gate: when set, only cards this member is already on are claimed.
     pub(crate) require_member: Option<MemberRef>,
     /// The label intake gate: when set, only cards carrying a label of this exact name
@@ -153,7 +154,7 @@ pub(crate) const SETTINGS: &[Declared] = &[
     ("base_url", "string", &[]),
     ("api_key", "string", &[("required", "true")]),
     ("token", "string", &[("required", "true")]),
-    ("pick_from", "string", &[]),
+    ("pick_from", "list[string]", &[]),
     ("require_member", "string", &[]),
     ("require_label", "string", &[]),
     ("without_label", "list[string]", &[]),
@@ -179,7 +180,12 @@ pub(crate) fn board_config(settings: &Value) -> Result<BoardConfig, SettingsErro
         base_url: opt_scalar(settings, "base_url").unwrap_or_else(|| TRELLO_BASE.to_string()),
         api_key: opt_scalar(settings, "api_key").unwrap_or_default(),
         token: opt_scalar(settings, "token").unwrap_or_default(),
-        pick_from: opt_scalar(settings, "pick_from").unwrap_or_default(),
+        pick_from: nonempty_list(
+            settings,
+            "pick_from",
+            "`pick_from` expects one or more list names",
+        )?
+        .unwrap_or_default(),
         require_member: required_scalar(settings, "require_member")?.map(|who| member_ref(&who)),
         require_label: required_scalar(settings, "require_label")?,
         without_label: nonempty_list(
@@ -377,14 +383,14 @@ mod tests {
         assert_eq!(cfg.board_id, "BID");
         assert_eq!(cfg.api_key, "k");
         assert_eq!(cfg.token, "t");
-        assert_eq!(cfg.pick_from, "Up for Grabs");
+        assert_eq!(cfg.pick_from, ["Up for Grabs"]);
     }
 
     #[test]
     fn defaults_apply_when_settings_absent() {
         let cfg = cfg(json!({}));
         assert_eq!(cfg.base_url, TRELLO_BASE);
-        assert_eq!(cfg.pick_from, "");
+        assert!(cfg.pick_from.is_empty());
         assert_eq!(cfg.require_member, None);
         assert_eq!(cfg.require_label, None);
         assert!(cfg.without_label.is_empty());
@@ -427,7 +433,7 @@ mod tests {
         }))
         .expect("valid");
         assert_eq!(cfg.board_id, "1Rkelydw");
-        assert_eq!(cfg.pick_from, "Up for Grabs");
+        assert_eq!(cfg.pick_from, ["Up for Grabs"]);
     }
 
     #[test]
@@ -484,6 +490,35 @@ mod tests {
             cfg(json!({"without_label": [["Hold", "WIP"], "Blockerat / Väntar"]})).without_label,
             ["Hold", "WIP", "Blockerat / Väntar"]
         );
+    }
+
+    /// `pick_from` is a list setting, so a lone name is a list of one: it reads the same
+    /// bare, as afkd's one repeatable entry, or beside a block, and several names keep the
+    /// order they were written in.
+    #[test]
+    fn pick_from_reads_one_name_or_several_in_the_shapes_afkd_lowers() {
+        for value in [
+            json!("To Do"),
+            json!(["To Do"]),
+            json!([["To Do"]]),
+            json!({"@value": "To Do"}),
+        ] {
+            assert_eq!(cfg(json!({ "pick_from": value })).pick_from, ["To Do"]);
+        }
+        assert_eq!(
+            cfg(json!({"pick_from": [["Bakgrundsvideor", "Hjälpvideor 🎬"]]})).pick_from,
+            ["Bakgrundsvideor", "Hjälpvideor 🎬"]
+        );
+        assert_eq!(
+            cfg(json!({"pick_from": ["Ideas 💡", ["Up for Grabs", "To Do"]]})).pick_from,
+            ["Ideas 💡", "Up for Grabs", "To Do"]
+        );
+        // A `pick_from` written with no value names no list to draw from.
+        for value in [json!(true), json!([true]), json!([{}])] {
+            let e = err(json!({ "pick_from": value }));
+            assert_eq!(e.key, "pick_from");
+            assert_eq!(e.problem, "`pick_from` expects one or more list names");
+        }
     }
 
     #[test]
