@@ -1221,7 +1221,7 @@ fn the_park_owner_holds_across_two_services_on_one_board() {
         "park"
     );
     b.fake
-        .comment(&b.card, &b.fake.me(), "Which header — `Retry-After`? 🙏", 0);
+        .comment(&b.card, &b.fake.me(), "Which header — `Retry-After`? 🙏", 2);
     assert_eq!(
         finish(&mut develop, &unit, "park", facts("fault", Some("parked"))),
         json!({"ok": true})
@@ -1277,6 +1277,73 @@ fn the_park_owner_holds_across_two_services_on_one_board() {
     ));
     assert!(b.fake.labels(&orphan).is_empty());
     develop.finish();
+    discuss.finish();
+}
+
+/// CGRDWyFv: a card a develop run built once, stamping `upto=0`, then discussed — every
+/// human comment answered — and parked on afkd's question. The discusser's sweep leaves
+/// it alone until a human speaks after that question, and the brief that reply resumes
+/// holds it alone as new.
+#[test]
+fn a_parked_discuss_card_built_once_waits_for_a_reply_after_afkds_question() {
+    let b = board();
+    let me = b.fake.me();
+    let mut discuss = Plugin::armed_as(DISCUSS, discuss_settings(&b.fake));
+    let card = b
+        .fake
+        .card("Discussion", "CGRDWyFv", "Ladda upp bilderna", "");
+    b.fake
+        .comment(&card, &me, "[afkd-ran] owner=afkd-512737 upto=0", 60);
+    b.fake.comment(
+        &card,
+        &b.phil,
+        "ladda upp dom och fixa min lokala databas.",
+        50,
+    );
+    b.fake.comment(
+        &card,
+        &me,
+        "The upload failed: the bucket answered `403 Forbidden`.\nI need a fresh key.",
+        45,
+    );
+    b.fake.comment(&card, &b.phil, "nå? 🚗", 40);
+    b.fake.comment(
+        &card,
+        &me,
+        "Which key should I use — the one in `.env` or a new one?\n\n```sh\naws s3 ls s3://bokningar\n```",
+        30,
+    );
+    b.fake
+        .comment(&card, &me, &format!("[afkd-park] service={DISCUSS}"), 29);
+    b.fake.label(&card, "Awaiting Reply");
+
+    let (comments, labels) = (b.fake.comments(&card), b.fake.labels(&card));
+    let writes = |fake: &FakeTrello| fake.seen().iter().filter(|r| r.method != "GET").count();
+    let before = writes(&b.fake);
+    assert_eq!(
+        discuss.poll(),
+        json!({"fire": false}),
+        "{}",
+        discuss.stderr()
+    );
+    assert_eq!(writes(&b.fake), before, "nothing written");
+    assert_eq!(b.fake.comments(&card), comments);
+    assert_eq!(b.fake.labels(&card), labels, "still badged");
+
+    let reply = "nyckeln ligger i 1Password — 「bokningar-s3」 🔑\nprova igen.";
+    b.fake.comment(&card, &b.phil, reply, 0);
+    let resumed = discuss.poll()["unit"].clone();
+    assert_eq!(resumed["thread"], "CGRDWyFv", "{}", discuss.stderr());
+    assert!(b.fake.labels(&card).is_empty(), "the badge comes off");
+    assert!(
+        said(&b.fake, &card, "[afkd-park]").is_empty(),
+        "and the marker"
+    );
+    let brief = resumed["files"][0]["text"].as_str().unwrap();
+    assert!(
+        brief.ends_with(&format!("## New comments\n\n**Phil Ek:** {reply}\n")),
+        "{brief}"
+    );
     discuss.finish();
 }
 

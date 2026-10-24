@@ -371,9 +371,11 @@ impl TrelloUnits {
     /// one a human has answered — wherever on the board it sits.
     ///
     /// The reply test is the feedback delta ([`feedback_comments`] against
-    /// [`watermark_of`]), so afkd's own tail comments cannot re-arm a card. Only the deny
-    /// gate is re-applied: `require_label`, `require_member` and `min_age` were passed at
-    /// the first claim, while `without_label` is a human's live veto.
+    /// [`feedback_boundary`]), so afkd's own tail comments cannot re-arm a card, and
+    /// neither can comments a run already answered, whatever watermark the card carries:
+    /// only a human comment after afkd's question does. Only the deny gate is re-applied:
+    /// `require_label`, `require_member` and `min_age` were passed at the first claim,
+    /// while `without_label` is a human's live veto.
     ///
     /// A card's [`PARK_MARKER`] names who parked it, and only that service resumes it
     /// ([`parked_elsewhere`](Self::parked_elsewhere)); a card naming a service off the
@@ -660,7 +662,7 @@ impl TrelloUnits {
         // The feedback delta and the delivery boundary, computed once from the read that
         // judged the claim, so a comment arriving mid-run lands after the boundary.
         let feedback = feedback_comments(&comments, &self_author);
-        let delivered = delivered_upto(&comments, &feedback);
+        let delivered = delivered_upto(&comments, &self_author, &feedback);
         Ok(ClaimRound::Won(Box::new(Unit {
             card,
             claim_id: claim.id,
@@ -1382,11 +1384,26 @@ fn watermark_of(comments: &[Comment]) -> Option<SystemTime> {
     comments.iter().filter_map(|c| ran_upto(&c.text)).max()
 }
 
-/// The delivery boundary to stamp on this run's watermark: the prior watermark or the
-/// newest delivered comment, whichever is later — anchored to the board's post times,
-/// never the local clock.
-fn delivered_upto(comments: &[Comment], feedback: &[Comment]) -> SystemTime {
-    let prior = watermark_of(comments);
+/// The one line between prior and new comments, for the parked sweep, the brief and the
+/// delivery boundary alike: the later of the [`watermark_of`] and afkd's newest
+/// **conversational** comment — control markers excluded, so this run's own claim cannot
+/// mask every real human comment. On a park, that comment is the question the parking run
+/// asked. `None` only when the card carries neither.
+fn feedback_boundary(comments: &[Comment], self_id: &str) -> Option<SystemTime> {
+    let last_word = comments
+        .iter()
+        .filter(|c| is_afkd(c, self_id) && !is_control_marker(&c.text))
+        .map(|c| c.posted_at)
+        .max();
+    watermark_of(comments).max(last_word)
+}
+
+/// The delivery boundary to stamp on this run's watermark: the [`feedback_boundary`] the
+/// delta was measured from or the newest delivered comment, whichever is later — anchored
+/// to the board's post times, never the local clock. A run that delivered nothing never
+/// moves the watermark back.
+fn delivered_upto(comments: &[Comment], self_id: &str, feedback: &[Comment]) -> SystemTime {
+    let prior = feedback_boundary(comments, self_id);
     let newest_delivered = feedback.iter().map(|c| c.posted_at).max();
     [prior, newest_delivered]
         .into_iter()
@@ -1412,18 +1429,12 @@ pub(crate) fn is_afkd(c: &Comment, self_id: &str) -> bool {
 /// The human-feedback delta to deliver this run: comments posted strictly after the
 /// run's boundary, with afkd's own dropped, oldest-first.
 ///
-/// The boundary is two-tier: a prior `[afkd-ran]` watermark wins; without one (the
-/// `discuss_with` path posts none) it falls back to afkd's newest **conversational**
-/// comment — control markers excluded, so this run's own claim cannot mask every real
-/// human comment. With neither, all human comments are kept.
+/// The boundary is the [`feedback_boundary`]: the later of a prior `[afkd-ran]`
+/// watermark and afkd's newest conversational comment, so on a card a develop run built
+/// once a later `discuss_with` reply (that path posts no watermark) still bounds the
+/// delta. With neither, all human comments are kept.
 fn feedback_comments(comments: &[Comment], self_id: &str) -> Vec<Comment> {
-    let boundary = watermark_of(comments).or_else(|| {
-        comments
-            .iter()
-            .filter(|c| is_afkd(c, self_id) && !is_control_marker(&c.text))
-            .map(|c| c.posted_at)
-            .max()
-    });
+    let boundary = feedback_boundary(comments, self_id);
     let mut kept: Vec<Comment> = comments
         .iter()
         .filter(|c| !is_afkd(c, self_id))
@@ -2125,7 +2136,7 @@ mod tests {
     fn watermark_records_delivered_line_so_mid_run_comments_are_not_lost() {
         let read_set = [ran("ran0", 100, 100), comment("h1", "delivered now", 150)];
         let feedback = feedback_comments(&read_set, SELF_ID);
-        let boundary = delivered_upto(&read_set, &feedback);
+        let boundary = delivered_upto(&read_set, SELF_ID, &feedback);
         assert_eq!(boundary, UNIX_EPOCH + Duration::from_secs(150));
 
         // Run A posts its watermark at run *end* (t=400) carrying upto=150; a human
@@ -2138,6 +2149,58 @@ mod tests {
             texts(&feedback_comments(&next_read, SELF_ID)),
             ["added while A was running"]
         );
+    }
+
+    #[test]
+    fn delivered_upto_is_never_older_than_the_boundary_the_delta_was_measured_from() {
+        let at = |secs| UNIX_EPOCH + Duration::from_secs(secs);
+        let cases: [(&str, Vec<Comment>, u64); 6] = [
+            (
+                "afkd's last word, no watermark",
+                vec![
+                    comment("h0", "gör om det", 100),
+                    self_comment("a", "redo.", 150),
+                ],
+                150,
+            ),
+            (
+                "afkd's last word over upto=0",
+                vec![ran("ran", 0, 120), self_comment("a", "redo.", 150)],
+                150,
+            ),
+            (
+                "a watermark newer than afkd's last word",
+                vec![self_comment("a", "redo.", 150), ran("ran", 180, 190)],
+                180,
+            ),
+            (
+                "afkd's last word newer than a real watermark",
+                vec![ran("ran", 250, 260), self_comment("a", "nå?", 510)],
+                510,
+            ),
+            (
+                "a delivered comment newer than both",
+                vec![
+                    ran("ran", 100, 110),
+                    self_comment("a", "redo.", 150),
+                    comment("h1", "ladda upp dom", 300),
+                ],
+                300,
+            ),
+            (
+                "neither a watermark nor afkd's word",
+                vec![self_comment("claim", &claim_text("me"), 90)],
+                0,
+            ),
+        ];
+        for (case, read_set, want) in cases {
+            let feedback = feedback_comments(&read_set, SELF_ID);
+            assert_eq!(
+                delivered_upto(&read_set, SELF_ID, &feedback),
+                at(want),
+                "{case}"
+            );
+        }
     }
 
     #[test]
@@ -4979,6 +5042,185 @@ mod tests {
             backstop_at < marker_at,
             "the marker is posted after the backstop"
         );
+    }
+
+    // --- A card built once, then discussed: afkd's last word bounds the delta ---
+
+    /// The human half of the three exchanges afkd has already answered, as Phil wrote
+    /// them on CGRDWyFv: one-line Swedish, a fenced multi-line comment, and a terse nudge.
+    const ANSWERED: [&str; 3] = [
+        "ladda upp dom och fixa min lokala databas.",
+        "bilderna ligger i `~/Bilder/bokningar/` — 214 st.\n\n\
+         ```sh\npsql bokningar < dump.sql\n```\n\nfunkar det? 🚗",
+        "nå?",
+    ];
+
+    /// afkd's answers to [`ANSWERED`]; the last is the question it parks on.
+    const REPLIES: [&str; 3] = [
+        "The upload failed: the bucket answered `403 Forbidden`.\nI need a fresh key.",
+        "Restored `dump.sql` into the local `bokningar` database — 214 rows in `bilder`.",
+        PARK_QUESTION,
+    ];
+
+    /// A human comment posted after afkd's last word, wide and non-ASCII.
+    const FRESH: &str = "nyckeln ligger i 1Password — 「bokningar-s3」 🔑\nprova igen.";
+
+    /// Seed `card`'s thread as a develop run once left it and a discuss service then
+    /// answered it: Phil's opening ask, the build's `[afkd-ran]` watermark stamped
+    /// `upto`, then each of [`ANSWERED`] followed by afkd's [`REPLIES`] — the last of
+    /// them at 510, afkd's newest word.
+    fn seed_built_then_answered(board: &MockBoard, card: &str, upto: u64) {
+        board.seed_comment_named(card, "h0", "ladda upp bilderna", "mem-phil", "Phil Ek", 100);
+        board.seed_comment_by(
+            card,
+            "ran",
+            &ran_text("afkd-512737", UNIX_EPOCH + Duration::from_secs(upto)),
+            SELF_ID,
+            210,
+        );
+        for (n, (ask, reply)) in ANSWERED.iter().zip(REPLIES).enumerate() {
+            let at = 300 + 100 * n as u64;
+            board.seed_comment_named(card, &format!("h{}", n + 1), ask, "mem-phil", "Phil Ek", at);
+            board.seed_comment_by(card, &format!("a{}", n + 1), reply, SELF_ID, at + 10);
+        }
+    }
+
+    /// CGRDWyFv as it stood when it was re-claimed: built once, every human comment since
+    /// answered, then parked on afkd's question — badged in `In Progress` with its
+    /// `[afkd-park]` marker — and an ordinary card at the head of `pick_from`.
+    fn built_then_parked(h: &Harness, upto: u64) {
+        h.board.add_list("Up for Grabs");
+        h.board.add_list("In Progress");
+        h.board
+            .add_card("In Progress", "parked", "Upload the photos", "Body");
+        h.board
+            .add_card("Up for Grabs", "queued", "Next up", "Body");
+        seed_built_then_answered(&h.board, "parked", upto);
+        h.board
+            .seed_comment_by("parked", "park", &park_text(TEST_SERVICE), SELF_ID, 520);
+        h.board.seed_card_label("parked", AWAITING_LABEL);
+        h.board.set_clock(1000);
+    }
+
+    /// The parked sweep leaves a card built once alone while every human comment on it
+    /// is answered, whatever its watermark says, and re-claims it on the next reply —
+    /// whose brief holds that reply alone as new.
+    fn assert_rearms_only_on_a_new_reply(upto: u64) {
+        let h = Harness::new(discuss_cfg(DiscussWith::Anyone), "me");
+        built_then_parked(&h, upto);
+
+        for _ in 0..2 {
+            assert!(
+                h.poll().is_none_or(|u| u.card.id != "parked"),
+                "answered comments do not re-arm a card watermarked upto={upto}"
+            );
+        }
+        assert!(is_badged(&h.board, "parked"));
+        assert!(h
+            .board
+            .comments_on("parked")
+            .iter()
+            .any(|c| park_service(&c.text) == Some(TEST_SERVICE)));
+
+        h.board
+            .seed_comment_named("parked", "fresh", FRESH, "mem-phil", "Phil Ek", 2000);
+        let unit = h.poll().expect("the reply re-arms the card");
+        assert_eq!(unit.card.id, "parked");
+        assert!(!is_badged(&h.board, "parked"));
+
+        let brief = &h.units.wire_unit(&unit).files[0].text;
+        let (earlier, new) = brief
+            .split_once("## New comments")
+            .expect("the brief has a new-comments section");
+        assert_eq!(new, format!("\n\n**Phil Ek:** {FRESH}\n"), "upto={upto}");
+        for ask in ANSWERED {
+            assert!(
+                earlier.contains(&format!("**Phil Ek:** {ask}")),
+                "{earlier}"
+            );
+        }
+        assert!(
+            earlier.contains(&format!("**afkd:** {}", PARK_QUESTION.trim())),
+            "{earlier}"
+        );
+    }
+
+    #[test]
+    fn a_card_built_once_is_not_re_armed_by_comments_afkd_already_answered() {
+        // The incident: the build had delivered nothing, so it stamped `upto=0`.
+        assert_rearms_only_on_a_new_reply(0);
+    }
+
+    #[test]
+    fn a_real_watermark_older_than_the_discuss_replies_does_not_re_arm_either() {
+        // Newer than the opening ask, older than every exchange afkd answered.
+        assert_rearms_only_on_a_new_reply(250);
+    }
+
+    #[test]
+    fn a_run_that_delivered_nothing_stamps_afkds_last_word_not_the_epoch() {
+        let h = Harness::new(cfg(), "me");
+        seed_source_card(&h.board, "card1");
+        h.board
+            .seed_comment_named("card1", "h0", "gör om det", "mem-phil", "Phil Ek", 100);
+        h.board
+            .seed_comment_by("card1", "redo", "redo.", SELF_ID, 150);
+        h.board.set_clock(1000);
+
+        let unit = h.poll().expect("claimed");
+        let last_word = UNIX_EPOCH + Duration::from_secs(150);
+        assert!(feedback_comments(&unit.comments, SELF_ID).is_empty());
+        assert_eq!(unit.delivered_upto, last_word);
+
+        h.run(&unit, 1, |_| proceed());
+        let stamped: Vec<String> = h
+            .board
+            .comments_on("card1")
+            .into_iter()
+            .filter(|c| is_ran(&c.text))
+            .map(|c| c.text)
+            .collect();
+        assert_eq!(stamped, [ran_text("me", last_word)]);
+        assert_eq!(ran_upto(&stamped[0]), Some(last_word));
+    }
+
+    #[test]
+    fn a_discuss_brief_on_a_built_card_lists_as_new_only_what_followed_afkds_last_word() {
+        let h = Harness::new(discuss_cfg(DiscussWith::Anyone), "me");
+        seed_source_card(&h.board, "card1");
+        seed_built_then_answered(&h.board, "card1", 0);
+        h.board
+            .seed_comment_named("card1", "fresh", FRESH, "mem-phil", "Phil Ek", 600);
+        h.board.set_clock(1000);
+
+        assert_eq!(
+            texts(&feedback_comments(&h.board.comments_on("card1"), SELF_ID)),
+            [FRESH]
+        );
+
+        let unit = h.poll().expect("the tail passes: a human spoke last");
+        let brief = &h.units.wire_unit(&unit).files[0].text;
+        let (earlier, new) = brief
+            .split_once("## New comments")
+            .expect("the brief has a new-comments section");
+        assert_eq!(new, format!("\n\n**Phil Ek:** {FRESH}\n"));
+        let earlier = earlier
+            .split_once("## Earlier conversation")
+            .expect("the answered exchanges are earlier")
+            .1;
+        for ask in ANSWERED {
+            assert!(
+                earlier.contains(&format!("**Phil Ek:** {ask}")),
+                "{earlier}"
+            );
+        }
+        for reply in REPLIES {
+            assert!(
+                earlier.contains(&format!("**afkd:** {}", reply.trim())),
+                "{earlier}"
+            );
+        }
+        assert!(!brief.contains("[afkd-"), "no control marker: {brief}");
     }
 
     // --- The parked scan: what it reads, what it skips, what it costs ---
