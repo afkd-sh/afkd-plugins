@@ -16,9 +16,12 @@
 //! JSON body) lands at the top or bottom of its list, or before the first other card
 //! whose `pos` is greater than the number it names, as those positions stood before the
 //! move; adding a member already on the card is Trello's `400`; a comment or card that
-//! does not exist is a `404`. Every request is recorded, and any route can be made to
-//! answer a status instead — or the whole fake taken out of reach, every connection
-//! closed unanswered.
+//! does not exist is a `404`. An attachment is uploaded as a multipart form whose `name`
+//! part names it, listed with its date, size and a download `url` on this fake, and
+//! downloaded from there with the OAuth `Authorization` header and **no** query
+//! credential — either of those wrong is a `401`, as on Trello's download host. Every
+//! request is recorded, and any route can be made to answer a status instead — or the
+//! whole fake taken out of reach, every connection closed unanswered.
 
 #![allow(dead_code)]
 
@@ -51,7 +54,38 @@ pub struct Seen {
     pub path: String,
     /// The decoded query pairs.
     pub query: Vec<(String, String)>,
+    /// The body as text, any invalid UTF-8 replaced.
     pub body: String,
+    /// The body as it crossed the wire.
+    pub raw: Vec<u8>,
+    pub content_type: Option<String>,
+    pub authorization: Option<String>,
+}
+
+/// One part of a multipart form, as the fake reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    /// The `name` its Content-Disposition gives.
+    pub name: String,
+    /// The `filename` its Content-Disposition gives, if any.
+    pub filename: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+/// An attachment on a card: an uploaded file, or a link.
+#[derive(Debug, Clone)]
+struct Attachment {
+    id: String,
+    card: String,
+    name: String,
+    /// The creation second, as the ObjectId carries it.
+    posted: u64,
+    /// The millisecond within it, which the listing's `date` carries and the id does not.
+    millis: u32,
+    /// The file's bytes; empty for a link.
+    bytes: Vec<u8>,
+    /// Where a link points; `None` for an upload, which this fake serves.
+    link: Option<String>,
 }
 
 /// A comment action on a card.
@@ -141,6 +175,9 @@ struct State {
     /// In board order: a list's cards are the ones naming it, in this order.
     cards: Vec<Card>,
     comments: Vec<Comment>,
+    attachments: Vec<Attachment>,
+    /// The API root, which an upload's download `url` is built on.
+    base: String,
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
     /// A comment post whose text contains this answers the status instead.
@@ -257,6 +294,37 @@ impl State {
         }
     }
 
+    /// An attachment as Trello lists it: an upload's `url` is its download on this fake,
+    /// named by a slug of its name, and a link's is where it points.
+    fn attachment_json(&self, a: &Attachment) -> Value {
+        let url = a.link.clone().unwrap_or_else(|| {
+            let file: String = a
+                .name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '.' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            format!(
+                "{}/cards/{}/attachments/{}/download/{file}",
+                self.base, a.card, a.id
+            )
+        });
+        json!({
+            "id": a.id,
+            "name": a.name,
+            "date": stamp(a.posted).replace(".000Z", &format!(".{:03}Z", a.millis)),
+            "url": url,
+            "isUpload": a.link.is_none(),
+            "bytes": if a.link.is_none() { json!(a.bytes.len()) } else { Value::Null },
+            "mimeType": if a.link.is_none() { "application/octet-stream" } else { "" },
+        })
+    }
+
     fn card_json(&self, card: &Card, with_actions: bool) -> Value {
         let mut value = json!({
             "id": card.id,
@@ -327,6 +395,7 @@ impl FakeTrello {
         let state = Arc::new(Mutex::new(State::default()));
         {
             let mut s = lock(&state);
+            s.base = base.clone();
             let me = s.mint(now() - 400 * 86_400);
             s.members.push(Member {
                 id: me.clone(),
@@ -477,6 +546,71 @@ impl FakeTrello {
             edited: None,
         });
         id
+    }
+
+    /// Put an uploaded file named `name` holding `bytes` on a card, `ago` seconds before
+    /// now; returns its id.
+    pub fn attachment(&self, card: &str, name: &str, bytes: &[u8], ago: u64) -> String {
+        self.attachment_at(card, name, bytes, ago, 0)
+    }
+
+    /// [`attachment`](Self::attachment), at `millis` into its second. Ids are minted in
+    /// the order seeded, so seeding the later millisecond first gives two uploads in one
+    /// second whose ids run against their times — as Trello's, minted on different
+    /// servers, can.
+    pub fn attachment_at(
+        &self,
+        card: &str,
+        name: &str,
+        bytes: &[u8],
+        ago: u64,
+        millis: u32,
+    ) -> String {
+        let mut s = lock(&self.state);
+        let posted = now() - ago;
+        let id = s.mint(posted);
+        s.attachments.push(Attachment {
+            id: id.clone(),
+            card: card.to_string(),
+            name: name.to_string(),
+            posted,
+            millis,
+            bytes: bytes.to_vec(),
+            link: None,
+        });
+        id
+    }
+
+    /// Put a link named `name` to `url` on a card, `ago` seconds before now; returns its id.
+    pub fn link_attachment(&self, card: &str, name: &str, url: &str, ago: u64) -> String {
+        let mut s = lock(&self.state);
+        let posted = now() - ago;
+        let id = s.mint(posted);
+        s.attachments.push(Attachment {
+            id: id.clone(),
+            card: card.to_string(),
+            name: name.to_string(),
+            posted,
+            millis: 0,
+            bytes: Vec::new(),
+            link: Some(url.to_string()),
+        });
+        id
+    }
+
+    /// A card's uploaded files, as `(name, bytes)` in the order they were put on it.
+    pub fn attachments(&self, card: &str) -> Vec<(String, Vec<u8>)> {
+        let s = lock(&self.state);
+        let mut files: Vec<&Attachment> = s
+            .attachments
+            .iter()
+            .filter(|a| a.card == card && a.link.is_none())
+            .collect();
+        files.sort_by(|a, b| a.id.cmp(&b.id));
+        files
+            .into_iter()
+            .map(|a| (a.name.clone(), a.bytes.clone()))
+            .collect()
     }
 
     /// Make every request to `route` answer `status`.
@@ -680,6 +814,7 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
     let method = parts.next().unwrap_or("").to_string();
     let target = parts.next().unwrap_or("").to_string();
     let mut length = 0usize;
+    let (mut content_type, mut authorization) = (None, None);
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).unwrap_or(0) == 0 {
@@ -690,16 +825,21 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
             break;
         }
         if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse().unwrap_or(0);
+            let (name, value) = (name.trim(), value.trim().to_string());
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.parse().unwrap_or(0);
+            } else if name.eq_ignore_ascii_case("content-type") {
+                content_type = Some(value);
+            } else if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value);
             }
         }
     }
-    let mut body = vec![0u8; length];
-    if reader.read_exact(&mut body).is_err() {
+    let mut raw = vec![0u8; length];
+    if reader.read_exact(&mut raw).is_err() {
         return;
     }
-    let body = String::from_utf8_lossy(&body).into_owned();
+    let body = String::from_utf8_lossy(&raw).into_owned();
     let (path, query) = match target.split_once('?') {
         Some((p, q)) => (p.to_string(), q.to_string()),
         None => (target.clone(), String::new()),
@@ -713,13 +853,16 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
         })
         .collect();
 
-    let (status, reply) = {
+    let (status, mime, reply) = {
         let mut s = lock(state);
         let seen = Seen {
             method: method.clone(),
             path: path.clone(),
             query: query.clone(),
             body: body.clone(),
+            raw: raw.clone(),
+            content_type: content_type.clone(),
+            authorization: authorization.clone(),
         };
         if s.down {
             // Out of reach: the stream drops here, closed with no reply.
@@ -733,13 +876,25 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
                 .find(|(k, _)| k == key)
                 .map(|(_, v)| v.as_str())
         };
-        if param("key") != Some(KEY) || param("token") != Some(TOKEN) {
-            (401, json!("invalid key"))
+        if let Some(reply) = download(&s, &method, &path, &query, authorization.as_deref()) {
+            reply
         } else {
-            route(&mut s, &method, &path, &query, &body)
+            let (status, reply) = if param("key") != Some(KEY) || param("token") != Some(TOKEN) {
+                (401, json!("invalid key"))
+            } else {
+                let request = Request {
+                    method: &method,
+                    path: &path,
+                    query: &query,
+                    body: &body,
+                    raw: &raw,
+                    content_type: content_type.as_deref(),
+                };
+                route(&mut s, &request)
+            };
+            (status, "application/json", reply.to_string().into_bytes())
         }
     };
-    let text = reply.to_string();
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -750,21 +905,114 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
     let mut stream = stream;
     let _ = write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n{text}",
-        text.len()
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        reply.len()
     );
+    let _ = stream.write_all(&reply);
     let _ = stream.flush();
 }
 
-/// Answer one authenticated request.
-fn route(
-    s: &mut State,
+/// One authenticated request, as [`route`] reads it.
+struct Request<'a> {
+    method: &'a str,
+    path: &'a str,
+    query: &'a [(String, String)],
+    body: &'a str,
+    raw: &'a [u8],
+    content_type: Option<&'a str>,
+}
+
+/// The OAuth header a download must carry, as Trello's download host takes it.
+pub fn oauth_header() -> String {
+    format!(r#"OAuth oauth_consumer_key="{KEY}", oauth_token="{TOKEN}""#)
+}
+
+/// Answer a download of an upload's bytes, or `None` when the request is no download: a
+/// `GET /1/cards/{card}/attachments/{id}/download/{file}`, authenticated by the OAuth
+/// header alone — a query credential beside it is refused, as Trello's host refuses it.
+/// A route made to fail answers its status, as every other does.
+fn download(
+    s: &State,
     method: &str,
     path: &str,
     query: &[(String, String)],
-    body: &str,
-) -> (u16, Value) {
+    authorization: Option<&str>,
+) -> Option<(u16, &'static str, Vec<u8>)> {
+    let segs: Vec<&str> = path.strip_prefix("/1/")?.split('/').collect();
+    let ["cards", card, "attachments", id, "download", _] = segs.as_slice() else {
+        return None;
+    };
+    if method != "GET" {
+        return None;
+    }
+    let json = |status: u16, reply: Value| {
+        Some((status, "application/json", reply.to_string().into_bytes()))
+    };
+    if let Some(status) = s.faults.get("download attachment") {
+        return json(*status, json!({ "message": "injected" }));
+    }
+    let carries = |key: &str| query.iter().any(|(k, _)| k == key);
+    if authorization != Some(oauth_header().as_str()) || carries("key") || carries("token") {
+        return json(401, json!("unauthorized permission requested"));
+    }
+    match s
+        .attachments
+        .iter()
+        .find(|a| a.id == *id && a.card == *card && a.link.is_none())
+    {
+        Some(a) => Some((200, "application/octet-stream", a.bytes.clone())),
+        None => json(404, json!("The requested resource was not found.")),
+    }
+}
+
+/// The parts of a multipart form whose content type is `content_type`, in order; empty
+/// when it is no multipart form.
+pub fn multipart_parts(content_type: &str, raw: &[u8]) -> Vec<Part> {
+    let Some(boundary) = content_type
+        .split(';')
+        .find_map(|p| p.trim().strip_prefix("boundary="))
+    else {
+        return Vec::new();
+    };
+    let delimiter = format!("--{boundary}");
+    let find = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).position(|w| w == needle);
+    let mut segments = Vec::new();
+    let mut rest = raw;
+    while let Some(at) = find(rest, delimiter.as_bytes()) {
+        segments.push(&rest[..at]);
+        rest = &rest[at + delimiter.len()..];
+    }
+    segments
+        .iter()
+        .skip(1)
+        .filter_map(|segment| {
+            let part = segment.strip_prefix(b"\r\n")?.strip_suffix(b"\r\n")?;
+            let split = find(part, b"\r\n\r\n")?;
+            let headers = String::from_utf8_lossy(&part[..split]).into_owned();
+            let field = |key: &str| {
+                let start = headers.find(&format!("{key}=\""))? + key.len() + 2;
+                let end = headers[start..].find('"')? + start;
+                Some(headers[start..end].to_string())
+            };
+            Some(Part {
+                name: field(" name").or_else(|| field(";name"))?,
+                filename: field("filename"),
+                bytes: part[split + 4..].to_vec(),
+            })
+        })
+        .collect()
+}
+
+/// Answer one authenticated request.
+fn route(s: &mut State, request: &Request) -> (u16, Value) {
+    let Request {
+        method,
+        path,
+        query,
+        body,
+        ..
+    } = *request;
     let not_found = (404, json!("The requested resource was not found."));
     let Some(rest) = path.strip_prefix("/1/") else {
         return not_found;
@@ -808,6 +1056,8 @@ fn route(
         ("DELETE", ["cards", _, "idLabels", _]) => "remove label",
         ("POST", ["cards", _, "idMembers"]) => "add member",
         ("DELETE", ["cards", _, "idMembers", _]) => "remove member",
+        ("POST", ["cards", _, "attachments"]) => "post attachment",
+        ("GET", ["cards", _, "attachments"]) => "list attachments",
         _ => return not_found,
     };
     if let Some(status) = s.faults.get(name) {
@@ -1035,6 +1285,52 @@ fn route(
             }
             (200, json!(s.cards[at].members))
         }
+        "post attachment" => {
+            let Some(at) = card_at(s) else {
+                return not_found;
+            };
+            let parts = multipart_parts(request.content_type.unwrap_or(""), request.raw);
+            let Some(file) = parts.iter().find(|p| p.name == "file") else {
+                return (400, json!({ "message": "no file part" }));
+            };
+            // Trello stores the `name` part as the attachment's name, else the file's.
+            let name = parts
+                .iter()
+                .find(|p| p.name == "name")
+                .map(|p| String::from_utf8_lossy(&p.bytes).into_owned())
+                .or_else(|| file.filename.clone())
+                .unwrap_or_default();
+            let clock = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let posted = clock.as_secs();
+            let attachment = Attachment {
+                id: s.mint(posted),
+                card: s.cards[at].id.clone(),
+                name,
+                posted,
+                millis: clock.subsec_millis(),
+                bytes: file.bytes.clone(),
+                link: None,
+            };
+            let reply = s.attachment_json(&attachment);
+            s.attachments.push(attachment);
+            (200, reply)
+        }
+        "list attachments" => match card_at(s) {
+            Some(at) => {
+                let card = s.cards[at].id.clone();
+                (
+                    200,
+                    s.attachments
+                        .iter()
+                        .filter(|a| a.card == card)
+                        .map(|a| s.attachment_json(a))
+                        .collect(),
+                )
+            }
+            None => not_found,
+        },
         _ => not_found,
     }
 }

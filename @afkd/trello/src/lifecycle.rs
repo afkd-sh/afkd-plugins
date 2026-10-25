@@ -1,4 +1,4 @@
-//! The **action vocabulary** afkd's slots call: the eight things a slot may do to a card,
+//! The **action vocabulary** afkd's slots call: the ten things a slot may do to a card,
 //! and the decode of one `call` request into one of them and the card it acts on.
 //!
 //! afkd runs the slots (`on_claim`, `on_done`, `on_fail`, `on_park`) as code, in the
@@ -10,6 +10,7 @@
 
 use serde_json::{Map, Value};
 
+use crate::attachment::Upload;
 use crate::settings::{member_ref, MemberRef};
 
 /// Where a moved card lands in its destination list.
@@ -53,6 +54,30 @@ pub(crate) enum LifecycleAction {
     },
     /// Post a literal comment on the card.
     Comment(String),
+    /// Upload a file to the card, its bytes read when the slot called for it.
+    Attach(Upload),
+}
+
+/// What one decoded `call` asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Op {
+    /// A write to the card, delivered — or queued — like every other.
+    Act(LifecycleAction),
+    /// Upload the file at `path` as `name`: a write once the file is read, which the
+    /// decode, reading arguments alone, leaves to its caller.
+    Attach {
+        /// The file's absolute path.
+        path: String,
+        /// The attachment's name on the card.
+        name: String,
+    },
+    /// Write the newest upload named `name` to `to`: a read, never queued.
+    Fetch {
+        /// The attachment's name on the card.
+        name: String,
+        /// The absolute path to write it to.
+        to: String,
+    },
 }
 
 /// One decoded `call`: the card it acts on, by the key its handle carries, and what to do.
@@ -61,7 +86,7 @@ pub(crate) struct Call {
     /// afkd's claim key for the card, the handle's `key`.
     pub(crate) key: String,
     /// What to do to it.
-    pub(crate) action: LifecycleAction,
+    pub(crate) op: Op,
 }
 
 /// The parameter every action takes first: the card it acts on, as a `trello.Card`
@@ -79,6 +104,8 @@ pub(crate) const ACTIONS: &[&str] = &[
     "add_member",
     "remove_member",
     "comment",
+    "attach",
+    "fetch_attachment",
 ];
 
 /// Decode one `call` — the action's name and its arguments by parameter name — into the
@@ -105,17 +132,29 @@ pub(crate) fn from_call(action: &str, args: &Map<String, Value>) -> Result<Call,
     };
     Ok(Call {
         key: key.to_string(),
-        action: decode(action, args)?,
+        op: decode(action, args)?,
     })
 }
 
-/// The action `action` asks for with `args`, its handle aside.
-fn decode(action: &str, args: &Map<String, Value>) -> Result<LifecycleAction, String> {
-    let string = |param: &str| match args.get(param) {
-        Some(Value::String(value)) => Ok(value.clone()),
-        Some(_) => Err(format!("{action}: parameter {param} must be a string")),
-        None => Err(format!("{action}: parameter {param} is required")),
-    };
+/// What `action` asks for with `args`, its handle aside.
+fn decode(action: &str, args: &Map<String, Value>) -> Result<Op, String> {
+    let string = |param: &str| string(action, args, param);
+    Ok(match action {
+        "attach" => Op::Attach {
+            path: string("path")?,
+            name: string("name")?,
+        },
+        "fetch_attachment" => Op::Fetch {
+            name: string("name")?,
+            to: string("to")?,
+        },
+        _ => Op::Act(decode_act(action, args)?),
+    })
+}
+
+/// The write `action` asks for with `args`.
+fn decode_act(action: &str, args: &Map<String, Value>) -> Result<LifecycleAction, String> {
+    let string = |param: &str| string(action, args, param);
     Ok(match action {
         "mark_complete" => LifecycleAction::MarkComplete,
         "archive" => LifecycleAction::Archive,
@@ -143,6 +182,15 @@ fn decode(action: &str, args: &Map<String, Value>) -> Result<LifecycleAction, St
     })
 }
 
+/// The string argument `param` of `action`, or the sentence refusing its absence or type.
+fn string(action: &str, args: &Map<String, Value>, param: &str) -> Result<String, String> {
+    match args.get(param) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(_) => Err(format!("{action}: parameter {param} must be a string")),
+        None => Err(format!("{action}: parameter {param} is required")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,25 +202,25 @@ mod tests {
 
     /// Decode `action` over `args` as afkd binds them, the card's handle first, and hold
     /// the call to the card the handle names.
-    fn call(action: &str, args: Value) -> Result<LifecycleAction, String> {
+    fn call(action: &str, args: Value) -> Result<Op, String> {
         let mut bound =
             Map::from_iter([(HANDLE.to_string(), json!({"id": "Qb7eLy2w", "key": KEY}))]);
         bound.extend(args.as_object().expect("an args object").clone());
         from_call(action, &bound).map(|call| {
             assert_eq!(call.key, KEY, "{action}");
-            call.action
+            call.op
         })
     }
 
     /// Every action in [`ACTIONS`] decodes from the arguments afkd binds for it, on the card
-    /// its handle names, each name
-    /// and text byte for byte: a wide list name, an emoji label, a username with
-    /// diacritics, the member `me`, and a multi-line markdown comment carrying CJK and a
-    /// literal `@{run:x}` that afkd did not interpolate.
+    /// its handle names, each name, path and text byte for byte: a wide list name, an emoji
+    /// label, a username with diacritics, the member `me`, a multi-line markdown comment
+    /// carrying CJK and a literal `@{run:x}` that afkd did not interpolate, and a path and
+    /// an attachment name with spaces and wide glyphs.
     #[test]
     fn every_action_decodes_from_its_bound_arguments() {
         let markdown = "## 完了 ✅\n\n- took 3m\n- log: @{run:x}\n\nsee the run log.";
-        let decoded: Vec<LifecycleAction> = [
+        let decoded: Vec<Op> = [
             ("mark_complete", json!({})),
             ("archive", json!({})),
             (
@@ -184,6 +232,14 @@ mod tests {
             ("add_member", json!({"member": ME})),
             ("remove_member", json!({"member": "björn-öst"})),
             ("comment", json!({"text": markdown})),
+            (
+                "attach",
+                json!({"path": "/srv/runs/計画 1/work.patch", "name": "work – 計画.patch"}),
+            ),
+            (
+                "fetch_attachment",
+                json!({"name": "plan.md", "to": "/srv/acme/earlier plan.md"}),
+            ),
         ]
         .into_iter()
         .map(|(action, args)| call(action, args).expect(action))
@@ -191,21 +247,31 @@ mod tests {
         assert_eq!(
             decoded,
             [
-                LifecycleAction::MarkComplete,
-                LifecycleAction::Archive,
-                LifecycleAction::MoveTo {
+                Op::Act(LifecycleAction::MarkComplete),
+                Op::Act(LifecycleAction::Archive),
+                Op::Act(LifecycleAction::MoveTo {
                     list: "Blockerat / Väntar".into(),
                     position: ListPosition::Bottom,
-                },
-                LifecycleAction::AddLabel {
+                }),
+                Op::Act(LifecycleAction::AddLabel {
                     name: "reviewed ✅".into()
-                },
-                LifecycleAction::RemoveLabel {
+                }),
+                Op::Act(LifecycleAction::RemoveLabel {
                     name: "Redo".into()
+                }),
+                Op::Act(LifecycleAction::AddMember(MemberRef::SelfMember)),
+                Op::Act(LifecycleAction::RemoveMember(MemberRef::Username(
+                    "björn-öst".into()
+                ))),
+                Op::Act(LifecycleAction::Comment(markdown.into())),
+                Op::Attach {
+                    path: "/srv/runs/計画 1/work.patch".into(),
+                    name: "work – 計画.patch".into(),
                 },
-                LifecycleAction::AddMember(MemberRef::SelfMember),
-                LifecycleAction::RemoveMember(MemberRef::Username("björn-öst".into())),
-                LifecycleAction::Comment(markdown.into()),
+                Op::Fetch {
+                    name: "plan.md".into(),
+                    to: "/srv/acme/earlier plan.md".into(),
+                },
             ]
         );
         assert_eq!(decoded.len(), ACTIONS.len());
@@ -218,28 +284,28 @@ mod tests {
     fn move_to_defaults_to_the_top_and_extra_args_are_ignored() {
         assert_eq!(
             call("move_to", json!({"list": "In Progress"})),
-            Ok(LifecycleAction::MoveTo {
+            Ok(Op::Act(LifecycleAction::MoveTo {
                 list: "In Progress".into(),
                 position: ListPosition::Top,
-            })
+            }))
         );
         assert_eq!(
             call(
                 "move_to",
                 json!({"list": "Review", "at": "top", "later": 1})
             ),
-            Ok(LifecycleAction::MoveTo {
+            Ok(Op::Act(LifecycleAction::MoveTo {
                 list: "Review".into(),
                 position: ListPosition::Top,
-            })
+            }))
         );
         assert_eq!(
             call("comment", json!({"text": ""})),
-            Ok(LifecycleAction::Comment(String::new()))
+            Ok(Op::Act(LifecycleAction::Comment(String::new())))
         );
         assert_eq!(
             call("archive", json!({"list": "Done"})),
-            Ok(LifecycleAction::Archive)
+            Ok(Op::Act(LifecycleAction::Archive))
         );
     }
 
@@ -302,6 +368,36 @@ mod tests {
                 json!({"text": {"@value": "x"}}),
                 "comment: parameter text must be a string",
             ),
+            (
+                "attach",
+                json!({"name": "work.patch"}),
+                "attach: parameter path is required",
+            ),
+            (
+                "attach",
+                json!({"path": "/tmp/work.patch"}),
+                "attach: parameter name is required",
+            ),
+            (
+                "attach",
+                json!({"path": ["/tmp/a"], "name": "a"}),
+                "attach: parameter path must be a string",
+            ),
+            (
+                "fetch_attachment",
+                json!({"to": "/tmp/plan.md"}),
+                "fetch_attachment: parameter name is required",
+            ),
+            (
+                "fetch_attachment",
+                json!({"name": "plan.md"}),
+                "fetch_attachment: parameter to is required",
+            ),
+            (
+                "fetch_attachment",
+                json!({"name": "plan.md", "to": 7}),
+                "fetch_attachment: parameter to must be a string",
+            ),
         ] {
             assert_eq!(
                 call(action, args.clone()),
@@ -352,7 +448,7 @@ mod tests {
             ),
             Ok(Call {
                 key: KEY.into(),
-                action: LifecycleAction::Archive,
+                op: Op::Act(LifecycleAction::Archive),
             })
         );
     }

@@ -38,11 +38,12 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
+use crate::attachment::read_upload;
 use crate::board::{BoardClient, Card};
 use crate::card::{is_afkd, Identity, TrelloUnits, Unit};
 use crate::client::TrelloClient;
 use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
-use crate::lifecycle::{from_call, Call};
+use crate::lifecycle::{from_call, Call, LifecycleAction, Op};
 use crate::outbox::{Outbox, Write};
 use crate::rfc3339::format_utc;
 use crate::settings::{board_config, BoardConfig};
@@ -463,9 +464,10 @@ impl Armed {
 
     /// Do one action a slot called, on the card of the unit its handle names — a live one,
     /// or one finished since. `{"ok":false}` with the sentence, diagnosed too, for an
-    /// action afkd would not have bound, a handle naming no card, or a board that refused
-    /// it. An action the board could not be reached for is taken for delivery and `ok`:
-    /// the outbox retries it, and the slot's next action queues behind it.
+    /// action afkd would not have bound, a handle naming no card, a file `attach` cannot
+    /// read, or a board that refused it. A write the board could not be reached for is
+    /// taken for delivery and `ok`: the outbox retries it, and the slot's next action
+    /// queues behind it. A `fetch_attachment` is a read, done now or refused, never queued.
     fn call(
         &self,
         action: &str,
@@ -477,7 +479,7 @@ impl Armed {
             diag.err(&error);
             Answer::Reply(json!({"ok": false, "error": error}).to_string())
         };
-        let Call { key, action: act } = match from_call(action, args) {
+        let Call { key, op } = match from_call(action, args) {
             Ok(call) => call,
             Err(problem) => return refuse(problem),
         };
@@ -491,6 +493,19 @@ impl Armed {
                     ))
                 }
             },
+        };
+        let act = match op {
+            Op::Act(act) => act,
+            Op::Attach { path, name } => match read_upload(&path, &name) {
+                Ok(upload) => LifecycleAction::Attach(upload),
+                Err(problem) => return refuse(problem),
+            },
+            Op::Fetch { name, to } => {
+                return match self.units.fetch_attachment(card, &name, &to, diag) {
+                    Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
+                    Err(problem) => refuse(problem),
+                }
+            }
         };
         match self.units.deliver(card, Write::Act(act), now, diag) {
             Ok(_) => Answer::Reply(json!({"ok": true}).to_string()),
@@ -1212,15 +1227,27 @@ mod tests {
         );
     }
 
-    /// Each of the eight actions, as afkd sends a hook's call of it on the live unit, does
+    /// Each of the ten actions, as afkd sends a hook's call of it on the live unit, does
     /// its one board operation on the claimed card, narrates one line naming the card's
     /// title, and answers `ok` — the names and texts byte for byte, `me` read as the authed
-    /// member, and a comment's `@{run:x}` left as afkd sent it.
+    /// member, a comment's `@{run:x}` left as afkd sent it, a file attached with its bytes
+    /// exact, and the newest upload of a name written where the slot said.
     #[test]
     fn every_action_over_call_acts_on_the_live_card_and_narrates() {
         let mut f = Fixture::armed(settings());
         seed(&f.board);
         f.board.add_list("Blockerat / Väntar");
+        f.board
+            .seed_attachment("card1", "plan.md", "## 計画\n\n1. one\n".as_bytes(), 50);
+        let dir = TempDir::new("every-action");
+        let patch = dir.path().join("work 計画.patch");
+        let bytes = b"diff --git a/x b/x\n\0\xe5\xe4\xf6\r\n".to_vec();
+        std::fs::write(&patch, &bytes).unwrap();
+        let (patch, to) = (
+            patch.to_string_lossy().into_owned(),
+            dir.path().join("earlier-plan.md"),
+        );
+        let to_str = to.to_string_lossy().into_owned();
         let key = f.poll()["unit"]["key"].clone();
         let (actions, narrated) = (f.board.actions().len(), f.diag.narrated().len());
         let markdown = "## 完了 ✅\n\n- took 3m 12s\n- log: @{run:x}\n\nsee the run log.";
@@ -1235,11 +1262,24 @@ mod tests {
             ("add_label", json!({"label": "reviewed ✅"})),
             ("remove_label", json!({"label": "Redo"})),
             ("comment", json!({"text": markdown})),
+            (
+                "attach",
+                json!({"path": patch, "name": "work – 計画.patch"}),
+            ),
+            ("fetch_attachment", json!({"name": "plan.md", "to": to_str})),
             ("mark_complete", json!({})),
             ("archive", json!({})),
         ] {
             assert_eq!(f.act(action, args, &key), json!({"ok": true}), "{action}");
         }
+        assert_eq!(
+            f.board.attachments_on("card1").last(),
+            Some(&("work – 計画.patch".to_string(), bytes.clone()))
+        );
+        assert_eq!(
+            std::fs::read(&to).unwrap(),
+            "## 計画\n\n1. one\n".as_bytes()
+        );
         assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
         let card = || "card1".to_string();
         assert_eq!(
@@ -1271,6 +1311,11 @@ mod tests {
                     card: card(),
                     label: "Redo".into(),
                 },
+                Action::Attach {
+                    card: card(),
+                    name: "work – 計画.patch".into(),
+                    len: bytes.len(),
+                },
                 Action::Complete(card()),
                 Action::Archive(card()),
             ]
@@ -1292,6 +1337,14 @@ mod tests {
                 format!("[trello] adding label \"reviewed ✅\" to card \"{title}\""),
                 format!("[trello] removing label \"Redo\" from card \"{title}\""),
                 format!("[trello] commenting on card \"{title}\""),
+                format!(
+                    "[trello] attaching \"work – 計画.patch\" ({} bytes) to card \"{title}\"",
+                    bytes.len()
+                ),
+                format!(
+                    "[trello] fetching attachment \"plan.md\" from card \"{title}\" into \
+                     {to_str} (18 bytes)"
+                ),
                 format!("[trello] marking card \"{title}\" complete"),
                 format!("[trello] archiving card \"{title}\""),
             ]
@@ -1409,6 +1462,18 @@ mod tests {
                 json!({"list": "Nirgendwo 🚫"}),
                 key.clone(),
                 "trello resolve list: no list named 'Nirgendwo 🚫'",
+            ),
+            (
+                "attach",
+                json!({"path": "work.patch", "name": "work.patch"}),
+                key.clone(),
+                "attach: path must be absolute, not \"work.patch\"",
+            ),
+            (
+                "fetch_attachment",
+                json!({"name": "plan.md", "to": "earlier-plan.md"}),
+                key.clone(),
+                "fetch_attachment: to must be absolute, not \"earlier-plan.md\"",
             ),
         ] {
             assert_eq!(
@@ -1580,6 +1645,71 @@ mod tests {
                 format!("[trello] adding label \"Problem\" to card \"{TITLE}\""),
             ]
         );
+    }
+
+    /// An `attach` the board cannot be reached for is queued with the bytes the call read,
+    /// so it lands from the queue as they were even once the file is gone; a
+    /// `fetch_attachment` meanwhile is a read, answered with the board's sentence and never
+    /// queued.
+    #[test]
+    fn an_attach_is_queued_with_its_bytes_and_a_fetch_is_not() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        let key = f.poll()["unit"]["key"].clone();
+        let dir = TempDir::new("attach-outage");
+        let patch = dir.path().join("work.patch");
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(100_000).collect();
+        std::fs::write(&patch, &bytes).unwrap();
+        f.board.go_down();
+        assert_eq!(
+            f.act(
+                "attach",
+                json!({"path": patch.to_str().unwrap(), "name": "work.patch"}),
+                &key
+            ),
+            json!({"ok": true})
+        );
+        std::fs::remove_file(&patch).unwrap();
+        let to = dir.path().join("plan.md");
+        assert_eq!(
+            f.act(
+                "fetch_attachment",
+                json!({"name": "plan.md", "to": to.to_str().unwrap()}),
+                &key
+            ),
+            json!({"ok": false, "error":
+                   "trello list attachments: no response (mock failure)"})
+        );
+        assert_eq!(
+            f.diag.errs(),
+            [
+                format!(
+                    "trello is unreachable for card \"{TITLE}\" (card1): trello post attachment: \
+                     no response (mock failure); attaching \"work.patch\" is queued and retried \
+                     for up to 1h"
+                ),
+                "trello list attachments: no response (mock failure)".to_string(),
+            ]
+        );
+
+        f.board.clear_failure();
+        f.clock.advance(RETRY_FIRST);
+        assert_eq!(
+            f.deliver(),
+            None,
+            "the attach landed, and nothing else was owed"
+        );
+        assert_eq!(
+            f.board.attachments_on("card1"),
+            [("work.patch".to_string(), bytes.clone())]
+        );
+        assert_eq!(
+            f.diag.narrated().last(),
+            Some(&format!(
+                "[trello] attaching \"work.patch\" (100000 bytes) to card \"{TITLE}\""
+            ))
+        );
+        assert!(!to.exists(), "the refused fetch wrote nothing");
     }
 
     /// The incident of 2026-10-01, replayed: Trello goes out of reach after the claim,

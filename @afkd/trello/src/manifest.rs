@@ -289,6 +289,14 @@ fn the_actions_are_the_ones_the_code_answers() {
         ("add_member".to_string(), vec![member.clone()]),
         ("remove_member".to_string(), vec![member]),
         ("comment".to_string(), required("text")),
+        (
+            "attach".to_string(),
+            [required("path"), required("name")].concat(),
+        ),
+        (
+            "fetch_attachment".to_string(),
+            [required("name"), required("to")].concat(),
+        ),
     ]);
     let mut move_to = required("list");
     move_to.push(table(&[

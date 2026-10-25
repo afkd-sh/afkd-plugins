@@ -2,7 +2,8 @@
 
 A **provider** plugin with one trigger kind, [`service(trello)`](#servicetrello-cards): it
 fires when a card lands in a watched list of a Trello board, and gives the service's slots
-the actions that move the card across the board as work starts, finishes, or fails. It also
+the actions that move the card across the board as work starts, finishes, or fails, and
+that attach a file to the card and fetch one back. It also
 ships the `trello` skill an agent works the card through: read and post comments, fetch and
 attach files, tick checklist items, move and label the card, and ask a question that parks
 the card until a human replies.
@@ -180,6 +181,8 @@ one request to the plugin, which does it on the card the action is passed first:
 | `trello.remove_label(card, "<name>")`     | remove a named label from the card; idempotent (removing a label not on the card is a no-op) |
 | `trello.add_label(card, "<name>")`        | add a named label to the card           |
 | `trello.comment(card, "<text>")`          | post a comment on the card, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
+| `trello.attach(card, "<path>", "<name>")` | upload the file at `<path>` to the card as an attachment named `<name>` |
+| `trello.fetch_attachment(card, "<name>", "<to>")` | write the newest file on the card named `<name>` to `<to>`; nothing when there is none |
 | `trello.archive(card)`                    | archive the card                        |
 
 The card is a `trello.Card` and nothing else: `trello.move_to("Review")`, with no card, or
@@ -203,6 +206,46 @@ doubling to 5 minutes, for up to an hour. The `[afkd-attempt]` notes and the run
 `[afkd-ran]` watermark are retried the same way. Every write queued is one line in the
 service log; one given up is a loud line naming the card and what was lost. The queue is
 held in memory, so a plugin afkd ends names each write it still owes.
+
+**Files on the card.** A comment holds at most 16 384 characters, so a plan, a review or a
+patch goes on the card as a file. `attach` reads the file at `path` when the slot calls it
+and uploads it under `name`, at most 10 MiB; a file it cannot read, or a larger one, fails
+the call. It is a write like the others: when Trello cannot take it, the bytes it read are
+queued and retried, so a file the slot then moves or deletes still lands as it was. If an
+upload landed but Trello answered with a 5xx, the retry puts a second, identical copy on the
+card. `fetch_attachment` writes the newest file on the card named exactly `name` to the
+path `to` — a link of that name is not a file and is passed over — and when there is none it
+writes nothing and leaves a file already at `to` as it was. It writes through a temp file
+beside `to`, so `to` never holds half a download, and it does not create `to`'s directory.
+A fetch is a read the slot needs now, so it is never queued: when Trello cannot be reached
+it fails with the reason, and an `attach` still queued behind an outage is not on the card
+yet. Both paths must be absolute, since the plugin does not run in the slot's `work_dir`.
+
+```conf
+import "core"
+import "@afkd/trello"
+
+develop :: service(trello) {
+  board     "https://trello.com/b/REPLACE_ME/board"
+  api_key   "REPLACE_ME"
+  token     "REPLACE_ME"
+  pick_from "Up for Grabs"
+
+  on_claim(card: trello.Card) {
+    fetched := trello.fetch_attachment(card, "plan.md", "/srv/acme/widgets/earlier-plan.md")
+    if fetched != nil { fail("trello.fetch_attachment: #{fetched.message}") }
+  }
+  on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+    trello.attach(card, "#{run.scratch_dir}/plan.md", "plan.md")
+    trello.comment(card, "the attempt failed; its plan is attached as plan.md")
+  }
+
+  work_dir "/srv/acme/widgets"
+  on_run(run: core.Run, card: trello.Card) {
+    $ cat $AFKD_SCRATCH_DIR/task.md
+  }
+}
+```
 
 **Repeating an action.** The label and member actions are all idempotent, so a retried card
 cannot fault on its own slots: `add_label` and `add_member` are additive — attaching

@@ -1,5 +1,5 @@
 name = "@afkd/trello"
-version = "0.8.0"
+version = "0.9.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -258,5 +258,45 @@ name = "comment"
 
   [[action.param]]
   name = "text"
+  type = "string"
+  required = true
+
+# A file on the card: the one at `path`, absolute, read when the action is called and
+# uploaded as `name`; queued and retried like every write when Trello is down.
+[[action]]
+name = "attach"
+
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "path"
+  type = "string"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  type = "string"
+  required = true
+
+# The newest file on the card named `name`, written to the absolute path `to`; nothing is
+# written when there is none. A read, never queued.
+[[action]]
+name = "fetch_attachment"
+
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  type = "string"
+  required = true
+
+  [[action.param]]
+  name = "to"
   type = "string"
   required = true

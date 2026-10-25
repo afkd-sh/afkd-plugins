@@ -45,7 +45,8 @@ pub(crate) fn transient(e: &BoardError) -> bool {
         BoardError::Status { status, .. } => *status == 429 || (500..=599).contains(status),
         BoardError::Decode { .. }
         | BoardError::ListNotFound { .. }
-        | BoardError::MemberNotFound { .. } => false,
+        | BoardError::MemberNotFound { .. }
+        | BoardError::Refused { .. } => false,
     }
 }
 
@@ -80,6 +81,7 @@ impl Write {
                 LifecycleAction::MarkComplete => "marking it complete".to_string(),
                 LifecycleAction::Archive => "archiving it".to_string(),
                 LifecycleAction::Comment(text) => format!("the comment {}", quoted(text)),
+                LifecycleAction::Attach(upload) => format!("attaching \"{}\"", upload.name),
             },
             Write::Note(text) => format!("the comment {}", quoted(text)),
             Write::Watermark { .. } => "the [afkd-ran] watermark".to_string(),
@@ -914,6 +916,13 @@ mod tests {
             (
                 Write::Act(LifecycleAction::Comment("## 完了 ✅\n\n- took 3m".into())),
                 "the comment \"## 完了 ✅…\"",
+            ),
+            (
+                Write::Act(LifecycleAction::Attach(crate::attachment::Upload {
+                    name: "work – 計画.patch".into(),
+                    bytes: b"\0".to_vec().into(),
+                })),
+                "attaching \"work – 計画.patch\"",
             ),
             (Write::Note(String::new()), "the comment \"\""),
             (

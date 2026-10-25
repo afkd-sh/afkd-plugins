@@ -11,6 +11,9 @@
 //! - The **outage** leg fails a card through both its attempts while Trello is out of
 //!   reach, and holds the card to its failed state once Trello is back: both attempt notes
 //!   on it, in Backlog with the Problem label, its claim released.
+//! - The **attachments** leg fetches, in `on_claim`, the newest of two plans an earlier
+//!   attempt left on the card, and finds no patch; its `on_run` then attaches one, and
+//!   the card holds it byte for byte.
 //! - The **complete example** leg `afkd validate`s the selfdev pipeline of config language
 //!   v2's §24 against the installed plugin, and the **handle** leg holds `afkd validate` to
 //!   refusing an action called without its card.
@@ -651,6 +654,130 @@ fn outage_leg_a_failed_card_still_reaches_backlog_with_its_attempt_notes() {
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
     fail_one_card_through_an_outage(home.path());
+}
+
+// --- files on the card ---------------------------------------------------------------
+
+/// The service the attachments leg drives, `home` its work dir: `on_claim` fetches what an
+/// earlier attempt left on the card — its plan and its patch — into `home`, failing on any
+/// error, and `on_run`, once the test creates `release`, attaches the patch it finds in
+/// `home`, failing if the plugin refuses it.
+fn attaching_service(home: &Path, base_url: &str) -> String {
+    format!(
+        r#"import "core"
+import "@afkd/trello"
+
+widgets :: service(trello) {{
+  board         "https://trello.com/b/{BOARD}/afkd-drift"
+  base_url      "{base_url}"
+  api_key       "{KEY}"
+  token         "{TOKEN}"
+  pick_from     "Up for Grabs"
+  poll_interval 1s
+  max_attempts  1
+
+  on_claim(card: trello.Card) {{
+    plan := trello.fetch_attachment(card, "plan.md", "{home}/earlier-plan.md")
+    if plan != nil {{ fail("trello.fetch_attachment: #{{plan.message}}") }}
+    patch := trello.fetch_attachment(card, "work.patch", "{home}/earlier.patch")
+    if patch != nil {{ fail("trello.fetch_attachment: #{{patch.message}}") }}
+    trello.move_to(card, "In Progress", at=.top)
+  }}
+  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+    trello.move_to(card, "Review", at=.top)
+  }}
+
+  work_dir "{home}"
+  on_run(run: core.Run, card: trello.Card) {{
+    $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    attached := trello.attach(card, "{home}/work.patch", "work.patch")
+    if attached != nil {{ fail("trello.attach: #{{attached.message}}") }}
+  }}
+}}
+"#,
+        home = home.display()
+    )
+}
+
+/// A patch as a run leaves one: 100 kB of diff text whose hunks carry Latin-1 bytes, CRLF
+/// line ends and NULs — not valid UTF-8, so nothing on the way may treat it as text.
+fn synthetic_patch() -> Vec<u8> {
+    let mut patch =
+        b"diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n".to_vec();
+    let mut n = 0u32;
+    while patch.len() < 100_000 {
+        patch.extend_from_slice(format!("@@ -{n},1 +{n},1 @@\r\n-r").as_bytes());
+        patch.extend_from_slice(b"\xe4d\r\n+r\xe4ksm\xf6rg\xe5s \0\xff\r\n");
+        n += 1;
+    }
+    assert!(
+        std::str::from_utf8(&patch).is_err(),
+        "the patch is not UTF-8"
+    );
+    patch
+}
+
+/// A card an earlier attempt left two plans on, on a real daemon: `on_claim` writes the
+/// newer plan to the work dir and, with no patch on the card, writes none; once released,
+/// `on_run` attaches the patch it is handed, and the card ends holding it byte for byte
+/// beside the two plans, finished into Review, and the daemon drains clean.
+fn fetch_on_claim_and_attach_on_run(home: &Path) {
+    let (fake, card) = seed();
+    let newer = "## 計画 — attempt 2\n\n1. Läs kortet 🚧\n2. Bygg.\n";
+    fake.attachment(&card, "plan.md", b"## attempt 1\n", 3600);
+    fake.attachment(&card, "plan.md", newer.as_bytes(), 1800);
+    write_config(home, &attaching_service(home, fake.base_url()));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the attaching service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    wait_for(home, &fake, &card, &daemon, "the card is claimed", || {
+        claimed(&fake, &card) && fake.list_of(&card) == "In Progress"
+    });
+    assert_eq!(
+        std::fs::read_to_string(home.join("earlier-plan.md"))
+            .ok()
+            .as_deref(),
+        Some(newer),
+        "on_claim fetched the newer plan:\n{}",
+        dump(home, &fake, &card, &daemon)
+    );
+    assert!(
+        !home.join("earlier.patch").exists(),
+        "no patch on the card, so none written"
+    );
+
+    let patch = synthetic_patch();
+    std::fs::write(home.join("work.patch"), &patch).expect("write the patch");
+    std::fs::write(home.join("release"), "").expect("release the run");
+    wait_for(home, &fake, &card, &daemon, "the card is finished", || {
+        fake.list_of(&card) == "Review" && !claimed(&fake, &card)
+    });
+    let files = fake.attachments(&card);
+    let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["plan.md", "plan.md", "work.patch"]);
+    assert!(
+        files[2].1 == patch,
+        "the patch landed byte for byte:\n{}",
+        dump(home, &fake, &card, &daemon)
+    );
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn attachments_leg_on_claim_fetches_the_newest_and_on_run_attaches() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    fetch_on_claim_and_attach_on_run(home.path());
 }
 
 // --- config language v2's complete example -------------------------------------------

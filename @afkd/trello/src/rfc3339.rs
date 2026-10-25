@@ -46,6 +46,31 @@ pub(crate) fn parse_rfc3339(s: &str) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(total as u64))
 }
 
+/// [`parse_rfc3339`], keeping the fractional second to the millisecond (`.9` is 900 ms,
+/// and digits past the third are dropped): what orders two attachments a board stamped
+/// within one second, where the second alone would tie. `None` for a fraction that is not
+/// digits.
+pub(crate) fn parse_rfc3339_millis(s: &str) -> Option<SystemTime> {
+    let whole = parse_rfc3339(s)?;
+    let (_, rest) = s.split_once('T').or_else(|| s.split_once(' '))?;
+    let (time, _) = split_offset(rest)?;
+    let millis = match time.split_once('.') {
+        Some((_, fraction))
+            if !fraction.is_empty() && fraction.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            let digits: String = fraction
+                .chars()
+                .chain(std::iter::repeat('0'))
+                .take(3)
+                .collect();
+            digits.parse().ok()?
+        }
+        Some(_) => return None,
+        None => 0,
+    };
+    Some(whole + Duration::from_millis(millis))
+}
+
 /// Render `t` as `YYYY-MM-DDTHH:MM:SSZ`, in UTC and to the second — the granularity
 /// [`parse_rfc3339`] reads back, so a round trip is exact. A time before the epoch
 /// (which nothing decoded here can be) renders as the epoch.
@@ -179,5 +204,34 @@ mod tests {
         // Sub-second precision is dropped, exactly as the reader drops it.
         let t = UNIX_EPOCH + Duration::from_millis(1_609_459_200_999);
         assert_eq!(format_utc(t), "2021-01-01T00:00:00Z");
+    }
+
+    /// The millisecond reader agrees with the second reader on the whole second and adds
+    /// the fraction — padded, cut at three digits, under an offset — and refuses a
+    /// fraction that is not digits.
+    #[test]
+    fn parse_rfc3339_millis_keeps_the_fraction_to_the_millisecond() {
+        let at = |s: &str| {
+            parse_rfc3339_millis(s).map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_millis())
+        };
+        let second = 1_792_997_600u128;
+        assert_eq!(
+            parse_rfc3339("2026-10-26T06:53:20Z")
+                .map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_secs() as u128),
+            Some(second)
+        );
+        for (stamp, millis) in [
+            ("2026-10-26T06:53:20Z", 0),
+            ("2026-10-26T06:53:20.087Z", 87),
+            ("2026-10-26T06:53:20.954Z", 954),
+            ("2026-10-26T06:53:20.9Z", 900),
+            ("2026-10-26T06:53:20.123456Z", 123),
+            ("2026-10-26T08:53:20.5+02:00", 500),
+        ] {
+            assert_eq!(at(stamp), Some(second * 1000 + millis), "{stamp}");
+        }
+        assert_eq!(at("2026-10-26T06:53:20.Z"), None);
+        assert_eq!(at("2026-10-26T06:53:20.9x7Z"), None);
+        assert_eq!(at("not a time"), None);
     }
 }

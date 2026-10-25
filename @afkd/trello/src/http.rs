@@ -98,7 +98,7 @@ impl BoardRequest {
         }
     }
 
-    /// Set one header, verbatim — `send_json`'s content type.
+    /// Set one header, verbatim — a body's content type, a download's `Authorization`.
     fn header(self, name: &str, value: &str) -> Self {
         match self {
             BoardRequest::NoBody(r) => BoardRequest::NoBody(r.header(name, value)),
@@ -116,7 +116,10 @@ impl BoardRequest {
 
     /// Send the request carrying `body`. A bodyless verb is forced to send one rather
     /// than refused, so the seam is total; no call site reaches that arm.
-    fn send_body(self, body: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    fn send_body(
+        self,
+        body: impl ureq::AsSendBody,
+    ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         match self {
             BoardRequest::NoBody(r) => r.force_send_body().send(body),
             BoardRequest::WithBody(r) => r.send(body),
@@ -307,6 +310,53 @@ impl<E: HttpError> HttpClient<E> {
             .header("Content-Type", "application/json")
             .send_body(&payload.to_string());
         map_outcome(stage, result)
+    }
+
+    /// Send `body` verbatim as the request body, under `content_type` — an upload's
+    /// multipart form.
+    pub(crate) fn send_bytes(
+        &self,
+        stage: &'static str,
+        req: BoardRequest,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<String, E> {
+        let result = req
+            .clip(self.request_budget(stage)?)
+            .header("Content-Type", content_type)
+            .send_body(body);
+        map_outcome(stage, result)
+    }
+
+    /// GET the absolute `url` verbatim — off no API root, with none of the credential's
+    /// query pairs — authenticated by `authorization` as its `Authorization` header, and
+    /// read its body as bytes, no more than `limit` of them. ureq strips the header from
+    /// any redirect it follows.
+    pub(crate) fn get_bytes_at(
+        &self,
+        stage: &'static str,
+        url: &str,
+        authorization: &str,
+        limit: u64,
+    ) -> Result<Vec<u8>, E> {
+        let req = BoardRequest::NoBody(self.agent().get(url))
+            .clip(self.request_budget(stage)?)
+            .header("Authorization", authorization);
+        match req.call() {
+            Ok(mut resp) => resp
+                .body_mut()
+                .with_config()
+                .limit(limit)
+                .read_to_vec()
+                .map_err(|e| match e {
+                    ureq::Error::BodyExceedsLimit(_) => {
+                        E::decode(stage, &format!("the body is over {limit} bytes"))
+                    }
+                    e => E::decode(stage, &transport_reason(&e)),
+                }),
+            Err(ureq::Error::StatusCode(status)) => Err(E::status(stage, status)),
+            Err(other) => Err(E::transport(stage, transport_reason(&other))),
+        }
     }
 
     /// Execute a built request, letting the caller **judge** a non-success status off

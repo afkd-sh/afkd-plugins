@@ -20,10 +20,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::attachment::{multipart, Attachment, MAX_ATTACHMENT_BYTES};
 use crate::board::{BoardClient, BoardError, Card, CheckItem, Checklist, Comment};
 use crate::http::{HttpClient, HttpError, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT};
 use crate::lifecycle::ListPosition;
-use crate::rfc3339::parse_rfc3339;
+use crate::rfc3339::{parse_rfc3339, parse_rfc3339_millis};
 use crate::settings::MemberRef;
 
 /// The Trello REST base (`https://api.trello.com/1`).
@@ -55,6 +56,25 @@ pub(crate) struct TrelloClient {
     /// use. The credentials are fixed for the client's life, so the authed
     /// identity cannot change under the memo.
     me: OnceLock<String>,
+    /// The credential again, as the `Authorization` header an attachment download sends,
+    /// since its host refuses the query pairs. Never logged.
+    authorization: String,
+    /// The origins an attachment download may send that header to: Trello's own, and the
+    /// API root's (a test's loopback fake).
+    download_origins: [Option<Origin>; 2],
+}
+
+/// A URL's scheme, host and port, lowercased: what decides where a credential may go.
+type Origin = (String, String, Option<u16>);
+
+/// The origin of `url`, or `None` when it names no scheme and host.
+fn origin(url: &str) -> Option<Origin> {
+    let uri: ureq::http::Uri = url.parse().ok()?;
+    Some((
+        uri.scheme_str()?.to_ascii_lowercase(),
+        uri.host()?.to_ascii_lowercase(),
+        uri.port_u16(),
+    ))
 }
 
 impl TrelloClient {
@@ -86,17 +106,17 @@ impl TrelloClient {
         connect: Duration,
         read: Duration,
     ) -> Self {
+        let (base, key, token) = (base.into(), key.into(), token.into());
         Self {
+            authorization: format!("OAuth oauth_consumer_key=\"{key}\", oauth_token=\"{token}\""),
+            download_origins: [origin("https://trello.com"), origin(&base)],
             http: HttpClient::new(
                 base,
                 // Trello authenticates with `?key=…&token=…` query parameters, so
                 // the credential rides the URL. Stamping it in the spine is what
                 // keeps every endpoint below free of it — and what makes the
                 // spine's URL-free transport reason load-bearing.
-                vec![
-                    ("key".to_string(), key.into()),
-                    ("token".to_string(), token.into()),
-                ],
+                vec![("key".to_string(), key), ("token".to_string(), token)],
                 connect,
                 read,
             ),
@@ -498,9 +518,79 @@ impl BoardClient for TrelloClient {
         self.resolve("resolve member", board_id, member)
     }
 
+    fn attach_file(&self, card_id: &str, name: &str, bytes: &[u8]) -> Result<(), BoardError> {
+        let stage = "post attachment";
+        // Multipart, with the credential in the query like every other write (ADR-0046).
+        let (content_type, body) = multipart(name, bytes);
+        let req = self
+            .http
+            .request("POST", &format!("/cards/{card_id}/attachments"));
+        self.http
+            .send_bytes(stage, req, &content_type, &body)
+            .map(drop)
+    }
+
+    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
+        let stage = "list attachments";
+        let req = self
+            .http
+            .request("GET", &format!("/cards/{card_id}/attachments"))
+            .query("fields", "id,name,date,url,isUpload,bytes");
+        parse_attachments(stage, &self.http.send(stage, req)?)
+    }
+
+    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
+        let stage = "download attachment";
+        // The url is the listing's, verbatim, so the credential goes only where the plugin
+        // already sends it: a link to anywhere else is refused before it is asked.
+        let at = origin(url);
+        if at.is_none() || !self.download_origins.contains(&at) {
+            let host = at.map_or_else(|| "no host".to_string(), |(_, host, _)| host);
+            return Err(BoardError::Refused {
+                stage,
+                reason: format!(
+                    "the attachment is hosted at {host}, which the plugin sends no credentials to"
+                ),
+            });
+        }
+        self.http
+            .get_bytes_at(stage, url, &self.authorization, MAX_ATTACHMENT_BYTES)
+    }
+
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         self.http.set_deadline(deadline)
     }
+}
+
+/// Parse a card's attachment listing. An entry with no id or url is passed over: nothing
+/// could fetch it.
+pub(crate) fn parse_attachments(
+    stage: &'static str,
+    body: &str,
+) -> Result<Vec<Attachment>, BoardError> {
+    let value = BoardError::decode_json(stage, body)?;
+    let array = BoardError::as_array(stage, &value, "attachments")?;
+    Ok(array
+        .iter()
+        .filter_map(|a| {
+            Some(Attachment {
+                id: a.get("id")?.as_str()?.to_string(),
+                name: a
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                // To the millisecond: two uploads a second apart often share the second.
+                date: a
+                    .get("date")
+                    .and_then(Value::as_str)
+                    .and_then(parse_rfc3339_millis),
+                url: a.get("url")?.as_str()?.to_string(),
+                is_upload: a.get("isUpload").and_then(Value::as_bool).unwrap_or(false),
+                bytes: a.get("bytes").and_then(Value::as_u64),
+            })
+        })
+        .collect())
 }
 
 /// Recover a Trello action/comment's post time from its id.
@@ -844,6 +934,8 @@ mod tests {
         target: String,
         headers: Vec<String>,
         body: String,
+        /// The body as it crossed the wire, for one that is not text.
+        raw: Vec<u8>,
     }
 
     impl Captured {
@@ -1025,6 +1117,7 @@ mod tests {
             target,
             headers,
             body: String::from_utf8_lossy(&body).into_owned(),
+            raw: body,
         }
     }
 
@@ -2403,6 +2496,7 @@ mod tests {
             target: "/no/query".into(),
             headers: Vec::new(),
             body: String::new(),
+            raw: Vec::new(),
         };
         assert!(cap.query().is_empty());
         assert_eq!(cap.path(), "/no/query");
@@ -2888,5 +2982,152 @@ mod tests {
     fn pos_value_maps_top_and_bottom() {
         assert_eq!(pos_value(ListPosition::Top), "top");
         assert_eq!(pos_value(ListPosition::Bottom), "bottom");
+    }
+
+    /// An upload is one multipart POST to the card's attachments, the credential in the
+    /// query as on every other write, the name in its own part and the bytes verbatim —
+    /// NULs, invalid UTF-8 and a CRLF included.
+    #[test]
+    fn attach_file_posts_one_multipart_form_with_the_credential_in_the_query() {
+        let stub = Stub::serve(ok_json(r#"{"id":"att1","name":"work.patch"}"#));
+        let bytes = b"diff --git a/x b/x\n\0\xe5\xe4\xf6\r\n".to_vec();
+        stub.client("KEY", "TOK")
+            .attach_file("c1", "work – 計画.patch", &bytes)
+            .unwrap();
+        let req = stub.captured();
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path(), "/cards/c1/attachments");
+        assert_eq!(
+            req.query(),
+            [("key".into(), "KEY".into()), ("token".into(), "TOK".into())]
+        );
+        let (content_type, body) = multipart("work – 計画.patch", &bytes);
+        assert_eq!(req.header("content-type"), Some(content_type));
+        assert_eq!(req.raw, body);
+    }
+
+    /// The listing asks for the fields the pick reads, and reads them back: a file with
+    /// its date and size, a link, and an entry with no url, which nothing could fetch.
+    #[test]
+    fn card_attachments_reads_files_and_links() {
+        let body = r#"[
+            {"id":"a1","name":"plan – 計画.md","date":"2026-10-25T04:31:07.123Z",
+             "url":"https://trello.com/1/cards/c1/attachments/a1/download/plan.md",
+             "isUpload":true,"bytes":2048},
+            {"id":"a2","name":"plan – 計画.md","date":"2026-10-25T05:00:00.000Z",
+             "url":"https://example.com/elsewhere","isUpload":false,"bytes":null},
+            {"id":"a3","name":"broken","isUpload":true}
+        ]"#;
+        let stub = Stub::serve(ok_json(body));
+        let listed = stub.client("KEY", "TOK").card_attachments("c1").unwrap();
+        assert!(
+            listed[0].date > parse_rfc3339("2026-10-25T04:31:07Z"),
+            "the milliseconds are kept"
+        );
+        let req = stub.captured();
+        assert_eq!(req.path(), "/cards/c1/attachments");
+        assert!(
+            req.has_query("fields", "id,name,date,url,isUpload,bytes"),
+            "{:?}",
+            req.query()
+        );
+        assert_eq!(
+            listed,
+            [
+                Attachment {
+                    id: "a1".into(),
+                    name: "plan – 計画.md".into(),
+                    date: parse_rfc3339_millis("2026-10-25T04:31:07.123Z"),
+                    url: "https://trello.com/1/cards/c1/attachments/a1/download/plan.md".into(),
+                    is_upload: true,
+                    bytes: Some(2048),
+                },
+                Attachment {
+                    id: "a2".into(),
+                    name: "plan – 計画.md".into(),
+                    date: parse_rfc3339_millis("2026-10-25T05:00:00Z"),
+                    url: "https://example.com/elsewhere".into(),
+                    is_upload: false,
+                    bytes: None,
+                },
+            ]
+        );
+    }
+
+    /// A download goes to the url verbatim with the OAuth header and no query credential,
+    /// and its bytes come back exact.
+    #[test]
+    fn download_attachment_sends_the_oauth_header_and_no_query_credential() {
+        let bytes = b"\0\x01\xffbinary\r\n".to_vec();
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\n\r\n",
+            bytes.len()
+        )
+        .into_bytes();
+        reply.extend_from_slice(&bytes);
+        // The stub writes text; this reply is bytes, so serve it raw.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let captured = read_request(&stream);
+            stream.write_all(&reply).unwrap();
+            captured
+        });
+        let client = TrelloClient::with_base(&base, "KEY", "TOK");
+        let url = format!("{base}/1/cards/c1/attachments/a1/download/work%20%E8%A8%88.patch");
+        assert_eq!(client.download_attachment(&url).unwrap(), bytes);
+        let req = server.join().unwrap();
+        assert_eq!(req.method, "GET");
+        assert_eq!(
+            req.target,
+            "/1/cards/c1/attachments/a1/download/work%20%E8%A8%88.patch"
+        );
+        // Read raw: `header` lowercases the value, and the credential is case-sensitive.
+        let authorization: Vec<&str> = req
+            .headers
+            .iter()
+            .filter_map(|h| h.split_once(':'))
+            .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            .map(|(_, value)| value.trim())
+            .collect();
+        assert_eq!(
+            authorization,
+            [r#"OAuth oauth_consumer_key="KEY", oauth_token="TOK""#]
+        );
+        assert!(req.query().is_empty(), "{:?}", req.query());
+    }
+
+    /// The credential goes to Trello and to the API root alone: a url on any other host, on
+    /// the API root's host over another scheme or port, on plain http to trello.com, or one
+    /// that is no url, is refused before anything is sent.
+    #[test]
+    fn download_attachment_refuses_a_host_it_sends_no_credentials_to() {
+        let client = TrelloClient::with_base("http://127.0.0.1:9/1", "KEY", "TOK");
+        for (url, host) in [
+            ("https://evil.example/plan.md", "evil.example"),
+            (
+                "https://trello.com.evil.example/x",
+                "trello.com.evil.example",
+            ),
+            (
+                "http://trello.com/1/cards/c/attachments/a/download/f",
+                "trello.com",
+            ),
+            ("https://127.0.0.1:9/x", "127.0.0.1"),
+            ("http://127.0.0.1:10/x", "127.0.0.1"),
+            ("/1/cards/c/attachments/a/download/f", "no host"),
+        ] {
+            let err = client.download_attachment(url).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "trello download attachment: the attachment is hosted at {host}, which the \
+                     plugin sends no credentials to"
+                ),
+                "{url}"
+            );
+            assert!(!crate::outbox::transient(&err), "{url}");
+        }
     }
 }

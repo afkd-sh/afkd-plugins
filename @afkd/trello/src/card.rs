@@ -31,6 +31,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::attachment;
 use crate::board::{BoardClient, BoardError, Card, Checklist, Comment};
 use crate::claim::{
     claim_renewal_text, claim_text, is_claim, won_claim, ClaimMarker, CLAIM_LIFETIME, CLAIM_SETTLE,
@@ -921,6 +922,18 @@ impl TrelloUnits {
         });
     }
 
+    /// Write the newest upload named `name` on `card` to `to`, or nothing when there is
+    /// none: the `fetch_attachment` action, a read done inline and never queued.
+    pub(crate) fn fetch_attachment(
+        &self,
+        card: &Card,
+        name: &str,
+        to: &str,
+        diag: &dyn Diag,
+    ) -> Result<(), String> {
+        attachment::fetch(&*self.board, card, name, to, diag)
+    }
+
     /// Carry out one action a hook called against a card, and on success narrate it. Each
     /// board call is `?`-propagated *before* the narration, so a failing action emits no
     /// success line.
@@ -1308,6 +1321,9 @@ pub(crate) fn perform_action(
         LifecycleAction::Comment(text) => {
             board.post_comment(&card.id, text)?;
         }
+        LifecycleAction::Attach(upload) => {
+            board.attach_file(&card.id, &upload.name, &upload.bytes)?
+        }
     }
     Ok(())
 }
@@ -1342,6 +1358,11 @@ pub(crate) fn action_line(action: &LifecycleAction, card: &Card) -> String {
             // Name the card, never the comment body: bodies can be long and multi-line.
             format!("{ACTION_TAG} commenting on card \"{title}\"")
         }
+        LifecycleAction::Attach(upload) => format!(
+            "{ACTION_TAG} attaching \"{}\" ({} bytes) to card \"{title}\"",
+            upload.name,
+            upload.bytes.len()
+        ),
     }
 }
 
@@ -1677,6 +1698,7 @@ mod tests {
     //! that half is kept — a crash victim's reversal through `release_stale`, say.
 
     use super::*;
+    use crate::attachment::Upload;
     use crate::board::{Action, MockBoard, SELF_ID};
     use crate::claim::CLAIM_MARKER;
     use crate::common::{CaptureDiag, FakeClock, TempDir, CALL_BUDGET, CLAIM_RESERVE};
@@ -5038,6 +5060,7 @@ mod tests {
             LifecycleAction::AddMember(_) => "add_member",
             LifecycleAction::RemoveMember(_) => "remove_member",
             LifecycleAction::Comment(_) => "comment",
+            LifecycleAction::Attach(_) => "attach",
         }
     }
 
@@ -5087,6 +5110,16 @@ mod tests {
                 ),
                 format!("{ACTION_TAG} commenting on card \"{title}\""),
             ),
+            (
+                LifecycleAction::Attach(Upload {
+                    name: "work – 計画 \"v2\".patch".into(),
+                    bytes: b"diff --git a/x b/x\n\0\xff".to_vec().into(),
+                }),
+                format!(
+                    "{ACTION_TAG} attaching \"work – 計画 \"v2\".patch\" (21 bytes) to card \
+                     \"{title}\""
+                ),
+            ),
         ]
     }
 
@@ -5106,6 +5139,7 @@ mod tests {
                 "add_label",
                 "add_member",
                 "archive",
+                "attach",
                 "comment",
                 "mark_complete",
                 "move_to",
@@ -5113,7 +5147,7 @@ mod tests {
                 "remove_member",
             ]
         );
-        let commented = &table[table.len() - 1].1;
+        let commented = &table[table.len() - 2].1;
         assert!(!commented.contains('\n'), "{commented}");
         assert_eq!(
             action_line(&LifecycleAction::Archive, &narrated_card("")),

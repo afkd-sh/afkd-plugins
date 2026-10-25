@@ -13,6 +13,7 @@
 
 use std::time::{Instant, SystemTime};
 
+use crate::attachment::Attachment;
 use crate::lifecycle::ListPosition;
 use crate::settings::MemberRef;
 
@@ -151,6 +152,13 @@ pub(crate) enum BoardError {
         /// The member username that was sought.
         name: String,
     },
+    /// The plugin refused to send the request at all.
+    Refused {
+        /// The stage of work the call belonged to.
+        stage: &'static str,
+        /// Why it was not sent.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for BoardError {
@@ -171,6 +179,7 @@ impl std::fmt::Display for BoardError {
             BoardError::MemberNotFound { stage, name } => {
                 write!(f, "trello {stage}: no member named '{name}'")
             }
+            BoardError::Refused { stage, reason } => write!(f, "trello {stage}: {reason}"),
         }
     }
 }
@@ -184,7 +193,8 @@ impl BoardError {
             | BoardError::Transport { stage, .. }
             | BoardError::Decode { stage, .. }
             | BoardError::ListNotFound { stage, .. }
-            | BoardError::MemberNotFound { stage, .. } => stage,
+            | BoardError::MemberNotFound { stage, .. }
+            | BoardError::Refused { stage, .. } => stage,
         }
     }
 }
@@ -300,6 +310,15 @@ pub(crate) trait BoardClient {
     /// intake gate does.
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError>;
 
+    /// Upload `bytes` to card `card_id` as an attachment named `name`.
+    fn attach_file(&self, card_id: &str, name: &str, bytes: &[u8]) -> Result<(), BoardError>;
+
+    /// The attachments on card `card_id`, files and links alike, in the board's order.
+    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError>;
+
+    /// The bytes of the attachment at `url`, an [`Attachment::url`] as the listing gave it.
+    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError>;
+
     /// Hand over the current call's deadline, which every request until the next hand-over
     /// must finish by — set before a call, cleared with `None` after it. A board that
     /// sends no requests has nothing to bound and ignores it.
@@ -380,6 +399,15 @@ impl<T: BoardClient + ?Sized> BoardClient for std::sync::Arc<T> {
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError> {
         (**self).resolve_member(board_id, member)
     }
+    fn attach_file(&self, card_id: &str, name: &str, bytes: &[u8]) -> Result<(), BoardError> {
+        (**self).attach_file(card_id, name, bytes)
+    }
+    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
+        (**self).card_attachments(card_id)
+    }
+    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
+        (**self).download_attachment(url)
+    }
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         (**self).set_call_deadline(deadline)
     }
@@ -443,6 +471,14 @@ mod mock {
         /// What `card_created_at` answers — the board's own record of the creation,
         /// the fallback route the `min_age` gate pays for.
         created_action: SystemTime,
+        /// The card's attachments, in the order they were put on it.
+        attachments: Vec<MockAttachment>,
+    }
+
+    /// One attachment on a mock card: its listing, and the bytes its url serves.
+    struct MockAttachment {
+        listed: Attachment,
+        bytes: Vec<u8>,
     }
 
     /// Hand-written (not derived) so both creation times default to the epoch:
@@ -464,6 +500,7 @@ mod mock {
                 vanish_on_read: false,
                 created_at: Some(UNIX_EPOCH),
                 created_action: UNIX_EPOCH,
+                attachments: Vec::new(),
             }
         }
     }
@@ -531,6 +568,15 @@ mod mock {
             card: String,
             /// Who was removed, as configured.
             member: MemberRef,
+        },
+        /// A file was uploaded to a card.
+        Attach {
+            /// The card it was put on.
+            card: String,
+            /// The attachment's name.
+            name: String,
+            /// How many bytes it held.
+            len: usize,
         },
     }
 
@@ -797,6 +843,76 @@ mod mock {
             {
                 comment.renewed_at = UNIX_EPOCH + Duration::from_secs(renewed_secs);
             }
+        }
+
+        /// Put an uploaded file named `name` holding `bytes` on a card, dated `secs`
+        /// seconds after the epoch; returns its id.
+        pub(crate) fn seed_attachment(
+            &self,
+            card: &str,
+            name: &str,
+            bytes: &[u8],
+            secs: u64,
+        ) -> String {
+            self.push_attachment(
+                card,
+                name,
+                bytes.to_vec(),
+                Some(bytes.len() as u64),
+                true,
+                secs,
+            )
+        }
+
+        /// Put an uploaded file on a card whose listing says it holds `size` bytes, with
+        /// none behind it: a file too large to seed.
+        pub(crate) fn seed_attachment_sized(&self, card: &str, name: &str, size: u64, secs: u64) {
+            self.push_attachment(card, name, Vec::new(), Some(size), true, secs);
+        }
+
+        /// Put a link named `name` on a card: an attachment that is no file.
+        pub(crate) fn seed_link_attachment(&self, card: &str, name: &str, secs: u64) {
+            self.push_attachment(card, name, Vec::new(), None, false, secs);
+        }
+
+        fn push_attachment(
+            &self,
+            card: &str,
+            name: &str,
+            bytes: Vec<u8>,
+            size: Option<u64>,
+            is_upload: bool,
+            secs: u64,
+        ) -> String {
+            let mut cards = lock(&self.cards);
+            let state = cards.get_mut(card).expect("card exists");
+            let id = format!("att{}", state.attachments.len() + 1);
+            state.attachments.push(MockAttachment {
+                listed: Attachment {
+                    url: format!("https://trello.com/1/cards/{card}/attachments/{id}/download/f"),
+                    id: id.clone(),
+                    name: name.to_string(),
+                    date: Some(UNIX_EPOCH + Duration::from_secs(secs)),
+                    is_upload,
+                    bytes: size,
+                },
+                bytes,
+            });
+            id
+        }
+
+        /// A card's uploaded files, as `(name, bytes)` in the order they were put on it.
+        pub(crate) fn attachments_on(&self, card: &str) -> Vec<(String, Vec<u8>)> {
+            lock(&self.cards)
+                .get(card)
+                .map(|c| {
+                    c.attachments
+                        .iter()
+                        .filter(|a| a.listed.is_upload)
+                        .map(|a| (a.listed.name.clone(), a.bytes.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
         }
 
         /// Make every call belonging to `stage` fail with a transport error until
@@ -1221,6 +1337,46 @@ mod mock {
                         name: username.clone(),
                     }),
             }
+        }
+
+        fn attach_file(&self, card_id: &str, name: &str, bytes: &[u8]) -> Result<(), BoardError> {
+            self.guard("post attachment")?;
+            let secs = self.next_post.fetch_add(1, Ordering::SeqCst);
+            self.push_attachment(
+                card_id,
+                name,
+                bytes.to_vec(),
+                Some(bytes.len() as u64),
+                true,
+                secs,
+            );
+            lock(&self.actions).push(Action::Attach {
+                card: card_id.to_string(),
+                name: name.to_string(),
+                len: bytes.len(),
+            });
+            Ok(())
+        }
+
+        fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
+            self.guard("list attachments")?;
+            Ok(lock(&self.cards)
+                .get(card_id)
+                .map(|c| c.attachments.iter().map(|a| a.listed.clone()).collect())
+                .unwrap_or_default())
+        }
+
+        fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
+            self.guard("download attachment")?;
+            lock(&self.cards)
+                .values()
+                .flat_map(|c| &c.attachments)
+                .find(|a| a.listed.url == url)
+                .map(|a| a.bytes.clone())
+                .ok_or(BoardError::Status {
+                    stage: "download attachment",
+                    status: 404,
+                })
         }
 
         fn set_call_deadline(&self, deadline: Option<Instant>) {
@@ -1772,6 +1928,14 @@ mod board_error_tests {
             .stage(),
             "add member"
         );
+        assert_eq!(
+            BoardError::Refused {
+                stage: "download attachment",
+                reason: "elsewhere".into()
+            }
+            .stage(),
+            "download attachment"
+        );
     }
 
     /// Each variant renders the built-in's own message, byte for byte — the line an
@@ -1814,6 +1978,16 @@ mod board_error_tests {
                 },
                 "trello add member: no member named 'ghost'",
             ),
+            (
+                BoardError::Refused {
+                    stage: "download attachment",
+                    reason: "the attachment is hosted at evil.example, which the plugin sends \
+                             no credentials to"
+                        .into(),
+                },
+                "trello download attachment: the attachment is hosted at evil.example, which \
+                 the plugin sends no credentials to",
+            ),
         ] {
             assert_eq!(err.to_string(), shown);
         }
@@ -1852,6 +2026,22 @@ mod board_error_tests {
         board
             .remove_member("b", "c1", &MemberRef::Username("marisa".into()))
             .unwrap();
+        board.attach_file("c1", "work.patch", b"\0diff").unwrap();
+        board.seed_link_attachment("c1", "work.patch", 0);
+        let listed = board.card_attachments("c1").unwrap();
+        assert_eq!(
+            listed.iter().map(|a| a.is_upload).collect::<Vec<_>>(),
+            [true, false]
+        );
+        assert_eq!(
+            board.download_attachment(&listed[0].url).unwrap(),
+            b"\0diff"
+        );
+        assert_eq!(
+            board.attachments_on("c1"),
+            [("work.patch".to_string(), b"\0diff".to_vec())],
+            "a link is no file"
+        );
 
         // The Arc handle and the inner board are the same state.
         assert_eq!(board.resolve_count(), 1);

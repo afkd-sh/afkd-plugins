@@ -29,6 +29,10 @@ rejects it and exits non-zero.
 
 Pass `--card ID` to post to a different card (overrides `$TRELLO_CARD_ID`).
 
+A comment holds at most 16 384 characters. Anything longer — a plan, a review, a
+patch — goes on the card as a file with `post_attachment.py` (see
+[Attachments](#attachments)), with a short comment saying what it is.
+
 ## Ask for clarification and park the run
 
 Two situations mean you should **stop and ask a human** rather than build:
@@ -298,6 +302,15 @@ It downloads that attachment into `$AFKD_SCRATCH_DIR/attachments/` and prints th
 written path — open it with the `Read` tool to view an image. Pass `--card ID` to
 fetch from a different card.
 
+Or fetch by name — the newest uploaded file named exactly that, say an earlier
+attempt's plan — and choose where it lands:
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/fetch_attachment.py" --name "<ATTACHMENT-NAME>" --to "<ABSOLUTE-PATH>"`
+
+`--name` takes the place of the id (give one or the other), and a link of that
+name is passed over. With no file of that name it prints `no attachment named …`,
+writes nothing and succeeds. `--to` works with an id too.
+
 To hand an artifact back — an annotated screenshot, a rendered diff, a report —
 attach a local file to the card:
 
@@ -324,8 +337,8 @@ helper paths are passed on the command line because `CLAUDE_PLUGIN_ROOT` is not
 exported into Bash subprocesses (ADR-0017).
 
 `AFKD_SCRATCH_DIR` — the per-run scratch dir — is additionally required by
-`fetch_attachment.py` (the download destination) and by `ask.py` (where its park
-marker, `park`, is written). Both fail loudly when it is unset.
+`fetch_attachment.py` without `--to` (the download destination) and by `ask.py`
+(where its park marker, `park`, is written). Both fail loudly when it is unset.
 
 **Blast radius of the overrides.** The board token is account-wide, so `--card`
 and `--board` (and `list_cards.py`'s list id) can reach **any** board, list, or

@@ -1,7 +1,8 @@
-//! The skill's placement helpers, `create_card.py` and `move_card.py`, run as an agent runs
-//! them — `python3` on the script, the board credentials in the environment — against the
-//! stateful fake Trello through their `TRELLO_API_BASE` seam. Each leg reads the board
-//! back: where a card landed, and that a refused placement wrote nothing.
+//! The skill's placement helpers, `create_card.py` and `move_card.py`, and its fetch by
+//! name, `fetch_attachment.py --name`, run as an agent runs them — `python3` on the script,
+//! the board credentials in the environment — against the stateful fake Trello through
+//! their `TRELLO_API_BASE` seam. Each leg reads the board back: where a card landed, that a
+//! refused placement wrote nothing, and which file a fetch wrote where.
 
 mod common;
 
@@ -10,8 +11,8 @@ use std::process::{Command, Output};
 
 use serde_json::{json, Value};
 
-use common::fake::{FakeTrello, Seen, KEY, TOKEN};
-use common::TempDir;
+use common::fake::{oauth_header, FakeTrello, Seen, KEY, TOKEN};
+use common::{binary_patch, TempDir};
 
 /// The queue's four cards, top to bottom: wide CJK, an emoji, a ` - ` clause and a
 /// backticked identifier, as this board's titles carry them.
@@ -411,4 +412,120 @@ fn move_card_placement_is_exclusive_with_pos() {
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(b.fake.seen().is_empty());
+}
+
+// --- fetch_attachment.py --name ---
+
+/// The newest upload named `work.patch` — a real `git diff --binary` — is written to
+/// `--to` byte for byte, past an older upload, a newer link of that name, and an upload
+/// earlier in the same second whose id is the higher; the download carries the OAuth
+/// header and no query credential, and the path written is printed.
+#[test]
+fn fetch_attachment_by_name_writes_the_newest_to_the_path() {
+    let b = board();
+    let card = &b.cards[0];
+    let dir = TempDir::new("fetch-by-name");
+    let patch = binary_patch(dir.path());
+    b.fake
+        .attachment(card, "work.patch", b"an older attempt\n", 3600);
+    let wanted = b.fake.attachment_at(card, "work.patch", &patch, 1800, 954);
+    b.fake
+        .attachment_at(card, "work.patch", b"earlier that second\n", 1800, 87);
+    b.fake
+        .link_attachment(card, "work.patch", "https://example.com/work.patch", 60);
+    let to = dir.path().join("earlier.patch");
+    let to_arg = to.to_string_lossy().into_owned();
+
+    let out = helper(
+        "fetch_attachment.py",
+        &["--name", "work.patch", "--to", &to_arg, "--card", card],
+        &b.fake,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), format!("{to_arg}\n"));
+    assert!(
+        std::fs::read(&to).unwrap() == patch,
+        "the patch came back changed"
+    );
+    let downloads: Vec<Seen> = b
+        .fake
+        .seen()
+        .into_iter()
+        .filter(|s| s.path.contains("/download/"))
+        .collect();
+    assert_eq!(downloads.len(), 1, "{downloads:?}");
+    assert!(
+        downloads[0]
+            .path
+            .contains(&format!("/attachments/{wanted}/")),
+        "{}",
+        downloads[0].path
+    );
+    assert_eq!(downloads[0].authorization, Some(oauth_header()));
+    assert!(downloads[0].query.is_empty(), "{:?}", downloads[0].query);
+    assert_eq!(
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
+            .count(),
+        0,
+        "no temp file outlives the write"
+    );
+}
+
+/// With no upload of the name the helper says so, writes nothing — a file already at
+/// `--to` is left as it was — downloads nothing, and succeeds.
+#[test]
+fn fetch_attachment_by_name_with_none_writes_nothing_and_succeeds() {
+    let b = board();
+    let card = &b.cards[0];
+    b.fake.attachment(card, "plan.md", b"plan\n", 60);
+    let dir = TempDir::new("fetch-by-name-none");
+    let to = dir.path().join("earlier.patch");
+    std::fs::write(&to, "kept\n").unwrap();
+    let to_arg = to.to_string_lossy().into_owned();
+    let out = helper(
+        "fetch_attachment.py",
+        &["--name", "work.patch", "--to", &to_arg, "--card", card],
+        &b.fake,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("fetch_attachment.py: no attachment named work.patch on card {card}\n")
+    );
+    assert_eq!(std::fs::read_to_string(&to).unwrap(), "kept\n");
+    let seen = only_request(&b.fake);
+    assert_eq!(seen.path, format!("/1/cards/{card}/attachments"));
+}
+
+/// An attachment is named by its id or by `--name`: both, or neither, is refused before
+/// any request.
+#[test]
+fn fetch_attachment_takes_an_id_or_a_name_not_both() {
+    let b = board();
+    let card = &b.cards[0];
+    let id = b.fake.attachment(card, "plan.md", b"plan\n", 60);
+    for args in [
+        vec![
+            id.as_str(),
+            "--name",
+            "plan.md",
+            "--to",
+            "/tmp/x",
+            "--card",
+            card,
+        ],
+        vec!["--to", "/tmp/x", "--card", card],
+    ] {
+        let out = helper("fetch_attachment.py", &args, &b.fake);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("name the attachment by its id or by --name, not both"),
+            "{}",
+            stderr(&out)
+        );
+    }
+    assert!(b.fake.seen().is_empty(), "{:?}", b.fake.seen());
 }

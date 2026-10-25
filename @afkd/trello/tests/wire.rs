@@ -11,8 +11,8 @@ mod common;
 
 use serde_json::{json, Value};
 
-use common::fake::{utc, FakeTrello, BOARD, KEY, TOKEN};
-use common::{Plugin, TempDir, DEVELOP, DISCUSS, MAX_LINE, OWNER};
+use common::fake::{multipart_parts, oauth_header, utc, FakeTrello, Seen, BOARD, KEY, TOKEN};
+use common::{binary_patch, Plugin, TempDir, DEVELOP, DISCUSS, MAX_LINE, OWNER};
 
 /// A card title carrying the delimiter a success line wraps it in, wide CJK, an emoji and
 /// an em dash.
@@ -1620,4 +1620,451 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
         "{stderr}"
     );
     plugin.finish();
+}
+
+// --- files on the card ---
+
+/// The requests that uploaded an attachment, in order.
+fn uploads(fake: &FakeTrello) -> Vec<Seen> {
+    fake.seen()
+        .into_iter()
+        .filter(|r| r.method == "POST" && r.path.ends_with("/attachments"))
+        .collect()
+}
+
+/// The requests that downloaded an attachment's bytes, in order.
+fn downloads(fake: &FakeTrello) -> Vec<Seen> {
+    fake.seen()
+        .into_iter()
+        .filter(|r| r.path.contains("/download/"))
+        .collect()
+}
+
+/// `path` as a call's string argument.
+fn arg(path: &std::path::Path) -> String {
+    path.to_str().expect("a UTF-8 temp path").to_string()
+}
+
+/// A real `git diff --binary` attached under a wide, dashed name crosses as one multipart
+/// POST to the card's attachments: the credential in the query, the `name` part the name
+/// byte for byte, the `file` part the patch byte for byte under an ASCII file name. The
+/// card then holds it, and the line naming it names the card.
+#[test]
+fn attach_uploads_the_file_once_as_multipart_with_its_name_and_bytes() {
+    let b = board();
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let dir = TempDir::new("attach");
+    let patch = binary_patch(dir.path());
+    let path = dir.path().join("work.patch");
+    std::fs::write(&path, &patch).unwrap();
+    let name = "work – 計画.patch";
+
+    assert_eq!(
+        plugin.act("attach", json!({"path": arg(&path), "name": name}), &unit),
+        json!({"ok": true}),
+        "{}",
+        plugin.stderr()
+    );
+    let sent = uploads(&b.fake);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let upload = &sent[0];
+    assert_eq!(upload.path, format!("/1/cards/{}/attachments", b.card));
+    assert_eq!(
+        upload.query,
+        [("key".into(), KEY.into()), ("token".into(), TOKEN.into())]
+    );
+    let content_type = upload.content_type.clone().unwrap_or_default();
+    assert!(
+        content_type.starts_with("multipart/form-data; boundary="),
+        "{content_type}"
+    );
+    let parts = multipart_parts(&content_type, &upload.raw);
+    assert_eq!(parts.len(), 2, "{parts:?}");
+    assert_eq!(
+        (parts[0].name.as_str(), parts[0].bytes.as_slice()),
+        ("name", name.as_bytes())
+    );
+    assert_eq!(parts[1].name, "file");
+    assert_eq!(
+        parts[1].bytes, patch,
+        "the file part is the patch, byte for byte"
+    );
+    let filename = parts[1].filename.clone().unwrap_or_default();
+    assert!(
+        filename.is_ascii() && filename.ends_with(".patch"),
+        "{filename}"
+    );
+    assert_eq!(
+        b.fake.attachments(&b.card),
+        [(name.to_string(), patch.clone())]
+    );
+
+    let stderr = plugin.finish();
+    assert!(
+        stderr.contains(&format!(
+            "[trello] attaching \"{name}\" ({} bytes) to card \"{TITLE}\"\n",
+            patch.len()
+        )),
+        "{stderr}"
+    );
+}
+
+/// An upload Trello answers with a 503 is queued and the call answers ok; the file is
+/// deleted straight after, so what lands is what the call read. A comment after it waits
+/// behind it, and once Trello heals the outbox lands the attachment — exactly once, its
+/// bytes exact — and then the comment.
+#[test]
+fn an_attach_trello_answers_5xx_is_queued_and_lands_from_the_outbox() {
+    let b = board();
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let dir = TempDir::new("attach-5xx");
+    let patch = binary_patch(dir.path());
+    let path = dir.path().join("work.patch");
+    std::fs::write(&path, &patch).unwrap();
+
+    b.fake.fail("post attachment", 503);
+    assert_eq!(
+        plugin.act(
+            "attach",
+            json!({"path": arg(&path), "name": "work.patch"}),
+            &unit
+        ),
+        json!({"ok": true})
+    );
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        plugin.act(
+            "comment",
+            json!({"text": "attempt 1 failed; the patch is attached"}),
+            &unit
+        ),
+        json!({"ok": true})
+    );
+    let stderr = plugin.stderr_soon("queued behind them");
+    let named = format!("card \"{TITLE}\" ({SHORT_LINK})");
+    assert!(
+        stderr.contains(&format!(
+            "trello is unreachable for {named}: trello post attachment: board returned status \
+             503; attaching \"work.patch\" is queued and retried for up to 1h"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "trello still owes {named} earlier writes; the comment \"attempt 1 failed; the patch \
+             is attached\" is queued behind them"
+        )),
+        "{stderr}"
+    );
+    b.fake.heal("post attachment");
+
+    assert!(
+        within(std::time::Duration::from_secs(15), || {
+            b.fake
+                .comments(&b.card)
+                .iter()
+                .any(|c| c.text.starts_with("attempt 1 failed"))
+        }),
+        "the outbox never delivered; stderr: {}",
+        plugin.stderr()
+    );
+    assert_eq!(
+        b.fake.attachments(&b.card),
+        [("work.patch".to_string(), patch.clone())]
+    );
+    assert_eq!(
+        uploads(&b.fake).len(),
+        2,
+        "the 503, then the one that landed"
+    );
+    let seen = b.fake.seen();
+    let at = |want: &dyn Fn(&Seen) -> bool| seen.iter().rposition(want).unwrap();
+    assert!(
+        at(&|r| r.method == "POST" && r.path.ends_with("/attachments"))
+            < at(&|r| r.method == "POST" && r.path.ends_with("/actions/comments")),
+        "the attachment lands before the comment queued behind it"
+    );
+    let stderr = plugin.stderr_soon("attaching \"work.patch\" (");
+    assert!(
+        stderr.contains(&format!(
+            "[trello] attaching \"work.patch\" ({} bytes) to card \"{TITLE}\"\n",
+            patch.len()
+        )),
+        "{stderr}"
+    );
+    plugin.finish();
+}
+
+/// A path the plugin cannot attach is refused with its sentence and nothing reaches
+/// Trello: a relative path, a missing one, a directory, a file one byte over 10 MiB, and
+/// an empty name.
+#[test]
+fn attach_refuses_a_relative_missing_or_oversized_file_and_sends_nothing() {
+    let b = board();
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let dir = TempDir::new("attach-refused");
+    let big = dir.path().join("big.bin");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(10 * 1024 * 1024 + 1)
+        .unwrap();
+    let small = dir.path().join("plan.md");
+    std::fs::write(&small, "plan").unwrap();
+    let missing = dir.path().join("gone.patch");
+    for (path, name, error) in [
+        (
+            "work.patch".to_string(),
+            "work.patch",
+            "attach: path must be absolute, not \"work.patch\"".to_string(),
+        ),
+        (
+            arg(&missing),
+            "work.patch",
+            format!("attach: no file at {}", arg(&missing)),
+        ),
+        (
+            arg(dir.path()),
+            "work.patch",
+            format!("attach: {} is not a regular file", arg(dir.path())),
+        ),
+        (
+            arg(&big),
+            "big.bin",
+            format!(
+                "attach: {} is over the 10 MiB Trello takes in one attachment",
+                arg(&big)
+            ),
+        ),
+        (
+            arg(&small),
+            "",
+            "attach: name must not be empty".to_string(),
+        ),
+    ] {
+        assert_eq!(
+            plugin.act("attach", json!({"path": path, "name": name}), &unit),
+            json!({"ok": false, "error": error}),
+            "{path}"
+        );
+    }
+    assert!(uploads(&b.fake).is_empty(), "{:?}", uploads(&b.fake));
+    assert!(b.fake.attachments(&b.card).is_empty());
+    plugin.finish();
+}
+
+/// Of two uploads named `plan.md`, the newer is written to `to` — past a newer link of
+/// that name pointing elsewhere and a newer upload of another name. The one download asks
+/// for that upload with the OAuth header and no query credential.
+#[test]
+fn fetch_attachment_writes_the_newest_of_two_with_the_name() {
+    let b = board();
+    let newer = "## 計画 — v2\n\n1. Läs kortet.\n2. Bygg 🚧\n\n```rust\nlet x = 1;\n```\n";
+    b.fake.attachment(&b.card, "plan.md", b"old plan\n", 3600);
+    let wanted = b
+        .fake
+        .attachment(&b.card, "plan.md", newer.as_bytes(), 1800);
+    b.fake
+        .link_attachment(&b.card, "plan.md", "https://example.com/plan.md", 900);
+    b.fake
+        .attachment(&b.card, "critique.md", b"the critique\n", 60);
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let dir = TempDir::new("fetch-newest");
+    let to = dir.path().join("earlier-plan.md");
+
+    assert_eq!(
+        plugin.act(
+            "fetch_attachment",
+            json!({"name": "plan.md", "to": arg(&to)}),
+            &unit
+        ),
+        json!({"ok": true}),
+        "{}",
+        plugin.stderr()
+    );
+    assert_eq!(std::fs::read(&to).unwrap(), newer.as_bytes());
+    let fetched = downloads(&b.fake);
+    assert_eq!(fetched.len(), 1, "{fetched:?}");
+    assert!(
+        fetched[0].path.starts_with(&format!(
+            "/1/cards/{}/attachments/{wanted}/download/",
+            b.card
+        )),
+        "{}",
+        fetched[0].path
+    );
+    assert_eq!(fetched[0].authorization, Some(oauth_header()));
+    assert!(fetched[0].query.is_empty(), "{:?}", fetched[0].query);
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        1,
+        "no temp file outlives the write"
+    );
+    let stderr = plugin.finish();
+    assert!(
+        stderr.contains(&format!(
+            "[trello] fetching attachment \"plan.md\" from card \"{TITLE}\" into {} ({} bytes)\n",
+            arg(&to),
+            newer.len()
+        )),
+        "{stderr}"
+    );
+}
+
+/// Two uploads of `work.patch` in one second, the later millisecond minted the lower id —
+/// as a live board minted two back-to-back uploads — fetch as the later one: the time
+/// decides, never the id.
+#[test]
+fn fetch_attachment_takes_the_later_millisecond_of_two_uploads_in_one_second() {
+    let b = board();
+    let later = b
+        .fake
+        .attachment_at(&b.card, "work.patch", b"the second attach\n\0", 30, 954);
+    let earlier = b
+        .fake
+        .attachment_at(&b.card, "work.patch", b"the first attach\n\0", 30, 87);
+    assert!(earlier > later, "the ids run against the times");
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let dir = TempDir::new("fetch-same-second");
+    let to = dir.path().join("earlier.patch");
+    assert_eq!(
+        plugin.act(
+            "fetch_attachment",
+            json!({"name": "work.patch", "to": arg(&to)}),
+            &unit
+        ),
+        json!({"ok": true}),
+        "{}",
+        plugin.stderr()
+    );
+    assert_eq!(std::fs::read(&to).unwrap(), b"the second attach\n\0");
+    plugin.finish();
+}
+
+/// With no upload of the name — only a link and another name — the call answers ok,
+/// writes nothing and leaves a file already at `to` as it was, says so, and downloads
+/// nothing.
+#[test]
+fn fetch_attachment_with_no_attachment_of_the_name_writes_nothing() {
+    let b = board();
+    b.fake
+        .link_attachment(&b.card, "work.patch", "https://example.com/work.patch", 60);
+    b.fake.attachment(&b.card, "plan.md", b"plan\n", 60);
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let dir = TempDir::new("fetch-none");
+    let to = dir.path().join("earlier.patch");
+    let kept = dir.path().join("kept.patch");
+    std::fs::write(&kept, "an earlier attempt's patch\n").unwrap();
+    for dest in [&to, &kept] {
+        assert_eq!(
+            plugin.act(
+                "fetch_attachment",
+                json!({"name": "work.patch", "to": arg(dest)}),
+                &unit
+            ),
+            json!({"ok": true})
+        );
+    }
+    assert!(!to.exists());
+    assert_eq!(
+        std::fs::read_to_string(&kept).unwrap(),
+        "an earlier attempt's patch\n"
+    );
+    assert!(downloads(&b.fake).is_empty());
+    let listed = b
+        .fake
+        .seen()
+        .into_iter()
+        .filter(|r| r.method == "GET" && r.path.ends_with("/attachments"))
+        .count();
+    assert_eq!(listed, 2, "one listing per call");
+    let stderr = plugin.finish();
+    assert!(
+        stderr.contains(&format!(
+            "[trello] no attachment named \"work.patch\" on card \"{TITLE}\"; nothing written\n"
+        )),
+        "{stderr}"
+    );
+}
+
+/// The card's round trip: a `git diff --binary` attached, then fetched back to another
+/// path, is the same bytes — the `cmp` a later attempt relies on.
+#[test]
+fn attach_then_fetch_returns_a_git_binary_patch_byte_for_byte() {
+    let b = board();
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let dir = TempDir::new("round-trip");
+    let patch = binary_patch(dir.path());
+    let (from, to) = (
+        dir.path().join("work.patch"),
+        dir.path().join("earlier.patch"),
+    );
+    std::fs::write(&from, &patch).unwrap();
+    for (action, args) in [
+        ("attach", json!({"path": arg(&from), "name": "work.patch"})),
+        (
+            "fetch_attachment",
+            json!({"name": "work.patch", "to": arg(&to)}),
+        ),
+    ] {
+        assert_eq!(
+            plugin.act(action, args, &unit),
+            json!({"ok": true}),
+            "{action}: {}",
+            plugin.stderr()
+        );
+    }
+    let back = std::fs::read(&to).unwrap();
+    assert!(back.len() > 100_000, "{}", back.len());
+    assert!(back == patch, "the patch came back changed");
+    plugin.finish();
+}
+
+/// A relative `to` is refused before Trello is asked; and while Trello is out of reach a
+/// fetch answers the transport failure — the slot decides — and nothing is queued for it.
+#[test]
+fn fetch_attachment_refuses_a_relative_to_and_answers_an_outage_with_an_error() {
+    let b = board();
+    b.fake.attachment(&b.card, "plan.md", b"plan\n", 60);
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+    let seen = b.fake.seen().len();
+    assert_eq!(
+        plugin.act(
+            "fetch_attachment",
+            json!({"name": "plan.md", "to": "earlier-plan.md"}),
+            &unit
+        ),
+        json!({"ok": false,
+               "error": "fetch_attachment: to must be absolute, not \"earlier-plan.md\""})
+    );
+    assert_eq!(b.fake.seen().len(), seen, "nothing was asked");
+
+    let dir = TempDir::new("fetch-outage");
+    let to = dir.path().join("earlier-plan.md");
+    b.fake.outage();
+    let reply = plugin.act(
+        "fetch_attachment",
+        json!({"name": "plan.md", "to": arg(&to)}),
+        &unit,
+    );
+    assert_eq!(reply["ok"], false, "{reply}");
+    let error = reply["error"].as_str().unwrap_or_default();
+    assert!(
+        error.starts_with("trello list attachments: no response ("),
+        "{error}"
+    );
+    b.fake.restore();
+    assert!(!to.exists());
+    let stderr = plugin.finish();
+    assert!(
+        !stderr.contains("queued"),
+        "a fetch is never queued: {stderr}"
+    );
 }
