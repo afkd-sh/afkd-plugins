@@ -107,7 +107,8 @@ pub(crate) struct Unit {
     /// brief and the feedback delta key on, and the backstop's last-speaker diff matches.
     self_author: String,
     /// The `pick_from` list the card was claimed from, when it is not the first one
-    /// named; `None` for the first, and for a card the parked sweep claimed.
+    /// named; `None` for the first. The parked sweep sets it from the list the card sat
+    /// in, so a card parked outside every `pick_from` list has `None` too.
     source: Option<Source>,
 }
 
@@ -401,6 +402,10 @@ impl TrelloUnits {
     /// A card's [`PARK_MARKER`] names who parked it, and only that service resumes it
     /// ([`parked_elsewhere`](Self::parked_elsewhere)); a card naming a service off the
     /// roster is an orphan, taken over with one narrated line.
+    ///
+    /// A card claimed here goes back, on a put-back, to the list it sat in when that is
+    /// one of `pick_from`'s, and otherwise to the first
+    /// ([`sweep_source`](Self::sweep_source)).
     fn scan_parked(
         &self,
         diag: &dyn Diag,
@@ -434,6 +439,9 @@ impl TrelloUnits {
             *cursor = start + take;
             start
         };
+        // The `pick_from` lists, resolved once a card is about to be taken, and then
+        // once per scan however many claim races it loses.
+        let mut sources = None;
         for step in 0..take {
             if budget.spent() {
                 return Ok(ParkScan::Spent);
@@ -453,7 +461,7 @@ impl TrelloUnits {
             if self.without_label.iter().any(|l| full.labels.contains(l)) {
                 continue;
             }
-            {
+            let source = {
                 let comments = full.comments.as_deref().unwrap_or_default();
                 // Someone already has this card in hand — including a park whose badge
                 // outlived its own claim release.
@@ -468,6 +476,10 @@ impl TrelloUnits {
                 if self.parked_elsewhere(comments) {
                     continue;
                 }
+                // Ahead of the reserve check, as the main scan resolves before it reads:
+                // the check below still guards the claim post, and a failed resolve has
+                // narrated and posted nothing.
+                let source = self.sweep_source(&full, &mut sources)?;
                 // Too little of the call is left to see a claim through: the card waits
                 // for the next beat, with nothing posted on it.
                 if budget.claim_reserve_short() {
@@ -478,15 +490,54 @@ impl TrelloUnits {
                 if let Some(line) = self.orphan_takeover(&full, comments) {
                     diag.narrate(&line);
                 }
-            }
+                source
+            };
             // Routed through the ordinary claim, which takes the badge off and hands back
             // an ordinary fresh unit — whose `on_claim` afkd runs, as for any other.
-            match self.attempt_claim(full, None, diag, clock)? {
+            match self.attempt_claim(full, source.as_ref(), diag, clock)? {
                 ClaimRound::Won(unit) => return Ok(ParkScan::Claimed(unit)),
                 ClaimRound::Lost => continue,
             }
         }
         Ok(ParkScan::Nothing)
+    }
+
+    /// The `pick_from` list a card the sweep claims returns to: the later list it sits
+    /// in, or `None` — the key's default, the first list — for a card in the first list,
+    /// in no `pick_from` list, or in a list the board did not name. A lone `pick_from`
+    /// resolves nothing, since its answer is always the first list. `sources` caches the
+    /// resolve for the rest of the scan.
+    fn sweep_source(
+        &self,
+        card: &Card,
+        sources: &mut Option<Vec<Source>>,
+    ) -> Result<Option<Source>, BoardError> {
+        if self.pick_from.len() < 2 {
+            return Ok(None);
+        }
+        let sources = match sources {
+            Some(sources) => sources,
+            None => sources.insert(self.sources()?),
+        };
+        Ok(sources
+            .iter()
+            .skip(1)
+            .find(|source| source.id == card.list_id)
+            .cloned())
+    }
+
+    /// Every `pick_from` name resolved to its list, in the order named. An unknown name
+    /// fails with the board's `no list named` error.
+    fn sources(&self) -> Result<Vec<Source>, BoardError> {
+        self.pick_from
+            .iter()
+            .map(|name| {
+                Ok(Source {
+                    id: self.board.resolve_list(&self.board_id, name)?,
+                    name: name.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Whether a parked card is **another live service's**: its newest [`PARK_MARKER`]
@@ -542,16 +593,7 @@ impl TrelloUnits {
             ParkScan::Spent => return Ok(None),
             ParkScan::Nothing => {}
         }
-        let sources = self
-            .pick_from
-            .iter()
-            .map(|name| {
-                Ok(Source {
-                    id: self.board.resolve_list(&self.board_id, name)?,
-                    name: name.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>, BoardError>>()?;
+        let sources = self.sources()?;
         // Each gate's identities, resolved once per poll and never per card or per list:
         // after the first list read, where a lone list has always asked for them.
         let mut gates = None;
@@ -918,7 +960,9 @@ impl TrelloUnits {
         if let Err(e) = self.board.delete_comment(card_id, claim_id) {
             diag.err(&e);
         }
-        // With no `pick_from` at all there is no list to return it to: the claim is pruned.
+        // `first()` is `None` only for units the greeting would have refused to arm, since
+        // `pick_from` is required: then there is no list to return it to, and the claim
+        // is pruned.
         let list_id = match list_id {
             Some(list_id) => Some(Ok(list_id.to_string())),
             None => self
@@ -1941,6 +1985,7 @@ mod tests {
             labels: Vec::new(),
             created_at: Some(UNIX_EPOCH),
             comments: None,
+            list_id: String::new(),
         }
     }
 
@@ -2739,6 +2784,147 @@ mod tests {
         );
     }
 
+    /// `id` badged in `list`, holding afkd's question, then `marker` (when given) and a
+    /// human's reply after it: a parked card the sweep may claim.
+    fn seed_answered_park(board: &MockBoard, list: &str, id: &str, marker: Option<&str>) {
+        board.add_card(list, id, "Hjälpvideo: boka en bil — 修复 🚨", "Body");
+        board.seed_card_label(id, AWAITING_LABEL);
+        board.seed_comment_by(id, &format!("ask-{id}"), PARK_QUESTION, SELF_ID, 200);
+        if let Some(marker) = marker {
+            board.seed_comment_by(id, &format!("park-{id}"), marker, SELF_ID, 210);
+        }
+        board.seed_comment_named(
+            id,
+            &format!("reply-{id}"),
+            PARK_REPLY,
+            "mem-phil",
+            "Phil Ek",
+            300,
+        );
+    }
+
+    /// A card parked in the second list, where it was claimed and discussed — no
+    /// `on_claim` moves it — and then answered, is claimed by the sweep under that list:
+    /// a crash's reversal and a given-up finish both put it back there.
+    #[test]
+    fn the_sweep_claims_a_second_list_card_under_its_list() {
+        // Each leg parks `card1` from `Up for Grabs`, answers it, and claims it again.
+        let swept = || {
+            let h = Harness::new(two_lists_cfg(), "me");
+            seed_two_lists(&h.board);
+            h.board.set_clock(1000);
+            assert_eq!(h.beat(2, ask(&h.board, "card1", fault("parked"))), None);
+            assert!(is_badged(&h.board, "card1"));
+            h.board
+                .seed_comment_named("card1", "reply", PARK_REPLY, "mem-phil", "Phil Ek", 2000);
+            h.board.set_clock(3000);
+            let unit = h.poll().expect("the sweep claims the answered card");
+            assert!(!is_badged(&h.board, "card1"));
+            assert_eq!(unit.key(), "card1#c3000#Up for Grabs");
+            (h, unit)
+        };
+
+        // A crash: the reversal moves it to the bottom of its own list.
+        let (h, unit) = swept();
+        assert_eq!(h.release(&unit.key()), Some(true));
+        assert_eq!(
+            h.board.actions().last(),
+            Some(&Action::Move {
+                card: "card1".into(),
+                list: "Up for Grabs".into(),
+                position: ListPosition::Bottom,
+            }),
+        );
+
+        // A park finish whose claim release the board will not take, given up on.
+        let (h, unit) = swept();
+        h.board.fail("delete comment");
+        let run = h.run(&unit, 1, ask(&h.board, "card1", fault("parked")));
+        assert!(!run.delivered, "held");
+        h.board.fail_status("delete comment", 403);
+        h.clock.advance(Duration::from_secs(60));
+        assert_eq!(h.release(&unit.key()), Some(true));
+        assert!(
+            h.diag
+                .errs()
+                .iter()
+                .any(|e| e.ends_with("returning it to \"Up for Grabs\"")),
+            "{:?}",
+            h.diag.errs()
+        );
+        assert_eq!(
+            h.board.actions().last(),
+            Some(&Action::Move {
+                card: "card1".into(),
+                list: "Up for Grabs".into(),
+                position: ListPosition::Bottom,
+            }),
+        );
+    }
+
+    /// A swept card in the first list, or in no `pick_from` list at all, keeps the
+    /// default key, and its reversal returns it to the first list.
+    #[test]
+    fn the_sweep_keys_a_first_list_or_outside_card_by_default() {
+        for list in ["Ideas 💡", "In Progress"] {
+            let h = Harness::new(two_lists_cfg(), "me");
+            seed_two_lists(&h.board);
+            seed_answered_park(&h.board, list, "p0", None);
+            h.board.set_clock(1000);
+
+            let unit = h.poll().expect("the sweep claims the answered card");
+            assert_eq!(unit.card.id, "p0", "{list}");
+            assert_eq!(unit.key(), "p0#c1000", "{list}");
+            assert_eq!(h.release(&unit.key()), Some(true));
+            assert_eq!(
+                h.board.actions().last(),
+                Some(&Action::Move {
+                    card: "p0".into(),
+                    list: "Ideas 💡".into(),
+                    position: ListPosition::Bottom,
+                }),
+                "{list}"
+            );
+        }
+    }
+
+    /// The sweep's lists resolve before it narrates a takeover or posts a claim, so a
+    /// resolve that fails leaves an orphaned card exactly as it found it.
+    #[test]
+    fn a_sweep_resolve_failure_posts_nothing_and_narrates_no_takeover() {
+        let h = Harness::new(two_lists_cfg(), "me");
+        seed_two_lists(&h.board);
+        seed_answered_park(
+            &h.board,
+            "Up for Grabs",
+            "p0",
+            Some(&park_text("afkd::gone")),
+        );
+        h.board.set_clock(1000);
+        h.board.fail("resolve list");
+
+        assert!(h.try_claim().is_err(), "the poll fails");
+        assert!(!h.board.calls().contains(&"post comment"));
+        assert_eq!(h.board.comments_on("p0").len(), 3, "nothing posted");
+        assert!(h.board.actions().is_empty(), "{:?}", h.board.actions());
+        assert!(is_badged(&h.board, "p0"));
+        assert!(
+            h.diag.narrated().is_empty(),
+            "no takeover narrated: {:?}",
+            h.diag.narrated()
+        );
+
+        // With the board back, the same beat takes it over under its list.
+        h.board.clear_failure();
+        let unit = h.poll().expect("taken over");
+        assert_eq!(unit.key(), "p0#c1000#Up for Grabs");
+        assert!(h
+            .diag
+            .narrated()
+            .iter()
+            .any(|l| l.contains("which this config no longer runs")));
+    }
+
     /// Every name resolves before any list is read, so a name the board lacks fails the
     /// poll naming it, even while an earlier list holds a claimable card.
     #[test]
@@ -2760,34 +2946,6 @@ mod tests {
         );
         assert!(!h.board.calls().contains(&"list cards"));
         assert!(h.board.comments_on("card1").is_empty());
-    }
-
-    /// With no `pick_from` there is no list to draw from: the poll reads none and is
-    /// idle, not a fault, and a reversal only prunes the claim.
-    #[test]
-    fn without_pick_from_the_poll_reads_no_list_and_a_reversal_only_prunes() {
-        let h = Harness::new(
-            BoardConfig {
-                pick_from: Vec::new(),
-                ..cfg()
-            },
-            "me",
-        );
-        seed_source_card(&h.board, "card1");
-        h.board.set_clock(1000);
-
-        assert!(h.try_claim().expect("not a fault").is_none());
-        assert_eq!(h.board.calls(), ["board cards"]);
-        h.board.seed_comment("card1", "c1", &claim_text("me"), 500);
-        assert_eq!(h.release("card1#c1"), Some(true));
-        assert_eq!(
-            h.board.actions(),
-            [Action::DeleteComment {
-                card: "card1".into(),
-                comment: "c1".into(),
-            }],
-        );
-        assert!(h.diag.errs().is_empty());
     }
 
     // --- The journal key and `release` (ADR-0059) ---
@@ -5210,8 +5368,20 @@ mod tests {
         h.board
             .seed_comment_named("card1", "reply", PARK_REPLY, "mem-phil", "Phil Ek", 2000);
 
-        let unit = h.poll().expect("the answered card is claimed");
+        let before = h.board.calls().len();
+        let unit = h
+            .try_claim()
+            .expect("no fault")
+            .expect("the answered card is claimed");
         assert_eq!(unit.card.id, "card1", "ahead of the head of pick_from");
+        // A lone `pick_from` resolves nothing in the sweep, and keys the card by default.
+        assert!(
+            !h.board.calls()[before..].contains(&"resolve list"),
+            "{:?}",
+            h.board.calls()
+        );
+        assert_eq!(unit.source, None);
+        h.hook(&unit.card, &h.hooks.on_claim);
         assert!(h.board.actions().iter().any(
             |a| matches!(a, Action::RemoveLabel { card, label } if card == "card1" && label == AWAITING_LABEL)
         ));
@@ -6825,5 +6995,38 @@ mod tests {
         assert!(h.board.calls().contains(&"list cards"));
         assert_eq!(claim_posts(&h.board), 0, "{:?}", h.board.calls());
         assert_eq!(h.diag.errs(), [RESERVE_LINE]);
+    }
+
+    /// A two-list sweep resolves its lists ahead of the check before its claim, so the
+    /// check still stands between the last request and the post. The clock as above: the
+    /// mock's requests read none, so the resolves cost no tick and the check finds 9s.
+    #[test]
+    fn a_two_list_sweep_resolves_before_its_reserve_check() {
+        let h = Harness {
+            clock: FakeClock::ticking(Duration::from_secs(2)),
+            ..Harness::new(two_lists_cfg(), "me")
+        };
+        seed_two_lists(&h.board);
+        seed_answered_park(&h.board, "Up for Grabs", "p0", None);
+        let read0 = h.clock.now();
+        h.units
+            .set_call_deadline(Some(read0 + Duration::from_secs(15)));
+
+        assert!(h.poll().is_none(), "the beat ends idle");
+        assert_eq!(claim_posts(&h.board), 0, "{:?}", h.board.calls());
+        assert_eq!(h.diag.errs(), [RESERVE_LINE]);
+        let calls = h.board.calls();
+        let read = calls
+            .iter()
+            .position(|c| *c == "read card")
+            .expect("p0 read");
+        assert_eq!(
+            calls[read + 1..]
+                .iter()
+                .filter(|c| **c == "resolve list")
+                .count(),
+            2,
+            "{calls:?}"
+        );
     }
 }

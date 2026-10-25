@@ -128,7 +128,7 @@ starts, finishes, or fails. Its secrets stay with the plugin and the run.
 | `api_key`        | `string`       | Trello API key; required               |
 | `token`          | `string`       | Trello token; required                 |
 | `base_url`       | `string`       | API base; defaults to the public Trello API (a test/overseer seam) |
-| `pick_from`      | `list[string]` | the lists new cards are drawn from, in the order written; one name or several |
+| `pick_from`      | `list[string]` | the lists new cards are drawn from, in the order written; one name or several; required |
 | `require_member` | `string`       | `"me"` or a username: only claim cards this member is already on; default unset (the head card is claimed) |
 | `require_label`  | `string`       | only claim cards carrying the named label; default unset (no label filter) |
 | `without_label`  | `list[string]` | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
@@ -224,7 +224,9 @@ as work starts, finishes, or fails.
 the top, and claims the first card that passes every gate below; the gates mean the same in
 every list. A name the board has no list for fails the poll, naming it. A card the plugin
 puts back — its run crashed, or afkd handed it back unrun — goes to the bottom of the list
-it was claimed from, so a card that keeps crashing cannot starve the head of the queue.
+it was claimed from, so a card that keeps crashing cannot starve the head of the queue. A
+parked card claimed again once answered goes back to the list it sat in when that is one of
+`pick_from`'s, and otherwise to the first.
 
 By default the poll claims the first card it comes to, the head of the first list that
 holds one. With
@@ -351,7 +353,8 @@ The badge is also how afkd **finds the card again**. Once a beat, before it read
 `pick_from`, the plugin asks the board which of its open cards carry `Awaiting Reply`; a
 badged card whose thread has gained a comment afkd did not write, newer than afkd's own last
 word, is claimed again right there — wherever it sits on the board, ahead of anything queued
-— the badge comes off, and the reply arrives under **New comments** in the fresh brief. A
+— the badge comes off, and the reply arrives under **New comments** in the fresh brief. Put
+back, it returns to that list when `pick_from` names it, and to the first list otherwise. A
 badged card nobody has answered is left alone. Badge it with a `without_label` name to veto
 it; archive it and it stops being scanned at all. An idle beat costs exactly one extra board
 request.

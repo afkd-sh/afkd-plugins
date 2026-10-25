@@ -65,8 +65,8 @@ pub(crate) struct BoardConfig {
     pub(crate) api_key: String,
     /// Token used to reach the board.
     pub(crate) token: String,
-    /// The named lists new tasks are drawn from, in the order written; empty when not
-    /// given.
+    /// The named lists new tasks are drawn from, in the order written; never empty, since
+    /// the setting is required.
     pub(crate) pick_from: Vec<String>,
     /// The intake gate: when set, only cards this member is already on are claimed.
     pub(crate) require_member: Option<MemberRef>,
@@ -154,7 +154,7 @@ pub(crate) const SETTINGS: &[Declared] = &[
     ("base_url", "string", &[]),
     ("api_key", "string", &[("required", "true")]),
     ("token", "string", &[("required", "true")]),
-    ("pick_from", "list[string]", &[]),
+    ("pick_from", "list[string]", &[("required", "true")]),
     ("require_member", "string", &[]),
     ("require_label", "string", &[]),
     ("without_label", "list[string]", &[]),
@@ -180,12 +180,19 @@ pub(crate) fn board_config(settings: &Value) -> Result<BoardConfig, SettingsErro
         base_url: opt_scalar(settings, "base_url").unwrap_or_else(|| TRELLO_BASE.to_string()),
         api_key: opt_scalar(settings, "api_key").unwrap_or_default(),
         token: opt_scalar(settings, "token").unwrap_or_default(),
+        // afkd refuses a service without it before any `hello`; this refuses a `hello`
+        // that arrives without it anyway, so no armed service has a list-less scan.
         pick_from: nonempty_list(
             settings,
             "pick_from",
             "`pick_from` expects one or more list names",
         )?
-        .unwrap_or_default(),
+        .ok_or_else(|| {
+            SettingsError::new(
+                "pick_from",
+                "`pick_from` is required: name the list or lists new cards are claimed from",
+            )
+        })?,
         require_member: required_scalar(settings, "require_member")?.map(|who| member_ref(&who)),
         require_label: required_scalar(settings, "require_label")?,
         without_label: nonempty_list(
@@ -337,13 +344,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The three required credentials plus `extra`, as afkd lowers a block: the
-    /// minimal block afkd would let through.
+    /// The four required settings plus `extra`, as afkd lowers a block: the minimal
+    /// block afkd would let through.
     fn block(extra: Value) -> Value {
         let mut settings = json!({
             "board": "https://trello.com/b/BID/x",
             "api_key": "k",
             "token": "t",
+            "pick_from": "Up for Grabs",
         });
         for (k, v) in extra.as_object().unwrap() {
             settings[k] = v.clone();
@@ -390,7 +398,7 @@ mod tests {
     fn defaults_apply_when_settings_absent() {
         let cfg = cfg(json!({}));
         assert_eq!(cfg.base_url, TRELLO_BASE);
-        assert!(cfg.pick_from.is_empty());
+        assert_eq!(cfg.pick_from, ["Up for Grabs"]);
         assert_eq!(cfg.require_member, None);
         assert_eq!(cfg.require_label, None);
         assert!(cfg.without_label.is_empty());
@@ -400,6 +408,20 @@ mod tests {
 
     /// The hooks are afkd's and never cross in `settings`; a proto 1-shaped leftover that
     /// did — an `on_claim` block, a bare `on_done` — is ignored, not a fault.
+    /// A block without `pick_from` names no list to claim from, so it is refused naming
+    /// the setting rather than armed to sweep parked cards and never claim a new one.
+    #[test]
+    fn a_block_without_pick_from_is_refused_naming_it() {
+        let mut settings = block(json!({}));
+        settings.as_object_mut().unwrap().remove("pick_from");
+        let e = board_config(&settings).unwrap_err();
+        assert_eq!(e.key, "pick_from");
+        assert_eq!(
+            e.problem,
+            "`pick_from` is required: name the list or lists new cards are claimed from"
+        );
+    }
+
     #[test]
     fn hook_keys_in_settings_are_ignored() {
         assert_eq!(
@@ -633,6 +655,7 @@ mod tests {
             "board": "https://trello.com/b/BID/x",
             "api_key": "SECRET-KEY-abc123",
             "token": "SECRET-TOKEN-def456",
+            "pick_from": "Up for Grabs",
         }))
         .expect("valid");
         let shown = format!("{cfg:?}");

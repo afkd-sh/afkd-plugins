@@ -707,6 +707,11 @@ mod tests {
         settings_fault["settings"]["require_label"] = json!(true);
         let mut min_range = hello(settings());
         min_range["settings"]["min_age"] = json!("2m..3m");
+        let mut without_pick_from = hello(settings());
+        without_pick_from["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("pick_from");
         let identity = "afkd did not say which service this is; @afkd/trello needs an afkd \
                         whose `hello` carries `service`, `roster` and `owner`";
         for (request, problem) in [
@@ -730,6 +735,11 @@ mod tests {
                 min_range,
                 "trigger card: setting `min_age`: setting `min_age` is not a duration (try \
                  `30s`, `5m`, `1h`): `2m..3m`",
+            ),
+            (
+                without_pick_from,
+                "trigger card: setting `pick_from`: `pick_from` is required: name the list or \
+                 lists new cards are claimed from",
             ),
         ] {
             let mut f = Fixture::new();

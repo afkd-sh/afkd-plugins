@@ -212,8 +212,9 @@ fn hello_arms_and_lists_every_call_it_answers() {
 
 /// What `hello` cannot arm with answers `ok:false`, with the problem on stderr in the
 /// built-in's own sentence — a kind this plugin does not provide (proto 1's
-/// `trello_card` among them), a block the manifest cannot refuse, a `hello` from an afkd
-/// too old to say who is asking, and the protocol of an afkd before config language v2.
+/// `trello_card` among them), a block the manifest cannot refuse, a block without the
+/// `pick_from` afkd requires, a `hello` from an afkd too old to say who is asking, and the
+/// protocol of an afkd before config language v2.
 #[test]
 fn hello_refuses_what_it_cannot_arm_with() {
     let b = board();
@@ -223,6 +224,11 @@ fn hello_refuses_what_it_cannot_arm_with() {
     };
     let mut flag_gate = settings(&b.fake);
     flag_gate["require_label"] = json!(true);
+    let mut without_pick_from = settings(&b.fake);
+    without_pick_from
+        .as_object_mut()
+        .unwrap()
+        .remove("pick_from");
     let mut anonymous = hello("card", 2, settings(&b.fake));
     for field in ["service", "roster", "owner"] {
         anonymous.as_object_mut().unwrap().remove(field);
@@ -249,6 +255,11 @@ fn hello_refuses_what_it_cannot_arm_with() {
         (
             hello("trello_card", 1, settings(&b.fake)),
             "afkd speaks plugin protocol 1, and this plugin speaks 2",
+        ),
+        (
+            hello("card", 2, without_pick_from),
+            "trigger card: setting `pick_from`: `pick_from` is required: name the list or \
+             lists new cards are claimed from",
         ),
     ] {
         let mut plugin = Plugin::spawn();
@@ -738,6 +749,135 @@ fn release_after_a_restart_returns_a_second_list_card_to_its_list() {
         std::slice::from_ref(&b.card)
     );
     after.finish();
+}
+
+/// Release the key of a card the sweep claimed in `plugin`: from `plugin` itself, or —
+/// with `restart` — from a fresh process, the plugin that claimed it gone.
+fn release_swept(b: &Board, plugin: Plugin, key: &Value, restart: bool) {
+    let mut plugin = if restart {
+        plugin.finish();
+        Plugin::armed(two_list_settings(&b.fake))
+    } else {
+        plugin
+    };
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": key})),
+        json!({"released": true})
+    );
+    plugin.finish();
+}
+
+/// The discusser's shape over two lists: a card claimed from the second list with no
+/// `on_claim` to move it is parked where it sits, answered, and claimed again by the
+/// sweep — whose key names the list, so a crash returns it to the bottom of that list,
+/// before a restart or after one.
+#[test]
+fn a_parked_card_answered_in_the_second_list_goes_back_there() {
+    for restart in [false, true] {
+        let b = board();
+        let (list, card) = second_list(&b);
+        let queued = b.fake.card("Hjälpvideor 🎬", "Qu3u3d00", "Nästa video", "");
+        let mut plugin = Plugin::armed(two_list_settings(&b.fake));
+
+        let reply = plugin.poll();
+        assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+        let unit = reply["unit"].clone();
+        assert_eq!(unit["id"], "Hj4lpV1d");
+        let claim = claims(&b.fake, &card);
+        assert_eq!(unit["key"], format!("{card}#{}#{list}", claim[0].id));
+        let scratch = TempDir::new("park");
+        std::fs::write(scratch.path().join("park"), b"").unwrap();
+        assert_eq!(
+            plugin.call(
+                json!({"call": "classify", "key": unit["key"], "scratch": scratch.path(),
+                               "outcome": "clean"})
+            ),
+            json!({"outcome": "park"})
+        );
+        b.fake.comment(
+            &card,
+            &b.fake.me(),
+            "Ska videon visa appen eller webben? 📱",
+            2,
+        );
+        assert_eq!(
+            finish(&mut plugin, &unit, "park", facts("fault", Some("parked"))),
+            json!({"ok": true})
+        );
+        assert_eq!(b.fake.labels(&card), ["Awaiting Reply"]);
+        assert_eq!(
+            b.fake.list_of(&card),
+            "Hjälpvideor 🎬",
+            "parked where it sat"
+        );
+        b.fake
+            .comment(&card, &b.phil, "Appen — webben får en egen video.", 0);
+
+        let swept = plugin.poll();
+        assert_eq!(swept["fire"], true, "{}", plugin.stderr());
+        let unit = swept["unit"].clone();
+        assert_eq!(unit["id"], "Hj4lpV1d", "the sweep claims it again");
+        assert!(b.fake.labels(&card).is_empty(), "the badge comes off");
+        let claim = claims(&b.fake, &card);
+        assert_eq!(claim.len(), 1, "one claim, ours");
+        assert_eq!(
+            unit["key"],
+            format!("{card}#{}#{list}", claim[0].id),
+            "the sweep's key names the list the card sat in"
+        );
+
+        release_swept(&b, plugin, &unit["key"], restart);
+        assert!(claims(&b.fake, &card).is_empty());
+        assert_eq!(
+            b.fake.cards_in("Hjälpvideor 🎬"),
+            [queued, card],
+            "restart: {restart}"
+        );
+        assert_eq!(
+            b.fake.cards_in("Up for Grabs"),
+            std::slice::from_ref(&b.card)
+        );
+    }
+}
+
+/// A card parked outside every `pick_from` list — where the selfdev `on_claim` put it —
+/// keeps the default key when the sweep claims it, and goes back to the first list,
+/// before a restart or after one.
+#[test]
+fn a_parked_card_answered_outside_pick_from_goes_to_the_first_list() {
+    for restart in [false, true] {
+        let b = board();
+        second_list(&b);
+        let card = b
+            .fake
+            .card("In Progress", "1nPr0g00", "Bakgrundsvideo: färjan ⛴️", "");
+        b.fake.label(&card, "Awaiting Reply");
+        b.fake
+            .comment(&card, &b.fake.me(), "Med eller utan speakerröst?", 120);
+        b.fake.comment(
+            &card,
+            &b.fake.me(),
+            &format!("[afkd-park] service={DEVELOP}"),
+            110,
+        );
+        b.fake.comment(&card, &b.phil, "Utan — bara musik.", 60);
+        let mut plugin = Plugin::armed(two_list_settings(&b.fake));
+
+        let swept = plugin.poll();
+        assert_eq!(swept["fire"], true, "{}", plugin.stderr());
+        let unit = swept["unit"].clone();
+        assert_eq!(unit["id"], "1nPr0g00");
+        let claim = claims(&b.fake, &card);
+        assert_eq!(unit["key"], format!("{card}#{}", claim[0].id));
+
+        release_swept(&b, plugin, &unit["key"], restart);
+        assert!(claims(&b.fake, &card).is_empty());
+        assert_eq!(
+            b.fake.cards_in("Up for Grabs"),
+            [b.card.clone(), card],
+            "restart: {restart}"
+        );
+    }
 }
 
 // --- finish, per outcome, and the hook afkd runs after it ---

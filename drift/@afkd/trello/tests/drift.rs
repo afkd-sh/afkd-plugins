@@ -949,6 +949,37 @@ widgets :: service(trello) {{
     assert_eq!(code, Some(0), "the call with its card validates:\n{report}");
 }
 
+/// `pick_from` is required: a service that names no list to claim from is refused at
+/// validate, naming the setting and the service, as a missing `api_key` is. The same
+/// service naming one validates.
+#[test]
+fn a_service_without_pick_from_fails_validate_naming_the_setting() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    write_config(
+        home.path(),
+        &service_drawing(
+            home.path(),
+            "http://127.0.0.1:9",
+            "without_label \"afkd/hold\"",
+        ),
+    );
+    let (code, report) = validate(home.path());
+    assert_eq!(
+        code,
+        Some(1),
+        "a service without pick_from is refused:\n{report}"
+    );
+    assert!(
+        report.contains(r#"missing required setting "pick_from" for service(trello)"#),
+        "the refusal names the setting and the service:\n{report}"
+    );
+    write_config(home.path(), &service(home.path(), "http://127.0.0.1:9"));
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "the service naming one validates:\n{report}");
+}
+
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence
 /// (one inside a list item) has that indent stripped from its body.
 fn conf_fences(readme: &str) -> Vec<(usize, String)> {

@@ -54,6 +54,10 @@ pub(crate) struct Card {
     /// nothing else — the claim decision and the backstop keep their own reads,
     /// since both must see the thread as it is *now* rather than as the poll saw it.
     pub(crate) comments: Option<Vec<Comment>>,
+    /// The id of the list the card sits in. Empty when the board did not say: the
+    /// narrow [`BoardClient::board_cards`] projection names none. Read by the parked
+    /// sweep, to put a card it claims back in the list it sat in, and by nothing else.
+    pub(crate) list_id: String,
 }
 
 /// One checklist on a card: a named group of check items.
@@ -915,6 +919,7 @@ mod mock {
                         labels: c.labels.clone(),
                         created_at: c.created_at,
                         comments: c.nest_comments.then(|| c.comments.clone()),
+                        list_id: list.id.clone(),
                     })
                 })
                 .collect())
@@ -945,6 +950,7 @@ mod mock {
                         members: Vec::new(),
                         created_at: None,
                         comments: None,
+                        list_id: String::new(),
                     })
                 })
                 .collect())
@@ -953,6 +959,7 @@ mod mock {
         fn read_card(&self, card_id: &str) -> Result<Option<Card>, BoardError> {
             self.guard("read card")?;
             lock(&self.card_reads).push(card_id.to_string());
+            let lists = lock(&self.lists);
             let cards = lock(&self.cards);
             let Some(c) = cards
                 .get(card_id)
@@ -960,6 +967,11 @@ mod mock {
             else {
                 return Ok(None);
             };
+            let list_id = lists
+                .iter()
+                .find(|l| l.cards.iter().any(|id| id == card_id))
+                .map(|l| l.id.clone())
+                .unwrap_or_default();
             // The per-card route always carries the thread — that is what it is for —
             // so `nest_comments` (which models the *list* poll's nesting) does not
             // gate it.
@@ -974,6 +986,7 @@ mod mock {
                 labels: c.labels.clone(),
                 created_at: c.created_at,
                 comments: Some(c.comments.clone()),
+                list_id,
             }))
         }
 

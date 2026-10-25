@@ -441,6 +441,7 @@ mod tests {
             labels: Vec::new(),
             created_at: None,
             comments: None,
+            list_id: String::new(),
         }
     }
 

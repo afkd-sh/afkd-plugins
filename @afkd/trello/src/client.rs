@@ -610,7 +610,8 @@ pub(crate) fn parse_cards(stage: &'static str, body: &str) -> Result<Vec<Card>, 
 /// `shortLink` arrives for free in Trello's default card fields (neither of those
 /// two fetches passes a `fields=` naming it). A missing, non-string, or empty one
 /// falls back to the card's `id`, so [`Card::short_link`] is always a usable name
-/// component. Every other field degrades to its empty value, so the narrowed
+/// component. `idList` comes free in the same default fields and becomes
+/// [`Card::list_id`]. Every other field degrades to its empty value, so the narrowed
 /// `fields=name,labels` projection the board-wide read asks for still decodes.
 pub(crate) fn card_from_value(c: &Value) -> Option<Card> {
     let id = c.get("id")?.as_str()?.to_string();
@@ -641,6 +642,11 @@ pub(crate) fn card_from_value(c: &Value) -> Option<Card> {
         members: parse_members_field(c),
         labels: parse_labels_field(c),
         comments: parse_nested_comments(c),
+        list_id: c
+            .get("idList")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
@@ -2604,6 +2610,20 @@ mod tests {
         assert_eq!(cards[1].short_link, "c2");
         assert_eq!(cards[2].short_link, "c3");
         assert_eq!(cards[3].short_link, "c4");
+    }
+
+    #[test]
+    fn parse_cards_lifts_id_list() {
+        // `idList` becomes `Card.list_id` — the list the parked sweep puts a card back
+        // in. A key that is absent or not a string decodes as empty, the way the
+        // board-wide `fields=name,labels` projection arrives.
+        let body = r#"[{"id":"c1","name":"Placed","idList":"5f00000000000000000000a2"},
+                       {"id":"c2","name":"Absent"},
+                       {"id":"c3","name":"Junk","idList":7}]"#;
+        let cards = parse_cards("list cards", body).unwrap();
+        assert_eq!(cards[0].list_id, "5f00000000000000000000a2");
+        assert_eq!(cards[1].list_id, "");
+        assert_eq!(cards[2].list_id, "");
     }
 
     /// The nested-comment decode, over the three shapes the board actually answers

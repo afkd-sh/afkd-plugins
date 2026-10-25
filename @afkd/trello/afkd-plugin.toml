@@ -1,5 +1,5 @@
 name = "@afkd/trello"
-version = "0.7.0"
+version = "0.8.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -53,6 +53,7 @@ claims = true
   [[kind.setting]]
   name = "pick_from"
   type = "list[string]"
+  required = true
 
   [[kind.setting]]
   name = "require_member"
