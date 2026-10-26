@@ -406,8 +406,6 @@ mod tests {
         assert_eq!(cfg.min_age, Duration::ZERO);
     }
 
-    /// The hooks are afkd's and never cross in `settings`; a proto 1-shaped leftover that
-    /// did — an `on_claim` block, a bare `on_done` — is ignored, not a fault.
     /// A block without `pick_from` names no list to claim from, so it is refused naming
     /// the setting rather than armed to sweep parked cards and never claim a new one.
     #[test]
@@ -422,6 +420,8 @@ mod tests {
         );
     }
 
+    /// The hooks are afkd's and never cross in `settings`; a proto 1-shaped leftover that
+    /// did — an `on_claim` block, a bare `on_done` — is ignored, not a fault.
     #[test]
     fn hook_keys_in_settings_are_ignored() {
         assert_eq!(
