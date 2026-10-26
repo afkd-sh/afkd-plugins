@@ -1,10 +1,10 @@
 afkd 0.2.379 · ● Running 3s · 3 up                                                     0 tok · $0.00
 CPU           ▁▁▁   1% · Mem           ▂▂▂ 6.4G/30G · Net ↓         ▁▂▂ 4.9k/s ↑         ▁▆▁ 3.1k/s 
                                                                                                     
-Service                        State                   Trigger              Last Activity   Next Run
-🈶 backup ×2                    ▶ Busy 1/2 1s           Every 1h                        1s           
-🔷 selfdev.develop ×3          ▶ Busy 2/3 1s           Every 1h                        1s           
-🔹 selfdev.review              ● Idle                  Every 1h                              59m 56s
+Service                          State                 Trigger              Last Activity   Next Run
+🈶 backup ×2                      ▶ Busy 1s             Every 1h                        1s           
+🔷 selfdev.develop ×3            ▶ Busy 1s             Every 1h                        1s           
+🔹 selfdev.review                ● Idle                Every 1h                              59m 56s
                                                                                                     
                                                                                                     
                                                                                                     
@@ -33,10 +33,10 @@ t run now  - narrow     Enter peek    b busy ○                  q quit
 nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -65,9 +65,9 @@ bnlllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnn
 ....................................................................................................
 dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
 ....................................................................................................
-bbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb
-sssssssssssssssssssssssssssssssBBBBBBBBBBBBBssssssssssssssssssssssssssssssssssssssssssssssssssssssss
-...............................bbbbbbbbbbbbb........................................................
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb
+sssssssssssssssssssssssssssssssssBBBBBBBBBssssssssssssssssssssssssssssssssssssssssssssssssssssssssss
+.................................bbbbbbbbb..........................................................
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................

@@ -1233,7 +1233,7 @@ test("a fixed family folds into one row at its lead, wearing its most urgent cop
   assert.deepEqual(rowCards(board).map((r) => r.name), ["backup", "selfdev.develop", "selfdev.review"]);
   const row = rowRecord(board, "selfdev.develop");
   assert.equal(row.badge, "Busy");
-  assert.deepEqual(row.family, { copies: 3, busy: 2, states: [["Busy", 2], ["Idle", 1]] });
+  assert.deepEqual(row.family, { copies: 3, states: [["Busy", 2], ["Idle", 1]] });
   assert.equal(
     row.inFlightSince,
     board.services["selfdev.develop.0"].inFlightSince,
@@ -1243,7 +1243,7 @@ test("a fixed family folds into one row at its lead, wearing its most urgent cop
   assert.equal(rowNameOf(board, "selfdev.develop.1"), "selfdev.develop");
   assert.equal(rowRecord(board, "selfdev.review").family, undefined, "a single service is no family");
   // A pool down to its copy 0 is a family of one.
-  assert.deepEqual(rowRecord(board, "backup").family, { copies: 1, busy: 0, states: [["Idle", 1]] });
+  assert.deepEqual(rowRecord(board, "backup").family, { copies: 1, states: [["Idle", 1]] });
   // The lane-free capture holds no lane, and the copies keep their own records.
   assert.equal(board.services["selfdev.develop.2"].badge, "Idle");
 });

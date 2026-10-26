@@ -760,16 +760,6 @@ const COLUMNS = [
 /// The fixed reserves, `shell::*_COL_WIDTH`. `service` has none: it is the content-fit column
 /// below the stretch floor and the flex sink above it.
 export const COL_WIDTH = { state: 19, trigger: 16, liveness: 13, next: 8 };
-/// `shell::FAMILY_STATE_COL_WIDTH` — the `State` column on a board holding a multi-copy family,
-/// wide enough for `▶ Busy 10/10 365d 23h`. The two cells over `COL_WIDTH.state` come out of
-/// `Service`'s room, so the shed ladder stays where it is.
-export const FAMILY_STATE_COL_WIDTH = 21;
-
-/// `shell::family_extra` — the cells a family board moves from `Service` to `State`: none on a
-/// board with no multi-copy family, so its layout is the one it always was.
-function familyExtra(board) {
-  return Object.keys(board.families).length > 0 ? FAMILY_STATE_COL_WIDTH - COL_WIDTH.state : 0;
-}
 /// `shell::COLUMN_SPACING` — the gutter between adjacent columns, spent by this table and by
 /// the `Queues` section's own five alike.
 const COLUMN_SPACING = 3;
@@ -823,11 +813,9 @@ function triggerColWidth(cols) {
 
 /// `shell::service_col_width` — content-fit below the stretch floor (clamped to the floor and
 /// to what the visible set leaves), and the pure remainder above it, where `content` is
-/// deliberately ignored so no column moves as a service is added, renamed or filtered. `extra`
-/// is [`familyExtra`]: it comes off what is left **before** either regime, so a name that fits
-/// the rest keeps its full width and the row still fills the pane.
-export function serviceColWidth(content, cols, extra = 0) {
-  const avail = Math.max(0, cols - columnReserve(visibleColumns(cols)) - extra);
+/// deliberately ignored so no column moves as a service is added, renamed or filtered.
+function serviceColWidth(content, cols) {
+  const avail = Math.max(0, cols - columnReserve(visibleColumns(cols)));
   if (cols < stretchFloor()) {
     return Math.min(Math.max(content, SERVICE_COL_MIN), Math.max(avail, SERVICE_COL_MIN));
   }
@@ -836,22 +824,20 @@ export function serviceColWidth(content, cols, extra = 0) {
 
 /// `shell::column_render_width` — the on-screen width of one column, so the header labels,
 /// the body cells and their eliding budgets are three projections of one number.
-function columnRenderWidth(key, content, cols, extra = 0) {
-  if (key === "service") return serviceColWidth(content, cols, extra);
+function columnRenderWidth(key, content, cols) {
+  if (key === "service") return serviceColWidth(content, cols);
   if (key === "trigger") return triggerColWidth(cols);
-  if (key === "state") return COL_WIDTH.state + extra;
   return COL_WIDTH[key];
 }
 
 /// The columns visible at `cols` and each one's render width, with `Service` fitted to the
 /// widest identity among `measured`. The list and the phone's status list both size through
 /// here, so the two cannot disagree on a column at the same width.
-function columnPlan(board, measured, cols) {
+function columnPlan(measured, cols) {
   const content = measured.reduce((w, row) => Math.max(w, textWidth(identityText(row))), 0);
   const visible = visibleColumns(cols);
   const widths = {};
-  const extra = familyExtra(board);
-  for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols, extra);
+  for (const column of visible) widths[column.key] = columnRenderWidth(column.key, content, cols);
   return { visible, widths };
 }
 
@@ -862,12 +848,6 @@ function columnPlan(board, measured, cols) {
 /// `family::COPIES_MARK` — what follows a family row's name before its live copy count:
 /// `develop ×3`.
 export const COPIES_MARK = " ×";
-
-/// `family::busy_share` — a busy family's share of its copies, between its `Busy` and the
-/// elapsed: `▶ Busy 2/3 4m 10s`.
-export function busyShare(busy, copies) {
-  return `${busy}/${copies}`;
-}
 
 /// `family::copies_breakdown` — the info page's `State` row for a family:
 /// `3 copies: 2 busy, 1 idle`, the states most urgent first, each word lowercased as the
@@ -1118,7 +1098,9 @@ function identityCells(prefix, body, name, tint, count = "") {
 /// carries one (`shell::badge_state_text`). The elapsed rides five badges, each off its own
 /// clock: a live `▶ Busy` fire shows the fire's age, and the four transitional/pre-fire
 /// states their dwell in that state, which is what keeps `Busy <elapsed>` meaning "has been
-/// running for" (`layout::service_row`).
+/// running for" (`layout::service_row`). A family row's record is already folded to its most
+/// urgent badge and its oldest copy's clocks (`family::fold_row`), so it reads through this
+/// same text with no count, as `shell::badge_state_text` does.
 function stateText(svc, now) {
   const glyph = BADGE_GLYPH[svc.badge] ?? BADGE_GLYPH.Idle;
   let since = null;
@@ -1126,10 +1108,8 @@ function stateText(svc, now) {
   else if (["Starting", "Queued", "Checking", "Stopping"].includes(svc.badge)) {
     since = svc.stateEnteredAt;
   }
-  // A busy family's share rides between the label and the elapsed.
-  const share = svc.badge === "Busy" && svc.family != null ? ` ${busyShare(svc.family.busy, svc.family.copies)}` : "";
   const elapsed = since === null ? "" : ` ${formatElapsed(Math.max(0, now - since))}`;
-  return `${glyph} ${svc.badge}${share}${elapsed}`;
+  return `${glyph} ${svc.badge}${elapsed}`;
 }
 
 /// `DashboardModel::visible_cards`'s name axis — the `/` needle, matched as a substring over
@@ -3506,7 +3486,6 @@ function runPlan(board, options) {
     focus,
     cols,
     rows,
-    extra: familyExtra(board),
     now: options.now,
     paneW,
     viewport,
@@ -3626,7 +3605,7 @@ function runHeaderCells(plan) {
   const visible = visibleColumns(plan.cols);
   const widths = {};
   for (const column of visible) {
-    widths[column.key] = columnRenderWidth(column.key, textWidth(identityText(row)), plan.cols, plan.extra);
+    widths[column.key] = columnRenderWidth(column.key, textWidth(identityText(row)), plan.cols);
   }
   return bodyRowCells(row, visible, widths, queueCols(plan.cols, 0), {}, plan.now);
 }
@@ -3754,7 +3733,7 @@ export function layout(board, options) {
   // group were open, over the needle's survivors alone, in the view that renders. Neither a
   // fold nor the busy lens may reflow the column under an operator who never touched a key;
   // the view flag does, because flat names are wider than the grouped tree's leaves.
-  const { visible, widths } = columnPlan(board, visibleRows(board, { filter, grouped, peeked }), cols);
+  const { visible, widths } = columnPlan(visibleRows(board, { filter, grouped, peeked }), cols);
   const laneCols = queueCols(cols, lanes.reduce((w, l) => Math.max(w, textWidth(l.lane)), 0));
   // The rollups a header shows, folded here over the filtered card set the rows were built
   // from — not `fold.mjs`'s unfiltered `groups()` — mirroring `DashboardModel::group_rollup`:
@@ -3840,7 +3819,7 @@ function statusFrame(board, options) {
   const cols = Math.max(1, Math.trunc(options.cols));
   const now = options.now;
   const rows = buildRows(board, "", new Set(), false, false, new Set());
-  const { visible, widths } = columnPlan(board, rows, cols);
+  const { visible, widths } = columnPlan(rows, cols);
   const screen = [
     fitRow(planHeader(headerView(board, now, options.version ?? ""), cols), cols),
     fitRow([], cols),

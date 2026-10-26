@@ -1201,8 +1201,8 @@ function urgency(badge) {
   return at === -1 ? URGENCY.length : at;
 }
 
-/// `FamilyCount::of` — how `members` split across states: the live copy count, how many are
-/// busy, and each state some copy is in with its count, most urgent first.
+/// `FamilyCount::of` — how `members` split across states: the live copy count and each state
+/// some copy is in with its count, most urgent first.
 function familyCount(members) {
   const states = [];
   for (const badge of members.map((m) => m.badge).sort((a, b) => urgency(a) - urgency(b))) {
@@ -1210,7 +1210,7 @@ function familyCount(members) {
     if (last !== undefined && last[0] === badge) last[1] += 1;
     else states.push([badge, 1]);
   }
-  return { copies: members.length, busy: members.filter((m) => m.badge === "Busy").length, states };
+  return { copies: members.length, states };
 }
 
 /// A family's empty row record named `base`, built off `anchor`, whose config every copy shares
@@ -1228,9 +1228,10 @@ function familyRow(base, anchor) {
 }
 
 /// `family::fold_row` — the row's facts read across `members` (index order, non-empty): copy
-/// 0's config, the most urgent badge, the longest-running busy copy's clock, the soonest next
-/// fire, the newest activity, summed tallies and any copy's flags. `lastError` and `breadcrumb`
-/// are written through by [`foldEvent`] instead, having no time to fold by.
+/// 0's config, the most urgent badge, the longest-running busy copy's clock and the oldest
+/// dwell in that badge, the soonest next fire, the newest activity, summed tallies and any
+/// copy's flags. `lastError` and `breadcrumb` are written through by [`foldEvent`] instead,
+/// having no time to fold by.
 function foldRow(row, members) {
   const anchor = members[0];
   const min = (values) => values.reduce((m, v) => (v === null ? m : m === null ? v : Math.min(m, v)), null);

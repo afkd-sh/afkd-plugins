@@ -20,10 +20,10 @@ import test from "node:test";
 
 import { fold, queues, rowCards, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, REFUSED_WHILE_QUITTING, SCOPES, all, glyphs, idOf, primary } from "./keymap.mjs";
-import { COL_WIDTH, COPIES_MARK, FAMILY_STATE_COL_WIDTH, TREND_LADDER, bodyHeight as bodyHeightOf, busyShare, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, runMetrics, scrollOffset, serviceColWidth, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
-import { URGENCY } from "./fold.mjs";
+import { COL_WIDTH, COPIES_MARK, TREND_LADDER, bodyHeight as bodyHeightOf, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { URGENCY, copiesOf, rowRecord } from "./fold.mjs";
 import { newSession as bootSession, press } from "./session.mjs";
-import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, screenText } from "./testkit.mjs";
+import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, readCapture, screenText } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
 
@@ -2528,14 +2528,80 @@ const familyBoard = () => foldCapture("family.jsonl", (f) => f.type === "event" 
 /// …and just after the pool minted its copy 1 (`meta.spawned`), which is still arming.
 const mintBoard = () => foldCapture("family.jsonl", (f) => f.type === "event" && f.event === "service_armed" && f.service === "backup.1");
 
-test("a fixed family is one row with its count and its busy share", () => {
+/// A family row's `State` cell as it reads on `rows`: the text between the name's `×N` and
+/// its `Every 1h` trigger, so a wide glyph in the name cannot skew a string index.
+function familyState(rows, name) {
+  const line = screenText(rows).split("\n").find((l) => l.includes(`${name}${COPIES_MARK}`));
+  return /×\d+\s+(\S.*?)\s{2,}Every 1h/.exec(line ?? "")?.[1] ?? null;
+}
+
+/// `family.jsonl` folded up to (not including) the first frame `until` matches, one [`STEP`]
+/// apart but for `gap` more before the one frame `late` matches: the copies' clocks part by a
+/// replay time the suite chose, while every frame stays as recorded.
+function familyReplay(until, late, gap) {
+  const frames = readCapture("family.jsonl");
+  const stop = frames.findIndex(until);
+  let board = seed({ logLines: 2000 });
+  let at = BASE;
+  for (const frame of frames.slice(0, stop)) board = fold(board, frame, (at += late(frame) ? STEP + gap : STEP));
+  return { board, at };
+}
+
+test("a fixed family is one row with its count and its oldest copy's clock", () => {
   const { board, at } = familyBoard();
   const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.379" });
   assertGrid(rows, 100, 30);
   assertGolden("family-100x30.txt", rows);
   const text = screenText(rows);
-  assert.ok(text.includes("selfdev.develop ×3") && text.includes("▶ Busy 2/3"), text);
+  assert.ok(text.includes("selfdev.develop ×3"), text);
+  assert.equal(familyState(rows, "selfdev.develop"), "▶ Busy 1s");
   assert.ok(!text.includes("develop.0"), "no copy has a row of its own");
+  // The info page still spells the split the row no longer shows.
+  const info = modelCells(board, infoAt("selfdev.develop", 100, 30, at));
+  assert.deepEqual(info.find(([label]) => label === "State"), ["State", "3 copies: 2 busy, 1 idle"]);
+});
+
+test("a family with one busy and one idle copy reads ▶ Busy and its time, with no share", () => {
+  // `shell::badge_state_text`: a family's cell is a single service's — its most urgent badge
+  // and that badge's clock — and nothing counts the copies but the `×N` after the name.
+  const { board, at } = packagesBoard();
+  const copies = copiesOf(board, rowRecord(board, "selfdev.develop"));
+  assert.deepEqual(copies.map((c) => [c.name, c.badge]), [["selfdev.develop.0", "Busy"], ["selfdev.develop.1", "Idle"]]);
+  const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.382", grouped: false });
+  const line = screenText(rows).split("\n").find((l) => l.includes("selfdev.develop ×2"));
+  assert.equal(line, "🛠 selfdev.develop ×2             ▶ Busy 1s             Every 1h                        1s           ");
+  assert.equal(familyState(rows, "selfdev.develop"), "▶ Busy 1s");
+});
+
+test("a family's Busy time is its oldest copy's", () => {
+  // Copy 1 starts two minutes after copy 0, so the two clocks read apart; the row takes the
+  // longer one (`family::fold_row`'s oldest `in_flight_since` among the busy copies).
+  const late = (f) => f.type === "event" && f.event === "run_started" && f.service === "selfdev.develop.1";
+  const { board, at } = familyReplay((f) => f.type === "event" && f.event === "run_started" && f.service === "backup.0", late, 120_000);
+  const now = at + 5000;
+  const [first, second, idle] = copiesOf(board, rowRecord(board, "selfdev.develop"));
+  assert.deepEqual([first.badge, second.badge, idle.badge], ["Busy", "Busy", "Idle"]);
+  assert.ok(first.inFlightSince < second.inFlightSince, "copy 0 has run the longer");
+  const rows = layoutOf(board, { cols: 100, rows: 30, now, version: "0.2.379" });
+  const oldest = `▶ Busy ${formatElapsed(now - first.inFlightSince)}`;
+  assert.equal(oldest, "▶ Busy 2m 5s");
+  assert.notEqual(formatElapsed(now - second.inFlightSince), formatElapsed(now - first.inFlightSince));
+  assert.equal(familyState(rows, "selfdev.develop"), oldest);
+});
+
+test("a family's Stopping time is its oldest copy's dwell", () => {
+  // The drain stops copy 0, then — ninety seconds on — copy 1; copy 2 is still idle. The row
+  // wears `Stopping` off its oldest dwell in that badge, not off the copy that stopped last.
+  const late = (f) => f.type === "event" && f.event === "service_stopping" && f.service === "selfdev.develop.1";
+  const { board, at } = familyReplay((f) => f.type === "event" && f.event === "service_stopping" && f.service === "selfdev.develop.2", late, 90_000);
+  const now = at + 3000;
+  const [first, second, idle] = copiesOf(board, rowRecord(board, "selfdev.develop"));
+  assert.deepEqual([first.badge, second.badge, idle.badge], ["Stopping", "Stopping", "Idle"]);
+  const rows = layoutOf(board, { cols: 100, rows: 30, now, version: "0.2.379" });
+  const oldest = `■ Stopping ${formatElapsed(now - first.stateEnteredAt)}`;
+  assert.equal(oldest, "■ Stopping 1m 33s");
+  assert.notEqual(formatElapsed(now - second.stateEnteredAt), formatElapsed(now - first.stateEnteredAt));
+  assert.equal(familyState(rows, "selfdev.develop"), oldest);
 });
 
 test("an auto family mid-mint moves only its count and its state", () => {
@@ -2548,53 +2614,42 @@ test("an auto family mid-mint moves only its count and its state", () => {
   const [was, now] = [lines(before), lines(after)];
   const changed = was.map((line, i) => i).filter((i) => was[i] !== now[i] && i > 3 && i < 24);
   assert.deepEqual(changed.map((i) => now[i].trim().split(/\s+/).slice(0, 2).join(" ")), ["🈶 backup"], "only the pool's own line moved");
-  assert.ok(was[changed[0]].includes("backup ×1") && now[changed[0]].includes("backup ×2 ") && now[changed[0]].includes("Busy 1/2"));
+  assert.ok(was[changed[0]].includes("backup ×1") && now[changed[0]].includes("backup ×2 "));
+  assert.equal(familyState(rows, "backup"), "▶ Busy 1s");
 });
 
-test("a family board widens State out of Service's room, and only a family board does", () => {
-  // Above the stretch floor the columns are a pure function of the width, so every column right
-  // of State keeps its x and State starts two cells left; a board with no family keeps the
-  // positions it always had.
+test("a family board's columns sit where a plain board's do", () => {
+  // A family's State text is no longer than a single service's, so no board widens State:
+  // above the stretch floor the columns are a pure function of the width, and every header
+  // label sits at one x whether the board holds a family or not.
   const header = ({ board, at }, cols) =>
     screenText(layoutOf(board, { cols, rows: 30, now: at + 1000, version: "0.2.379" })).split("\n")[3];
-  for (const cols of [100, 140]) {
+  for (const cols of [90, 100, 140]) {
     const family = header(familyBoard(), cols);
     const plain = header(liveBoard(), cols);
-    assert.equal(family.indexOf("State") + (FAMILY_STATE_COL_WIDTH - COL_WIDTH.state), plain.indexOf("State"), `${cols}`);
-    for (const label of ["Trigger", "Last Activity", "Next Run"]) {
-      assert.equal(family.indexOf(label), plain.indexOf(label), `${cols}: ${label} stays put`);
+    for (const label of ["State", "Trigger", "Last Activity", "Next Run"]) {
+      assert.notEqual(plain.indexOf(label), -1, `${cols}: ${label} is shown`);
+      assert.equal(family.indexOf(label), plain.indexOf(label), `${cols}: ${label} sits where it does with no family`);
     }
   }
 });
 
-test("the family State width is shell.rs's", { skip: NO_AFKD_SRC }, () => {
+test("the State cell and its width are shell.rs's, on any board", { skip: NO_AFKD_SRC }, () => {
   const rust = afkdSource("crates", "tui", "src", "shell.rs");
-  const constant = (name) => Number(new RegExp(`const ${name}: u16 = (\\d+);`).exec(rust)?.[1]);
-  assert.equal(constant("STATE_COL_WIDTH"), COL_WIDTH.state);
-  assert.equal(constant("FAMILY_STATE_COL_WIDTH"), FAMILY_STATE_COL_WIDTH);
-  // The extra comes off what is left for `Service` before either regime: above the stretch
-  // floor the remainder shrinks by it, below it the content-fit clamp's ceiling does.
-  const extra = FAMILY_STATE_COL_WIDTH - COL_WIDTH.state;
-  for (const content of [0, 20, 200]) {
-    assert.equal(serviceColWidth(content, 100, extra), serviceColWidth(content, 100, 0) - extra);
-  }
-  for (const cols of [80, 60, 40]) {
-    const room = serviceColWidth(10_000, cols, 0);
-    for (const content of [0, 12, room - extra, 200]) {
-      assert.equal(serviceColWidth(content, cols, extra), Math.min(Math.max(content, 8), Math.max(room - extra, 8)), `${cols}/${content}`);
-    }
-  }
-  // A name that fits what is left at 60 keeps its full width.
-  const fits = serviceColWidth(10_000, 60, 0) - extra;
-  assert.equal(serviceColWidth(fits, 60, extra), fits);
+  assert.equal(Number(/const STATE_COL_WIDTH: u16 = (\d+);/.exec(rust)?.[1]), COL_WIDTH.state);
+  // `badge_state_text` is the cell's one shape — glyph, label and an optional elapsed — and no
+  // count rides it; the family rows above read exactly that shape.
+  const at = rust.indexOf("fn badge_state_text(");
+  const body = rust.slice(at, rust.indexOf("\n}", at));
+  assert.deepEqual([...body.matchAll(/format!\("([^"]*)"/g)].map(([, f]) => f), ["{} {} {e}", "{} {}"]);
 });
 
-test("the copy count and busy share are family.rs's", { skip: NO_AFKD_SRC }, () => {
+test("the copy mark and the family record are family.rs's", { skip: NO_AFKD_SRC }, () => {
   const rust = afkdSource("crates", "tui", "src", "family.rs");
   assert.equal(/const COPIES_MARK: &str = "([^"]*)";/.exec(rust)?.[1], COPIES_MARK);
-  const share = rust.slice(rust.indexOf("fn busy_share("), rust.indexOf("\n}", rust.indexOf("fn busy_share(")));
-  assert.deepEqual([...share.matchAll(/format!\("([^"]*)"/g)].map(([, f]) => f), ["{busy}/{copies}"]);
-  assert.equal(busyShare(2, 3), "2/3");
+  const at = rust.indexOf("pub struct FamilyCount {");
+  const fields = [...rust.slice(at, rust.indexOf("\n}", at)).matchAll(/pub (\w+):/g)].map(([, f]) => f);
+  assert.deepEqual(Object.keys(rowRecord(familyBoard().board, "selfdev.develop").family), fields);
 });
 
 test("the info breakdown is family.rs's wording", { skip: NO_AFKD_SRC }, () => {
@@ -2609,9 +2664,9 @@ test("the info breakdown is family.rs's wording", { skip: NO_AFKD_SRC }, () => {
   const labels = Object.fromEntries(
     [...model.slice(labelAt, model.indexOf("\n    }", labelAt)).matchAll(/Badge::(\w+) => "([^"]+)"/g)].map(([, b, l]) => [b, l]),
   );
-  assert.equal(copiesBreakdown({ copies: 3, busy: 2, states: [["Busy", 2], ["Idle", 1]] }), "3 copies: 2 busy, 1 idle");
-  assert.equal(copiesBreakdown({ copies: 1, busy: 0, states: [["Crashed", 1]] }), "1 copy: 1 crashed");
-  const every = copiesBreakdown({ copies: 8, busy: 1, states: URGENCY.map((b) => [b, 1]) });
+  assert.equal(copiesBreakdown({ copies: 3, states: [["Busy", 2], ["Idle", 1]] }), "3 copies: 2 busy, 1 idle");
+  assert.equal(copiesBreakdown({ copies: 1, states: [["Crashed", 1]] }), "1 copy: 1 crashed");
+  const every = copiesBreakdown({ copies: 8, states: URGENCY.map((b) => [b, 1]) });
   assert.equal(every, `8 copies: ${URGENCY.map((b) => `1 ${labels[b].toLowerCase()}`).join(", ")}`);
 });
 
