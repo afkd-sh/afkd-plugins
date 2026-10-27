@@ -1,0 +1,202 @@
+# Every GraphQL operation @afkd/linear sends, each named, each starting at the start of a line,
+# and no other: the client sends an operation by its name from this file, the fake Linear its
+# tests run against answers only the documents written here, and both check each against
+# Linear's schema (tests/schema.graphql). Every value that varies is a variable; the literals
+# written inline are page sizes. A comment is a whole line, before the first operation.
+
+query Viewer {
+  viewer {
+    id
+  }
+}
+
+query TeamByKey($filter: TeamFilter!) {
+  teams(filter: $filter, first: 2) {
+    nodes {
+      id
+      key
+    }
+  }
+}
+
+query States($teamId: String!) {
+  team(id: $teamId) {
+    states(first: 100) {
+      nodes {
+        id
+        name
+        type
+      }
+    }
+  }
+}
+
+query Issues($filter: IssueFilter!, $sort: [IssueSortInput!]!, $first: Int!, $after: String) {
+  issues(filter: $filter, sort: $sort, first: $first, after: $after) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      url
+      sortOrder
+      state {
+        id
+        name
+        type
+      }
+      labels(first: 20) {
+        nodes {
+          name
+        }
+      }
+      assignee {
+        id
+      }
+      delegate {
+        id
+      }
+      parent {
+        identifier
+        title
+      }
+      children(first: 20) {
+        nodes {
+          identifier
+          title
+          state {
+            name
+          }
+        }
+      }
+      inverseRelations(first: 20) {
+        nodes {
+          type
+          issue {
+            identifier
+            state {
+              type
+            }
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query IssueComments($id: String!, $after: String) {
+  issue(id: $id) {
+    comments(first: 100, after: $after) {
+      nodes {
+        id
+        body
+        createdAt
+        editedAt
+        user {
+          id
+          name
+          displayName
+        }
+        botActor {
+          id
+          name
+        }
+        externalUser {
+          id
+          name
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query Users($filter: UserFilter!) {
+  users(filter: $filter, first: 2) {
+    nodes {
+      id
+    }
+  }
+}
+
+query Labels($filter: IssueLabelFilter!) {
+  issueLabels(filter: $filter, first: 50) {
+    nodes {
+      id
+      team {
+        id
+      }
+    }
+  }
+}
+
+mutation CommentCreate($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment {
+      id
+      body
+      createdAt
+      editedAt
+      user {
+        id
+        name
+        displayName
+      }
+      botActor {
+        id
+        name
+      }
+      externalUser {
+        id
+        name
+      }
+    }
+  }
+}
+
+mutation CommentUpdate($id: String!, $input: CommentUpdateInput!) {
+  commentUpdate(id: $id, input: $input) {
+    success
+  }
+}
+
+mutation CommentDelete($id: String!) {
+  commentDelete(id: $id) {
+    success
+  }
+}
+
+mutation IssueAddLabel($id: String!, $labelId: String!) {
+  issueAddLabel(id: $id, labelId: $labelId) {
+    success
+  }
+}
+
+mutation IssueRemoveLabel($id: String!, $labelId: String!) {
+  issueRemoveLabel(id: $id, labelId: $labelId) {
+    success
+  }
+}
+
+mutation IssueLabelCreate($input: IssueLabelCreateInput!) {
+  issueLabelCreate(input: $input) {
+    success
+    issueLabel {
+      id
+    }
+  }
+}
+
+mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) {
+    success
+  }
+}

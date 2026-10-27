@@ -1,0 +1,169 @@
+name = "@afkd/linear"
+version = "0.1.0"
+proto = 2
+shape = "provider"
+source = "https://github.com/afkd-sh/afkd-plugins"
+exec = "afkd-linear"
+
+# The item a run claims, `linear.Issue` in a config: every slot is passed it. afkd carries
+# `id` (the issue's identifier, `ENG-123`) and `key` (afkd's claim key) for every handle; the
+# fields below are the rest of what the plugin knows about an issue. Every one is always sent,
+# since a field left out is not delivered and a slot reading it would fail its run: an issue
+# with no parent sends `parent` as `""`, and one with no label, sub-issue or blocker an empty
+# list.
+[[handle]]
+name = "Issue"
+
+  [[handle.field]]
+  name = "title"
+  type = "string"
+
+  [[handle.field]]
+  name = "url"
+  type = "string"
+
+  [[handle.field]]
+  name = "labels"
+  type = "list[string]"
+
+  # The name of the workflow state the issue sat in when it was claimed.
+  [[handle.field]]
+  name = "state"
+  type = "string"
+
+  # The parent issue's identifier, or "" for an issue that is no sub-issue.
+  [[handle.field]]
+  name = "parent"
+  type = "string"
+
+  # The sub-issues' identifiers, in Linear's order.
+  [[handle.field]]
+  name = "sub_issues"
+  type = "list[string]"
+
+  # The identifiers of every issue that blocks this one, done or not.
+  [[handle.field]]
+  name = "blocked_by"
+  type = "list[string]"
+
+# The one kind, `service(linear)` in a config: a Linear team whose issues are claimed one per
+# run. afkd's own claim keys, `every` and `max_attempts`, are afkd's and not declared here.
+[[kind]]
+name = "issue"
+role = "trigger"
+main = true
+claims = true
+
+  # The team's key, the prefix of every identifier it holds (`ENG`).
+  [[kind.setting]]
+  name = "team"
+  type = "string"
+  required = true
+
+  [[kind.setting]]
+  name = "base_url"
+  type = "string"
+
+  # The credential: a Linear API key, or an OAuth app's `client_id` and `client_secret`, from
+  # which the plugin fetches the app's own token. Exactly one of the two is written.
+  [[kind.setting]]
+  name = "api_key"
+  type = "string"
+
+  [[kind.setting]]
+  name = "client_id"
+  type = "string"
+
+  [[kind.setting]]
+  name = "client_secret"
+  type = "string"
+
+  # The workflow states new issues are claimed from, by name, in the order they are scanned.
+  [[kind.setting]]
+  name = "pick_from"
+  type = "list[string]"
+  required = true
+
+  [[kind.setting]]
+  name = "require_member"
+  type = "string"
+
+  [[kind.setting]]
+  name = "require_label"
+  type = "string"
+
+  [[kind.setting]]
+  name = "without_label"
+  type = "list[string]"
+
+  [[kind.setting]]
+  name = "discuss_with"
+  type = "list[string]"
+
+  # The slots afkd runs, each passed the run and its issue, and after the run its outcome.
+  [[kind.slot]]
+  name = "on_run"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+  [[kind.slot]]
+  name = "on_claim"
+  when = "pre"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+  [[kind.slot]]
+  name = "on_done"
+  when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
+  name = "on_fail"
+  when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
+  name = "on_park"
+  when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "issue"
+    type = "Issue"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"

@@ -1,0 +1,1554 @@
+//! The real [`Tracker`]: the Linear GraphQL mapping behind the issue-tracker seam.
+//!
+//! Every request is one named operation out of `operations.graphql`, sent by its name
+//! ([`operation`]), so a document that file does not hold cannot be sent. Every value that
+//! varies rides as a variable, built by a pure `…_vars` function, and every reply is read
+//! by a pure `parse_*` function: both are unit-tested with no network, and the documents
+//! and the variables are held to Linear's published schema (`tests/schema.graphql`) by the
+//! schema tests below. The HTTP mapping itself is exercised against a loopback `Stub`.
+//!
+//! Linear answers a request it refuses with an `errors` body, on a 200 as well as on a 4xx,
+//! so every reply is read for `errors` before its `data` ([`graphql_data`]).
+
+use std::sync::{Arc, OnceLock};
+use std::time::{Instant, SystemTime};
+
+use serde_json::{json, Value};
+
+use crate::auth::Auth;
+use crate::http::{Http, Reply, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT};
+use crate::rfc3339::parse_rfc3339_millis;
+use crate::settings::MemberRef;
+use crate::tracker::{
+    Blocker, Child, Comment, Issue, LinearError, Page, Related, State, Team, Tracker,
+};
+
+/// Linear's API root; GraphQL is at [`GRAPHQL_PATH`] under it.
+pub(crate) const LINEAR_BASE: &str = "https://api.linear.app";
+
+/// Where the GraphQL endpoint sits under the API root.
+pub(crate) const GRAPHQL_PATH: &str = "/graphql";
+
+/// How many issues one `Issues` page holds: small, with its nested connections, to keep a
+/// query far under Linear's complexity cap.
+pub(crate) const ISSUES_PAGE: u32 = 25;
+
+/// The operations the plugin sends, as written.
+const OPERATIONS: &str = include_str!("operations.graphql");
+
+/// The message Linear's error starts with when what a request names does not exist.
+const NOT_FOUND: &str = "Entity not found";
+
+/// Every operation in `operations.graphql`, by name, in the file's order: each runs from a
+/// line starting `query ` or `mutation ` to the next one, and the comment lines before the
+/// first are none of them.
+pub(crate) fn operations() -> &'static [(&'static str, &'static str)] {
+    static PARSED: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
+    PARSED.get_or_init(|| {
+        let starts: Vec<usize> = OPERATIONS
+            .match_indices('\n')
+            .map(|(at, _)| at + 1)
+            .filter(|&at| {
+                let line = &OPERATIONS[at..];
+                line.starts_with("query ") || line.starts_with("mutation ")
+            })
+            .collect();
+        starts
+            .iter()
+            .enumerate()
+            .map(|(n, &start)| {
+                let end = starts.get(n + 1).copied().unwrap_or(OPERATIONS.len());
+                let document = OPERATIONS[start..end].trim();
+                let name = document
+                    .split(|c: char| c.is_whitespace() || c == '(' || c == '{')
+                    .nth(1)
+                    .unwrap_or_default();
+                (name, document)
+            })
+            .collect()
+    })
+}
+
+/// The document of the operation named `name`.
+pub(crate) fn operation(name: &str) -> Option<&'static str> {
+    operations()
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, document)| *document)
+}
+
+// --- the variables each operation is sent with ---
+
+/// `TeamByKey`: the team whose key is `key`.
+pub(crate) fn team_by_key_vars(key: &str) -> Value {
+    json!({ "filter": { "key": { "eq": key } } })
+}
+
+/// `States`: the team's workflow states.
+pub(crate) fn states_vars(team_id: &str) -> Value {
+    json!({ "teamId": team_id })
+}
+
+/// `Issues`: one page of a state's issues in the team's manual order, from `after`.
+pub(crate) fn issues_in_state_vars(team_id: &str, state_id: &str, after: Option<&str>) -> Value {
+    json!({
+        "filter": { "team": { "id": { "eq": team_id } }, "state": { "id": { "eq": state_id } } },
+        "sort": [{ "manual": { "order": "Ascending" } }],
+        "first": ISSUES_PAGE,
+        "after": after,
+    })
+}
+
+/// `Issues`: one page of the team's issues carrying the label `label`, from `after`.
+pub(crate) fn parked_vars(team_id: &str, label: &str, after: Option<&str>) -> Value {
+    json!({
+        "filter": {
+            "team": { "id": { "eq": team_id } },
+            "labels": { "some": { "name": { "eq": label } } },
+        },
+        "sort": [{ "manual": { "order": "Ascending" } }],
+        "first": ISSUES_PAGE,
+        "after": after,
+    })
+}
+
+/// `Issues`: the last issue in a state's manual order, which a put-back goes below.
+pub(crate) fn last_in_state_vars(team_id: &str, state_id: &str) -> Value {
+    json!({
+        "filter": { "team": { "id": { "eq": team_id } }, "state": { "id": { "eq": state_id } } },
+        "sort": [{ "manual": { "order": "Descending" } }],
+        "first": 1,
+    })
+}
+
+/// `IssueComments`: one page of an issue's comments, from `after`.
+pub(crate) fn comments_vars(issue_id: &str, after: Option<&str>) -> Value {
+    json!({ "id": issue_id, "after": after })
+}
+
+/// `Users`: the users whose display name or email is `name`.
+pub(crate) fn users_vars(name: &str) -> Value {
+    json!({ "filter": { "or": [{ "displayName": { "eq": name } }, { "email": { "eq": name } }] } })
+}
+
+/// `Labels`: the labels named `name`, the team's and the workspace's.
+pub(crate) fn labels_vars(name: &str) -> Value {
+    json!({ "filter": { "name": { "eq": name } } })
+}
+
+/// `CommentCreate`: `body` as a new comment on the issue.
+pub(crate) fn comment_create_vars(issue_id: &str, body: &str) -> Value {
+    json!({ "input": { "issueId": issue_id, "body": body } })
+}
+
+/// `CommentUpdate`: the comment's body rewritten to `body`.
+pub(crate) fn comment_update_vars(comment_id: &str, body: &str) -> Value {
+    json!({ "id": comment_id, "input": { "body": body } })
+}
+
+/// `CommentDelete`: the comment.
+pub(crate) fn comment_delete_vars(comment_id: &str) -> Value {
+    json!({ "id": comment_id })
+}
+
+/// `IssueAddLabel` and `IssueRemoveLabel`: the issue and the label.
+pub(crate) fn issue_label_vars(issue_id: &str, label_id: &str) -> Value {
+    json!({ "id": issue_id, "labelId": label_id })
+}
+
+/// `IssueLabelCreate`: a label named `name` for the team.
+pub(crate) fn label_create_vars(name: &str, team_id: &str) -> Value {
+    json!({ "input": { "name": name, "teamId": team_id } })
+}
+
+/// `IssueUpdate`: the issue moved to the state, at `sort_order` in its manual order.
+pub(crate) fn move_vars(issue_id: &str, state_id: &str, sort_order: f64) -> Value {
+    json!({ "id": issue_id, "input": { "stateId": state_id, "sortOrder": sort_order } })
+}
+
+// --- the client ---
+
+/// A [`Tracker`] backed by Linear's GraphQL API.
+pub(crate) struct LinearClient {
+    /// The spine, holding the API root and the timeout budgets.
+    http: Http,
+    /// The credential, shared with the outbox worker's client so an app fetches one token.
+    auth: Arc<Auth>,
+    /// The viewer's id, fetched once: the credential is fixed for the client's life.
+    viewer: OnceLock<String>,
+}
+
+impl LinearClient {
+    /// A client pointed at `base` — the `base_url` setting, which defaults to Linear's —
+    /// sending `auth`, with the default connect/read timeouts.
+    pub(crate) fn new(base: &str, auth: Arc<Auth>) -> Self {
+        Self {
+            http: Http::new(base, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT),
+            auth,
+            viewer: OnceLock::new(),
+        }
+    }
+
+    /// Send the operation named `name` with `variables`, and return its `data`. A request
+    /// an app's token is refused for is sent once more with a fresh token; a second refusal
+    /// is the caller's, and so is a key's first.
+    fn post_graphql(
+        &self,
+        stage: &'static str,
+        name: &str,
+        variables: Value,
+    ) -> Result<Value, LinearError> {
+        let Some(query) = operation(name) else {
+            return Err(LinearError::Decode {
+                stage,
+                reason: format!("operations.graphql holds no operation {name}"),
+            });
+        };
+        let body =
+            json!({ "operationName": name, "query": query, "variables": variables }).to_string();
+        let send = || {
+            let authorization = self.auth.header(&self.http, Instant::now())?;
+            let reply = self.http.post(
+                stage,
+                GRAPHQL_PATH,
+                "application/json",
+                Some(&authorization),
+                body.as_bytes(),
+            )?;
+            graphql_data(stage, &reply)
+        };
+        match send() {
+            Err(e) if refused_credential(&e) && self.auth.invalidate() => send(),
+            result => result,
+        }
+    }
+
+    /// Every page of an `Issues` read, its variables built by `vars` from a cursor.
+    fn all_issues(
+        &self,
+        stage: &'static str,
+        vars: impl Fn(Option<&str>) -> Value,
+    ) -> Result<Vec<Issue>, LinearError> {
+        let mut issues = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let page = parse_issue_page(
+                stage,
+                &self.post_graphql(stage, "Issues", vars(after.as_deref()))?,
+            )?;
+            issues.extend(page.items);
+            match page.next {
+                Some(next) => after = Some(next),
+                None => return Ok(issues),
+            }
+        }
+    }
+
+    /// The id of the label named `name` for `team_id`: the team's own, else the workspace's
+    /// (a label with no team), else `None`.
+    fn find_label(
+        &self,
+        stage: &'static str,
+        team_id: &str,
+        name: &str,
+    ) -> Result<Option<String>, LinearError> {
+        let labels = parse_labels(
+            stage,
+            &self.post_graphql(stage, "Labels", labels_vars(name))?,
+        )?;
+        let pick = |team: Option<&str>| {
+            labels
+                .iter()
+                .find(|(_, t)| t.as_deref() == team)
+                .map(|(id, _)| id.clone())
+        };
+        Ok(pick(Some(team_id)).or_else(|| pick(None)))
+    }
+}
+
+/// Whether `e` is Linear refusing the credential itself: a 401, or an `authentication
+/// error`.
+fn refused_credential(e: &LinearError) -> bool {
+    match e {
+        LinearError::Status { status, .. } => *status == 401,
+        LinearError::Refused { status, kind, .. } => {
+            *status == 401 || kind == "authentication error"
+        }
+        _ => false,
+    }
+}
+
+impl Tracker for LinearClient {
+    fn viewer(&self) -> Result<String, LinearError> {
+        if let Some(id) = self.viewer.get() {
+            return Ok(id.clone());
+        }
+        let stage = "read viewer";
+        let data = self.post_graphql(stage, "Viewer", json!({}))?;
+        let id = str_at(stage, &data["viewer"], "id")?;
+        Ok(self.viewer.get_or_init(|| id).clone())
+    }
+
+    fn resolve_team(&self, key: &str) -> Result<Team, LinearError> {
+        let stage = "resolve team";
+        let data = self.post_graphql(stage, "TeamByKey", team_by_key_vars(key))?;
+        parse_teams(stage, &data)?
+            .into_iter()
+            .find(|team| team.key == key)
+            .ok_or_else(|| LinearError::NoSuch {
+                stage,
+                what: format!("team with the key '{key}'"),
+            })
+    }
+
+    fn states(&self, team_id: &str) -> Result<Vec<State>, LinearError> {
+        let stage = "read states";
+        parse_states(
+            stage,
+            &self.post_graphql(stage, "States", states_vars(team_id))?,
+        )
+    }
+
+    fn issues_in_state(
+        &self,
+        team_id: &str,
+        state_id: &str,
+        after: Option<&str>,
+    ) -> Result<Page<Issue>, LinearError> {
+        let stage = "read issues";
+        let vars = issues_in_state_vars(team_id, state_id, after);
+        parse_issue_page(stage, &self.post_graphql(stage, "Issues", vars)?)
+    }
+
+    fn parked_issues(&self, team_id: &str, label: &str) -> Result<Vec<Issue>, LinearError> {
+        self.all_issues("read parked issues", |after| {
+            parked_vars(team_id, label, after)
+        })
+    }
+
+    fn issue_comments(&self, issue_id: &str) -> Result<Vec<Comment>, LinearError> {
+        let stage = "read comments";
+        let mut comments = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let vars = comments_vars(issue_id, after.as_deref());
+            let page =
+                parse_comment_page(stage, &self.post_graphql(stage, "IssueComments", vars)?)?;
+            comments.extend(page.items);
+            match page.next {
+                Some(next) => after = Some(next),
+                None => return Ok(comments),
+            }
+        }
+    }
+
+    fn post_comment(&self, issue_id: &str, text: &str) -> Result<Comment, LinearError> {
+        let stage = "post comment";
+        let data =
+            self.post_graphql(stage, "CommentCreate", comment_create_vars(issue_id, text))?;
+        parse_comment(stage, &data["commentCreate"]["comment"])
+    }
+
+    fn edit_comment(&self, comment_id: &str, text: &str) -> Result<(), LinearError> {
+        let stage = "edit comment";
+        self.post_graphql(
+            stage,
+            "CommentUpdate",
+            comment_update_vars(comment_id, text),
+        )
+        .map(drop)
+    }
+
+    fn delete_comment(&self, comment_id: &str) -> Result<(), LinearError> {
+        let stage = "delete comment";
+        self.post_graphql(stage, "CommentDelete", comment_delete_vars(comment_id))
+            .map(drop)
+    }
+
+    fn resolve_user(&self, who: &MemberRef) -> Result<String, LinearError> {
+        let stage = "resolve user";
+        let name = match who {
+            MemberRef::Me => return self.viewer(),
+            MemberRef::Named(name) => name,
+        };
+        let users = parse_user_ids(stage, &self.post_graphql(stage, "Users", users_vars(name))?)?;
+        match users.as_slice() {
+            [id] => Ok(id.clone()),
+            [] => Err(LinearError::NoSuch {
+                stage,
+                what: format!("user whose display name or email is '{name}'"),
+            }),
+            _ => Err(LinearError::NoSuch {
+                stage,
+                what: format!(
+                    "one user whose display name or email is '{name}': more than one is; \
+                     name them by email"
+                ),
+            }),
+        }
+    }
+
+    fn add_label(&self, team_id: &str, issue_id: &str, name: &str) -> Result<(), LinearError> {
+        let stage = "add label";
+        let label_id = match self.find_label(stage, team_id, name)? {
+            Some(id) => id,
+            None => {
+                let data =
+                    self.post_graphql(stage, "IssueLabelCreate", label_create_vars(name, team_id))?;
+                str_at(stage, &data["issueLabelCreate"]["issueLabel"], "id")?
+            }
+        };
+        self.post_graphql(
+            stage,
+            "IssueAddLabel",
+            issue_label_vars(issue_id, &label_id),
+        )
+        .map(drop)
+    }
+
+    fn remove_label(&self, team_id: &str, issue_id: &str, name: &str) -> Result<(), LinearError> {
+        let stage = "remove label";
+        let Some(label_id) = self.find_label(stage, team_id, name)? else {
+            return Ok(());
+        };
+        self.post_graphql(
+            stage,
+            "IssueRemoveLabel",
+            issue_label_vars(issue_id, &label_id),
+        )
+        .map(drop)
+    }
+
+    fn move_to_bottom(
+        &self,
+        team_id: &str,
+        issue_id: &str,
+        state_id: &str,
+    ) -> Result<(), LinearError> {
+        let stage = "move issue";
+        let last = parse_issue_page(
+            stage,
+            &self.post_graphql(stage, "Issues", last_in_state_vars(team_id, state_id))?,
+        )?;
+        let bottom = last.items.first().map_or(0.0, |issue| issue.sort_order);
+        self.post_graphql(
+            stage,
+            "IssueUpdate",
+            move_vars(issue_id, state_id, bottom + 1000.0),
+        )
+        .map(drop)
+    }
+
+    fn authorization(&self) -> Result<String, LinearError> {
+        self.auth.header(&self.http, Instant::now())
+    }
+
+    fn set_call_deadline(&self, deadline: Option<Instant>) {
+        self.http.set_deadline(deadline)
+    }
+}
+
+// --- reading the replies ---
+
+/// Read a GraphQL reply: its `data`, or why there is none. An `errors` body is read on any
+/// status, the first error speaking for the rest: Linear's `Entity not found` is
+/// [`LinearError::NotFound`], any other a [`LinearError::Refused`] keeping its
+/// `extensions.type` (else `extensions.code`), lowercased. A non-success status with no
+/// `errors` is a [`LinearError::Status`].
+pub(crate) fn graphql_data(stage: &'static str, reply: &Reply) -> Result<Value, LinearError> {
+    let ok = (200..300).contains(&reply.status);
+    let body: Value = match serde_json::from_str(&reply.body) {
+        Ok(body) => body,
+        Err(e) if ok => {
+            return Err(LinearError::Decode {
+                stage,
+                reason: e.to_string(),
+            })
+        }
+        Err(_) => Value::Null,
+    };
+    if let Some(first) = body
+        .get("errors")
+        .and_then(Value::as_array)
+        .and_then(|errors| errors.first())
+    {
+        let message = first
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("an error with no message")
+            .to_string();
+        if message.starts_with(NOT_FOUND) {
+            return Err(LinearError::NotFound { stage, message });
+        }
+        let extension = |key: &str| first.get("extensions")?.get(key)?.as_str();
+        let kind = extension("type")
+            .or_else(|| extension("code"))
+            .unwrap_or_default()
+            .to_lowercase();
+        return Err(LinearError::Refused {
+            stage,
+            status: reply.status,
+            message,
+            kind,
+            retry_after: reply.retry_after,
+        });
+    }
+    if !ok {
+        return Err(LinearError::Status {
+            stage,
+            status: reply.status,
+            retry_after: reply.retry_after,
+        });
+    }
+    match body.get("data") {
+        Some(data) if data.is_object() => Ok(data.clone()),
+        _ => Err(LinearError::Decode {
+            stage,
+            reason: "the reply carries no data".to_string(),
+        }),
+    }
+}
+
+/// The string at `key` of `value`, or a decode error naming the key.
+fn str_at(stage: &'static str, value: &Value, key: &str) -> Result<String, LinearError> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| LinearError::Decode {
+            stage,
+            reason: format!("no string `{key}`"),
+        })
+}
+
+/// The `nodes` array of the connection at `value`, or a decode error.
+fn nodes<'a>(stage: &'static str, value: &'a Value) -> Result<&'a Vec<Value>, LinearError> {
+    value
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| LinearError::Decode {
+            stage,
+            reason: "a connection carries no `nodes`".to_string(),
+        })
+}
+
+/// The cursor of the page after the connection at `value`, `None` on its last page.
+fn next_cursor(value: &Value) -> Option<String> {
+    let page = value.get("pageInfo")?;
+    if page.get("hasNextPage").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    page.get("endCursor")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The teams of a `TeamByKey` reply.
+pub(crate) fn parse_teams(stage: &'static str, data: &Value) -> Result<Vec<Team>, LinearError> {
+    nodes(stage, &data["teams"])?
+        .iter()
+        .map(|t| {
+            Ok(Team {
+                id: str_at(stage, t, "id")?,
+                key: str_at(stage, t, "key")?,
+            })
+        })
+        .collect()
+}
+
+/// The workflow states of a `States` reply.
+pub(crate) fn parse_states(stage: &'static str, data: &Value) -> Result<Vec<State>, LinearError> {
+    nodes(stage, &data["team"]["states"])?
+        .iter()
+        .map(|s| parse_state(stage, s))
+        .collect()
+}
+
+fn parse_state(stage: &'static str, s: &Value) -> Result<State, LinearError> {
+    Ok(State {
+        id: str_at(stage, s, "id")?,
+        name: str_at(stage, s, "name")?,
+        kind: str_at(stage, s, "type")?,
+    })
+}
+
+/// One page of an `Issues` reply.
+pub(crate) fn parse_issue_page(
+    stage: &'static str,
+    data: &Value,
+) -> Result<Page<Issue>, LinearError> {
+    let connection = &data["issues"];
+    Ok(Page {
+        items: nodes(stage, connection)?
+            .iter()
+            .map(|i| parse_issue(stage, i))
+            .collect::<Result<_, _>>()?,
+        next: next_cursor(connection),
+    })
+}
+
+/// One issue node, as `Issues` selects it. Only `blocks` relations are kept, as the
+/// issue's blockers; `related`, `similar` and `duplicate` never hold an issue back.
+pub(crate) fn parse_issue(stage: &'static str, i: &Value) -> Result<Issue, LinearError> {
+    let names = |connection: &Value| -> Result<Vec<String>, LinearError> {
+        nodes(stage, connection)?
+            .iter()
+            .map(|n| str_at(stage, n, "name"))
+            .collect()
+    };
+    let id_of = |user: &Value| user.get("id").and_then(Value::as_str).map(str::to_string);
+    let parent = match &i["parent"] {
+        Value::Null => None,
+        p => Some(Related {
+            identifier: str_at(stage, p, "identifier")?,
+            title: str_at(stage, p, "title")?,
+        }),
+    };
+    let children = nodes(stage, &i["children"])?
+        .iter()
+        .map(|c| {
+            Ok(Child {
+                identifier: str_at(stage, c, "identifier")?,
+                title: str_at(stage, c, "title")?,
+                state: str_at(stage, &c["state"], "name")?,
+            })
+        })
+        .collect::<Result<_, LinearError>>()?;
+    let blockers = nodes(stage, &i["inverseRelations"])?
+        .iter()
+        .filter(|r| r.get("type").and_then(Value::as_str) == Some("blocks"))
+        .map(|r| {
+            Ok(Blocker {
+                identifier: str_at(stage, &r["issue"], "identifier")?,
+                state_kind: str_at(stage, &r["issue"]["state"], "type")?,
+            })
+        })
+        .collect::<Result<_, LinearError>>()?;
+    Ok(Issue {
+        id: str_at(stage, i, "id")?,
+        identifier: str_at(stage, i, "identifier")?,
+        title: str_at(stage, i, "title")?,
+        description: i
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        url: str_at(stage, i, "url")?,
+        state: parse_state(stage, &i["state"])?,
+        labels: names(&i["labels"])?,
+        assignee: id_of(&i["assignee"]),
+        delegate: id_of(&i["delegate"]),
+        parent,
+        children,
+        blockers,
+        sort_order: i.get("sortOrder").and_then(Value::as_f64).ok_or_else(|| {
+            LinearError::Decode {
+                stage,
+                reason: "no number `sortOrder`".to_string(),
+            }
+        })?,
+    })
+}
+
+/// One page of an `IssueComments` reply.
+pub(crate) fn parse_comment_page(
+    stage: &'static str,
+    data: &Value,
+) -> Result<Page<Comment>, LinearError> {
+    let connection = &data["issue"]["comments"];
+    Ok(Page {
+        items: nodes(stage, connection)?
+            .iter()
+            .map(|c| parse_comment(stage, c))
+            .collect::<Result<_, _>>()?,
+        next: next_cursor(connection),
+    })
+}
+
+/// One comment node. Its author is whoever Linear names: the user, else the bot actor an
+/// integration or an app without a user posts as, else the external user, else no one; and
+/// the name shown is that author's own, the user's full name before their display name.
+pub(crate) fn parse_comment(stage: &'static str, c: &Value) -> Result<Comment, LinearError> {
+    let text = |v: &Value, key: &str| {
+        v.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+    };
+    let (author, author_name) = [
+        (&c["user"], ["name", "displayName"]),
+        (&c["botActor"], ["name", "name"]),
+        (&c["externalUser"], ["name", "name"]),
+    ]
+    .into_iter()
+    .find_map(|(who, names)| {
+        let id = text(who, "id")?;
+        let name = text(who, names[0]).or_else(|| text(who, names[1]));
+        Some((id.clone(), name.unwrap_or(id)))
+    })
+    .unwrap_or_default();
+    let time = |key: &str| {
+        c.get(key)
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_millis)
+    };
+    let posted_at: SystemTime = time("createdAt").ok_or_else(|| LinearError::Decode {
+        stage,
+        reason: "a comment carries no readable `createdAt`".to_string(),
+    })?;
+    Ok(Comment {
+        id: str_at(stage, c, "id")?,
+        text: str_at(stage, c, "body")?,
+        author,
+        author_name,
+        posted_at,
+        renewed_at: time("editedAt").unwrap_or(posted_at),
+    })
+}
+
+/// The user ids of a `Users` reply.
+pub(crate) fn parse_user_ids(
+    stage: &'static str,
+    data: &Value,
+) -> Result<Vec<String>, LinearError> {
+    nodes(stage, &data["users"])?
+        .iter()
+        .map(|u| str_at(stage, u, "id"))
+        .collect()
+}
+
+/// The labels of a `Labels` reply, each with its team's id, `None` for a workspace label.
+pub(crate) fn parse_labels(
+    stage: &'static str,
+    data: &Value,
+) -> Result<Vec<(String, Option<String>)>, LinearError> {
+    nodes(stage, &data["issueLabels"])?
+        .iter()
+        .map(|l| {
+            let team = l["team"]
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok((str_at(stage, l, "id")?, team))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdl::Sdl;
+    use crate::settings::AuthConfig;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread::JoinHandle;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn sdl() -> Sdl {
+        Sdl::parse(include_str!("../tests/schema.graphql")).expect("the excerpt parses")
+    }
+
+    /// Every operation the plugin can send, by name: the whole of `operations.graphql`.
+    const NAMES: &[&str] = &[
+        "Viewer",
+        "TeamByKey",
+        "States",
+        "Issues",
+        "IssueComments",
+        "Users",
+        "Labels",
+        "CommentCreate",
+        "CommentUpdate",
+        "CommentDelete",
+        "IssueAddLabel",
+        "IssueRemoveLabel",
+        "IssueLabelCreate",
+        "IssueUpdate",
+    ];
+
+    /// Every document conforms to Linear's schema — its selection, its variable types and
+    /// their use, every argument and inline literal at every depth — and is named as the
+    /// client sends it.
+    #[test]
+    fn every_operation_conforms_to_linears_schema() {
+        let sdl = sdl();
+        assert_eq!(
+            operations()
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            NAMES
+        );
+        for (name, document) in operations() {
+            let checked = sdl
+                .check_document(document)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(checked.name, *name);
+        }
+        assert_eq!(
+            operation("Viewer"),
+            Some("query Viewer {\n  viewer {\n    id\n  }\n}")
+        );
+        assert_eq!(operation("Viewr"), None);
+    }
+
+    /// Every variables builder, on realistic arguments — wide names, an email, a cursor and
+    /// none, a sort order of 0 and of 1e15 — sends exactly what its operation declares, and
+    /// every operation that declares a variable is reached by one.
+    #[test]
+    fn every_variables_builder_conforms_to_its_operation() {
+        let sdl = sdl();
+        let team = "6f5e4d3c-2b1a-4098-8f7e-6d5c4b3a2918";
+        let state = "1a2b3c4d-5e6f-4708-9a1b-2c3d4e5f6a7b";
+        let issue = "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+        let cursor = Some("eyJpZCI6IjBmNmMxZDJlIn0=");
+        let rows: Vec<(&str, Value)> = vec![
+            ("Viewer", json!({})),
+            ("TeamByKey", team_by_key_vars("ENG")),
+            ("TeamByKey", team_by_key_vars("ÅÄÖ")),
+            ("States", states_vars(team)),
+            ("Issues", issues_in_state_vars(team, state, None)),
+            ("Issues", issues_in_state_vars(team, state, cursor)),
+            ("Issues", parked_vars(team, "Awaiting Reply", None)),
+            ("Issues", parked_vars(team, "Väntar på svar 🚦", cursor)),
+            ("Issues", last_in_state_vars(team, state)),
+            ("IssueComments", comments_vars(issue, None)),
+            ("IssueComments", comments_vars(issue, cursor)),
+            ("Users", users_vars("陳大文")),
+            ("Users", users_vars("chen@acme.example")),
+            ("Labels", labels_vars("Awaiting Reply")),
+            (
+                "CommentCreate",
+                comment_create_vars(issue, "[afkd-claim] owner=afkd-4242"),
+            ),
+            (
+                "CommentCreate",
+                comment_create_vars(issue, "看起来不对 🚨\n\n```\nx\n```"),
+            ),
+            (
+                "CommentUpdate",
+                comment_update_vars(issue, "[afkd-claim] owner=a renewal=3"),
+            ),
+            ("CommentDelete", comment_delete_vars(issue)),
+            ("IssueAddLabel", issue_label_vars(issue, state)),
+            ("IssueRemoveLabel", issue_label_vars(issue, state)),
+            (
+                "IssueLabelCreate",
+                label_create_vars("Awaiting Reply", team),
+            ),
+            ("IssueUpdate", move_vars(issue, state, 0.0)),
+            ("IssueUpdate", move_vars(issue, state, 1e15)),
+        ];
+        for (name, vars) in &rows {
+            let declared = sdl
+                .check_document(operation(name).expect("a known operation"))
+                .unwrap()
+                .variables;
+            sdl.check_variables(&declared, vars)
+                .unwrap_or_else(|e| panic!("{name} {vars}: {e}"));
+        }
+        for (name, document) in operations() {
+            let declares = !sdl.check_document(document).unwrap().variables.is_empty();
+            assert!(
+                !declares || rows.iter().any(|(row, _)| row == name),
+                "no builder reaches {name}"
+            );
+        }
+    }
+
+    /// The parked sweep asks for issues with *a* label of the name — the collection filter's
+    /// `some` — and a state scan for the state's issues in manual order; both page 25 at a
+    /// time. The put-back reads the state's last issue.
+    #[test]
+    fn the_issue_filters_are_the_ones_the_scan_means() {
+        assert_eq!(
+            parked_vars("t", "Awaiting Reply", None),
+            json!({
+                "filter": {"team": {"id": {"eq": "t"}},
+                           "labels": {"some": {"name": {"eq": "Awaiting Reply"}}}},
+                "sort": [{"manual": {"order": "Ascending"}}],
+                "first": 25,
+                "after": null,
+            })
+        );
+        assert_eq!(
+            issues_in_state_vars("t", "s", Some("c")),
+            json!({
+                "filter": {"team": {"id": {"eq": "t"}}, "state": {"id": {"eq": "s"}}},
+                "sort": [{"manual": {"order": "Ascending"}}],
+                "first": 25,
+                "after": "c",
+            })
+        );
+        assert_eq!(
+            last_in_state_vars("t", "s"),
+            json!({
+                "filter": {"team": {"id": {"eq": "t"}}, "state": {"id": {"eq": "s"}}},
+                "sort": [{"manual": {"order": "Descending"}}],
+                "first": 1,
+            })
+        );
+        assert_eq!(
+            move_vars("i", "s", 1012.5),
+            json!({"id": "i", "input": {"stateId": "s", "sortOrder": 1012.5}})
+        );
+    }
+
+    fn reply(status: u16, retry_after: Option<u64>, body: &str) -> Reply {
+        Reply {
+            status,
+            retry_after: retry_after.map(Duration::from_secs),
+            body: body.to_string(),
+        }
+    }
+
+    /// Linear's refusals, each as it arrives: an `errors` body on a 200 and on a 400 (an
+    /// invalid document), a rate limit with its wait, a missing entity, a gateway's HTML,
+    /// and a 200 that is not JSON or carries no data.
+    #[test]
+    fn a_reply_is_read_for_errors_before_its_data() {
+        let stage = "read issues";
+        let e = graphql_data(
+            stage,
+            &reply(
+                200,
+                None,
+                r#"{"data":null,"errors":[{"message":"Argument Validation Error","extensions":{"type":"invalid input","code":"INVALID_INPUT","userPresentableMessage":"x"}}]}"#,
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            LinearError::Refused {
+                stage,
+                status: 200,
+                message: "Argument Validation Error".into(),
+                kind: "invalid input".into(),
+                retry_after: None,
+            }
+        );
+        assert!(!e.transient());
+
+        let e = graphql_data(
+            stage,
+            &reply(
+                400,
+                None,
+                r#"{"errors":[{"message":"Cannot query field \"stateID\" on type \"IssueUpdateInput\".","extensions":{"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error"}}]}"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(!e.transient(), "a refused document is the caller's: {e}");
+        assert_eq!(
+            e.to_string(),
+            "linear read issues: Linear refused it (400): Cannot query field \"stateID\" on type \
+             \"IssueUpdateInput\"."
+        );
+
+        let e = graphql_data(
+            stage,
+            &reply(
+                429,
+                Some(7),
+                r#"{"errors":[{"message":"Rate limit exceeded","extensions":{"code":"RATELIMITED"}}]}"#,
+            ),
+        )
+        .unwrap_err();
+        assert!(e.transient());
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(7)));
+        assert!(matches!(&e, LinearError::Refused { kind, .. } if kind == "ratelimited"));
+
+        assert_eq!(
+            graphql_data(
+                "delete comment",
+                &reply(200, None, r#"{"errors":[{"message":"Entity not found: Comment","extensions":{"type":"invalid input"}}]}"#)
+            )
+            .unwrap_err(),
+            LinearError::NotFound {
+                stage: "delete comment",
+                message: "Entity not found: Comment".into()
+            }
+        );
+        let e = graphql_data(stage, &reply(502, None, "<html>Bad Gateway</html>")).unwrap_err();
+        assert_eq!(
+            e,
+            LinearError::Status {
+                stage,
+                status: 502,
+                retry_after: None
+            }
+        );
+        assert!(e.transient());
+        assert!(matches!(
+            graphql_data(stage, &reply(200, None, "<html>")),
+            Err(LinearError::Decode { .. })
+        ));
+        assert!(matches!(
+            graphql_data(stage, &reply(200, None, r#"{"data":null}"#)),
+            Err(LinearError::Decode { .. })
+        ));
+        assert_eq!(
+            graphql_data(
+                stage,
+                &reply(200, None, r#"{"data":{"viewer":{"id":"u"}}}"#)
+            )
+            .unwrap(),
+            json!({"viewer": {"id": "u"}})
+        );
+    }
+
+    /// An issue node as Linear sends one: wide text, a null description, assignee, delegate
+    /// and parent, its children's states, and relations of every type, only `blocks` kept.
+    #[test]
+    fn an_issue_reads_with_its_family_and_only_its_blocking_relations() {
+        let data = json!({"issues": {
+            "nodes": [{
+                "id": "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5",
+                "identifier": "ENG-421",
+                "title": "修复 the retry storm 🚨 — \"backoff\" resets",
+                "description": null,
+                "url": "https://linear.app/acme/issue/ENG-421/retry-storm",
+                "sortOrder": -1234.5,
+                "state": {"id": "s1", "name": "Todo ✏️", "type": "unstarted"},
+                "labels": {"nodes": [{"name": "afkd/ready"}, {"name": "Väntar på svar"}]},
+                "assignee": null,
+                "delegate": {"id": "app-user"},
+                "parent": null,
+                "children": {"nodes": [
+                    {"identifier": "ENG-422", "title": "子任务 one", "state": {"name": "Done"}},
+                ]},
+                "inverseRelations": {"nodes": [
+                    {"type": "blocks", "issue": {"identifier": "ENG-399", "state": {"type": "started"}}},
+                    {"type": "related", "issue": {"identifier": "ENG-12", "state": {"type": "backlog"}}},
+                    {"type": "duplicate", "issue": {"identifier": "ENG-13", "state": {"type": "backlog"}}},
+                    {"type": "blocks", "issue": {"identifier": "ENG-398", "state": {"type": "canceled"}}},
+                ]},
+            }],
+            "pageInfo": {"hasNextPage": true, "endCursor": "c2"},
+        }});
+        let page = parse_issue_page("read issues", &data).unwrap();
+        assert_eq!(page.next.as_deref(), Some("c2"));
+        let issue = &page.items[0];
+        assert_eq!(issue.title, "修复 the retry storm 🚨 — \"backoff\" resets");
+        assert_eq!(issue.description, "");
+        assert_eq!(issue.state.kind, "unstarted");
+        assert_eq!(issue.labels, ["afkd/ready", "Väntar på svar"]);
+        assert_eq!(
+            (issue.assignee.as_deref(), issue.delegate.as_deref()),
+            (None, Some("app-user"))
+        );
+        assert_eq!(issue.parent, None);
+        assert_eq!(
+            issue.children,
+            [Child {
+                identifier: "ENG-422".into(),
+                title: "子任务 one".into(),
+                state: "Done".into()
+            }]
+        );
+        assert_eq!(
+            issue.blockers,
+            [
+                Blocker {
+                    identifier: "ENG-399".into(),
+                    state_kind: "started".into()
+                },
+                Blocker {
+                    identifier: "ENG-398".into(),
+                    state_kind: "canceled".into()
+                },
+            ]
+        );
+        assert_eq!(issue.sort_order, -1234.5);
+
+        let mut broken = data.clone();
+        broken["issues"]["nodes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("identifier");
+        assert_eq!(
+            parse_issue_page("read issues", &broken)
+                .unwrap_err()
+                .to_string(),
+            "linear read issues: undecodable response (no string `identifier`)"
+        );
+        let last =
+            json!({"issues": {"nodes": [], "pageInfo": {"hasNextPage": false, "endCursor": null}}});
+        assert_eq!(parse_issue_page("read issues", &last).unwrap().next, None);
+    }
+
+    /// A comment's author is its user, else its bot actor, else its external user, else
+    /// nobody, and its name is that author's own; its times are read to the millisecond.
+    #[test]
+    fn a_comments_author_is_the_user_the_bot_or_the_external_user() {
+        let comment = |extra: Value| {
+            let mut c = json!({
+                "id": "c1", "body": "看起来不对 🚨", "createdAt": "2026-10-27T09:58:00.087Z",
+                "editedAt": null, "user": null, "botActor": null, "externalUser": null,
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                c[k] = v.clone();
+            }
+            parse_comment("read comments", &c).unwrap()
+        };
+        let human =
+            comment(json!({"user": {"id": "u-chen", "name": "陳大文", "displayName": "chen"}}));
+        assert_eq!(
+            (human.author.as_str(), human.author_name.as_str()),
+            ("u-chen", "陳大文")
+        );
+        let handle = comment(json!({"user": {"id": "u-phil", "name": " ", "displayName": "phil"}}));
+        assert_eq!(handle.author_name, "phil");
+        let bot = comment(json!({"botActor": {"id": "bot-afkd", "name": "afkd"}}));
+        assert_eq!(
+            (bot.author.as_str(), bot.author_name.as_str()),
+            ("bot-afkd", "afkd")
+        );
+        let nameless_bot = comment(json!({"botActor": {"id": null, "name": "Zapier"}}));
+        assert_eq!(
+            (
+                nameless_bot.author.as_str(),
+                nameless_bot.author_name.as_str()
+            ),
+            ("", "")
+        );
+        let external = comment(json!({"externalUser": {"id": "x-1", "name": "Álvaro (Slack)"}}));
+        assert_eq!(external.author, "x-1");
+        let posted = UNIX_EPOCH + Duration::from_millis(1_793_095_080_087);
+        assert_eq!((human.posted_at, human.renewed_at), (posted, posted));
+        let edited = comment(json!({"editedAt": "2026-10-27T10:03:00.500Z"}));
+        assert_eq!(
+            edited.renewed_at,
+            UNIX_EPOCH + Duration::from_millis(1_793_095_380_500)
+        );
+        let mut undated = json!({"id": "c1", "body": "x", "createdAt": "yesterday"});
+        undated["user"] = Value::Null;
+        assert!(parse_comment("read comments", &undated).is_err());
+    }
+
+    // --- over a loopback stub ---
+
+    /// What the stub saw for one request.
+    struct Captured {
+        path: String,
+        headers: Vec<String>,
+        body: String,
+    }
+
+    impl Captured {
+        fn header(&self, name: &str) -> Option<String> {
+            let want = format!("{}:", name.to_ascii_lowercase());
+            self.headers.iter().find_map(|h| {
+                h.to_ascii_lowercase()
+                    .strip_prefix(&want)
+                    .map(|_| h[want.len()..].trim().to_string())
+            })
+        }
+
+        fn json(&self) -> Value {
+            serde_json::from_str(&self.body).expect("a JSON body")
+        }
+    }
+
+    /// A stub serving `responses` in order, one per connection, each closed after its reply.
+    struct Stub {
+        base: String,
+        handle: Option<JoinHandle<()>>,
+        rx: mpsc::Receiver<Captured>,
+    }
+
+    impl Stub {
+        fn serve(responses: Vec<String>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let port = listener.local_addr().unwrap().port();
+            let (tx, rx) = mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                for response in responses {
+                    let (mut stream, _) = listener.accept().expect("accept");
+                    let captured = read_request(&stream);
+                    stream.write_all(response.as_bytes()).expect("write reply");
+                    tx.send(captured).ok();
+                }
+            });
+            Self {
+                base: format!("http://127.0.0.1:{port}"),
+                handle: Some(handle),
+                rx,
+            }
+        }
+
+        fn client(&self, auth: AuthConfig) -> LinearClient {
+            LinearClient::new(&self.base, Arc::new(Auth::new(&auth)))
+        }
+
+        fn captured(self, n: usize) -> Vec<Captured> {
+            let captured = (0..n)
+                .map(|_| self.rx.recv().expect("the stub captured a request"))
+                .collect();
+            if let Some(h) = self.handle {
+                let _ = h.join();
+            }
+            captured
+        }
+    }
+
+    fn read_request(stream: &std::net::TcpStream) -> Captured {
+        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut start = String::new();
+        reader.read_line(&mut start).expect("read start line");
+        let path = start.split(' ').nth(1).unwrap_or("").to_string();
+        let mut headers = Vec::new();
+        let mut length = 0usize;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read header");
+            let line = line.trim_end().to_string();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(rest) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = rest.trim().parse().unwrap_or(0);
+            }
+            headers.push(line);
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body).expect("read body");
+        Captured {
+            path,
+            headers,
+            body: String::from_utf8_lossy(&body).into_owned(),
+        }
+    }
+
+    /// A raw HTTP reply with a JSON body, its connection closed.
+    fn http(status: u16, extra: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n{extra}\r\n{body}",
+            body.len()
+        )
+    }
+
+    const UNAUTHORIZED: &str = r#"{"errors":[{"message":"Authentication required, not authenticated","extensions":{"type":"authentication error","code":"AUTHENTICATION_ERROR"}}]}"#;
+
+    fn app() -> AuthConfig {
+        AuthConfig::App {
+            client_id: "app-id-7f3a".into(),
+            client_secret: "app secret&=9c1e".into(),
+        }
+    }
+
+    fn token(n: u32) -> String {
+        http(
+            200,
+            "",
+            &format!(
+                r#"{{"access_token":"tok-{n}","token_type":"Bearer","expires_in":2591999,"scope":"read write"}}"#
+            ),
+        )
+    }
+
+    /// An API key goes out bare, with the named operation, its document and its variables,
+    /// to the GraphQL endpoint.
+    #[test]
+    fn an_api_key_is_sent_bare_with_the_named_operation() {
+        let stub = Stub::serve(vec![http(200, "", r#"{"data":{"viewer":{"id":"u-me"}}}"#)]);
+        let client = stub.client(AuthConfig::ApiKey("lin_api_7f3a".into()));
+        assert_eq!(client.viewer().unwrap(), "u-me");
+        assert_eq!(client.viewer().unwrap(), "u-me", "kept, not asked again");
+        let [seen] = <[Captured; 1]>::try_from(stub.captured(1)).ok().unwrap();
+        assert_eq!(seen.path, "/graphql");
+        assert_eq!(
+            seen.header("authorization").as_deref(),
+            Some("lin_api_7f3a")
+        );
+        assert_eq!(
+            seen.json(),
+            json!({"operationName": "Viewer", "query": operation("Viewer").unwrap(), "variables": {}})
+        );
+    }
+
+    /// An app trades its id and secret for a token with the `client_credentials` grant and
+    /// the fixed scope, form-encoded, and sends it as `Bearer`; the token is kept for the
+    /// next request.
+    #[test]
+    fn an_app_fetches_a_token_and_sends_it_as_bearer() {
+        let stub = Stub::serve(vec![
+            token(1),
+            http(200, "", r#"{"data":{"viewer":{"id":"app-user"}}}"#),
+            http(200, "", r#"{"data":{"commentDelete":{"success":true}}}"#),
+        ]);
+        let client = stub.client(app());
+        assert_eq!(client.viewer().unwrap(), "app-user");
+        client.delete_comment("c1").unwrap();
+        let seen = stub.captured(3);
+        assert_eq!(seen[0].path, "/oauth/token");
+        assert_eq!(
+            seen[0].header("content-type").as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
+        assert_eq!(
+            seen[0].body,
+            "grant_type=client_credentials&scope=read%2Cwrite%2Capp%3Aassignable%2Capp%3Amentionable\
+             &client_id=app-id-7f3a&client_secret=app+secret%26%3D9c1e"
+        );
+        assert_eq!(seen[0].header("authorization"), None);
+        for request in &seen[1..] {
+            assert_eq!(
+                request.header("authorization").as_deref(),
+                Some("Bearer tok-1")
+            );
+        }
+    }
+
+    /// A token Linear refuses is dropped and fetched again, and the request sent once more;
+    /// refused a second time, it is the caller's error. An API key is never retried.
+    #[test]
+    fn a_refused_token_is_fetched_again_and_the_request_retried_once() {
+        let stub = Stub::serve(vec![
+            token(1),
+            http(401, "", UNAUTHORIZED),
+            token(2),
+            http(200, "", r#"{"data":{"commentDelete":{"success":true}}}"#),
+            http(401, "", UNAUTHORIZED),
+            token(3),
+            http(401, "", UNAUTHORIZED),
+        ]);
+        let client = stub.client(app());
+        client.delete_comment("c1").unwrap();
+        let e = client.delete_comment("c2").unwrap_err();
+        assert!(
+            matches!(&e, LinearError::Refused { status: 401, .. }),
+            "{e}"
+        );
+        let seen = stub.captured(7);
+        let auth: Vec<String> = seen
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} {}",
+                    r.path,
+                    r.header("authorization").unwrap_or_default()
+                )
+            })
+            .collect();
+        assert_eq!(
+            auth,
+            [
+                "/oauth/token ",
+                "/graphql Bearer tok-1",
+                "/oauth/token ",
+                "/graphql Bearer tok-2",
+                "/graphql Bearer tok-2",
+                "/oauth/token ",
+                "/graphql Bearer tok-3",
+            ]
+        );
+
+        let stub = Stub::serve(vec![http(401, "", UNAUTHORIZED)]);
+        let client = stub.client(AuthConfig::ApiKey("lin_api_revoked".into()));
+        assert!(client.delete_comment("c1").is_err());
+        assert_eq!(stub.captured(1).len(), 1, "a key is asked once");
+    }
+
+    /// A document Linear refuses as invalid is the caller's error, never a retry, and so is
+    /// the same refusal on a 200; a 429's wait is read off its header.
+    #[test]
+    fn a_refused_document_is_the_callers_error() {
+        let invalid = r#"{"errors":[{"message":"Unknown argument \"frist\" on field \"Issue.comments\".","extensions":{"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error"}}]}"#;
+        let stub = Stub::serve(vec![
+            http(400, "", invalid),
+            http(200, "", invalid),
+            http(
+                429,
+                "Retry-After: 7\r\n",
+                r#"{"errors":[{"message":"Rate limit exceeded","extensions":{"code":"RATELIMITED"}}]}"#,
+            ),
+        ]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        for status in [400, 200] {
+            let e = client.issue_comments("i").unwrap_err();
+            assert!(
+                matches!(&e, LinearError::Refused { status: s, kind, .. } if *s == status && kind == "graphql error"),
+                "{e}"
+            );
+            assert!(!e.transient());
+        }
+        let e = client.delete_comment("c").unwrap_err();
+        assert!(e.transient());
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(7)));
+        assert_eq!(stub.captured(3).len(), 3, "nothing retried inline");
+    }
+
+    /// A user is resolved by display name or email, exactly one: none, or two, is a refusal
+    /// naming the name; `me` is the viewer.
+    #[test]
+    fn a_user_resolves_to_exactly_one() {
+        let users = |ids: &[&str]| {
+            let nodes: Vec<Value> = ids.iter().map(|id| json!({"id": id})).collect();
+            http(
+                200,
+                "",
+                &json!({"data": {"users": {"nodes": nodes}}}).to_string(),
+            )
+        };
+        let stub = Stub::serve(vec![
+            users(&["u-chen"]),
+            users(&[]),
+            users(&["u-a", "u-b"]),
+            http(200, "", r#"{"data":{"viewer":{"id":"u-me"}}}"#),
+        ]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        let named = |n: &str| MemberRef::Named(n.into());
+        assert_eq!(client.resolve_user(&named("陳大文")).unwrap(), "u-chen");
+        assert_eq!(
+            client
+                .resolve_user(&named("nobody@acme.example"))
+                .unwrap_err()
+                .to_string(),
+            "linear resolve user: no user whose display name or email is 'nobody@acme.example'"
+        );
+        assert_eq!(
+            client.resolve_user(&named("alex")).unwrap_err().to_string(),
+            "linear resolve user: no one user whose display name or email is 'alex': more \
+             than one is; name them by email"
+        );
+        assert_eq!(client.resolve_user(&MemberRef::Me).unwrap(), "u-me");
+        let seen = stub.captured(4);
+        assert_eq!(seen[0].json()["variables"], users_vars("陳大文"));
+    }
+
+    /// The badge goes on as the team's own label before a workspace one of the same name, a
+    /// label is created for the team when there is neither, and taking off a label no one
+    /// made is a no-op.
+    #[test]
+    fn a_label_is_the_teams_then_the_workspaces_then_a_new_one() {
+        let labels = |nodes: Value| {
+            http(
+                200,
+                "",
+                &json!({"data": {"issueLabels": {"nodes": nodes}}}).to_string(),
+            )
+        };
+        let ok = |field: &str| {
+            http(
+                200,
+                "",
+                &json!({"data": {field: {"success": true}}}).to_string(),
+            )
+        };
+        let stub = Stub::serve(vec![
+            labels(json!([
+                {"id": "l-ws", "team": null},
+                {"id": "l-other", "team": {"id": "t-other"}},
+                {"id": "l-eng", "team": {"id": "t-eng"}},
+            ])),
+            ok("issueAddLabel"),
+            labels(
+                json!([{"id": "l-other", "team": {"id": "t-other"}}, {"id": "l-ws", "team": null}]),
+            ),
+            ok("issueAddLabel"),
+            labels(json!([{"id": "l-other", "team": {"id": "t-other"}}])),
+            http(
+                200,
+                "",
+                r#"{"data":{"issueLabelCreate":{"success":true,"issueLabel":{"id":"l-new"}}}}"#,
+            ),
+            ok("issueAddLabel"),
+            labels(json!([])),
+        ]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        for _ in 0..3 {
+            client.add_label("t-eng", "i-1", "Awaiting Reply").unwrap();
+        }
+        client
+            .remove_label("t-eng", "i-1", "Awaiting Reply")
+            .unwrap();
+        let seen = stub.captured(8);
+        let sent: Vec<(String, Value)> = seen
+            .iter()
+            .map(|r| {
+                (
+                    r.json()["operationName"].as_str().unwrap().to_string(),
+                    r.json()["variables"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            sent[1],
+            ("IssueAddLabel".into(), issue_label_vars("i-1", "l-eng"))
+        );
+        assert_eq!(
+            sent[3],
+            ("IssueAddLabel".into(), issue_label_vars("i-1", "l-ws"))
+        );
+        assert_eq!(
+            sent[5],
+            (
+                "IssueLabelCreate".into(),
+                label_create_vars("Awaiting Reply", "t-eng")
+            )
+        );
+        assert_eq!(
+            sent[6],
+            ("IssueAddLabel".into(), issue_label_vars("i-1", "l-new"))
+        );
+        assert_eq!(sent[7].0, "Labels", "a missing label is not taken off");
+    }
+
+    /// A put-back goes below the state's last issue, and to 1000 in a state that is empty.
+    #[test]
+    fn a_put_back_goes_below_the_states_last_issue() {
+        let last = |nodes: Value| {
+            http(200, "", &json!({"data": {"issues": {"nodes": nodes, "pageInfo": {"hasNextPage": false, "endCursor": null}}}}).to_string())
+        };
+        let node = json!({
+            "id": "i-9", "identifier": "ENG-9", "title": "t", "description": "", "url": "u",
+            "sortOrder": 12.5, "state": {"id": "s", "name": "Todo", "type": "unstarted"},
+            "labels": {"nodes": []}, "assignee": null, "delegate": null, "parent": null,
+            "children": {"nodes": []}, "inverseRelations": {"nodes": []},
+        });
+        let ok = http(200, "", r#"{"data":{"issueUpdate":{"success":true}}}"#);
+        let stub = Stub::serve(vec![last(json!([node])), ok.clone(), last(json!([])), ok]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        client.move_to_bottom("t", "i-1", "s").unwrap();
+        client.move_to_bottom("t", "i-1", "s").unwrap();
+        let seen = stub.captured(4);
+        assert_eq!(seen[0].json()["variables"], last_in_state_vars("t", "s"));
+        assert_eq!(seen[1].json()["variables"], move_vars("i-1", "s", 1012.5));
+        assert_eq!(seen[3].json()["variables"], move_vars("i-1", "s", 1000.0));
+    }
+
+    /// Comments are read to the last page, each page's cursor sent with the next.
+    #[test]
+    fn comments_are_read_to_the_last_page() {
+        let page = |ids: &[&str], next: Option<&str>| {
+            let nodes: Vec<Value> = ids
+                .iter()
+                .map(|id| json!({"id": id, "body": "b", "createdAt": "2026-10-27T09:58:00Z",
+                                 "editedAt": null, "user": {"id": "u", "name": "n", "displayName": "d"},
+                                 "botActor": null, "externalUser": null}))
+                .collect();
+            http(
+                200,
+                "",
+                &json!({"data": {"issue": {"comments": {"nodes": nodes,
+                "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next}}}}})
+                .to_string(),
+            )
+        };
+        let stub = Stub::serve(vec![page(&["c1", "c2"], Some("k1")), page(&["c3"], None)]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        let ids: Vec<String> = client
+            .issue_comments("i")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, ["c1", "c2", "c3"]);
+        let seen = stub.captured(2);
+        assert_eq!(seen[0].json()["variables"], comments_vars("i", None));
+        assert_eq!(seen[1].json()["variables"], comments_vars("i", Some("k1")));
+    }
+}

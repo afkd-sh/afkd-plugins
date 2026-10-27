@@ -1,0 +1,1422 @@
+//! A stateful fake Linear on a loopback socket: the GraphQL endpoint and the token endpoint
+//! the plugin's client calls, over a team's states, users, labels, issues, relations and
+//! comments the test seeds and then reads back. std and `serde_json` only, and nothing from
+//! the plugin crate, so another suite can `#[path]`-include it.
+//!
+//! **Every request is held to Linear's schema before it is answered.** A `POST /graphql` is
+//! checked by `sdl.rs` against `tests/schema.graphql` — its document, and its variables
+//! against the variables the document declares — and its document must be, whitespace
+//! aside, the one `src/operations.graphql` holds under its `operationName`. One that fails
+//! is answered as Linear answers an invalid request, a 400 with a `graphql error`, and is
+//! recorded in [`FakeLinear::invalid_requests`], which every leg holds empty. Past that,
+//! only the filter paths the plugin means are answered: an `Issues` filter on anything but
+//! the team's id, a state's id or the name of *some* label is refused the same way, even
+//! where the schema allows it.
+//!
+//! The rest is what Linear does that the plugin depends on: an API key is sent bare and an
+//! app's token as `Bearer`, from the `client_credentials` grant with the plugin's scope, and
+//! lasts as long as the fake says; anything else is a 401 `authentication error`. Ids are
+//! uuids minted in no order, and times come off the real clock to the millisecond (a claim's
+//! liveness is judged against the wall clock). A state's issues come back in their manual
+//! order, comments newest first, an edit stamps `editedAt`, a missing id is Linear's
+//! `Entity not found`. Every request is recorded, and an operation can be rate limited with
+//! a `Retry-After`, made to answer a status, or the whole fake taken out of reach.
+
+#![allow(dead_code)]
+
+#[path = "sdl.rs"]
+mod sdl;
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde_json::{json, Value};
+
+use sdl::Sdl;
+
+/// The API key every request may carry as it is.
+pub const API_KEY: &str = "lin_api_7f3aK9c1eQ2w";
+
+/// The OAuth app's credentials, which the token endpoint trades for a token.
+pub const CLIENT_ID: &str = "app-id-7f3a9c1e";
+pub const CLIENT_SECRET: &str = "app-secret-4b8d&=/2e";
+
+/// The scope an app's token must be asked for.
+pub const SCOPE: &str = "read,write,app:assignable,app:mentionable";
+
+/// The team every issue is in, by key.
+pub const TEAM: &str = "ENG";
+
+/// The schema every request is held to.
+const SCHEMA: &str = include_str!("../schema.graphql");
+
+/// The operations the plugin sends, as it writes them.
+const OPERATIONS: &str = include_str!("../../src/operations.graphql");
+
+/// Who wrote a comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Author {
+    /// A user, by id.
+    User(String),
+    /// A bot actor: an app's comments, when the fake says so ([`FakeLinear::comments_as_bot`]).
+    Bot(String),
+    /// An external user, by id.
+    External(String),
+}
+
+impl Author {
+    /// The id the plugin reads the author by.
+    pub fn id(&self) -> &str {
+        match self {
+            Author::User(id) | Author::Bot(id) | Author::External(id) => id,
+        }
+    }
+}
+
+/// A comment on an issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub id: String,
+    pub issue: String,
+    pub author: Author,
+    pub body: String,
+    /// When it was posted, in epoch milliseconds.
+    pub created: u64,
+    /// When it was last edited, once edited.
+    pub edited: Option<u64>,
+}
+
+/// One request as the fake saw it.
+#[derive(Debug, Clone)]
+pub struct Seen {
+    pub path: String,
+    /// The operation's name, `""` for the token endpoint.
+    pub operation: String,
+    pub variables: Value,
+    pub authorization: Option<String>,
+    /// The form body, for the token endpoint.
+    pub form: String,
+    pub at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct User {
+    id: String,
+    name: String,
+    display_name: String,
+    email: String,
+}
+
+#[derive(Debug, Clone)]
+struct State {
+    id: String,
+    name: String,
+    kind: String,
+}
+
+#[derive(Debug, Clone)]
+struct Label {
+    id: String,
+    name: String,
+    /// `None` for a workspace label.
+    team: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct Issue {
+    id: String,
+    number: u32,
+    title: String,
+    description: Option<String>,
+    state: String,
+    labels: Vec<String>,
+    assignee: Option<String>,
+    delegate: Option<String>,
+    parent: Option<String>,
+    sort_order: f64,
+}
+
+#[derive(Debug, Clone)]
+struct Token {
+    value: String,
+    expires: Instant,
+    revoked: bool,
+}
+
+#[derive(Default)]
+struct Store {
+    counter: u64,
+    team_id: String,
+    key_user: String,
+    app_user: String,
+    users: Vec<User>,
+    states: Vec<State>,
+    labels: Vec<Label>,
+    issues: Vec<Issue>,
+    /// `(blocker, blocked, type)`.
+    relations: Vec<(String, String, String)>,
+    comments: Vec<Comment>,
+    tokens: Vec<Token>,
+    token_lifetime: u64,
+    token_fetches: usize,
+    /// Whether the app's comments are authored by its bot actor rather than its user.
+    bot_comments: bool,
+    bot_id: String,
+    /// An operation → how many more requests to rate limit, and the wait to ask for.
+    rate_limits: HashMap<String, (u32, u64)>,
+    /// An operation → the status it answers instead.
+    faults: HashMap<String, u16>,
+    /// Operations answered as Linear answers a document it refuses.
+    refused: Vec<String>,
+    /// A comment post whose body contains this answers the status instead.
+    post_faults: Vec<(String, u16)>,
+    /// Issues on which the next claim post is raced by a rival.
+    races: Vec<String>,
+    /// The page size of an issue's comments.
+    comments_page: usize,
+    seen: Vec<Seen>,
+    invalid: Vec<String>,
+    down: bool,
+    dropped: Vec<Seen>,
+}
+
+/// The wall clock now, in epoch milliseconds.
+pub fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// RFC 3339, UTC, to the millisecond, as Linear writes a time.
+pub fn stamp(ms: u64) -> String {
+    let (secs, millis) = (ms / 1000, ms % 1000);
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        rem / 3_600,
+        (rem % 3_600) / 60,
+        rem % 60
+    )
+}
+
+/// RFC 3339, UTC, to the second — the shape a `comments` reply's `at` takes.
+pub fn utc(ms: u64) -> String {
+    stamp(ms - ms % 1000).replace(".000Z", "Z")
+}
+
+impl Store {
+    /// A fresh uuid, its bits a hash of a counter, so ids carry no order.
+    fn mint(&mut self) -> String {
+        self.counter += 1;
+        let mut x = self.counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut word = || {
+            x ^= x >> 30;
+            x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            x ^= x >> 27;
+            x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+            x ^= x >> 31;
+            x
+        };
+        let (a, b) = (word(), word());
+        format!(
+            "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+            a >> 32,
+            (a >> 16) & 0xffff,
+            a & 0xfff,
+            0x8000 | ((b >> 48) & 0x3fff),
+            b & 0xffff_ffff_ffff
+        )
+    }
+
+    fn user(&self, id: &str) -> Option<&User> {
+        self.users.iter().find(|u| u.id == id)
+    }
+
+    fn state(&self, id: &str) -> Option<&State> {
+        self.states.iter().find(|s| s.id == id)
+    }
+
+    fn issue_at(&self, id: &str) -> Option<usize> {
+        self.issues.iter().position(|i| i.id == id)
+    }
+
+    fn identifier(&self, issue: &Issue) -> String {
+        format!("{TEAM}-{}", issue.number)
+    }
+
+    fn state_json(&self, id: &str) -> Value {
+        let s = self.state(id).expect("a seeded state");
+        json!({"id": s.id, "name": s.name, "type": s.kind})
+    }
+
+    /// An issue node, every field the `Issues` document selects.
+    fn issue_json(&self, issue: &Issue) -> Value {
+        let labels: Vec<Value> = issue
+            .labels
+            .iter()
+            .filter_map(|id| self.labels.iter().find(|l| l.id == *id))
+            .take(20)
+            .map(|l| json!({"name": l.name}))
+            .collect();
+        let children: Vec<Value> = self
+            .issues
+            .iter()
+            .filter(|c| c.parent.as_deref() == Some(&issue.id))
+            .take(20)
+            .map(|c| {
+                json!({"identifier": self.identifier(c), "title": c.title,
+                       "state": {"name": self.state(&c.state).map_or("", |s| s.name.as_str())}})
+            })
+            .collect();
+        let inverse: Vec<Value> = self
+            .relations
+            .iter()
+            .filter(|(_, target, _)| *target == issue.id)
+            .take(20)
+            .filter_map(|(source, _, kind)| {
+                let source = self.issues.iter().find(|i| i.id == *source)?;
+                Some(json!({"type": kind, "issue": {
+                    "identifier": self.identifier(source),
+                    "state": {"type": self.state(&source.state).map_or("", |s| s.kind.as_str())},
+                }}))
+            })
+            .collect();
+        let parent = issue
+            .parent
+            .as_deref()
+            .and_then(|p| self.issues.iter().find(|i| i.id == p))
+            .map(|p| json!({"identifier": self.identifier(p), "title": p.title}));
+        let identifier = self.identifier(issue);
+        json!({
+            "id": issue.id,
+            "identifier": identifier,
+            "title": issue.title,
+            "description": issue.description,
+            "url": format!("https://linear.app/acme/issue/{identifier}/{}", slug(&issue.title)),
+            "sortOrder": issue.sort_order,
+            "state": self.state_json(&issue.state),
+            "labels": {"nodes": labels},
+            "assignee": issue.assignee.as_ref().map(|id| json!({"id": id})),
+            "delegate": issue.delegate.as_ref().map(|id| json!({"id": id})),
+            "parent": parent,
+            "children": {"nodes": children},
+            "inverseRelations": {"nodes": inverse},
+        })
+    }
+
+    fn comment_json(&self, c: &Comment) -> Value {
+        let (user, bot, external) = match &c.author {
+            Author::User(id) => {
+                let u = self.user(id);
+                (
+                    json!({"id": id, "name": u.map_or("", |u| u.name.as_str()),
+                           "displayName": u.map_or("", |u| u.display_name.as_str())}),
+                    Value::Null,
+                    Value::Null,
+                )
+            }
+            Author::Bot(id) => (Value::Null, json!({"id": id, "name": "afkd"}), Value::Null),
+            Author::External(id) => (
+                Value::Null,
+                Value::Null,
+                json!({"id": id, "name": "Álvaro (Slack)"}),
+            ),
+        };
+        json!({
+            "id": c.id,
+            "body": c.body,
+            "createdAt": stamp(c.created),
+            "editedAt": c.edited.map(stamp),
+            "user": user,
+            "botActor": bot,
+            "externalUser": external,
+        })
+    }
+
+    /// A state's or a label's issues, as the `Issues` filter the plugin sends selects them:
+    /// open, in the team, in manual order — ascending or descending.
+    fn select(&self, filter: &Value, descending: bool) -> Result<Vec<&Issue>, String> {
+        let filter = filter.as_object().cloned().unwrap_or_default();
+        let mut state = None;
+        let mut label = None;
+        for (key, value) in &filter {
+            match key.as_str() {
+                "team" if value.as_object().map(|o| o.len()) == Some(1) => {
+                    let id = value["id"]["eq"]
+                        .as_str()
+                        .ok_or("filter.team is not id.eq")?;
+                    if id != self.team_id {
+                        return Ok(Vec::new());
+                    }
+                }
+                "state" if value.as_object().map(|o| o.len()) == Some(1) => {
+                    state = Some(
+                        value["id"]["eq"]
+                            .as_str()
+                            .ok_or("filter.state is not id.eq")?,
+                    );
+                }
+                "labels" if value.as_object().map(|o| o.len()) == Some(1) => {
+                    label = Some(
+                        value["some"]["name"]["eq"]
+                            .as_str()
+                            .ok_or("filter.labels is not some.name.eq")?,
+                    );
+                }
+                other => return Err(format!("the fake answers no Issues filter on `{other}`")),
+            }
+        }
+        if !filter.contains_key("team") {
+            return Err("the fake answers no Issues filter without the team".into());
+        }
+        let mut issues: Vec<&Issue> = self
+            .issues
+            .iter()
+            .filter(|i| state.is_none_or(|s| i.state == s))
+            .filter(|i| {
+                label.is_none_or(|name| {
+                    i.labels
+                        .iter()
+                        .any(|id| self.labels.iter().any(|l| l.id == *id && l.name == name))
+                })
+            })
+            .collect();
+        issues.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
+        if descending {
+            issues.reverse();
+        }
+        Ok(issues)
+    }
+
+    /// Who the `Authorization` header authenticates as, if anyone.
+    fn viewer(&self, authorization: Option<&str>) -> Option<String> {
+        match authorization? {
+            key if key == API_KEY => Some(self.key_user.clone()),
+            bearer => {
+                let token = bearer.strip_prefix("Bearer ")?;
+                self.tokens
+                    .iter()
+                    .any(|t| t.value == token && !t.revoked && Instant::now() < t.expires)
+                    .then(|| self.app_user.clone())
+            }
+        }
+    }
+}
+
+/// A lowercase ASCII slug of a title, as Linear's issue urls carry one.
+fn slug(title: &str) -> String {
+    let mut slug = String::new();
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
+/// The fake. Dropping it leaves the listener thread parked on `accept`; the process ends it.
+#[derive(Clone)]
+pub struct FakeLinear {
+    base: String,
+    store: Arc<Mutex<Store>>,
+}
+
+fn lock(store: &Mutex<Store>) -> MutexGuard<'_, Store> {
+    store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The documents `operations.graphql` holds, by name, whitespace collapsed.
+fn documents() -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut current: Option<(String, String)> = None;
+    for line in OPERATIONS.lines() {
+        if line.starts_with("query ") || line.starts_with("mutation ") {
+            if let Some((name, doc)) = current.take() {
+                out.insert(name, collapse(&doc));
+            }
+            let name = line
+                .split(|c: char| c.is_whitespace() || c == '(' || c == '{')
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            current = Some((name, String::new()));
+        }
+        if let Some((_, doc)) = current.as_mut() {
+            doc.push_str(line);
+            doc.push('\n');
+        }
+    }
+    if let Some((name, doc)) = current {
+        out.insert(name, collapse(&doc));
+    }
+    out
+}
+
+fn collapse(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The document `operations.graphql` holds under `name`, as the fake compares it: what a
+/// test that reaches Linear the way a run's own script would sends.
+pub fn operation_document(name: &str) -> Option<String> {
+    documents().remove(name)
+}
+
+impl FakeLinear {
+    /// A fake with team `ENG`, its API key's user and its app's user, listening on
+    /// `127.0.0.1:0`.
+    pub fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let base = format!("http://{}", listener.local_addr().expect("local addr"));
+        let store = Arc::new(Mutex::new(Store {
+            token_lifetime: 2_591_999,
+            comments_page: 100,
+            ..Store::default()
+        }));
+        {
+            let mut s = lock(&store);
+            s.team_id = s.mint();
+            let key_user = s.mint();
+            s.users.push(User {
+                id: key_user.clone(),
+                name: "afkd".into(),
+                display_name: "afkd".into(),
+                email: "afkd@acme.example".into(),
+            });
+            s.key_user = key_user;
+            let app_user = s.mint();
+            s.users.push(User {
+                id: app_user.clone(),
+                name: "afkd (app)".into(),
+                display_name: "afkd-app".into(),
+                email: "app@oauthapp.example".into(),
+            });
+            s.app_user = app_user;
+            s.bot_id = s.mint();
+        }
+        let schema = Arc::new(Sdl::parse(SCHEMA).expect("the excerpt parses"));
+        let docs = Arc::new(documents());
+        let shared = Arc::clone(&store);
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (store, schema, docs) =
+                    (Arc::clone(&shared), Arc::clone(&schema), Arc::clone(&docs));
+                thread::spawn(move || serve(stream, &store, &schema, &docs));
+            }
+        });
+        Self { base, store }
+    }
+
+    /// The API root, as a config's `base_url` writes it.
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
+
+    pub fn team_id(&self) -> String {
+        lock(&self.store).team_id.clone()
+    }
+
+    /// The API key's user: the viewer an API key reads as.
+    pub fn key_user(&self) -> String {
+        lock(&self.store).key_user.clone()
+    }
+
+    /// The app's user: the viewer an app's token reads as.
+    pub fn app_user(&self) -> String {
+        lock(&self.store).app_user.clone()
+    }
+
+    /// The bot actor an app's comments are authored by, when
+    /// [`comments_as_bot`](Self::comments_as_bot) says so.
+    pub fn bot_id(&self) -> String {
+        lock(&self.store).bot_id.clone()
+    }
+
+    /// Author the app's comments by its bot actor, not its user.
+    pub fn comments_as_bot(&self) {
+        lock(&self.store).bot_comments = true;
+    }
+
+    /// Add a workflow state of the category `kind`; returns its id.
+    pub fn state(&self, name: &str, kind: &str) -> String {
+        let mut s = lock(&self.store);
+        let id = s.mint();
+        s.states.push(State {
+            id: id.clone(),
+            name: name.to_string(),
+            kind: kind.to_string(),
+        });
+        id
+    }
+
+    /// Add a user; returns its id.
+    pub fn user(&self, name: &str, display_name: &str, email: &str) -> String {
+        let mut s = lock(&self.store);
+        let id = s.mint();
+        s.users.push(User {
+            id: id.clone(),
+            name: name.to_string(),
+            display_name: display_name.to_string(),
+            email: email.to_string(),
+        });
+        id
+    }
+
+    /// Add an issue at the bottom of the state named `state`; returns its id.
+    pub fn issue(&self, state: &str, title: &str, description: &str) -> String {
+        let mut s = lock(&self.store);
+        let state = s
+            .states
+            .iter()
+            .find(|st| st.name == state)
+            .map(|st| st.id.clone())
+            .expect("a seeded state");
+        let id = s.mint();
+        let number = s.issues.len() as u32 + 101;
+        let sort_order = s
+            .issues
+            .iter()
+            .map(|i| i.sort_order)
+            .fold(-1000.0_f64, f64::max)
+            + 1000.0;
+        s.issues.push(Issue {
+            id: id.clone(),
+            number,
+            title: title.to_string(),
+            description: (!description.is_empty()).then(|| description.to_string()),
+            state,
+            labels: Vec::new(),
+            assignee: None,
+            delegate: None,
+            parent: None,
+            sort_order,
+        });
+        id
+    }
+
+    /// An issue's identifier (`ENG-101`).
+    pub fn identifier(&self, issue: &str) -> String {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.identifier(&s.issues[at])
+    }
+
+    /// An issue's url, as the fake serves it.
+    pub fn url(&self, issue: &str) -> String {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issue_json(&s.issues[at])["url"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn edit(&self, issue: &str, f: impl FnOnce(&mut Issue)) {
+        let mut s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        f(&mut s.issues[at]);
+    }
+
+    pub fn assign(&self, issue: &str, user: &str) {
+        self.edit(issue, |i| i.assignee = Some(user.to_string()));
+    }
+
+    pub fn delegate(&self, issue: &str, user: &str) {
+        self.edit(issue, |i| i.delegate = Some(user.to_string()));
+    }
+
+    pub fn set_parent(&self, child: &str, parent: &str) {
+        self.edit(child, |i| i.parent = Some(parent.to_string()));
+    }
+
+    /// Relate `source` to `target` as `kind`: `blocks` makes `source` a blocker of `target`.
+    pub fn relate(&self, source: &str, target: &str, kind: &str) {
+        lock(&self.store).relations.push((
+            source.to_string(),
+            target.to_string(),
+            kind.to_string(),
+        ));
+    }
+
+    /// Move an issue to the bottom of the state named `state`, as a person does.
+    pub fn move_to(&self, issue: &str, state: &str) {
+        let mut s = lock(&self.store);
+        let state = s
+            .states
+            .iter()
+            .find(|st| st.name == state)
+            .map(|st| st.id.clone())
+            .expect("a seeded state");
+        let bottom = s
+            .issues
+            .iter()
+            .map(|i| i.sort_order)
+            .fold(0.0_f64, f64::max);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at].state = state;
+        s.issues[at].sort_order = bottom + 1000.0;
+    }
+
+    /// Put the team's label named `name` on an issue, creating it when need be.
+    pub fn label(&self, issue: &str, name: &str) {
+        let mut s = lock(&self.store);
+        let team = s.team_id.clone();
+        let label = match s
+            .labels
+            .iter()
+            .find(|l| l.name == name && l.team.as_deref() == Some(&team))
+        {
+            Some(l) => l.id.clone(),
+            None => {
+                let id = s.mint();
+                s.labels.push(Label {
+                    id: id.clone(),
+                    name: name.to_string(),
+                    team: Some(team),
+                });
+                id
+            }
+        };
+        let at = s.issue_at(issue).expect("a seeded issue");
+        if !s.issues[at].labels.contains(&label) {
+            s.issues[at].labels.push(label);
+        }
+    }
+
+    /// Take the label named `name` off an issue, as a person does.
+    pub fn unlabel(&self, issue: &str, name: &str) {
+        let mut s = lock(&self.store);
+        let ids: Vec<String> = s
+            .labels
+            .iter()
+            .filter(|l| l.name == name)
+            .map(|l| l.id.clone())
+            .collect();
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at].labels.retain(|l| !ids.contains(l));
+    }
+
+    /// Seed a comment by `author`, posted `ago` seconds before now; returns its id.
+    pub fn comment(&self, issue: &str, author: Author, body: &str, ago: u64) -> String {
+        let mut s = lock(&self.store);
+        let id = s.mint();
+        s.comments.push(Comment {
+            id: id.clone(),
+            issue: issue.to_string(),
+            author,
+            body: body.to_string(),
+            created: now_ms() - ago * 1000,
+            edited: None,
+        });
+        id
+    }
+
+    /// An issue's comments, in the order they were posted.
+    pub fn comments(&self, issue: &str) -> Vec<Comment> {
+        let s = lock(&self.store);
+        let mut thread: Vec<Comment> = s
+            .comments
+            .iter()
+            .filter(|c| c.issue == issue)
+            .cloned()
+            .collect();
+        thread.sort_by_key(|c| c.created);
+        thread
+    }
+
+    /// An issue's label names.
+    pub fn labels(&self, issue: &str) -> Vec<String> {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at]
+            .labels
+            .iter()
+            .filter_map(|id| s.labels.iter().find(|l| l.id == *id))
+            .map(|l| l.name.clone())
+            .collect()
+    }
+
+    /// The name of the state an issue sits in.
+    pub fn state_of(&self, issue: &str) -> String {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.state(&s.issues[at].state)
+            .map(|st| st.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// The ids of the issues in the state named `state`, in manual order.
+    pub fn in_state(&self, state: &str) -> Vec<String> {
+        let s = lock(&self.store);
+        let Some(state) = s.states.iter().find(|st| st.name == state) else {
+            return Vec::new();
+        };
+        let mut issues: Vec<&Issue> = s.issues.iter().filter(|i| i.state == state.id).collect();
+        issues.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
+        issues.into_iter().map(|i| i.id.clone()).collect()
+    }
+
+    /// How long a token lasts, in seconds.
+    pub fn token_lifetime(&self, secs: u64) {
+        lock(&self.store).token_lifetime = secs;
+    }
+
+    /// How many tokens the token endpoint has handed out.
+    pub fn token_fetches(&self) -> usize {
+        lock(&self.store).token_fetches
+    }
+
+    /// Revoke every token handed out so far.
+    pub fn revoke_tokens(&self) {
+        for t in lock(&self.store).tokens.iter_mut() {
+            t.revoked = true;
+        }
+    }
+
+    /// Answer the next `n` requests of `operation` as Linear answers a rate limit: a 429,
+    /// `Retry-After` the `wait` in seconds, and the `RATELIMITED` error.
+    pub fn rate_limit(&self, operation: &str, n: u32, wait: u64) {
+        lock(&self.store)
+            .rate_limits
+            .insert(operation.to_string(), (n, wait));
+    }
+
+    /// Make every request of `operation` answer `status`.
+    pub fn fail(&self, operation: &str, status: u16) {
+        lock(&self.store)
+            .faults
+            .insert(operation.to_string(), status);
+    }
+
+    /// Make every comment post whose body contains `needle` answer `status`.
+    pub fn fail_post_matching(&self, needle: &str, status: u16) {
+        lock(&self.store)
+            .post_faults
+            .push((needle.to_string(), status));
+    }
+
+    /// Answer every request of `operation` as Linear answers a document it refuses.
+    pub fn refuse_as_invalid(&self, operation: &str) {
+        lock(&self.store).refused.push(operation.to_string());
+    }
+
+    /// Stop failing `operation`, and every comment post.
+    pub fn heal(&self, operation: &str) {
+        let mut s = lock(&self.store);
+        s.faults.remove(operation);
+        s.rate_limits.remove(operation);
+        s.refused.retain(|op| op != operation);
+        s.post_faults.clear();
+    }
+
+    /// Answer an issue's comments this many a page.
+    pub fn comments_page(&self, n: usize) {
+        lock(&self.store).comments_page = n;
+    }
+
+    /// Take the fake out of reach: every request is read and its connection closed with no
+    /// reply, until [`restore`](Self::restore).
+    pub fn outage(&self) {
+        lock(&self.store).down = true;
+    }
+
+    pub fn restore(&self) {
+        lock(&self.store).down = false;
+    }
+
+    /// On the next `[afkd-claim]` posted to `issue`, a rival's claim lands first: posted a
+    /// second earlier by another user, so it out-orders ours.
+    pub fn race_on_next_claim(&self, issue: &str) {
+        lock(&self.store).races.push(issue.to_string());
+    }
+
+    /// Every request answered, in order.
+    pub fn seen(&self) -> Vec<Seen> {
+        lock(&self.store).seen.clone()
+    }
+
+    /// The requests an outage dropped.
+    pub fn dropped(&self) -> Vec<Seen> {
+        lock(&self.store).dropped.clone()
+    }
+
+    /// Every request refused as not conforming to the schema or the operations, each as
+    /// the sentence it was refused with.
+    pub fn invalid_requests(&self) -> Vec<String> {
+        lock(&self.store).invalid.clone()
+    }
+
+    /// Forget the refused requests, for a leg that provokes one on purpose.
+    pub fn clear_invalid(&self) {
+        lock(&self.store).invalid.clear();
+    }
+
+    /// POST `body` to the GraphQL endpoint as a client would, with the API key: the status
+    /// and the body that came back.
+    pub fn post_raw(&self, body: &Value) -> (u16, Value) {
+        let addr = self.base.trim_start_matches("http://");
+        let mut stream = TcpStream::connect(addr).expect("connect to the fake");
+        let body = body.to_string();
+        write!(
+            stream,
+            "POST /graphql HTTP/1.1\r\nHost: {addr}\r\nAuthorization: {API_KEY}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("write the request");
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).expect("read the reply");
+        let status = reply
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let json = reply
+            .split_once("\r\n\r\n")
+            .and_then(|(_, b)| serde_json::from_str(b).ok())
+            .unwrap_or(Value::Null);
+        (status, json)
+    }
+}
+
+/// One request as read off the socket.
+struct Raw {
+    path: String,
+    authorization: Option<String>,
+    body: String,
+}
+
+fn read_request(stream: &TcpStream) -> Option<Raw> {
+    let mut reader = BufReader::new(stream.try_clone().ok()?);
+    let mut start = String::new();
+    if reader.read_line(&mut start).ok()? == 0 {
+        return None;
+    }
+    let path = start.split_whitespace().nth(1)?.to_string();
+    let (mut length, mut authorization) = (0usize, None);
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 {
+            break;
+        }
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap_or(0);
+            } else if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_string());
+            }
+        }
+    }
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).ok()?;
+    Some(Raw {
+        path,
+        authorization,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    })
+}
+
+/// One reply: its status, its extra headers, and its JSON body.
+type Reply = (u16, Vec<(String, String)>, Value);
+
+/// An `errors` body of one error.
+fn error(message: &str, code: &str, kind: &str) -> Value {
+    json!({"errors": [{"message": message, "extensions": {"code": code, "type": kind}}]})
+}
+
+/// Serve one connection: one request, one reply, then close.
+fn serve(stream: TcpStream, store: &Mutex<Store>, schema: &Sdl, docs: &HashMap<String, String>) {
+    let Some(raw) = read_request(&stream) else {
+        return;
+    };
+    let reply = {
+        let mut s = lock(store);
+        answer(&mut s, schema, docs, &raw)
+    };
+    let Some((status, headers, body)) = reply else {
+        // Out of reach: the stream drops here, closed with no reply.
+        return;
+    };
+    let body = body.to_string();
+    let extra: String = headers
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}\r\n"))
+        .collect();
+    let mut stream = stream;
+    let _ = write!(
+        stream,
+        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n{extra}\r\n{body}",
+        body.len()
+    );
+    let _ = stream.flush();
+}
+
+/// Answer one request, or `None` to drop it unanswered.
+fn answer(s: &mut Store, schema: &Sdl, docs: &HashMap<String, String>, raw: &Raw) -> Option<Reply> {
+    let request: Value = serde_json::from_str(&raw.body).unwrap_or(Value::Null);
+    let seen = Seen {
+        path: raw.path.clone(),
+        operation: request["operationName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        variables: request["variables"].clone(),
+        authorization: raw.authorization.clone(),
+        form: if raw.path == "/oauth/token" {
+            raw.body.clone()
+        } else {
+            String::new()
+        },
+        at: Instant::now(),
+    };
+    if s.down {
+        s.dropped.push(seen);
+        return None;
+    }
+    s.seen.push(seen);
+    Some(match raw.path.as_str() {
+        "/oauth/token" => token(s, &raw.body),
+        "/graphql" => graphql(s, schema, docs, raw, &request),
+        _ => (404, Vec::new(), json!({"error": "not found"})),
+    })
+}
+
+/// The token endpoint: a token for the app's credentials, with the grant and the scope.
+fn token(s: &mut Store, form: &str) -> Reply {
+    let pairs: HashMap<String, String> = form
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(k, v)| (percent_decode(k), percent_decode(v)))
+        .collect();
+    let field = |k: &str| pairs.get(k).map(String::as_str);
+    let refuse = |error: &str, description: &str| {
+        (
+            400,
+            Vec::new(),
+            json!({"error": error, "error_description": description}),
+        )
+    };
+    if field("grant_type") != Some("client_credentials") {
+        return refuse("unsupported_grant_type", "The grant type is not supported");
+    }
+    if field("client_id") != Some(CLIENT_ID) || field("client_secret") != Some(CLIENT_SECRET) {
+        return (
+            401,
+            Vec::new(),
+            json!({"error": "invalid_client", "error_description": "Client authentication failed"}),
+        );
+    }
+    if field("scope") != Some(SCOPE) {
+        return refuse("invalid_scope", "The requested scope is invalid");
+    }
+    s.token_fetches += 1;
+    let value = format!("lin_oauth_tok-{}", s.token_fetches);
+    s.tokens.push(Token {
+        value: value.clone(),
+        expires: Instant::now() + Duration::from_secs(s.token_lifetime),
+        revoked: false,
+    });
+    (
+        200,
+        Vec::new(),
+        json!({"access_token": value, "token_type": "Bearer", "expires_in": s.token_lifetime,
+               "scope": "read write app:assignable app:mentionable"}),
+    )
+}
+
+/// The GraphQL endpoint: the request checked, the caller authenticated, any injected fault
+/// answered, then the operation dispatched.
+fn graphql(
+    s: &mut Store,
+    schema: &Sdl,
+    docs: &HashMap<String, String>,
+    raw: &Raw,
+    request: &Value,
+) -> Reply {
+    let invalid = |s: &mut Store, sentence: String| {
+        s.invalid.push(sentence.clone());
+        (
+            400,
+            Vec::new(),
+            error(&sentence, "GRAPHQL_VALIDATION_FAILED", "graphql error"),
+        )
+    };
+    let name = request["operationName"].as_str().unwrap_or_default();
+    let query = request["query"].as_str().unwrap_or_default();
+    let operation = match schema.check_document(query) {
+        Ok(op) => op,
+        Err(e) => return invalid(s, e),
+    };
+    if operation.name != name {
+        return invalid(
+            s,
+            format!(
+                "operationName {name} names a document called {}",
+                operation.name
+            ),
+        );
+    }
+    if docs.get(name) != Some(&collapse(query)) {
+        return invalid(
+            s,
+            format!("{name} is not the document operations.graphql holds"),
+        );
+    }
+    if let Err(e) = schema.check_variables(&operation.variables, &request["variables"]) {
+        return invalid(s, e);
+    }
+    let Some(viewer) = s.viewer(raw.authorization.as_deref()) else {
+        return (
+            401,
+            Vec::new(),
+            error(
+                "Authentication required, not authenticated",
+                "AUTHENTICATION_ERROR",
+                "authentication error",
+            ),
+        );
+    };
+    if s.refused.iter().any(|op| op == name) {
+        return (
+            400,
+            Vec::new(),
+            error(
+                &format!("Field \"{name}\" argument is invalid."),
+                "GRAPHQL_VALIDATION_FAILED",
+                "graphql error",
+            ),
+        );
+    }
+    if let Some((left, wait)) = s.rate_limits.get_mut(name) {
+        if *left > 0 {
+            *left -= 1;
+            let wait = *wait;
+            return (
+                429,
+                vec![("Retry-After".into(), wait.to_string())],
+                error("Rate limit exceeded", "RATELIMITED", "ratelimited"),
+            );
+        }
+    }
+    if let Some(status) = s.faults.get(name) {
+        return (
+            *status,
+            Vec::new(),
+            error("injected", "INTERNAL_SERVER_ERROR", "internal error"),
+        );
+    }
+    let vars = &request["variables"];
+    match dispatch(s, name, vars, &viewer) {
+        Ok(data) => (200, Vec::new(), json!({"data": data})),
+        Err(Refusal::NotFound(what)) => (
+            200,
+            Vec::new(),
+            error(
+                &format!("Entity not found: {what}"),
+                "INVALID_INPUT",
+                "invalid input",
+            ),
+        ),
+        Err(Refusal::Invalid(sentence)) => invalid(s, sentence),
+        Err(Refusal::Status(status)) => (
+            status,
+            Vec::new(),
+            error("injected", "INTERNAL_SERVER_ERROR", "internal error"),
+        ),
+    }
+}
+
+/// Why an operation was not done.
+enum Refusal {
+    /// What it names does not exist.
+    NotFound(&'static str),
+    /// It asks for what the plugin never means.
+    Invalid(String),
+    /// A fault the test injected.
+    Status(u16),
+}
+
+/// The page of `items` after the cursor `after`, `first` long, and its `pageInfo`; a cursor
+/// is the last item's id.
+fn page<T>(
+    items: Vec<T>,
+    id: impl Fn(&T) -> String,
+    after: Option<&str>,
+    first: usize,
+) -> (Vec<T>, Value) {
+    let start = after
+        .and_then(|a| items.iter().position(|i| id(i) == a).map(|p| p + 1))
+        .unwrap_or(0);
+    let rest: Vec<T> = items.into_iter().skip(start).collect();
+    let more = rest.len() > first;
+    let kept: Vec<T> = rest.into_iter().take(first).collect();
+    let end = kept.last().map(&id);
+    (kept, json!({"hasNextPage": more, "endCursor": end}))
+}
+
+fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Value, Refusal> {
+    let var = |key: &str| vars[key].as_str().unwrap_or_default().to_string();
+    match name {
+        "Viewer" => Ok(json!({"viewer": {"id": viewer}})),
+        "TeamByKey" => {
+            let key = vars["filter"]["key"]["eq"].as_str().unwrap_or_default();
+            let nodes = if key == TEAM {
+                vec![json!({"id": s.team_id, "key": TEAM})]
+            } else {
+                Vec::new()
+            };
+            Ok(json!({"teams": {"nodes": nodes}}))
+        }
+        "States" => {
+            if var("teamId") != s.team_id {
+                return Err(Refusal::NotFound("Team"));
+            }
+            let nodes: Vec<Value> = s.states.iter().map(|st| s.state_json(&st.id)).collect();
+            Ok(json!({"team": {"states": {"nodes": nodes}}}))
+        }
+        "Issues" => {
+            let descending = vars["sort"][0]["manual"]["order"] == "Descending";
+            let issues = s
+                .select(&vars["filter"], descending)
+                .map_err(Refusal::Invalid)?;
+            let first = vars["first"].as_u64().unwrap_or(50) as usize;
+            let (kept, info) = page(issues, |i| i.id.clone(), vars["after"].as_str(), first);
+            let nodes: Vec<Value> = kept.iter().map(|i| s.issue_json(i)).collect();
+            Ok(json!({"issues": {"nodes": nodes, "pageInfo": info}}))
+        }
+        "IssueComments" => {
+            let issue = var("id");
+            if s.issue_at(&issue).is_none() {
+                return Err(Refusal::NotFound("Issue"));
+            }
+            let mut thread: Vec<&Comment> =
+                s.comments.iter().filter(|c| c.issue == issue).collect();
+            thread.sort_by(|a, b| b.created.cmp(&a.created).then(b.id.cmp(&a.id)));
+            let (kept, info) = page(
+                thread,
+                |c| c.id.clone(),
+                vars["after"].as_str(),
+                s.comments_page,
+            );
+            let nodes: Vec<Value> = kept.iter().map(|c| s.comment_json(c)).collect();
+            Ok(json!({"issue": {"comments": {"nodes": nodes, "pageInfo": info}}}))
+        }
+        "Users" => {
+            let or = vars["filter"]["or"].as_array().cloned().unwrap_or_default();
+            let wants: Vec<(String, String)> = or
+                .iter()
+                .filter_map(|f| {
+                    let (k, v) = f.as_object()?.iter().next()?;
+                    Some((k.clone(), v["eq"].as_str()?.to_string()))
+                })
+                .collect();
+            let nodes: Vec<Value> = s
+                .users
+                .iter()
+                .filter(|u| {
+                    wants.iter().any(|(k, v)| match k.as_str() {
+                        "displayName" => u.display_name == *v,
+                        "email" => u.email == *v,
+                        _ => false,
+                    })
+                })
+                .take(2)
+                .map(|u| json!({"id": u.id}))
+                .collect();
+            Ok(json!({"users": {"nodes": nodes}}))
+        }
+        "Labels" => {
+            let filter = vars["filter"].as_object().cloned().unwrap_or_default();
+            if filter.keys().any(|k| k != "name") {
+                return Err(Refusal::Invalid(
+                    "the fake answers Labels by name only".into(),
+                ));
+            }
+            let name = vars["filter"]["name"]["eq"].as_str().unwrap_or_default();
+            let nodes: Vec<Value> = s
+                .labels
+                .iter()
+                .filter(|l| l.name == name)
+                .map(|l| json!({"id": l.id, "team": l.team.as_ref().map(|t| json!({"id": t}))}))
+                .collect();
+            Ok(json!({"issueLabels": {"nodes": nodes}}))
+        }
+        "CommentCreate" => {
+            let issue = vars["input"]["issueId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let body = vars["input"]["body"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            if s.issue_at(&issue).is_none() {
+                return Err(Refusal::NotFound("Issue"));
+            }
+            if let Some((_, status)) = s.post_faults.iter().find(|(n, _)| body.contains(n)) {
+                return Err(Refusal::Status(*status));
+            }
+            let now = now_ms();
+            if body.starts_with("[afkd-claim]") {
+                if let Some(at) = s.races.iter().position(|r| *r == issue) {
+                    s.races.remove(at);
+                    let rival = s
+                        .users
+                        .iter()
+                        .find(|u| u.display_name == "rival-host")
+                        .map(|u| u.id.clone())
+                        .unwrap_or_default();
+                    let id = s.mint();
+                    s.comments.push(Comment {
+                        id,
+                        issue: issue.clone(),
+                        author: Author::User(rival),
+                        body: "[afkd-claim] owner=afkd-17".into(),
+                        created: now - 1000,
+                        edited: None,
+                    });
+                }
+            }
+            let author = if viewer == s.app_user && s.bot_comments {
+                Author::Bot(s.bot_id.clone())
+            } else {
+                Author::User(viewer.to_string())
+            };
+            let id = s.mint();
+            let comment = Comment {
+                id,
+                issue,
+                author,
+                body,
+                created: now,
+                edited: None,
+            };
+            let node = s.comment_json(&comment);
+            s.comments.push(comment);
+            Ok(json!({"commentCreate": {"success": true, "comment": node}}))
+        }
+        "CommentUpdate" => {
+            let id = var("id");
+            let Some(c) = s.comments.iter_mut().find(|c| c.id == id) else {
+                return Err(Refusal::NotFound("Comment"));
+            };
+            c.body = vars["input"]["body"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            c.edited = Some(now_ms());
+            Ok(json!({"commentUpdate": {"success": true}}))
+        }
+        "CommentDelete" => {
+            let id = var("id");
+            let Some(at) = s.comments.iter().position(|c| c.id == id) else {
+                return Err(Refusal::NotFound("Comment"));
+            };
+            s.comments.remove(at);
+            Ok(json!({"commentDelete": {"success": true}}))
+        }
+        "IssueAddLabel" | "IssueRemoveLabel" => {
+            let (issue, label) = (var("id"), var("labelId"));
+            if !s.labels.iter().any(|l| l.id == label) {
+                return Err(Refusal::NotFound("IssueLabel"));
+            }
+            let at = s.issue_at(&issue).ok_or(Refusal::NotFound("Issue"))?;
+            let labels = &mut s.issues[at].labels;
+            if name == "IssueAddLabel" {
+                if !labels.contains(&label) {
+                    labels.push(label);
+                }
+            } else {
+                labels.retain(|l| *l != label);
+            }
+            let field = if name == "IssueAddLabel" {
+                "issueAddLabel"
+            } else {
+                "issueRemoveLabel"
+            };
+            Ok(json!({ field: {"success": true} }))
+        }
+        "IssueLabelCreate" => {
+            let id = s.mint();
+            s.labels.push(Label {
+                id: id.clone(),
+                name: vars["input"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                team: vars["input"]["teamId"].as_str().map(str::to_string),
+            });
+            Ok(json!({"issueLabelCreate": {"success": true, "issueLabel": {"id": id}}}))
+        }
+        "IssueUpdate" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            if let Some(state) = vars["input"]["stateId"].as_str() {
+                if s.state(state).is_none() {
+                    return Err(Refusal::NotFound("WorkflowState"));
+                }
+                s.issues[at].state = state.to_string();
+            }
+            if let Some(order) = vars["input"]["sortOrder"].as_f64() {
+                s.issues[at].sort_order = order;
+            }
+            Ok(json!({"issueUpdate": {"success": true}}))
+        }
+        other => Err(Refusal::Invalid(format!(
+            "the fake answers no operation {other}"
+        ))),
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = |b: u8| (b as char).to_digit(16);
+                match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi * 16 + lo) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}

@@ -13,6 +13,7 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   triggers, with the skill an agent answers them through.
 - [`@afkd/github`](@afkd/github) — GitHub issues and pull-request reviews as afkd
   triggers, with the skill an agent answers them through.
+- [`@afkd/linear`](@afkd/linear) — Linear issues as afkd triggers.
 
 Each plugin carries its own README, its own `node --test` suite and its own
 fixtures. A script a plugin is built with but does not ship lives under
@@ -34,8 +35,8 @@ suites on every push, and a red suite does not publish.
 
 Plugins here are published as per-plugin release tarballs and listed in afkd's
 plugin index, so a name is enough. A release is finished and holds only what the
-plugin runs: the four compiled plugins publish one archive per platform (x86_64
-and aarch64 Linux, a static binary each) beside their manifest and skill, and
+plugin runs: the five compiled plugins publish one archive per platform (x86_64
+and aarch64 Linux, a static binary each) beside their manifest and any skill, and
 web_top the relay, the page and its modules. afkd never builds a plugin, so no
 operator's host needs a toolchain. `tools/pack-release` is the one list of what
 each release ships.

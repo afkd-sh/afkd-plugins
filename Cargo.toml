@@ -3,4 +3,4 @@
 # `tools/pack-release` packs.
 [workspace]
 resolver = "2"
-members = ["drift/@afkd/web_top", "drift/@afkd/gitea", "drift/@afkd/trello", "drift/@afkd/gitlab", "drift/@afkd/github"]
+members = ["drift/@afkd/web_top", "drift/@afkd/gitea", "drift/@afkd/trello", "drift/@afkd/gitlab", "drift/@afkd/github", "drift/@afkd/linear"]

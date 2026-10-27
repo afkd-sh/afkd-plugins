@@ -1,0 +1,11 @@
+[package]
+name = "linear-drift"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Holds @afkd/linear to the afkd installed on PATH"
+
+[dev-dependencies]
+libc = "0.2"
+serde_json = "1"
+tempfile = "3"

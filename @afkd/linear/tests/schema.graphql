@@ -1,0 +1,344 @@
+# An excerpt of Linear's published GraphQL schema: packages/sdk/src/schema.graphql in
+# linear/linear at 618a737a4e6aa279b7853c650f79f209a5142bbc.
+#
+# It holds every type, field and argument @afkd/linear selects or sends, and no other. Each type
+# keeps a subset of its fields, each kept field carries every argument Linear declares for it,
+# and every line is Linear's own with its docstring dropped. An input type keeps every field it
+# requires. CommentFilter and UserSortInput are empty: kept arguments name them, and the plugin
+# never sends them. tests/common/sdl.rs reads it, and holds every request to it.
+#
+# To check it against Linear's at that commit (it prints every line that is not Linear's, so
+# nothing when all are):
+#
+# curl -sL https://raw.githubusercontent.com/linear/linear/618a737a4e6aa279b7853c650f79f209a5142bbc/packages/sdk/src/schema.graphql | awk 'NR == FNR { if (/^(type|input|enum|scalar) /) t = $2; else if (/^}/) t = ""; else have[t, $0] = 1; next } /^#/ || /^$/ { next } /^(type|input|enum|scalar) / { t = $2; next } /^}/ { next } !((t, $0) in have) { print t ": " $0 }' - tests/schema.graphql
+
+type Query {
+  issue(
+    id: String!
+  ): Issue!
+  issueLabels(
+    after: String
+    before: String
+    filter: IssueLabelFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): IssueLabelConnection!
+  issues(
+    after: String
+    before: String
+    filter: IssueFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+    sort: [IssueSortInput!]
+  ): IssueConnection!
+  team(
+    id: String!
+  ): Team!
+  teams(
+    after: String
+    before: String
+    filter: TeamFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): TeamConnection!
+  users(
+    after: String
+    before: String
+    filter: UserFilter
+    first: Int
+    includeArchived: Boolean
+    includeDisabled: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+    sort: [UserSortInput!]
+  ): UserConnection!
+  viewer: User!
+}
+
+type Mutation {
+  commentCreate(
+    input: CommentCreateInput!
+  ): CommentPayload!
+  commentDelete(
+    id: String!
+  ): DeletePayload!
+  commentUpdate(
+    id: String!
+    input: CommentUpdateInput!
+    skipEditedAt: Boolean
+  ): CommentPayload!
+  issueAddLabel(
+    id: String!
+    labelId: String!
+  ): IssuePayload!
+  issueLabelCreate(
+    input: IssueLabelCreateInput!
+    replaceTeamLabels: Boolean
+  ): IssueLabelPayload!
+  issueRemoveLabel(
+    id: String!
+    labelId: String!
+  ): IssuePayload!
+  issueUpdate(
+    id: String!
+    input: IssueUpdateInput!
+  ): IssuePayload!
+}
+
+type ActorBot {
+  id: ID
+  name: String
+  type: String!
+}
+
+type Comment {
+  botActor: ActorBot
+  body: String!
+  createdAt: DateTime!
+  editedAt: DateTime
+  externalUser: ExternalUser
+  id: ID!
+  user: User
+}
+
+type CommentConnection {
+  nodes: [Comment!]!
+  pageInfo: PageInfo!
+}
+
+type CommentPayload {
+  comment: Comment!
+  success: Boolean!
+}
+
+type DeletePayload {
+  success: Boolean!
+}
+
+type ExternalUser {
+  id: ID!
+  name: String!
+}
+
+type Issue {
+  assignee: User
+  children(
+    after: String
+    before: String
+    filter: IssueFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): IssueConnection!
+  comments(
+    after: String
+    before: String
+    filter: CommentFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): CommentConnection!
+  createdAt: DateTime!
+  delegate: User
+  description: String
+  id: ID!
+  identifier: String!
+  inverseRelations(
+    after: String
+    before: String
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): IssueRelationConnection!
+  labels(
+    after: String
+    before: String
+    filter: IssueLabelFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): IssueLabelConnection!
+  parent: Issue
+  sortOrder: Float!
+  state: WorkflowState!
+  title: String!
+  url: String!
+}
+
+type IssueConnection {
+  nodes: [Issue!]!
+  pageInfo: PageInfo!
+}
+
+type IssueLabel {
+  id: ID!
+  name: String!
+  team: Team
+}
+
+type IssueLabelConnection {
+  nodes: [IssueLabel!]!
+}
+
+type IssueLabelPayload {
+  issueLabel: IssueLabel!
+  success: Boolean!
+}
+
+type IssuePayload {
+  success: Boolean!
+}
+
+type IssueRelation {
+  issue: Issue!
+  relatedIssue: Issue!
+  type: String!
+}
+
+type IssueRelationConnection {
+  nodes: [IssueRelation!]!
+}
+
+type PageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type Team {
+  id: ID!
+  key: String!
+  name: String!
+  states(
+    after: String
+    before: String
+    filter: WorkflowStateFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): WorkflowStateConnection!
+}
+
+type TeamConnection {
+  nodes: [Team!]!
+}
+
+type User {
+  displayName: String!
+  email: String!
+  id: ID!
+  name: String!
+}
+
+type UserConnection {
+  nodes: [User!]!
+}
+
+type WorkflowState {
+  id: ID!
+  name: String!
+  type: String!
+}
+
+type WorkflowStateConnection {
+  nodes: [WorkflowState!]!
+}
+
+input CommentCreateInput {
+  body: String
+  issueId: String
+}
+
+input CommentUpdateInput {
+  body: String
+}
+
+input IDComparator {
+  eq: ID
+}
+
+input IssueFilter {
+  labels: IssueLabelCollectionFilter
+  state: WorkflowStateFilter
+  team: TeamFilter
+}
+
+input IssueLabelCollectionFilter {
+  name: StringComparator
+  some: IssueLabelFilter
+}
+
+input IssueLabelCreateInput {
+  name: String!
+  teamId: String
+}
+
+input IssueLabelFilter {
+  name: StringComparator
+}
+
+input IssueSortInput {
+  manual: ManualSort
+}
+
+input IssueUpdateInput {
+  sortOrder: Float
+  stateId: String
+}
+
+input ManualSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input StringComparator {
+  eq: String
+}
+
+input TeamFilter {
+  id: IDComparator
+  key: StringComparator
+}
+
+input UserFilter {
+  displayName: StringComparator
+  email: StringComparator
+  or: [UserFilter!]
+}
+
+input WorkflowStateFilter {
+  id: IDComparator
+}
+
+enum PaginationNulls {
+  first
+  last
+}
+
+enum PaginationOrderBy {
+  createdAt
+  updatedAt
+}
+
+enum PaginationSortOrder {
+  Ascending
+  Descending
+}
+
+scalar DateTime
+
+input CommentFilter {
+}
+
+input UserSortInput {
+}

@@ -1,0 +1,137 @@
+# Cut the release `afkd install @afkd/linear` fetches.
+#
+# afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose `@afkd/linear`
+# entry names this repository's `releases/download/linear/afkd-linear-{platform}.tar.gz`, and
+# fills `{platform}` with the host's `<arch>-<os>` before the download. So this workflow ships
+# a finished binary per platform, never source: each archive holds the manifest and a static
+# musl build of the plugin for one CPU (it runs on any Linux of that CPU, whatever its glibc),
+# and nothing else — the core ships no skill. afkd never builds a plugin and places what the
+# archive holds, so no operator's host needs a toolchain. afkd cannot install a subdirectory
+# of a monorepo — its git leg requires the manifest at the clone root, and its tarball leg
+# steps through exactly one wrapper directory — so each archive's single top-level directory
+# is the plugin.
+#
+# The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
+# `{platform}` URL it recorded at install time and never re-reads the index, so the fixed tag
+# behind that one template is how an already-installed operator reaches the next version.
+#
+# A `workflow_dispatch` on a branch runs everything up to the release itself, which only main
+# publishes: that is how a change to this file is proven on real runners before it ships.
+name: Release @afkd/linear
+
+on:
+  push:
+    branches: [main]
+    paths: ['@afkd/linear/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-linear
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A red suite must not publish, so the plugin's own suite — its unit tests and the wire
+      # contract suite against the loopback fake Linear — runs here, `--locked` as the release
+      # build below is. The drift gate under `drift/` needs an afkd on PATH, so it runs on a
+      # host that has one, not here.
+      - name: The plugin's own suite
+        working-directory: '@afkd/linear'
+        run: cargo test --locked
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          # Native runners for both CPUs, so `ring`'s C builds with the runner's own musl-gcc
+          # and no cross toolchain.
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+      ASSET: afkd-linear-${{ matrix.arch }}-linux.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - name: musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build
+        working-directory: '@afkd/linear'
+        run: cargo build --release --locked --target "$TARGET"
+
+      # A binary tied to this runner's glibc would refuse to start on an older host, so the
+      # link is asserted rather than trusted. Read from a file: under the runner's `pipefail`,
+      # a `grep -q` that stops reading early can fail its writer on SIGPIPE.
+      - name: The binary is static
+        run: |
+          file -b "@afkd/linear/target/$TARGET/release/afkd-linear" > kind
+          cat kind
+          grep -Eq 'statically linked|static-pie linked' kind
+          rm kind
+
+      - name: Pack
+        run: |
+          tools/pack-release linear out "@afkd/linear/target/$TARGET/release/afkd-linear"
+          tar czf "$ASSET" -C out afkd-linear
+          # Assert the shape exactly rather than trust it — the manifest and the binary under
+          # one top-level `afkd-linear/`, and nothing else — so a stray file and a missing one
+          # are both red.
+          printf '%s\n' afkd-linear/ afkd-linear/afkd-plugin.toml afkd-linear/afkd-linear \
+            | LC_ALL=C sort > expected
+          tar tzf "$ASSET" | LC_ALL=C sort > listing
+          diff expected listing
+          # Unpacked, not read off the listing: `test -x` after extraction is the same
+          # question afkd's own unpack answers, asked the same way.
+          mkdir shape && tar xzf "$ASSET" -C shape
+          test -x shape/afkd-linear/afkd-linear
+          rm -rf shape out expected listing
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      # Delete-then-create, because a tag is unique and the replacement cannot be made
+      # first. The brief 404 window on the download URL is a loud, retryable failure for an
+      # `afkd update` that races it. Both platforms go up in one create, so the tag never
+      # holds one without the other.
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/linear/afkd-plugin.toml')
+          test -n "$version"
+          assets="assets/afkd-linear-x86_64-linux.tar.gz assets/afkd-linear-aarch64-linux.tar.gz"
+          ls -l $assets
+          # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
+          # the notes name the afkd it needs: 0.2.414 is the first that fills in `{platform}`
+          # and refuses a `build` line (0.2.241 brought the handle fields a claim carries).
+          printf '`afkd install @afkd/linear`, or `afkd update @afkd/linear` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.414 or newer (the platform archive, no build step; the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          gh release delete linear --yes --cleanup-tag || true
+          gh release create linear --target "$GITHUB_SHA" --title "@afkd/linear $version" --notes-file notes.md $assets
