@@ -14,6 +14,11 @@
 //!   setting in both credential forms, to one whose slots call every action the plugin
 //!   declares, to refusing one without `team` or `pick_from`, and to refusing a call of an
 //!   action the plugin does not declare.
+//! - The **README** leg validates every `conf` fence of the plugin's README, each a whole
+//!   entry file, against the installed release.
+//! - The **skill** leg runs one issue whose run works it through the installed `linear`
+//!   skill — a comment, then a question that parks the run — so the env a real daemon hands
+//!   a run is the env the skill's scripts read, and the issue parks as the plugin parks it.
 //!
 //! The Linear is the plugin's own loopback fake ([`fake`]), which holds every request to
 //! Linear's schema: each leg ends with its record of refused requests empty. No leg touches
@@ -61,8 +66,8 @@ fn built_binary() -> &'static Path {
     })
 }
 
-/// Stage the release `tools/pack-release` packs under `dst` — the manifest and the binary,
-/// exactly what the release archive holds — and return the staged root.
+/// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
+/// the skill, exactly what the release archive holds — and return the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("linear")
@@ -71,7 +76,31 @@ fn stage(dst: &Path) -> PathBuf {
         .status()
         .expect("run tools/pack-release");
     assert!(status.success(), "tools/pack-release linear");
-    dst.join("afkd-linear")
+    let staged = dst.join("afkd-linear");
+    for present in [
+        "afkd-plugin.toml",
+        "afkd-linear",
+        "skills/linear/SKILL.md",
+        "skills/linear/lib/linear_api.py",
+        "skills/linear/lib/operations.graphql",
+    ] {
+        assert!(staged.join(present).exists(), "the release holds {present}");
+    }
+    for absent in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src",
+        "tests",
+        "README.md",
+        "target",
+        "skills/linear/lib/__pycache__",
+    ] {
+        assert!(
+            !staged.join(absent).exists(),
+            "the release holds no {absent}"
+        );
+    }
+    staged
 }
 
 /// Every path under `dir`, relative and sorted, directories included.
@@ -442,10 +471,19 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     let staged = stage(stage_dir.path());
+    let mut shipped = vec!["afkd-linear".to_string(), "afkd-plugin.toml".to_string()];
+    shipped.extend(
+        tree_of(&plugin_root().join("skills"))
+            .into_iter()
+            .filter(|path| !path.contains("__pycache__"))
+            .map(|path| format!("skills/{path}")),
+    );
+    shipped.push("skills".to_string());
+    shipped.sort();
     assert_eq!(
         tree_of(&staged),
-        ["afkd-linear", "afkd-plugin.toml"],
-        "the release holds the manifest and the binary, and nothing else"
+        shipped,
+        "the release holds the manifest, the binary and the skill, and nothing else"
     );
     install(home.path(), &staged);
     let placed = plugins_root(home.path()).join(NAME);
@@ -855,5 +893,156 @@ widgets :: service(linear) {{
         code,
         Some(0),
         "the slot without the call validates:\n{report}"
+    );
+}
+
+/// The README's `conf` fences, each with the line its opener sits on. An indented fence
+/// (one inside a list item) has that indent stripped from its body.
+fn conf_fences(readme: &str) -> Vec<(usize, String)> {
+    let mut fences = Vec::new();
+    let mut open: Option<(usize, usize, Vec<&str>)> = None;
+    for (at, line) in readme.lines().enumerate() {
+        match open.as_mut() {
+            None if line.trim() == "```conf" => {
+                let indent = line.len() - line.trim_start().len();
+                open = Some((at + 1, indent, Vec::new()));
+            }
+            None => {}
+            Some(_) if line.trim() == "```" => {
+                let (opened, _, body) = open.take().expect("open");
+                fences.push((opened, body.join("\n") + "\n"));
+            }
+            Some((_, indent, body)) => body.push(line.get(*indent..).unwrap_or("").trim_end()),
+        }
+    }
+    assert!(open.is_none(), "every conf fence in the README closes");
+    fences
+}
+
+#[test]
+fn every_readme_conf_fence_validates() {
+    let readme = std::fs::read_to_string(plugin_root().join("README.md")).expect("the README");
+    let fences = conf_fences(&readme);
+    let openers = readme.lines().filter(|l| l.trim() == "```conf").count();
+    assert!(openers > 0, "the README carries conf fences");
+    assert_eq!(fences.len(), openers, "every conf opener yields a fence");
+
+    let home = installed();
+    for (n, (line, fence)) in fences.iter().enumerate() {
+        assert!(
+            !fence.trim().is_empty(),
+            "fence {} (README line {line}) is empty",
+            n + 1
+        );
+        write_config(home.path(), fence);
+        let (code, report) = validate(home.path());
+        assert_eq!(
+            code,
+            Some(0),
+            "fence {} (README line {line}) validates:\n{fence}\n{report}",
+            n + 1
+        );
+    }
+}
+
+/// What the skill leg's run posts through `post_comment.py`, and then asks through `ask.py`:
+/// wide CJK, an emoji, quotes, a fence and several lines.
+const NOTE: &str = "计划 ✅ — \"backoff\" capped at 30s:\n\n```\nlet backoff = 30;\n```";
+const QUESTION: &str = "看起来不对 🚨 — should a 401 reset the backoff?\n\nIt does today.";
+
+/// The skill leg's service: its run calls the installed skill's scripts by path, with the
+/// env the run carries and nothing else, the way an agent's Bash tool does.
+fn skill_service(home: &Path, base_url: &str, skill: &Path) -> String {
+    format!(
+        r#"import "core"
+import "@afkd/linear"
+
+NOTE     :: "{note}"
+QUESTION :: "{question}"
+
+widgets :: service(linear) {{
+  team      "{TEAM}"
+  base_url  "{base_url}"
+  api_key   "{API_KEY}"
+  pick_from "Todo"
+
+  work_dir "{home}"
+  on_run proc(run: core.Run, issue: linear.Issue) {{
+    $ python3 {skill}/post_comment.py #{{NOTE}}
+    $ python3 {skill}/ask.py #{{QUESTION}}
+  }}
+}}
+"#,
+        home = home.display(),
+        skill = skill.display(),
+        note = literal(NOTE),
+        question = literal(QUESTION),
+    )
+}
+
+/// `text` as the body of a config string literal: its `\`, `"` and newlines escaped.
+fn literal(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+/// A run works its issue through the installed skill on a real daemon: its comment and its
+/// question land on the issue verbatim, and the question parks it as the plugin parks one —
+/// the `Awaiting Reply` label on, an `[afkd-park]` marker naming the service, the claim
+/// released. `afkd plugins` lists the skill, and every request conforms.
+#[test]
+fn skill_leg_a_run_comments_and_parks_through_the_installed_skill() {
+    let home = installed();
+    let home = home.path();
+    let skill = plugins_root(home).join(NAME).join("skills/linear");
+    let out = run_subcommand_args(home, &["plugins"]);
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    let line = listed
+        .lines()
+        .find(|l| l.starts_with(NAME))
+        .unwrap_or_else(|| panic!("afkd plugins lists {NAME}:\n{listed}"));
+    assert!(line.contains("skill linear"), "the skill is supplied:\n{listed}");
+
+    let seeded = seed();
+    let (fake, issue) = (&seeded.fake, seeded.issue.as_str());
+    write_config(home, &skill_service(home, fake.base_url(), &skill));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    wait_for(home, fake, issue, &daemon, "the issue is parked", || {
+        let thread = fake.comments(issue);
+        fake.labels(issue).iter().any(|l| l == "Awaiting Reply")
+            && thread.iter().any(|c| c.body.starts_with("[afkd-park]"))
+            && !claimed(fake, issue)
+    });
+    let thread = fake.comments(issue);
+    let said: Vec<&str> = thread
+        .iter()
+        .filter(|c| !c.body.starts_with("[afkd-"))
+        .map(|c| c.body.as_str())
+        .collect();
+    assert_eq!(said, [ASK, NOTE, QUESTION], "the thread, oldest first");
+    let parked = thread
+        .iter()
+        .find(|c| c.body.starts_with("[afkd-park]"))
+        .expect("the park marker");
+    assert!(parked.body.contains("widgets"), "{:?} names the service", parked.body);
+    assert_eq!(fake.state_of(issue), "Todo", "a park moves nothing");
+    assert_eq!(run_dirs(home).len(), 1, "one run, parked, not claimed again");
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fake.invalid_requests(),
+        Vec::<String>::new(),
+        "requests Linear's schema refuses"
     );
 }

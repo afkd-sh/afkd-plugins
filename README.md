@@ -13,7 +13,7 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   triggers, with the skill an agent answers them through.
 - [`@afkd/github`](@afkd/github) — GitHub issues and pull-request reviews as afkd
   triggers, with the skill an agent answers them through.
-- [`@afkd/linear`](@afkd/linear) — Linear issues as afkd triggers.
+- [`@afkd/linear`](@afkd/linear) — Linear issues as afkd triggers, with the skill an agent works the issue through.
 
 Each plugin carries its own README, its own `node --test` suite and its own
 fixtures. A script a plugin is built with but does not ship lives under

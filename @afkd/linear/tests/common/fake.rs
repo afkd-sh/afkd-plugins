@@ -35,11 +35,17 @@
 //! file a person pasted ([`FakeLinear::seed_file`]) and fail the next PUTs with a status
 //! ([`FakeLinear::fail_uploads`]). [`png`] is the one file fixture, a valid PNG holding every
 //! byte value.
+//!
+//! **The plugin's `linear` skill is answered the same way.** Its scripts send the documents
+//! `skills/linear/lib/operations.graphql` holds, and the fake answers those too, held to the
+//! same schema; a name both files hold must be one document, or [`FakeLinear::start`] panics
+//! naming it. As Linear does, an issue is found by its identifier (`ENG-101`) as well as by its
+//! id, wherever a request names one.
 
 #![allow(dead_code)]
 
 #[path = "sdl.rs"]
-mod sdl;
+pub mod sdl;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -70,6 +76,9 @@ const SCHEMA: &str = include_str!("../schema.graphql");
 
 /// The operations the plugin sends, as it writes them.
 const OPERATIONS: &str = include_str!("../../src/operations.graphql");
+
+/// The operations the plugin's `linear` skill sends, as its scripts write them.
+const SKILL_OPERATIONS: &str = include_str!("../../skills/linear/lib/operations.graphql");
 
 /// Who wrote a comment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,12 +140,15 @@ struct State {
     id: String,
     name: String,
     kind: String,
+    /// Its place in the team's workflow: the order it was seeded in.
+    position: f64,
 }
 
 #[derive(Debug, Clone)]
 struct Label {
     id: String,
     name: String,
+    color: String,
     /// `None` for a workspace label.
     team: Option<String>,
 }
@@ -334,8 +346,16 @@ impl Store {
         self.states.iter().find(|s| s.id == id)
     }
 
+    /// Where the issue named by `id` sits, its id or its identifier.
     fn issue_at(&self, id: &str) -> Option<usize> {
-        self.issues.iter().position(|i| i.id == id)
+        self.issues
+            .iter()
+            .position(|i| i.id == id || self.identifier(i) == id)
+    }
+
+    /// The id of the issue named by `id`, its id or its identifier.
+    fn issue_id(&self, id: &str) -> Option<String> {
+        self.issue_at(id).map(|at| self.issues[at].id.clone())
     }
 
     fn identifier(&self, issue: &Issue) -> String {
@@ -344,7 +364,7 @@ impl Store {
 
     fn state_json(&self, id: &str) -> Value {
         let s = self.state(id).expect("a seeded state");
-        json!({"id": s.id, "name": s.name, "type": s.kind})
+        json!({"id": s.id, "name": s.name, "type": s.kind, "position": s.position})
     }
 
     /// A sub-issue node, as `Issues` and `IssueChildren` select one.
@@ -520,6 +540,19 @@ impl Store {
         }
     }
 
+    /// A new label named `name` in `color`, the team's or, with no `team`, the workspace's;
+    /// returns its id.
+    fn add_label(&mut self, name: &str, color: &str, team: Option<String>) -> String {
+        let id = self.mint();
+        self.labels.push(Label {
+            id: id.clone(),
+            name: name.to_string(),
+            color: color.to_string(),
+            team,
+        });
+        id
+    }
+
     /// Who the `Authorization` header authenticates as, if anyone.
     fn viewer(&self, authorization: Option<&str>) -> Option<String> {
         match authorization? {
@@ -561,11 +594,31 @@ fn lock(store: &Mutex<Store>) -> MutexGuard<'_, Store> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The documents `operations.graphql` holds, by name, whitespace collapsed.
+/// The documents the plugin's and its skill's `operations.graphql` hold, by name, whitespace
+/// collapsed.
+///
+/// # Panics
+///
+/// When the two files hold one name as two different documents.
 fn documents() -> HashMap<String, String> {
+    let mut out = documents_of(OPERATIONS);
+    for (name, doc) in documents_of(SKILL_OPERATIONS) {
+        if let Some(plugin) = out.get(&name) {
+            assert_eq!(
+                *plugin, doc,
+                "the skill's {name} is not the document src/operations.graphql holds"
+            );
+        }
+        out.insert(name, doc);
+    }
+    out
+}
+
+/// The documents one `operations.graphql` holds, by name, whitespace collapsed.
+fn documents_of(text: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let mut current: Option<(String, String)> = None;
-    for line in OPERATIONS.lines() {
+    for line in text.lines() {
         if line.starts_with("query ") || line.starts_with("mutation ") {
             if let Some((name, doc)) = current.take() {
                 out.insert(name, collapse(&doc));
@@ -596,6 +649,16 @@ fn collapse(text: &str) -> String {
 /// test that reaches Linear the way a run's own script would sends.
 pub fn operation_document(name: &str) -> Option<String> {
     documents().remove(name)
+}
+
+/// The documents the skill's `operations.graphql` holds, by name, whitespace collapsed.
+pub fn skill_documents() -> HashMap<String, String> {
+    documents_of(SKILL_OPERATIONS)
+}
+
+/// The documents the plugin's `operations.graphql` holds, by name, whitespace collapsed.
+pub fn plugin_documents() -> HashMap<String, String> {
+    documents_of(OPERATIONS)
 }
 
 impl FakeLinear {
@@ -675,16 +738,57 @@ impl FakeLinear {
         lock(&self.store).bot_comments = true;
     }
 
-    /// Add a workflow state of the category `kind`; returns its id.
+    /// Add a workflow state of the category `kind`, after every state seeded before it;
+    /// returns its id.
     pub fn state(&self, name: &str, kind: &str) -> String {
         let mut s = lock(&self.store);
         let id = s.mint();
+        let position = s.states.len() as f64;
         s.states.push(State {
             id: id.clone(),
             name: name.to_string(),
             kind: kind.to_string(),
+            position,
         });
         id
+    }
+
+    /// Add a label of the team's, named `name` in the hex colour `color`; returns its id.
+    pub fn team_label(&self, name: &str, color: &str) -> String {
+        let mut s = lock(&self.store);
+        let team = s.team_id.clone();
+        s.add_label(name, color, Some(team))
+    }
+
+    /// Add a workspace label, one no team holds, named `name` in the hex colour `color`;
+    /// returns its id.
+    pub fn workspace_label(&self, name: &str, color: &str) -> String {
+        lock(&self.store).add_label(name, color, None)
+    }
+
+    /// The ids of the labels on an issue.
+    pub fn label_ids(&self, issue: &str) -> Vec<String> {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at].labels.clone()
+    }
+
+    /// Put the label `label`, by id, on an issue.
+    pub fn put_label(&self, issue: &str, label: &str) {
+        self.edit(issue, |i| {
+            if !i.labels.iter().any(|l| l == label) {
+                i.labels.push(label.to_string());
+            }
+        });
+    }
+
+    /// The id of every issue the fake holds, in the order they were filed.
+    pub fn issue_ids(&self) -> Vec<String> {
+        lock(&self.store)
+            .issues
+            .iter()
+            .map(|i| i.id.clone())
+            .collect()
     }
 
     /// Add a user; returns its id.
@@ -809,15 +913,7 @@ impl FakeLinear {
             .find(|l| l.name == name && l.team.as_deref() == Some(&team))
         {
             Some(l) => l.id.clone(),
-            None => {
-                let id = s.mint();
-                s.labels.push(Label {
-                    id: id.clone(),
-                    name: name.to_string(),
-                    team: Some(team),
-                });
-                id
-            }
+            None => s.add_label(name, "#bec2c8", Some(team)),
         };
         let at = s.issue_at(issue).expect("a seeded issue");
         if !s.issues[at].labels.contains(&label) {
@@ -851,6 +947,14 @@ impl FakeLinear {
             edited: None,
         });
         id
+    }
+
+    /// Mark a comment edited now, as a person editing it does.
+    pub fn mark_edited(&self, comment: &str) {
+        let mut s = lock(&self.store);
+        if let Some(c) = s.comments.iter_mut().find(|c| c.id == comment) {
+            c.edited = Some(now_ms());
+        }
     }
 
     /// An issue's comments, in the order they were posted.
@@ -1559,14 +1663,14 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             };
             Ok(json!({"teams": {"nodes": nodes}}))
         }
-        "States" => {
+        "States" | "TeamStates" => {
             if var("teamId") != s.team_id {
                 return Err(Refusal::NotFound("Team"));
             }
             let nodes: Vec<Value> = s.states.iter().map(|st| s.state_json(&st.id)).collect();
             Ok(json!({"team": {"states": {"nodes": nodes}}}))
         }
-        "Issues" => {
+        "Issues" | "StateIssues" => {
             let descending = vars["sort"][0]["manual"]["order"] == "Descending";
             let issues = s
                 .select(&vars["filter"], descending)
@@ -1577,10 +1681,7 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             Ok(json!({"issues": {"nodes": nodes, "pageInfo": info}}))
         }
         "IssueRelations" => {
-            let issue = var("id");
-            if s.issue_at(&issue).is_none() {
-                return Err(Refusal::NotFound("Issue"));
-            }
+            let issue = s.issue_id(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
             let connection = s.inverse_relations(&issue, vars["after"].as_str(), 50);
             Ok(json!({"issue": {"inverseRelations": connection}}))
         }
@@ -1589,20 +1690,14 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             Ok(json!({"issue": {"description": s.issues[at].description}}))
         }
         "IssueChildren" => {
-            let issue = var("id");
-            if s.issue_at(&issue).is_none() {
-                return Err(Refusal::NotFound("Issue"));
-            }
+            let issue = s.issue_id(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
             let children = s.children(&issue);
             let (kept, info) = page(children, |c| c.id.clone(), vars["after"].as_str(), 50);
             let nodes: Vec<Value> = kept.iter().map(|c| s.child_json(c)).collect();
             Ok(json!({"issue": {"children": {"nodes": nodes, "pageInfo": info}}}))
         }
         "IssueComments" => {
-            let issue = var("id");
-            if s.issue_at(&issue).is_none() {
-                return Err(Refusal::NotFound("Issue"));
-            }
+            let issue = s.issue_id(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
             let mut thread: Vec<&Comment> =
                 s.comments.iter().filter(|c| c.issue == issue).collect();
             thread.sort_by(|a, b| b.created.cmp(&a.created).then(b.id.cmp(&a.id)));
@@ -1656,17 +1751,13 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             Ok(json!({"issueLabels": {"nodes": nodes}}))
         }
         "CommentCreate" => {
-            let issue = vars["input"]["issueId"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
+            let issue = s
+                .issue_id(vars["input"]["issueId"].as_str().unwrap_or_default())
+                .ok_or(Refusal::NotFound("Issue"))?;
             let body = vars["input"]["body"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
-            if s.issue_at(&issue).is_none() {
-                return Err(Refusal::NotFound("Issue"));
-            }
             if let Some((_, status)) = s.post_faults.iter().find(|(n, _)| body.contains(n)) {
                 return Err(Refusal::Status(*status));
             }
@@ -1751,15 +1842,11 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             Ok(json!({ field: {"success": true} }))
         }
         "IssueLabelCreate" => {
-            let id = s.mint();
-            s.labels.push(Label {
-                id: id.clone(),
-                name: vars["input"]["name"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                team: vars["input"]["teamId"].as_str().map(str::to_string),
-            });
+            let id = s.add_label(
+                vars["input"]["name"].as_str().unwrap_or_default(),
+                "#bec2c8",
+                vars["input"]["teamId"].as_str().map(str::to_string),
+            );
             Ok(json!({"issueLabelCreate": {"success": true, "issueLabel": {"id": id}}}))
         }
         "IssueUpdate" => {
@@ -1782,15 +1869,15 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             }
             Ok(json!({"issueUpdate": {"success": true}}))
         }
-        "IssueCreate" => {
+        "IssueCreate" | "NewIssue" => {
             let input = &vars["input"];
             if input["teamId"].as_str() != Some(s.team_id.as_str()) {
                 return Err(Refusal::NotFound("Team"));
             }
-            let parent = input["parentId"].as_str().map(str::to_string);
-            if parent.as_deref().is_some_and(|p| s.issue_at(p).is_none()) {
-                return Err(Refusal::NotFound("Issue"));
-            }
+            let parent = match input["parentId"].as_str() {
+                Some(p) => Some(s.issue_id(p).ok_or(Refusal::NotFound("Issue"))?),
+                None => None,
+            };
             let state = match input["stateId"].as_str() {
                 Some(state) if s.state(state).is_none() => {
                     return Err(Refusal::NotFound("WorkflowState"))
@@ -1805,12 +1892,13 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             };
             let id = s.mint();
             let number = s.issues.len() as u32 + 101;
-            let sort_order = s
-                .issues
-                .iter()
-                .map(|i| i.sort_order)
-                .fold(-1000.0_f64, f64::max)
-                + 1000.0;
+            let sort_order = input["sortOrder"].as_f64().unwrap_or_else(|| {
+                s.issues
+                    .iter()
+                    .map(|i| i.sort_order)
+                    .fold(-1000.0_f64, f64::max)
+                    + 1000.0
+            });
             let issue = Issue {
                 id,
                 number,
@@ -1824,14 +1912,53 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                 sort_order,
                 archived: false,
             };
-            let identifier = s.identifier(&issue);
+            let node = json!({
+                "id": issue.id,
+                "identifier": s.identifier(&issue),
+                "url": format!("https://linear.app/acme/issue/{}/{}", s.identifier(&issue), slug(&issue.title)),
+            });
             s.issues.push(issue);
-            Ok(json!({"issueCreate": {"success": true, "issue": {"identifier": identifier}}}))
+            Ok(json!({"issueCreate": {"success": true, "issue": node}}))
         }
-        "IssueArchive" => {
+        "IssueArchive" | "IssueUnarchive" => {
             let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
-            s.issues[at].archived = true;
-            Ok(json!({"issueArchive": {"success": true}}))
+            s.issues[at].archived = name == "IssueArchive";
+            let field = if name == "IssueArchive" {
+                "issueArchive"
+            } else {
+                "issueUnarchive"
+            };
+            Ok(json!({ field: {"success": true} }))
+        }
+        "TeamLabels" => {
+            let team = s.team_id.clone();
+            let wanted = json!({"or": [{"team": {"id": {"eq": team}}}, {"team": {"null": true}}]});
+            if vars["filter"] != wanted {
+                return Err(Refusal::Invalid(format!(
+                    "the fake answers TeamLabels for the team and the workspace only, not {}",
+                    vars["filter"]
+                )));
+            }
+            let (kept, info) = page(
+                s.labels.clone(),
+                |l| l.id.clone(),
+                vars["after"].as_str(),
+                100,
+            );
+            let nodes: Vec<Value> = kept
+                .iter()
+                .map(|l| {
+                    json!({"id": l.id, "name": l.name, "color": l.color,
+                           "team": l.team.as_ref().map(|t| json!({"id": t}))})
+                })
+                .collect();
+            Ok(json!({"issueLabels": {"nodes": nodes, "pageInfo": info}}))
+        }
+        "IssueLabelIds" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            let issue = &s.issues[at];
+            let nodes: Vec<Value> = issue.labels.iter().map(|id| json!({"id": id})).collect();
+            Ok(json!({"issue": {"identifier": s.identifier(issue), "labels": {"nodes": nodes}}}))
         }
         "FileUpload" => {
             let (content_type, filename) = (var("contentType"), var("filename"));

@@ -65,7 +65,7 @@ web_top)
 *)
 	cp "$binary" "$dst/afkd-$leaf"
 	chmod 755 "$dst/afkd-$leaf"
-	# A plugin may ship no skill: @afkd/linear's core has none yet.
+	# A plugin with no `skills/` ships none.
 	if [ -d "$src/skills" ]; then
 		cp -pR "$src/skills" "$dst/skills"
 		# Bytecode a local `python3` run left behind is this host's, not the plugin's.

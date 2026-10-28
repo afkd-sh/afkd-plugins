@@ -1026,4 +1026,235 @@ mod tests {
         );
         assert!(diag.narrated().is_empty());
     }
+
+    /// The skill's Python, which reads and writes links for `list_files.py`, `fetch_file.py`
+    /// and `post_file.py`, run over `fixture` as JSON on its stdin; its answers, as JSON.
+    fn python_ports(fixture: &serde_json::Value, api_url: &str) -> serde_json::Value {
+        const DRIVER: &str = r#"
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import linear_api as linear
+f = json.load(sys.stdin)
+json.dump({
+    "links": [linear.linked_files(md, linear.is_linear_file) for md in f["markdown"]],
+    "names": [linear.file_name_for(*row) for row in f["names"]],
+    "types": [linear.content_type_of(name) for name in f["types"]],
+    "embeds": [
+        linear.embed(text, [(n, linear.content_type_of(n), u) for n, u in files])
+        for text, files in f["embeds"]
+    ],
+    "linear": [linear.is_linear_file(url) for url in f["urls"]],
+    "markers": [linear.is_control_marker(text) for text in f["markers"]],
+}, sys.stdout)
+"#;
+        use std::io::Write as _;
+        let lib = concat!(env!("CARGO_MANIFEST_DIR"), "/skills/linear/lib");
+        let mut child = std::process::Command::new("python3")
+            .args(["-B", "-c", DRIVER, lib])
+            .env("LINEAR_API_URL", api_url)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run python3");
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(fixture.to_string().as_bytes())
+            .expect("write the fixture");
+        let out = child.wait_with_output().expect("python3 ends");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).expect("the ports answer JSON")
+    }
+
+    /// The skill's Python ports read and write links exactly as this module does, over one
+    /// fixture of the inputs that tell two readings apart: wide and four-byte text at each
+    /// bound, escapes, nesting, every destination and title form, the whitespace and control
+    /// characters Python and Rust class differently, unsafe and over-long names, extensions in
+    /// any case, names a link must escape, and afkd's markers escaped and indented.
+    #[test]
+    fn the_skill_ports_read_and_write_links_as_the_plugin_does() {
+        use crate::auth::Auth;
+        use crate::client::{LinearClient, GRAPHQL_PATH};
+        use crate::settings::AuthConfig;
+        use serde_json::json;
+
+        let base = "http://127.0.0.1:8080/";
+        let up = "https://uploads.linear.app/o/1";
+        let client = LinearClient::new(
+            base,
+            Arc::new(Auth::new(&AuthConfig::ApiKey("lin_api_k".into()))),
+        );
+        let is_linear = |url: &str| client.is_linear_file(url);
+        let text = |c: &str, n: usize| c.repeat(n);
+        let markdown = vec![
+            format!(
+                "## 背景 🚨\n\nBefore: ![shot — 修复.png]({up}/a.png) and \
+                 [run.log](<{up}/b log.txt>) — <{up}/bare>"
+            ),
+            format!("\\[not a link]({up}/c) but \\\\[is one]({up}/d), \\\\\\[not]({up}/x)"),
+            format!("[![inner.png]({up}/e)]({up}/f) [a [nested] text]({up}/g)"),
+            format!(
+                "[a]({up}/h \"title\") [b]({up}/i 'it''s') [c]({up}/j (paren)) \
+                 [d]({up}/k (a(b)) [e]({up}/l \"no close) [f]({up}/m x)"
+            ),
+            format!("[[[[ [a]({up}/n [b](<{up}/o<p>) [c](<{up}/q\n>)"),
+            format!("[{}]({up}/r)", text("字", 341)),
+            format!("[{}]({up}/s)", text("字", 342)),
+            format!(
+                "[{}]({up}/t) [{}]({up}/u)",
+                text("a", 1024),
+                text("a", 1025)
+            ),
+            format!("[{}]({up}/v)", text("😀", 256)),
+            format!("[p]({up}/{}{})", text("(", 32), text(")", 32)),
+            format!("[p]({up}/{}{})", text("(", 33), text(")", 33)),
+            format!("[q]({up}/1c\u{1c}x) [r]({up}/85\u{85}t) [s]({up}/3000\u{3000}\"t\")"),
+            "[x](https://example.com/a.png) [y](http://uploads.linear.app/o/1/a)".to_string(),
+            format!("[z](https://uploads.linear.app.evil.example/o) [log]({base}uploads/o/1)"),
+            format!("[a\n\nb]({up}/w) [a\nb]({up}/y)"),
+            format!("[big]({up}/{})", text("a", 3000)),
+            format!("[a\\]b\\\\c\\d\\字]({up}/z)"),
+            String::new(),
+            text("[](", 500),
+        ];
+        let long = format!("{}.png", text("長", 100));
+        let names: Vec<(usize, usize, String, String)> = vec![
+            (1, 1, "shot — 修复.png".into(), format!("{up}/a")),
+            (
+                3,
+                2,
+                "".into(),
+                format!("{up}/screen%20shot.png?sig=1#frag"),
+            ),
+            (1, 1, "  ".into(), format!("{up}/")),
+            (1, 1, "../../etc/passwd".into(), format!("{up}/a")),
+            (1, 1, "a\\b\u{7}c\u{7f}\u{9f}d".into(), format!("{up}/a")),
+            (1, 1, "...hidden".into(), format!("{up}/a")),
+            (1, 1, "\u{1c}name\u{1c}".into(), format!("{up}/a")),
+            (1, 1, "\u{85}name.txt\u{3000}".into(), format!("{up}/a")),
+            (12, 3, long, format!("{up}/a")),
+            (
+                1,
+                1,
+                format!("{}.verylongextension123", text("x", 300)),
+                format!("{up}/a"),
+            ),
+            (
+                1,
+                1,
+                format!("{}.tar.gz", text("😀", 70)),
+                format!("{up}/a"),
+            ),
+            (7, 1, "".into(), format!("{up}/../")),
+        ];
+        let types = [
+            "shot.PNG",
+            "a.JpEg",
+            "x.svg",
+            "notes.MD",
+            ".png",
+            "noext",
+            "a.Patch",
+            "b.diff",
+            "c.json",
+            "d.pdf",
+            "e.log",
+            "f.TXT",
+            "g.webp",
+            "h.gif",
+            "archive.tar.gz",
+            "x.\u{212a}",
+            "ÉCRAN.PNG",
+            "trailing.",
+        ];
+        let embeds: Vec<(&str, Vec<(&str, String)>)> = vec![
+            ("After the fix ✅", vec![("shot.png", format!("{up}/a"))]),
+            ("", vec![("run [final].log", format!("{up}/b"))]),
+            (
+                "## 計画\n\ntwo:",
+                vec![
+                    ("a\\b].png", format!("{up}/c")),
+                    ("c.md", format!("{up}/d")),
+                ],
+            ),
+            ("", vec![]),
+        ];
+        let urls = [
+            format!("{up}/a"),
+            "https://uploads.linear.app".into(),
+            "https://uploads.linear.app.evil.example/o/1/a".into(),
+            "http://uploads.linear.app/o/1/a".into(),
+            format!("{base}uploads/x"),
+            "http://127.0.0.1:8080".into(),
+            "http://127.0.0.1:80800/x".into(),
+            String::new(),
+        ];
+        let markers = [
+            "[afkd-claim] owner=afkd-17",
+            "  \n[afkd-ran] owner=afkd-17 upto=1",
+            "\\[afkd-park\\] service=afkd::develop",
+            "\u{1c}[afkd-attempt] 1/2",
+            "\u{3000}[afkd-attempt] 1/2",
+            "seen a stray [afkd-claim] on this issue",
+            "\\\\[afkd-claim] owner=x",
+            "",
+        ];
+        let fixture = json!({
+            "markdown": markdown,
+            "names": names,
+            "types": types,
+            "embeds": embeds,
+            "urls": urls,
+            "markers": markers,
+        });
+        let rust = json!({
+            "links": markdown.iter().map(|md| linked_files(md, &is_linear)).collect::<Vec<_>>(),
+            "names": names
+                .iter()
+                .map(|(n, width, name, url)| file_name_for(*n, *width, name, url))
+                .collect::<Vec<_>>(),
+            "types": types.iter().map(|name| content_type_of(name)).collect::<Vec<_>>(),
+            "embeds": embeds
+                .iter()
+                .map(|(text, files)| {
+                    let uploads: Vec<Upload> = files.iter().map(|(name, _)| upload(name)).collect();
+                    let urls: Vec<String> = files.iter().map(|(_, url)| url.clone()).collect();
+                    embed(text, &uploads, &urls)
+                })
+                .collect::<Vec<_>>(),
+            "linear": urls.iter().map(|url| is_linear(url)).collect::<Vec<_>>(),
+            "markers": markers.iter().map(|text| is_control_marker(text)).collect::<Vec<_>>(),
+        });
+        let found: usize = rust["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_array().unwrap().len())
+            .sum();
+        assert!(
+            found >= 15,
+            "the fixture finds links to compare: {}",
+            rust["links"]
+        );
+        let python = python_ports(&fixture, &format!("{base}{GRAPHQL_PATH}"));
+        for key in ["links", "names", "types", "embeds", "linear", "markers"] {
+            let (rust, python) = (&rust[key], &python[key]);
+            for (n, (r, p)) in rust
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(python.as_array().unwrap())
+                .enumerate()
+            {
+                assert_eq!(r, p, "{key}[{n}]: Rust, then Python");
+            }
+            assert_eq!(rust, python, "{key}");
+        }
+    }
 }

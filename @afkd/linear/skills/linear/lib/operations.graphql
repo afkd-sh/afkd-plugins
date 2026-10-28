@@ -1,0 +1,197 @@
+# Every GraphQL operation the `linear` skill's scripts send, each named, each starting at the start
+# of a line, and no other: lib/linear_api.py sends an operation by its name from this file, as the
+# plugin does from its own src/operations.graphql. A name both files hold is one document, written
+# the same in each, and the fake Linear the plugin's tests run against holds both to Linear's
+# schema (tests/schema.graphql). Every value that varies is a variable; the literals written
+# inline are page sizes. A comment is a whole line, before the first operation.
+
+query TeamStates($teamId: String!) {
+  team(id: $teamId) {
+    states(first: 100) {
+      nodes {
+        id
+        name
+        type
+        position
+      }
+    }
+  }
+}
+
+query StateIssues($filter: IssueFilter!, $sort: [IssueSortInput!]!, $first: Int!, $after: String) {
+  issues(filter: $filter, sort: $sort, first: $first, after: $after) {
+    nodes {
+      id
+      identifier
+      title
+      sortOrder
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query TeamLabels($filter: IssueLabelFilter!, $after: String) {
+  issueLabels(filter: $filter, first: 100, after: $after) {
+    nodes {
+      id
+      name
+      color
+      team {
+        id
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query IssueDescription($id: String!) {
+  issue(id: $id) {
+    description
+  }
+}
+
+query IssueChildren($id: String!, $after: String) {
+  issue(id: $id) {
+    children(first: 50, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        state {
+          name
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueComments($id: String!, $after: String) {
+  issue(id: $id) {
+    comments(first: 100, after: $after) {
+      nodes {
+        id
+        body
+        createdAt
+        editedAt
+        user {
+          id
+          name
+          displayName
+        }
+        botActor {
+          id
+          name
+        }
+        externalUser {
+          id
+          name
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueLabelIds($id: String!) {
+  issue(id: $id) {
+    identifier
+    labels(first: 100) {
+      nodes {
+        id
+      }
+    }
+  }
+}
+
+mutation CommentCreate($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment {
+      id
+      body
+      createdAt
+      editedAt
+      user {
+        id
+        name
+        displayName
+      }
+      botActor {
+        id
+        name
+      }
+      externalUser {
+        id
+        name
+      }
+    }
+  }
+}
+
+mutation IssueAddLabel($id: String!, $labelId: String!) {
+  issueAddLabel(id: $id, labelId: $labelId) {
+    success
+  }
+}
+
+mutation IssueRemoveLabel($id: String!, $labelId: String!) {
+  issueRemoveLabel(id: $id, labelId: $labelId) {
+    success
+  }
+}
+
+mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) {
+    success
+  }
+}
+
+mutation NewIssue($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    success
+    issue {
+      id
+      identifier
+      url
+    }
+  }
+}
+
+mutation IssueArchive($id: String!) {
+  issueArchive(id: $id) {
+    success
+  }
+}
+
+mutation IssueUnarchive($id: String!) {
+  issueUnarchive(id: $id) {
+    success
+  }
+}
+
+mutation FileUpload($contentType: String!, $filename: String!, $size: Int!) {
+  fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+    success
+    uploadFile {
+      uploadUrl
+      assetUrl
+      headers {
+        key
+        value
+      }
+    }
+  }
+}

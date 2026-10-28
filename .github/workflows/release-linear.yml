@@ -3,9 +3,9 @@
 # afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose `@afkd/linear`
 # entry names this repository's `releases/download/linear/afkd-linear-{platform}.tar.gz`, and
 # fills `{platform}` with the host's `<arch>-<os>` before the download. So this workflow ships
-# a finished binary per platform, never source: each archive holds the manifest and a static
-# musl build of the plugin for one CPU (it runs on any Linux of that CPU, whatever its glibc),
-# and nothing else — the core ships no skill. afkd never builds a plugin and places what the
+# a finished binary per platform, never source: each archive holds the manifest, a static musl
+# build of the plugin for one CPU (it runs on any Linux of that CPU, whatever its glibc) and
+# the `linear` skill, and nothing else. afkd never builds a plugin and places what the
 # archive holds, so no operator's host needs a toolchain. afkd cannot install a subdirectory
 # of a monorepo — its git leg requires the manifest at the clone root, and its tarball leg
 # steps through exactly one wrapper directory — so each archive's single top-level directory
@@ -87,17 +87,23 @@ jobs:
         run: |
           tools/pack-release linear out "@afkd/linear/target/$TARGET/release/afkd-linear"
           tar czf "$ASSET" -C out afkd-linear
-          # Assert the shape exactly rather than trust it — the manifest and the binary under
-          # one top-level `afkd-linear/`, and nothing else — so a stray file and a missing one
-          # are both red.
-          printf '%s\n' afkd-linear/ afkd-linear/afkd-plugin.toml afkd-linear/afkd-linear \
-            | LC_ALL=C sort > expected
+          # Assert the shape exactly rather than trust it: the expected listing is built from
+          # the repository, not from what was packed — the manifest, the binary, and every
+          # file git tracks under `skills/` with its directories, under one top-level
+          # `afkd-linear/` — so a stray file and a missing one are both red.
+          {
+            echo 'afkd-linear/afkd-plugin.toml'
+            echo 'afkd-linear/afkd-linear'
+            git ls-files -- '@afkd/linear/skills' | sed 's|^@afkd/linear/|afkd-linear/|'
+          } | awk -F/ '{ dir = ""; for (i = 1; i < NF; i++) { dir = dir $i "/"; print dir } print }' \
+            | LC_ALL=C sort -u > expected
           tar tzf "$ASSET" | LC_ALL=C sort > listing
           diff expected listing
           # Unpacked, not read off the listing: `test -x` after extraction is the same
           # question afkd's own unpack answers, asked the same way.
           mkdir shape && tar xzf "$ASSET" -C shape
           test -x shape/afkd-linear/afkd-linear
+          for script in shape/afkd-linear/skills/linear/*.py; do test -x "$script"; done
           rm -rf shape out expected listing
 
       - uses: actions/upload-artifact@v4
