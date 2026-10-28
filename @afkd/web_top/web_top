@@ -1351,7 +1351,7 @@ def main():
     # `:0` announces what it got.
     print("serving http://%s:%d" % (bind, httpd.server_address[1]), flush=True)
     ready.set()
-    httpd.serve_forever(poll_interval=0.1)
+    httpd.serve_forever(0.1)
     httpd.server_close()
     return 0
 

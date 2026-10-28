@@ -16,6 +16,9 @@
 //!   bot by the config's own constant `BOT`, and refuses the same file spelling the label
 //!   actions noun-first, as they were before they were named Odin-style. The **handle**
 //!   leg holds `afkd validate` to refusing an action passed the other kind's item.
+//! - The **cadence** leg holds `afkd validate` to refusing a service of either kind that
+//!   writes the claim key afkd renamed to `every`, pointing it at `every`, and to taking
+//!   the same services with `every`.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
 //!   each a whole entry file, against the installed plugin.
 //!
@@ -172,12 +175,12 @@ import "@afkd/gitlab"
 BOT :: "{ME}"
 
 widgets :: service(gitlab) {{
-  base_url      "{base_url}"
-  project       "{PROJECT}"
-  token         "{TOKEN}"
-  source_label  "afkd::ready"
-  poll_interval 1s
-  max_attempts  1
+  base_url     "{base_url}"
+  project      "{PROJECT}"
+  token        "{TOKEN}"
+  source_label "afkd::ready"
+  every        1s
+  max_attempts 1
 
   on_claim(issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
   on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
@@ -392,12 +395,12 @@ fn mr_service(work: &Path, base_url: &str) -> String {
 import "@afkd/gitlab"
 
 reviews :: service(gitlab.mr) {{
-  base_url      "{base_url}"
-  project       "{PROJECT}"
-  token         "{TOKEN}"
-  author_me     true
-  poll_interval 1s
-  max_attempts  1
+  base_url     "{base_url}"
+  project      "{PROJECT}"
+  token        "{TOKEN}"
+  author_me    true
+  every        1s
+  max_attempts 1
 
   on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{
     gitlab.mr_comment(mr, "round answered: #{{mr.title}}")
@@ -506,12 +509,12 @@ fn failing_service(home: &Path, base_url: &str) -> String {
 import "@afkd/gitlab"
 
 widgets :: service(gitlab) {{
-  base_url      "{base_url}"
-  project       "{PROJECT}"
-  token         "{TOKEN}"
-  source_label  "afkd::ready"
-  poll_interval 1s
-  max_attempts  2
+  base_url     "{base_url}"
+  project      "{PROJECT}"
+  token        "{TOKEN}"
+  source_label "afkd::ready"
+  every        1s
+  max_attempts 2
 
   on_claim(issue: gitlab.Issue) {{
     if gitlab.assign_me(issue) != nil {{ fail("assign_me") }}
@@ -667,12 +670,12 @@ import "@afkd/gitlab"
 BOT :: "autocoder"
 
 issues :: service(gitlab) {
-  base_url      "https://gitlab.example.com"
-  project       "acme/sub.group/widgets"
-  token         "REPLACE_ME"
-  source_label  "afkd::ready"
-  max_attempts  2
-  poll_interval 1m~3m
+  base_url     "https://gitlab.example.com"
+  project      "acme/sub.group/widgets"
+  token        "REPLACE_ME"
+  source_label "afkd::ready"
+  max_attempts 2
+  every        1m~3m
 
   on_claim(issue: gitlab.Issue) {
     _ = gitlab.assign_me(issue)
@@ -695,10 +698,10 @@ issues :: service(gitlab) {
 }
 
 reviews :: service(gitlab.mr) {
-  project       "4242"
-  token         "REPLACE_ME"
-  author_me     true
-  poll_interval 2m
+  project   "4242"
+  token     "REPLACE_ME"
+  author_me true
+  every     2m
 
   on_claim(mr: gitlab.Merge_Request) {
     _ = gitlab.mr_assign_me(mr)
@@ -825,6 +828,73 @@ reviews :: service(gitlab.mr) {{
     );
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "the mr action validates:\n{report}");
+}
+
+/// The claim key afkd renamed to `every`, spelled in halves so a `git grep` for it holds
+/// this repo to writing it nowhere else.
+const OLD_CADENCE: &str = concat!("poll", "_interval");
+
+/// A service of each kind whose claim cadence is written `{key} 1m~3m`, the line a group
+/// of its own, so the file is as `afkd fmt` prints it under either key.
+fn cadence_services(key: &str) -> String {
+    format!(
+        r#"import "core"
+import "@afkd/gitlab"
+
+issues :: service(gitlab) {{
+  base_url "https://gitlab.example.com"
+  project  "acme/sub.group/widgets"
+  token    "REPLACE_ME"
+
+  {key} 1m~3m
+
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: core.Run, issue: gitlab.Issue) {{
+    $ true
+  }}
+}}
+
+reviews :: service(gitlab.mr) {{
+  base_url "https://gitlab.example.com"
+  project  "acme/sub.group/widgets"
+  token    "REPLACE_ME"
+
+  {key} 1m~3m
+
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {{
+    $ true
+  }}
+}}
+"#
+    )
+}
+
+/// The claim cadence is afkd's own `every`, and neither kind declares [`OLD_CADENCE`]
+/// beside it: a service of either kind writing it with `1m~3m` is refused at validate,
+/// naming the setting, the service and the key to write instead, and the same services
+/// writing `every 1m~3m` validate.
+#[test]
+fn the_old_cadence_key_is_refused_naming_every_and_every_validates() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    write_config(home.path(), &cadence_services(OLD_CADENCE));
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(1), "{OLD_CADENCE} is refused:\n{report}");
+    for said in [
+        format!(r#"unknown setting "{OLD_CADENCE}" for service(gitlab)"#),
+        format!(r#"unknown setting "{OLD_CADENCE}" for service(gitlab.mr)"#),
+        r#"did you mean "every"?"#.to_owned(),
+    ] {
+        assert!(report.contains(&said), "the refusal says {said}:\n{report}");
+    }
+    write_config(home.path(), &cadence_services("every"));
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "every validates:\n{report}");
+    assert!(!report.contains("warning:"), "cleanly:\n{report}");
 }
 
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence

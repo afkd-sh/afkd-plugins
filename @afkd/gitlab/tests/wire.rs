@@ -45,7 +45,7 @@ fn settings(fake: &FakeGitlab) -> Value {
         "project": PROJECT,
         "token": TOKEN,
         "source_label": "afkd::ready",
-        "poll_interval": "30s",
+        "every": "30s",
         "max_attempts": "1",
     })
 }
@@ -933,7 +933,7 @@ fn mr_settings(fake: &FakeGitlab) -> Value {
         "project": PROJECT,
         "token": TOKEN,
         "author_me": "true",
-        "poll_interval": "30s",
+        "every": "30s",
         "max_attempts": "1",
     })
 }

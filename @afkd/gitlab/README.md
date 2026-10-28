@@ -68,11 +68,11 @@ task :: proc() {
 }
 
 develop :: service(gitlab) {
-  base_url      "https://gitlab.example.com"
-  project       "group/widgets"
-  token         GITLAB_TOKEN
-  source_label  "afkd::ready"
-  poll_interval 1m~3m
+  base_url     "https://gitlab.example.com"
+  project      "group/widgets"
+  token        GITLAB_TOKEN
+  source_label "afkd::ready"
+  every        1m~3m
 
   on_claim(issue: gitlab.Issue) {
     gitlab.assign_me(issue)
@@ -93,11 +93,11 @@ develop :: service(gitlab) {
 }
 
 reviews :: service(gitlab.mr) {
-  base_url      "https://gitlab.example.com"
-  project       "group/widgets"
-  token         GITLAB_TOKEN
-  author_me     true
-  poll_interval 2m~4m
+  base_url  "https://gitlab.example.com"
+  project   "group/widgets"
+  token     GITLAB_TOKEN
+  author_me true
+  every     2m~4m
 
   on_claim(mr: gitlab.Merge_Request) { gitlab.mr_add_label(mr, "afkd::reviewing") }
   on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
@@ -141,14 +141,14 @@ Fires for open issues on a single GitLab project, and its slots reflect progress
 through the issue's assignees, labels, and state. Its token stays with the plugin and the
 run.
 
-| Key             | Type       | Notes                                              |
-|-----------------|------------|----------------------------------------------------|
-| `base_url`      | `string`   | optional; empty → `https://gitlab.com` (API under `/api/v4`) |
-| `project`       | `string`   | **required**: a numeric id or a path-with-namespace (`group/widgets`) |
-| `token`         | `string`   | personal/project access token (`PRIVATE-TOKEN`); required |
-| `source_label`  | `string`   | optional; restrict to issues carrying this label   |
-| `max_attempts`  | `int`      | retries per issue; default `1`                     |
-| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters             |
+| Key            | Type       | Notes                                              |
+|----------------|------------|----------------------------------------------------|
+| `base_url`     | `string`   | optional; empty → `https://gitlab.com` (API under `/api/v4`) |
+| `project`      | `string`   | **required**: a numeric id or a path-with-namespace (`group/widgets`) |
+| `token`        | `string`   | personal/project access token (`PRIVATE-TOKEN`); required |
+| `source_label` | `string`   | optional; restrict to issues carrying this label   |
+| `max_attempts` | `int`      | retries per issue; default `1`                     |
+| `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
 The last two are afkd's own, read by afkd for every kind that claims its work.
 
@@ -170,9 +170,11 @@ label itself when a claim is won, and an issue carrying it is never picked up ag
 human, or a slot's `gitlab.remove_label(issue, "afkd::claimed")`, removes it to retry).
 GitLab creates a label the first time it is used, so there is nothing to define up front.
 
-**Cadence.** Polls the forge every `poll_interval` for open issues carrying `source_label`
-(if set); a service works **one issue at a time, to completion**, and `max_attempts` bounds
-the per-issue retries. There is no clarification gate and no `on_park`.
+**Cadence.** The plugin checks the forge for open issues carrying `source_label` (if set)
+the moment the service starts, then `every` after each check that claimed nothing or whose
+issue failed; an issue run to a finish is followed by the next check at once. A service
+works **one issue at a time, to completion**, and `max_attempts` bounds the per-issue
+retries. There is no clarification gate and no `on_park`.
 
 **Saying what happened.** A `gitlab.comment(issue, …)` in `on_done`/`on_fail` can carry
 the run's own facts, which afkd interpolates before the plugin sees the text: the
@@ -215,10 +217,10 @@ import "core"
 import "@afkd/gitlab"
 
 widgets :: service(gitlab) {
-  base_url      "https://gitlab.example.com"
-  project       "group/sub.group/widgets"
-  token         "REPLACE_ME"
-  poll_interval 4m~6m
+  base_url "https://gitlab.example.com"
+  project  "group/sub.group/widgets"
+  token    "REPLACE_ME"
+  every    4m~6m
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, issue: gitlab.Issue) {
@@ -241,20 +243,22 @@ for it.
 Fires on open merge requests — optionally only the bot's own — and re-fires when a human
 leaves a note newer than the bot's last word, for an automated review loop.
 
-| Key             | Type       | Notes                                              |
-|-----------------|------------|----------------------------------------------------|
-| `base_url`      | `string`   | as for `service(gitlab)`                           |
-| `project`       | `string`   | **required**: a numeric id or a path-with-namespace |
-| `token`         | `string`   | personal/project access token; required           |
-| `author_me`     | `bool`     | restrict to the bot's own MRs; default `false`     |
-| `max_attempts`  | `int`      | retries per round; default `1`                     |
-| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters             |
+| Key            | Type       | Notes                                              |
+|----------------|------------|----------------------------------------------------|
+| `base_url`     | `string`   | as for `service(gitlab)`                           |
+| `project`      | `string`   | **required**: a numeric id or a path-with-namespace |
+| `token`        | `string`   | personal/project access token; required           |
+| `author_me`    | `bool`     | restrict to the bot's own MRs; default `false`     |
+| `max_attempts` | `int`      | retries per round; default `1`                     |
+| `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
 `source_label` is **not** a key here.
 
-**Cadence.** Polls the forge every `poll_interval` for the project's open merge requests,
-optionally narrowed to the bot's own via `author_me`. Concurrency, retries, and the slots
-behave as for `service(gitlab)`.
+**Cadence.** The plugin checks the forge for the project's open merge requests, optionally
+narrowed to the bot's own via `author_me`, the moment the service starts, then `every` after
+each check that claimed nothing or whose round failed; a round run to a finish is followed
+by the next check at once. Concurrency, retries, and the slots behave as for
+`service(gitlab)`.
 
 **When an MR fires.** Feedback is read from the MR's **notes** — GitLab has no separate
 review list. An MR is eligible when it carries **a note newer than the bot's last word**:

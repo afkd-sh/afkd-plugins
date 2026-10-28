@@ -2419,7 +2419,7 @@ function triggerKind(svc) {
 
 /// `infoview::pretty_key` — a raw config key as a field label: `_`→space and the first
 /// character upper-cased (`pick_from`→`Pick from`). Only the first: an already-lowercase
-/// remainder is a word, not an acronym, so `poll_interval`→`Poll interval`.
+/// remainder is a word, not an acronym, so `max_attempts`→`Max attempts`.
 function prettyKey(key) {
   const spaced = key.replace(/_/g, " ");
   return spaced === "" ? spaced : spaced[0].toUpperCase() + spaced.slice(1);

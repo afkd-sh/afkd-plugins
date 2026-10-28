@@ -225,7 +225,7 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
         .cloned()
         .collect();
     assert_eq!(settings, want);
-    for afkds in ["every", "poll_interval", "max_attempts"] {
+    for afkds in ["every", "max_attempts"] {
         assert!(
             settings.iter().all(|s| s["name"] != quoted(afkds)),
             "`{afkds}` is afkd's to declare"

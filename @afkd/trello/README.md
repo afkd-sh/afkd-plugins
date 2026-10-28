@@ -67,13 +67,13 @@ task :: proc() {
 }
 
 develop :: service(trello) {
-  board         TRELLO_BOARD
-  api_key       TRELLO_API_KEY
-  token         TRELLO_TOKEN
-  pick_from     "Up for Grabs"
-  min_age       1m
-  max_attempts  2
-  poll_interval 1m~3m
+  board        TRELLO_BOARD
+  api_key      TRELLO_API_KEY
+  token        TRELLO_TOKEN
+  pick_from    "Up for Grabs"
+  min_age      1m
+  max_attempts 2
+  every        1m~3m
 
   on_claim(card: trello.Card) {
     trello.add_member(card)
@@ -136,7 +136,7 @@ starts, finishes, or fails. Its secrets stay with the plugin and the run.
 | `discuss_with`   | `list[string]` | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
 | `min_age`        | `duration`     | don't claim a card younger than this, measured from card creation; default `0` (no filter) |
 | `max_attempts`   | `int`          | retries per card; default `1`          |
-| `poll_interval`  | `duration`     | default `30s`; a range `2m~3m` jitters |
+| `every`          | `duration`     | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
 The last two are afkd's own, read by afkd for every kind that claims its work.
 
@@ -257,10 +257,11 @@ remove); a *member* who is not on the board is an error either way. `move_to` is
 action whose effect is positional rather than additive — it re-lists the card at the
 target's `top` or `bottom` — so two `move_to`s leave the card wherever the last one put it.
 
-**Cadence.** **Polls** the board every `poll_interval` and fires for cards in
-`pick_from`'s lists; a service works **one card at a time, to completion**, and
-`max_attempts` bounds the retries per card. The slots move, complete, or archive the card
-as work starts, finishes, or fails.
+**Cadence.** The plugin checks the board for work the moment the service starts, then
+`every` after each check that claimed nothing or whose card failed; a card run to a finish
+is followed by the next check at once. It fires for cards in `pick_from`'s lists; a
+service works **one card at a time, to completion**, and `max_attempts` bounds the retries
+per card. The slots move, complete, or archive the card as work starts, finishes, or fails.
 
 **Intake.** `pick_from` names one list or several, `pick_from "To Do"` or
 `pick_from "Ideas", "To Do"`. The poll goes through them in the order written, each from
@@ -493,11 +494,11 @@ import "core"
 import "@afkd/trello"
 
 widgets :: service(trello) {
-  board         "https://trello.com/b/REPLACE_ME/board"
-  api_key       "REPLACE_ME"
-  token         "REPLACE_ME"
-  pick_from     "To Do"
-  poll_interval 2m~3m
+  board     "https://trello.com/b/REPLACE_ME/board"
+  api_key   "REPLACE_ME"
+  token     "REPLACE_ME"
+  pick_from "To Do"
+  every     2m~3m
 
   on_claim(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
   on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {

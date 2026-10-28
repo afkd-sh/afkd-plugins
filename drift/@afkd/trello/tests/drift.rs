@@ -17,6 +17,9 @@
 //! - The **complete example** leg `afkd validate`s the selfdev pipeline of config language
 //!   v2's §24 against the installed plugin, and the **handle** leg holds `afkd validate` to
 //!   refusing an action called without its card.
+//! - The **cadence** leg holds `afkd validate` to refusing a service that writes the claim
+//!   key afkd renamed to `every`, pointing it at `every`, and to taking the same service
+//!   with `every`.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
 //!   each a whole entry file, against the installed plugin.
 //!
@@ -181,7 +184,7 @@ fn seed() -> (FakeTrello, String) {
 /// never does cannot wedge it — which is what lets the test see the claim and the run
 /// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each.
 fn service(home: &Path, base_url: &str) -> String {
-    service_drawing(home, base_url, r#"pick_from     "Up for Grabs""#)
+    service_drawing(home, base_url, r#"pick_from    "Up for Grabs""#)
 }
 
 /// [`service`], drawing its cards as `intake` says: the `pick_from` line, and any gate
@@ -192,13 +195,13 @@ fn service_drawing(home: &Path, base_url: &str, intake: &str) -> String {
 import "@afkd/trello"
 
 widgets :: service(trello) {{
-  board         "https://trello.com/b/{BOARD}/afkd-drift"
-  base_url      "{base_url}"
-  api_key       "{KEY}"
-  token         "{TOKEN}"
+  board        "https://trello.com/b/{BOARD}/afkd-drift"
+  base_url     "{base_url}"
+  api_key      "{KEY}"
+  token        "{TOKEN}"
   {intake}
-  poll_interval 1s
-  max_attempts  1
+  every        1s
+  max_attempts 1
 
   on_claim(card: trello.Card) {{
     trello.add_member(card)
@@ -483,13 +486,13 @@ fn failing_service(home: &Path, base_url: &str) -> String {
 import "@afkd/trello"
 
 widgets :: service(trello) {{
-  board         "https://trello.com/b/{BOARD}/afkd-drift"
-  base_url      "{base_url}"
-  api_key       "{KEY}"
-  token         "{TOKEN}"
-  pick_from     "Up for Grabs"
-  poll_interval 1s
-  max_attempts  2
+  board        "https://trello.com/b/{BOARD}/afkd-drift"
+  base_url     "{base_url}"
+  api_key      "{KEY}"
+  token        "{TOKEN}"
+  pick_from    "Up for Grabs"
+  every        1s
+  max_attempts 2
 
   on_claim(card: trello.Card) {{
     trello.move_to(card, "In Progress", at=.top)
@@ -668,13 +671,13 @@ fn attaching_service(home: &Path, base_url: &str) -> String {
 import "@afkd/trello"
 
 widgets :: service(trello) {{
-  board         "https://trello.com/b/{BOARD}/afkd-drift"
-  base_url      "{base_url}"
-  api_key       "{KEY}"
-  token         "{TOKEN}"
-  pick_from     "Up for Grabs"
-  poll_interval 1s
-  max_attempts  1
+  board        "https://trello.com/b/{BOARD}/afkd-drift"
+  base_url     "{base_url}"
+  api_key      "{KEY}"
+  token        "{TOKEN}"
+  pick_from    "Up for Grabs"
+  every        1s
+  max_attempts 1
 
   on_claim(card: trello.Card) {{
     plan := trello.fetch_attachment(card, "plan.md", "{home}/earlier-plan.md")
@@ -958,13 +961,13 @@ task :: proc(run: core.Run) {
 }
 
 develop :: service(trello) {
-  board         TRELLO_BOARD
-  api_key       TRELLO_API_KEY
-  token         TRELLO_TOKEN
-  pick_from     "Up for Grabs"
-  min_age       1m
-  max_attempts  2
-  poll_interval 1m~3m
+  board        TRELLO_BOARD
+  api_key      TRELLO_API_KEY
+  token        TRELLO_TOKEN
+  pick_from    "Up for Grabs"
+  min_age      1m
+  max_attempts 2
+  every        1m~3m
 
   on_claim(card: trello.Card) {
     added := trello.add_member(card)
@@ -1105,6 +1108,59 @@ fn a_service_without_pick_from_fails_validate_naming_the_setting() {
     write_config(home.path(), &service(home.path(), "http://127.0.0.1:9"));
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "the service naming one validates:\n{report}");
+}
+
+/// The claim key afkd renamed to `every`, spelled in halves so a `git grep` for it holds
+/// this repo to writing it nowhere else.
+const OLD_CADENCE: &str = concat!("poll", "_interval");
+
+/// A service whose claim cadence is written `{key} 1m~3m`, the line a group of its own, so
+/// the file is as `afkd fmt` prints it under either key.
+fn cadence_service(key: &str) -> String {
+    format!(
+        r#"import "core"
+import "@afkd/trello"
+
+widgets :: service(trello) {{
+  board     "https://trello.com/b/BOARDID/afkd"
+  api_key   "REPLACE_ME"
+  token     "REPLACE_ME"
+  pick_from "Up for Grabs"
+
+  {key} 1m~3m
+
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: core.Run, card: trello.Card) {{
+    $ true
+  }}
+}}
+"#
+    )
+}
+
+/// The claim cadence is afkd's own `every`, and the manifest declares no [`OLD_CADENCE`]
+/// beside it: a service writing it with `1m~3m` is refused at validate, naming the
+/// setting, the service and the key to write instead, and the same service writing
+/// `every 1m~3m` validates.
+#[test]
+fn the_old_cadence_key_is_refused_naming_every_and_every_validates() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    write_config(home.path(), &cadence_service(OLD_CADENCE));
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(1), "{OLD_CADENCE} is refused:\n{report}");
+    for said in [
+        format!(r#"unknown setting "{OLD_CADENCE}" for service(trello)"#),
+        r#"did you mean "every"?"#.to_owned(),
+    ] {
+        assert!(report.contains(&said), "the refusal says {said}:\n{report}");
+    }
+    write_config(home.path(), &cadence_service("every"));
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "every validates:\n{report}");
+    assert!(!report.contains("warning:"), "cleanly:\n{report}");
 }
 
 /// The README's `conf` fences, each with the line its opener sits on. An indented fence

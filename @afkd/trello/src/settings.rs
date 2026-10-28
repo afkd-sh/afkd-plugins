@@ -5,9 +5,9 @@
 //! every key is one the kind declares, `board`/`api_key`/`token` are present, and each
 //! value is of its declared type. What is left here is the part a manifest cannot say — a
 //! list that names nothing, a `min_age` that is not a plain duration — in the built-in
-//! trigger's own sentences. The cadence and the attempt bound (`poll_interval`,
-//! `max_attempts`) are afkd's and are not read here, and the hooks never arrive here at
-//! all: afkd runs them, and each action they call is one `call` ([`crate::lifecycle`]).
+//! trigger's own sentences. The cadence and the attempt bound (`every`, `max_attempts`) are
+//! afkd's and are not read here, and the hooks never arrive here at all: afkd runs them, and
+//! each action they call is one `call` ([`crate::lifecycle`]).
 //!
 //! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a duration
 //! its largest whole unit, a range `lo..hi`), and a `list[…]` is always an array — of the
@@ -162,7 +162,7 @@ pub(crate) const SETTINGS: &[Declared] = &[
     ("min_age", "duration", &[]),
     ("max_attempts", "int", &[("default", "1")]),
     (
-        "poll_interval",
+        "every",
         "duration",
         &[("jitter", "true"), ("default", "\"30s\"")],
     ),
@@ -385,7 +385,7 @@ mod tests {
         let cfg = cfg(json!({
             "pick_from": "Up for Grabs",
             "max_attempts": "2",
-            "poll_interval": "30s",
+            "every": "30s",
         }));
         assert_eq!(cfg.board_address, "https://trello.com/b/BID/x");
         assert_eq!(cfg.board_id, "BID");
@@ -626,8 +626,8 @@ mod tests {
         }
     }
 
-    /// A threshold is not resampled per read, so the `poll_interval` jitter range is not
-    /// a legal `min_age`, and neither is a compound, a bare number or an overflow.
+    /// A threshold is not resampled per read, so the `every` jitter range is not a legal
+    /// `min_age`, and neither is a compound, a bare number or an overflow.
     #[test]
     fn min_age_rejects_a_range_and_every_other_non_duration() {
         for spelling in [

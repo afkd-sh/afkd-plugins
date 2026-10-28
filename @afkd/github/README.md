@@ -68,10 +68,10 @@ task :: proc() {
 }
 
 develop :: service(github) {
-  repo          "acme/widgets"
-  token         GITHUB_TOKEN
-  source_label  "afkd/ready"
-  poll_interval 1m~3m
+  repo         "acme/widgets"
+  token        GITHUB_TOKEN
+  source_label "afkd/ready"
+  every        1m~3m
 
   on_claim(issue: github.Issue) {
     github.assign_me(issue)
@@ -92,10 +92,10 @@ develop :: service(github) {
 }
 
 reviews :: service(github.pr) {
-  repo          "acme/widgets"
-  token         GITHUB_TOKEN
-  author_me     true
-  poll_interval 2m~4m
+  repo      "acme/widgets"
+  token     GITHUB_TOKEN
+  author_me true
+  every     2m~4m
 
   on_claim(pr: github.Pull_Request) { github.pr_add_label(pr, "afkd/reviewing") }
   on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
@@ -141,14 +141,14 @@ Fires for open issues on a single GitHub repository, and its slots reflect progr
 through the issue's assignees, labels, and state. Its token stays with the plugin and the
 run.
 
-| Key             | Type       | Notes                                              |
-|-----------------|------------|----------------------------------------------------|
-| `host`          | `string`   | optional; empty/`github.com` → the cloud API, any other host → GitHub Enterprise `…/api/v3` |
-| `repo`          | `string`   | **required**: a single repository, `"owner/name"`  |
-| `token`         | `string`   | personal access token (`Authorization: Bearer`); required |
-| `source_label`  | `string`   | optional; restrict to issues carrying this label   |
-| `max_attempts`  | `int`      | retries per issue; default `1`                     |
-| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters             |
+| Key            | Type       | Notes                                              |
+|----------------|------------|----------------------------------------------------|
+| `host`         | `string`   | optional; empty/`github.com` → the cloud API, any other host → GitHub Enterprise `…/api/v3` |
+| `repo`         | `string`   | **required**: a single repository, `"owner/name"`  |
+| `token`        | `string`   | personal access token (`Authorization: Bearer`); required |
+| `source_label` | `string`   | optional; restrict to issues carrying this label   |
+| `max_attempts` | `int`      | retries per issue; default `1`                     |
+| `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
 The last two are afkd's own, read by afkd for every kind that claims its work.
 
@@ -172,9 +172,11 @@ itself when a claim is won, and an issue carrying it is never picked up again (a
 a slot's `github.remove_label(issue, "afkd/claimed")`, removes it to retry). GitHub creates
 a label the first time it is added to an issue, so there is nothing to define up front.
 
-**Cadence.** Polls the forge every `poll_interval` for open issues carrying `source_label`
-(if set); a service works **one issue at a time, to completion**, and `max_attempts` bounds
-the per-issue retries. There is no clarification gate and no `on_park`.
+**Cadence.** The plugin checks the forge for open issues carrying `source_label` (if set)
+the moment the service starts, then `every` after each check that claimed nothing or whose
+issue failed; an issue run to a finish is followed by the next check at once. A service
+works **one issue at a time, to completion**, and `max_attempts` bounds the per-issue
+retries. There is no clarification gate and no `on_park`.
 
 **Saying what happened.** A `github.comment(issue, …)` in `on_done`/`on_fail` can carry
 the run's own facts, which afkd interpolates before the plugin sees the text: the
@@ -218,9 +220,9 @@ import "core"
 import "@afkd/github"
 
 widgets :: service(github) {
-  repo          "acme/widgets"
-  token         "REPLACE_ME"
-  poll_interval 4m~6m
+  repo  "acme/widgets"
+  token "REPLACE_ME"
+  every 4m~6m
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, issue: github.Issue) {
@@ -243,20 +245,22 @@ for it.
 Fires on open pull requests — optionally only the bot's own — and re-fires when a human
 leaves feedback newer than the bot's last word, for an automated review loop.
 
-| Key             | Type       | Notes                                              |
-|-----------------|------------|----------------------------------------------------|
-| `host`          | `string`   | as for `service(github)`                           |
-| `repo`          | `string`   | **required**: a single repository, `"owner/name"`  |
-| `token`         | `string`   | personal access token; required                    |
-| `author_me`     | `bool`     | restrict to the bot's own PRs; default `false`     |
-| `max_attempts`  | `int`      | retries per round; default `1`                     |
-| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters             |
+| Key            | Type       | Notes                                              |
+|----------------|------------|----------------------------------------------------|
+| `host`         | `string`   | as for `service(github)`                           |
+| `repo`         | `string`   | **required**: a single repository, `"owner/name"`  |
+| `token`        | `string`   | personal access token; required                    |
+| `author_me`    | `bool`     | restrict to the bot's own PRs; default `false`     |
+| `max_attempts` | `int`      | retries per round; default `1`                     |
+| `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
 `source_label` is **not** a key here.
 
-**Cadence.** Polls the forge every `poll_interval` for the repo's open pull requests,
-optionally narrowed to the bot's own via `author_me`. Concurrency, retries, and the slots
-behave as for `service(github)`.
+**Cadence.** The plugin checks the forge for the repo's open pull requests, optionally
+narrowed to the bot's own via `author_me`, the moment the service starts, then `every` after
+each check that claimed nothing or whose round failed; a round run to a finish is followed
+by the next check at once. Concurrency, retries, and the slots behave as for
+`service(github)`.
 
 **When a PR fires.** Feedback is read from the PR's conversation **comments** and its
 **reviews**. A PR is eligible when it carries **feedback newer than the bot's last word**:

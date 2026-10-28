@@ -68,10 +68,10 @@ task :: proc() {
 }
 
 develop :: service(gitea) {
-  base_url      "https://gitea.example.com"
-  repo          "acme/widgets"
-  token         GITEA_TOKEN
-  poll_interval 1m~3m
+  base_url "https://gitea.example.com"
+  repo     "acme/widgets"
+  token    GITEA_TOKEN
+  every    1m~3m
 
   on_claim(issue: gitea.Issue) {
     gitea.assign_me(issue)
@@ -95,11 +95,11 @@ develop :: service(gitea) {
 }
 
 reviews :: service(gitea.pr) {
-  base_url      "https://gitea.example.com"
-  repo          "acme/widgets"
-  token         GITEA_TOKEN
-  author_me     true
-  poll_interval 2m~4m
+  base_url  "https://gitea.example.com"
+  repo      "acme/widgets"
+  token     GITEA_TOKEN
+  author_me true
+  every     2m~4m
 
   on_claim(pr: gitea.Pull_Request) { gitea.pr_add_label(pr, "afkd/working") }
   on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
@@ -149,16 +149,16 @@ authenticates as (e.g. a dedicated `autocoder` account) — *or* when it carries
 next poll picks it up, no label to remember. The `source_label` remains as a classic label
 gate for those who want it; either signal suffices.
 
-| Key             | Type           | Notes                                              |
-|-----------------|----------------|----------------------------------------------------|
-| `base_url`      | `string`       | the Gitea instance base URL                        |
-| `repo`          | `string`       | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
-| `org`           | `string`       | every repository of an org; **exactly one** of `repo`/`org` |
-| `token`         | `string`       | personal access token; required                    |
-| `source_label`  | `string`       | optional label gate; alternative to assigning bot  |
-| `discuss_with`  | `list[string]` | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
-| `max_attempts`  | `int`          | retries per issue; default `1`                     |
-| `poll_interval` | `duration`     | default `30s`; a range `2m~3m` jitters             |
+| Key            | Type           | Notes                                              |
+|----------------|----------------|----------------------------------------------------|
+| `base_url`     | `string`       | the Gitea instance base URL                        |
+| `repo`         | `string`       | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
+| `org`          | `string`       | every repository of an org; **exactly one** of `repo`/`org` |
+| `token`        | `string`       | personal access token; required                    |
+| `source_label` | `string`       | optional label gate; alternative to assigning bot  |
+| `discuss_with` | `list[string]` | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
+| `max_attempts` | `int`          | retries per issue; default `1`                     |
+| `every`        | `duration`     | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
 The last two are afkd's own, read by afkd for every kind that claims its work.
 
@@ -181,10 +181,11 @@ an exclusive label the moment another label in the same scope is added, so the g
 vanish under your own `on_claim` and the issue would be claimed again on every poll. A
 plugin that finds `afkd/claimed` already defined exclusive refuses to run and says so.
 
-**Cadence.** Polls the forge every `poll_interval` for open issues **assigned to the bot**
-(or carrying `source_label`, if set) across a single `repo` or every repo of an `org`; a
-service works **one issue at a time, to completion**, and `max_attempts` bounds the
-per-issue retries.
+**Cadence.** The plugin checks the forge for open issues **assigned to the bot** (or
+carrying `source_label`, if set) across a single `repo` or every repo of an `org` the moment
+the service starts, then `every` after each check that claimed nothing or whose issue
+failed; an issue run to a finish is followed by the next check at once. A service works
+**one issue at a time, to completion**, and `max_attempts` bounds the per-issue retries.
 
 ```conf
 import "core"
@@ -313,10 +314,10 @@ import "core"
 import "@afkd/gitea"
 
 widgets :: service(gitea) {
-  base_url      "https://git.example.com"
-  repo          "acme/widgets"
-  token         "REPLACE_ME"
-  poll_interval 4m~6m
+  base_url "https://git.example.com"
+  repo     "acme/widgets"
+  token    "REPLACE_ME"
+  every    4m~6m
 
   work_dir "/srv/acme/widgets"
   on_run(run: core.Run, issue: gitea.Issue) {
@@ -340,21 +341,23 @@ flight. All of this is afkd's own mid-run watch; the plugin only reads the threa
 Fires on open pull requests — optionally only the bot's own — and re-fires when a human
 leaves feedback newer than the bot's last word, for an automated review loop.
 
-| Key             | Type       | Notes                                                  |
-|-----------------|------------|--------------------------------------------------------|
-| `base_url`      | `string`   | the Gitea instance base URL                            |
-| `repo`          | `string`   | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
-| `org`           | `string`   | every repository of an org; **exactly one** of `repo`/`org` |
-| `token`         | `string`   | personal access token; required                        |
-| `author_me`     | `bool`     | restrict to the bot's own PRs; default `false`         |
-| `max_attempts`  | `int`      | retries per round; default `1`                         |
-| `poll_interval` | `duration` | default `30s`; a range `2m~3m` jitters                 |
+| Key            | Type       | Notes                                                  |
+|----------------|------------|--------------------------------------------------------|
+| `base_url`     | `string`   | the Gitea instance base URL                            |
+| `repo`         | `string`   | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
+| `org`          | `string`   | every repository of an org; **exactly one** of `repo`/`org` |
+| `token`        | `string`   | personal access token; required                        |
+| `author_me`    | `bool`     | restrict to the bot's own PRs; default `false`         |
+| `max_attempts` | `int`      | retries per round; default `1`                         |
+| `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
 `source_label` and `discuss_with` are not keys here, and the kind has no `on_park` slot.
 
-**Cadence.** Polls the forge every `poll_interval` for open PRs, optionally narrowed to the
-bot's own via `author_me`, across a single `repo` or every repo of an `org`. Concurrency,
-retries, and the slots behave as for `service(gitea)`.
+**Cadence.** The plugin checks the forge for open PRs, optionally narrowed to the bot's own
+via `author_me`, across a single `repo` or every repo of an `org`, the moment the service
+starts, then `every` after each check that claimed nothing or whose round failed; a round
+run to a finish is followed by the next check at once. Concurrency, retries, and the slots
+behave as for `service(gitea)`.
 
 **When a PR fires.** A PR is eligible when it carries **feedback newer than the bot's last
 word**: the newest of the bot's own comments (by when they were last edited) and reviews

@@ -40,7 +40,7 @@ fn settings(fake: &FakeGitea) -> Value {
         "repo": REPO,
         "token": TOKEN,
         "source_label": "afkd/ready",
-        "poll_interval": "30s",
+        "every": "30s",
         "max_attempts": "1",
     })
 }
@@ -937,7 +937,7 @@ fn pr_settings(fake: &FakeGitea) -> Value {
         "repo": REPO,
         "token": TOKEN,
         "author_me": "true",
-        "poll_interval": "2m",
+        "every": "2m",
         "max_attempts": "2",
     })
 }

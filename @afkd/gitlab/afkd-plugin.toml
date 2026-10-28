@@ -1,5 +1,5 @@
 name = "@afkd/gitlab"
-version = "0.7.0"
+version = "0.8.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -78,7 +78,7 @@ claims = true
   default = 1
 
   [[kind.setting]]
-  name = "poll_interval"
+  name = "every"
   type = "duration"
   jitter = true
   default = "30s"
@@ -168,7 +168,7 @@ claims = true
   default = 1
 
   [[kind.setting]]
-  name = "poll_interval"
+  name = "every"
   type = "duration"
   jitter = true
   default = "30s"

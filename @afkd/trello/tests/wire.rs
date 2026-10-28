@@ -83,7 +83,7 @@ fn settings(fake: &FakeTrello) -> Value {
         "api_key": KEY,
         "token": TOKEN,
         "pick_from": "Up for Grabs",
-        "poll_interval": "30s",
+        "every": "30s",
         "max_attempts": "2",
     })
 }

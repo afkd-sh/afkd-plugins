@@ -5,7 +5,7 @@
 //! every key is one the kind declares, `token` is present, and each value is of its
 //! declared type. What is left here is the part a manifest cannot say — exactly one of
 //! `repo`/`org`, and a `discuss_with` naming someone — in the built-in trigger's own
-//! sentences. The cadence and the attempt bound (`poll_interval`, `max_attempts`) are
+//! sentences. The cadence and the attempt bound (`every`, `max_attempts`) are
 //! afkd's and are not read here, and the hooks never arrive here at all: afkd runs them,
 //! and each action they call is one `call` ([`crate::lifecycle`]).
 //!
@@ -116,7 +116,7 @@ pub(crate) const ISSUE_SETTINGS: &[Declared] = &[
     ("discuss_with", "list[string]", &[]),
     ("max_attempts", "int", &[("default", "1")]),
     (
-        "poll_interval",
+        "every",
         "duration",
         &[("jitter", "true"), ("default", "\"30s\"")],
     ),
@@ -133,7 +133,7 @@ pub(crate) const PR_SETTINGS: &[Declared] = &[
     ("author_me", "bool", &[("default", "false")]),
     ("max_attempts", "int", &[("default", "1")]),
     (
-        "poll_interval",
+        "every",
         "duration",
         &[("jitter", "true"), ("default", "\"30s\"")],
     ),
@@ -274,7 +274,7 @@ mod tests {
             "token": "PAT",
             "source_label": "afkd/ready",
             "max_attempts": "2",
-            "poll_interval": "1m",
+            "every": "1m",
         }))
         .expect("valid");
         assert_eq!(cfg.base_url, "https://gitea.example.com");

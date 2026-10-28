@@ -1,5 +1,5 @@
 name = "@afkd/linear"
-version = "0.5.1"
+version = "0.5.2"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
