@@ -192,17 +192,17 @@ impl Plugin {
                 max,
                 reason,
             } => on_armed(armed, clock, |a| {
-                a.attempt_failed(&key, n, max, reason.as_deref(), clock.now(), diag)
+                a.attempt_failed(&key, n, max, reason.as_deref(), clock, diag)
             }),
             Request::Finish {
                 key,
                 outcome,
                 facts,
             } => on_armed(armed, clock, |a| {
-                a.finish(&key, outcome, &facts, clock.now(), diag)
+                a.finish(&key, outcome, &facts, clock, diag)
             }),
             Request::Call { action, args } => {
-                on_armed(armed, clock, |a| a.call(&action, &args, clock.now(), diag))
+                on_armed(armed, clock, |a| a.call(&action, &args, clock, diag))
             }
             Request::Unknown => {
                 diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
@@ -403,13 +403,13 @@ impl Armed {
         n: u32,
         max: u32,
         reason: Option<&str>,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
         let ok = match self.live.get(key) {
             Some(live) => {
                 self.units
-                    .attempt_failed(&live.unit, n, max, reason, now, diag);
+                    .attempt_failed(&live.unit, n, max, reason, clock, diag);
                 true
             }
             None => {
@@ -430,7 +430,7 @@ impl Armed {
         key: &str,
         outcome: UnitOutcome,
         facts: &Facts,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
         let Some(live) = self.live.remove(key) else {
@@ -439,7 +439,7 @@ impl Armed {
             ));
             return Answer::Reply(json!({"ok": true}).to_string());
         };
-        let reply = if self.units.finish(&live.unit, outcome, facts, now, diag) {
+        let reply = if self.units.finish(&live.unit, outcome, facts, clock, diag) {
             json!({"ok": true})
         } else {
             diag.err(&format_args!(
@@ -469,7 +469,7 @@ impl Armed {
         &self,
         action: &str,
         args: &Map<String, Value>,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
         let refuse = |error: String| {
@@ -494,7 +494,7 @@ impl Armed {
         let done = match op {
             Op::Act(act) => self
                 .units
-                .act(issue, act, now, diag)
+                .act(issue, act, clock, diag)
                 .map_err(|e| e.to_string()),
             Op::Read { read, to } => self.units.read(issue, me, read, &to, diag),
         };

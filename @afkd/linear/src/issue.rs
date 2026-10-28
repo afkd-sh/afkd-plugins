@@ -360,25 +360,27 @@ impl LinearUnits {
 
     /// Do `write` on `issue`, or queue it: behind the issue's earlier writes while any is
     /// still owed, so one issue's writes land in the order they were asked for; and for a
-    /// retry when Linear cannot take it now. Every write queued is said, one line. A refusal
-    /// no retry can fix is the caller's error, and nothing is queued.
+    /// retry when Linear cannot take it now, its wait counted from when the inline try failed,
+    /// read off `clock` after it. Every write queued is said, one line. A refusal no retry can
+    /// fix is the caller's error, and nothing is queued.
     pub(crate) fn deliver(
         &self,
         issue: &Issue,
         write: Write,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Result<Delivery, LinearError> {
         if self.outbox.owes(&issue.id) {
             diag.err(&queued_behind_line(issue, &write));
-            self.outbox.queue_behind(issue, write, now);
+            self.outbox.queue_behind(issue, write, clock.now());
             return Ok(Delivery::Queued);
         }
         match write.perform(&*self.tracker, issue) {
             Ok(()) => Ok(Delivery::Landed),
             Err(e) if e.transient() => {
                 diag.err(&queued_line(issue, &write, &e));
-                self.outbox.queue_retry(issue, write, now, e.retry_after());
+                self.outbox
+                    .queue_retry(issue, write, clock.now(), e.retry_after());
                 Ok(Delivery::Queued)
             }
             Err(e) => Err(e),
@@ -428,12 +430,12 @@ impl LinearUnits {
         &self,
         issue: &Issue,
         action: IssueAction,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Result<(), LinearError> {
         let team = self.team()?;
         let line = action_line(&action, &team, issue);
-        if self.deliver(issue, Write::Act { team, action }, now, diag)? == Delivery::Landed {
+        if self.deliver(issue, Write::Act { team, action }, clock, diag)? == Delivery::Landed {
             diag.narrate(&line);
         }
         Ok(())
@@ -827,7 +829,7 @@ impl LinearUnits {
         unit: &Unit,
         outcome: UnitOutcome,
         facts: &Facts,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) {
         let spoke = match self.tracker.issue_comments(&unit.issue.id) {
@@ -844,7 +846,7 @@ impl LinearUnits {
         };
         if !spoke {
             let backstop = Write::Note(backstop_text(outcome, facts));
-            if let Err(e) = self.deliver(&unit.issue, backstop.clone(), now, diag) {
+            if let Err(e) = self.deliver(&unit.issue, backstop.clone(), clock, diag) {
                 diag.err(&lost_line(&unit.issue, &backstop, &e, None));
             }
         }
@@ -1076,14 +1078,14 @@ impl LinearUnits {
         n: u32,
         max: u32,
         reason: Option<&str>,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) {
         let Some(reason) = reason else {
             return;
         };
         let note = Write::Note(attempt_text(n, max, reason));
-        if let Err(e) = self.deliver(&unit.issue, note.clone(), now, diag) {
+        if let Err(e) = self.deliver(&unit.issue, note.clone(), clock, diag) {
             diag.err(&lost_line(&unit.issue, &note, &e, None));
         }
     }
@@ -1108,7 +1110,7 @@ impl LinearUnits {
         unit: &Unit,
         outcome: UnitOutcome,
         facts: &Facts,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> bool {
         let issue = &unit.issue;
@@ -1139,7 +1141,7 @@ impl LinearUnits {
                     text: ran_text(&self.owner, unit.delivered_upto),
                     priors: priors.clone(),
                 };
-                match self.deliver(issue, watermark.clone(), now, diag) {
+                match self.deliver(issue, watermark.clone(), clock, diag) {
                     Ok(Delivery::Landed) => crate::outbox::prune(&*self.tracker, &priors, diag),
                     Ok(Delivery::Queued) => {}
                     Err(e) => diag.err(&lost_line(issue, &watermark, &e, None)),
@@ -1147,7 +1149,7 @@ impl LinearUnits {
             }
             // Grooming path: afkd's own last comment IS the tail boundary, so the backstop
             // guarantees afkd is the last speaker.
-            Some(_) => self.post_backstop_if_silent(unit, outcome, facts, now, diag),
+            Some(_) => self.post_backstop_if_silent(unit, outcome, facts, clock, diag),
         }
         // The park owner marker: AFTER the watermark/backstop branch (posted before it, it
         // would count as afkd speaking and suppress the backstop) and BEFORE the release (a
@@ -1196,7 +1198,7 @@ impl LinearUnits {
                 park_marker: marker_owed,
                 park_priors,
                 release: true,
-                since: now,
+                since: clock.now(),
             });
         }
         !release_owed
@@ -1652,7 +1654,7 @@ mod tests {
 
         fn finish(&self, unit: &Unit, outcome: UnitOutcome) -> bool {
             self.units
-                .finish(unit, outcome, &Facts::none(), self.clock.now(), &self.diag)
+                .finish(unit, outcome, &Facts::none(), &self.clock, &self.diag)
         }
 
         fn texts(&self, id: &str) -> Vec<String> {
@@ -2546,16 +2548,9 @@ mod tests {
         let f = fx(json!({}));
         f.tracker.add_issue("Todo", "ENG-1", "t", "");
         let unit = f.poll().unwrap();
-        f.units.attempt_failed(
-            &unit,
-            1,
-            2,
-            Some("cargo test: 3 failed"),
-            f.clock.now(),
-            &f.diag,
-        );
         f.units
-            .attempt_failed(&unit, 2, 2, None, f.clock.now(), &f.diag);
+            .attempt_failed(&unit, 1, 2, Some("cargo test: 3 failed"), &f.clock, &f.diag);
+        f.units.attempt_failed(&unit, 2, 2, None, &f.clock, &f.diag);
         assert_eq!(
             f.texts("ENG-1")[1..],
             ["[afkd-attempt] 1/2: cargo test: 3 failed"]
@@ -2571,7 +2566,7 @@ mod tests {
             },
         );
         f.units
-            .attempt_failed(&unit, 2, 2, Some("again"), f.clock.now(), &f.diag);
+            .attempt_failed(&unit, 2, 2, Some("again"), &f.clock, &f.diag);
         assert!(f.units.outbox().owes("ENG-1"));
         assert_eq!(
             f.diag.errs(),
@@ -2580,6 +2575,56 @@ mod tests {
               refused it (429): Rate limit exceeded; the comment \"[afkd-attempt] 2/2: again\" \
               is queued and retried for up to 1h"
             ]
+        );
+    }
+
+    /// A write Linear rate limits is first retried no sooner than its `Retry-After` after its
+    /// inline try failed, not after the call that asked for it began: on a clock that moves on
+    /// one slow round trip per read, the wait starts from the read after the try.
+    #[test]
+    fn a_rate_limited_write_waits_its_retry_after_from_the_failure() {
+        const TRY: Duration = Duration::from_secs(2);
+        const RETRY_AFTER: Duration = Duration::from_secs(7);
+        let mut f = fx(json!({}));
+        f.tracker.add_issue("Todo", "ENG-1", TITLE, "");
+        let unit = f.poll().unwrap();
+        f.clock = FakeClock::ticking(TRY);
+        f.tracker.fail(
+            "post comment",
+            LinearError::Refused {
+                stage: "post comment",
+                status: 429,
+                message: "Rate limit exceeded".into(),
+                kind: "ratelimited".into(),
+                retry_after: Some(RETRY_AFTER),
+            },
+        );
+        // Read the call's instant where `Plugin::answer` reads it, before the try goes out.
+        let asked = f.clock.now();
+        assert_eq!(
+            f.units.deliver(
+                &unit.issue,
+                Write::Note("[afkd-attempt] 1/2: cargo test: 3 failed\n修复 🚨".into()),
+                &f.clock,
+                &f.diag,
+            ),
+            Ok(Delivery::Queued)
+        );
+        let due = f
+            .units
+            .outbox()
+            .deliver_due(&*f.tracker, &f.clock, &f.diag)
+            .expect("the note is still owed");
+        assert!(
+            due >= asked + TRY + RETRY_AFTER,
+            "the retry is due {:?} after the call began: its {RETRY_AFTER:?} wait counts from \
+             the call, not from the try that failed {TRY:?} into it",
+            due - asked
+        );
+        assert_eq!(
+            f.tracker.comments_on("ENG-1").len(),
+            1,
+            "only the claim landed"
         );
     }
 
