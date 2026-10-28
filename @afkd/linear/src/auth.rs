@@ -4,9 +4,9 @@
 //!
 //! An app token makes the app the actor, so its name shows on what it does, which is how
 //! each bot runs as a Linear app of its own. Linear answers the grant with a token valid for
-//! 30 days and no refresh token, and asks for a new one on a 401; so a token is renewed
-//! ahead of its expiry ([`renew_after`]), and one Linear refuses all the same is dropped
-//! ([`Auth::invalidate`]) and fetched again for one retry.
+//! 2 591 999 seconds, 30 days less one, and no refresh token, and asks for a new one on a
+//! 401; so a token is renewed ahead of its expiry ([`renew_after`]), and one Linear refuses
+//! all the same is dropped ([`Auth::invalidate`]) and fetched again for one retry.
 //!
 //! The token is fetched on the first request that needs it, never at `hello`: an outage
 //! when the service arms is an idle beat, not a refused service.
@@ -26,7 +26,10 @@ use crate::tracker::LinearError;
 /// asked for different scopes.
 pub(crate) const SCOPE: &str = "read,write,app:assignable,app:mentionable";
 
-/// The most a token is renewed ahead of its expiry: an hour, for Linear's 30-day tokens.
+/// The most a token is renewed ahead of its expiry: an hour. The token Linear's
+/// `client_credentials` grant issued, checked against the real API on 2026-10-28 with the
+/// scope `app:assignable app:mentionable read write`, lived 2 591 999 seconds (30 days less
+/// one), so the hour is under a seven-hundredth of its life.
 pub(crate) const REFRESH_MARGIN_CAP: Duration = Duration::from_secs(3600);
 
 /// Where Linear's token endpoint sits under the API root.

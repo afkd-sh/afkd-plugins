@@ -121,6 +121,21 @@ pub(crate) fn last_in_state_vars(team_id: &str, state_id: &str) -> Value {
     })
 }
 
+/// `IssueRelations`: the page of an issue's inverse relations after the cursor `after`.
+pub(crate) fn relations_vars(issue_id: &str, after: &str) -> Value {
+    json!({ "id": issue_id, "after": after })
+}
+
+/// `IssueDescription`: the issue's description.
+pub(crate) fn description_vars(issue_id: &str) -> Value {
+    json!({ "id": issue_id })
+}
+
+/// `IssueChildren`: one page of an issue's sub-issues, from `after`.
+pub(crate) fn children_vars(issue_id: &str, after: Option<&str>) -> Value {
+    json!({ "id": issue_id, "after": after })
+}
+
 /// `IssueComments`: one page of an issue's comments, from `after`.
 pub(crate) fn comments_vars(issue_id: &str, after: Option<&str>) -> Value {
     json!({ "id": issue_id, "after": after })
@@ -164,6 +179,48 @@ pub(crate) fn label_create_vars(name: &str, team_id: &str) -> Value {
 /// `IssueUpdate`: the issue moved to the state, at `sort_order` in its manual order.
 pub(crate) fn move_vars(issue_id: &str, state_id: &str, sort_order: f64) -> Value {
     json!({ "id": issue_id, "input": { "stateId": state_id, "sortOrder": sort_order } })
+}
+
+/// `IssueUpdate`: the issue retitled `title`.
+pub(crate) fn title_vars(issue_id: &str, title: &str) -> Value {
+    json!({ "id": issue_id, "input": { "title": title } })
+}
+
+/// `IssueUpdate`: the issue's description replaced with `text`.
+pub(crate) fn description_update_vars(issue_id: &str, text: &str) -> Value {
+    json!({ "id": issue_id, "input": { "description": text } })
+}
+
+/// `IssueUpdate`: the issue moved to the state, its place there Linear's to pick.
+pub(crate) fn state_vars(issue_id: &str, state_id: &str) -> Value {
+    json!({ "id": issue_id, "input": { "stateId": state_id } })
+}
+
+/// `IssueCreate`: a new issue in the team titled `title`, and only what else is given: the
+/// description when it is not empty, the parent, the state.
+pub(crate) fn issue_create_vars(
+    team_id: &str,
+    parent_id: Option<&str>,
+    title: &str,
+    description: &str,
+    state_id: Option<&str>,
+) -> Value {
+    let mut input = json!({ "teamId": team_id, "title": title });
+    if !description.is_empty() {
+        input["description"] = json!(description);
+    }
+    if let Some(parent_id) = parent_id {
+        input["parentId"] = json!(parent_id);
+    }
+    if let Some(state_id) = state_id {
+        input["stateId"] = json!(state_id);
+    }
+    json!({ "input": input })
+}
+
+/// `IssueArchive`: the issue.
+pub(crate) fn archive_vars(issue_id: &str) -> Value {
+    json!({ "id": issue_id })
 }
 
 // --- the client ---
@@ -223,6 +280,32 @@ impl LinearClient {
         }
     }
 
+    /// One page of an `Issues` read, each issue's blockers read whole: an issue whose inverse
+    /// relations run past the page `Issues` reads them in has the rest read
+    /// (`IssueRelations`) until the last, so a blocker behind other relations still holds it
+    /// back.
+    fn issue_page(&self, stage: &'static str, vars: Value) -> Result<Page<Issue>, LinearError> {
+        let page = parse_issue_page(stage, &self.post_graphql(stage, "Issues", vars)?)?;
+        let items = page
+            .items
+            .into_iter()
+            .map(|(mut issue, mut after)| {
+                while let Some(cursor) = after {
+                    let vars = relations_vars(&issue.id, &cursor);
+                    let data = self.post_graphql(stage, "IssueRelations", vars)?;
+                    let connection = &data["issue"]["inverseRelations"];
+                    issue.blockers.extend(blockers(stage, connection)?);
+                    after = next_cursor(connection);
+                }
+                Ok(issue)
+            })
+            .collect::<Result<_, LinearError>>()?;
+        Ok(Page {
+            items,
+            next: page.next,
+        })
+    }
+
     /// Every page of an `Issues` read, its variables built by `vars` from a cursor.
     fn all_issues(
         &self,
@@ -232,10 +315,7 @@ impl LinearClient {
         let mut issues = Vec::new();
         let mut after: Option<String> = None;
         loop {
-            let page = parse_issue_page(
-                stage,
-                &self.post_graphql(stage, "Issues", vars(after.as_deref()))?,
-            )?;
+            let page = self.issue_page(stage, vars(after.as_deref()))?;
             issues.extend(page.items);
             match page.next {
                 Some(next) => after = Some(next),
@@ -315,9 +395,10 @@ impl Tracker for LinearClient {
         state_id: &str,
         after: Option<&str>,
     ) -> Result<Page<Issue>, LinearError> {
-        let stage = "read issues";
-        let vars = issues_in_state_vars(team_id, state_id, after);
-        parse_issue_page(stage, &self.post_graphql(stage, "Issues", vars)?)
+        self.issue_page(
+            "read issues",
+            issues_in_state_vars(team_id, state_id, after),
+        )
     }
 
     fn parked_issues(&self, team_id: &str, label: &str) -> Result<Vec<Issue>, LinearError> {
@@ -430,13 +511,77 @@ impl Tracker for LinearClient {
             stage,
             &self.post_graphql(stage, "Issues", last_in_state_vars(team_id, state_id))?,
         )?;
-        let bottom = last.items.first().map_or(0.0, |issue| issue.sort_order);
+        let bottom = last
+            .items
+            .first()
+            .map_or(0.0, |(issue, _)| issue.sort_order);
         self.post_graphql(
             stage,
             "IssueUpdate",
             move_vars(issue_id, state_id, bottom + 1000.0),
         )
         .map(drop)
+    }
+
+    fn issue_description(&self, issue_id: &str) -> Result<String, LinearError> {
+        let stage = "read description";
+        let data = self.post_graphql(stage, "IssueDescription", description_vars(issue_id))?;
+        Ok(data["issue"]
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    fn sub_issues(&self, issue_id: &str) -> Result<Vec<Child>, LinearError> {
+        let stage = "read sub-issues";
+        let mut children = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let vars = children_vars(issue_id, after.as_deref());
+            let data = self.post_graphql(stage, "IssueChildren", vars)?;
+            let connection = &data["issue"]["children"];
+            children.extend(parse_children(stage, connection)?);
+            match next_cursor(connection) {
+                Some(next) => after = Some(next),
+                None => return Ok(children),
+            }
+        }
+    }
+
+    fn set_title(&self, issue_id: &str, title: &str) -> Result<(), LinearError> {
+        self.post_graphql("rename issue", "IssueUpdate", title_vars(issue_id, title))
+            .map(drop)
+    }
+
+    fn set_description(&self, issue_id: &str, text: &str) -> Result<(), LinearError> {
+        let vars = description_update_vars(issue_id, text);
+        self.post_graphql("describe issue", "IssueUpdate", vars)
+            .map(drop)
+    }
+
+    fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError> {
+        self.post_graphql("move issue", "IssueUpdate", state_vars(issue_id, state_id))
+            .map(drop)
+    }
+
+    fn create_issue(
+        &self,
+        team_id: &str,
+        parent_id: Option<&str>,
+        title: &str,
+        description: &str,
+        state_id: Option<&str>,
+    ) -> Result<String, LinearError> {
+        let stage = "create issue";
+        let vars = issue_create_vars(team_id, parent_id, title, description, state_id);
+        let data = self.post_graphql(stage, "IssueCreate", vars)?;
+        str_at(stage, &data["issueCreate"]["issue"], "identifier")
+    }
+
+    fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError> {
+        self.post_graphql("archive issue", "IssueArchive", archive_vars(issue_id))
+            .map(drop)
     }
 
     fn authorization(&self) -> Result<String, LinearError> {
@@ -572,23 +717,54 @@ fn parse_state(stage: &'static str, s: &Value) -> Result<State, LinearError> {
     })
 }
 
-/// One page of an `Issues` reply.
+/// One page of an `Issues` reply: each issue, and the cursor of its inverse relations' next
+/// page, `None` when `Issues` read them all.
 pub(crate) fn parse_issue_page(
     stage: &'static str,
     data: &Value,
-) -> Result<Page<Issue>, LinearError> {
+) -> Result<Page<(Issue, Option<String>)>, LinearError> {
     let connection = &data["issues"];
     Ok(Page {
         items: nodes(stage, connection)?
             .iter()
-            .map(|i| parse_issue(stage, i))
-            .collect::<Result<_, _>>()?,
+            .map(|i| Ok((parse_issue(stage, i)?, next_cursor(&i["inverseRelations"]))))
+            .collect::<Result<_, LinearError>>()?,
         next: next_cursor(connection),
     })
 }
 
-/// One issue node, as `Issues` selects it. Only `blocks` relations are kept, as the
-/// issue's blockers; `related`, `similar` and `duplicate` never hold an issue back.
+/// The blockers among a connection of inverse relations: only `blocks` relations are kept;
+/// `related`, `similar` and `duplicate` never hold an issue back.
+fn blockers(stage: &'static str, connection: &Value) -> Result<Vec<Blocker>, LinearError> {
+    nodes(stage, connection)?
+        .iter()
+        .filter(|r| r.get("type").and_then(Value::as_str) == Some("blocks"))
+        .map(|r| {
+            Ok(Blocker {
+                identifier: str_at(stage, &r["issue"], "identifier")?,
+                state_kind: str_at(stage, &r["issue"]["state"], "type")?,
+            })
+        })
+        .collect()
+}
+
+/// The sub-issues of a connection of them, as `Issues` and `IssueChildren` select them.
+fn parse_children(stage: &'static str, connection: &Value) -> Result<Vec<Child>, LinearError> {
+    nodes(stage, connection)?
+        .iter()
+        .map(|c| {
+            Ok(Child {
+                id: str_at(stage, c, "id")?,
+                identifier: str_at(stage, c, "identifier")?,
+                title: str_at(stage, c, "title")?,
+                state: str_at(stage, &c["state"], "name")?,
+            })
+        })
+        .collect()
+}
+
+/// One issue node, as `Issues` selects it, its blockers those on the page of inverse
+/// relations it carries ([`blockers`]).
 pub(crate) fn parse_issue(stage: &'static str, i: &Value) -> Result<Issue, LinearError> {
     let names = |connection: &Value| -> Result<Vec<String>, LinearError> {
         nodes(stage, connection)?
@@ -604,26 +780,6 @@ pub(crate) fn parse_issue(stage: &'static str, i: &Value) -> Result<Issue, Linea
             title: str_at(stage, p, "title")?,
         }),
     };
-    let children = nodes(stage, &i["children"])?
-        .iter()
-        .map(|c| {
-            Ok(Child {
-                identifier: str_at(stage, c, "identifier")?,
-                title: str_at(stage, c, "title")?,
-                state: str_at(stage, &c["state"], "name")?,
-            })
-        })
-        .collect::<Result<_, LinearError>>()?;
-    let blockers = nodes(stage, &i["inverseRelations"])?
-        .iter()
-        .filter(|r| r.get("type").and_then(Value::as_str) == Some("blocks"))
-        .map(|r| {
-            Ok(Blocker {
-                identifier: str_at(stage, &r["issue"], "identifier")?,
-                state_kind: str_at(stage, &r["issue"]["state"], "type")?,
-            })
-        })
-        .collect::<Result<_, LinearError>>()?;
     Ok(Issue {
         id: str_at(stage, i, "id")?,
         identifier: str_at(stage, i, "identifier")?,
@@ -639,8 +795,8 @@ pub(crate) fn parse_issue(stage: &'static str, i: &Value) -> Result<Issue, Linea
         assignee: id_of(&i["assignee"]),
         delegate: id_of(&i["delegate"]),
         parent,
-        children,
-        blockers,
+        children: parse_children(stage, &i["children"])?,
+        blockers: blockers(stage, &i["inverseRelations"])?,
         sort_order: i.get("sortOrder").and_then(Value::as_f64).ok_or_else(|| {
             LinearError::Decode {
                 stage,
@@ -755,6 +911,9 @@ mod tests {
         "TeamByKey",
         "States",
         "Issues",
+        "IssueRelations",
+        "IssueDescription",
+        "IssueChildren",
         "IssueComments",
         "Users",
         "Labels",
@@ -765,6 +924,8 @@ mod tests {
         "IssueRemoveLabel",
         "IssueLabelCreate",
         "IssueUpdate",
+        "IssueCreate",
+        "IssueArchive",
     ];
 
     /// Every document conforms to Linear's schema — its selection, its variable types and
@@ -794,8 +955,9 @@ mod tests {
     }
 
     /// Every variables builder, on realistic arguments — wide names, an email, a cursor and
-    /// none, a sort order of 0 and of 1e15 — sends exactly what its operation declares, and
-    /// every operation that declares a variable is reached by one.
+    /// none, a sort order of 0 and of 1e15, a multi-line description and an empty one, an
+    /// issue filed with every optional field and with none — sends exactly what its
+    /// operation declares, and every operation that declares a variable is reached by one.
     #[test]
     fn every_variables_builder_conforms_to_its_operation() {
         let sdl = sdl();
@@ -813,6 +975,10 @@ mod tests {
             ("Issues", parked_vars(team, "Awaiting Reply", None)),
             ("Issues", parked_vars(team, "Väntar på svar 🚦", cursor)),
             ("Issues", last_in_state_vars(team, state)),
+            ("IssueRelations", relations_vars(issue, "eyJpZCI6InIyMCJ9")),
+            ("IssueDescription", description_vars(issue)),
+            ("IssueChildren", children_vars(issue, None)),
+            ("IssueChildren", children_vars(issue, cursor)),
             ("IssueComments", comments_vars(issue, None)),
             ("IssueComments", comments_vars(issue, cursor)),
             ("Users", users_vars("陳大文")),
@@ -839,6 +1005,31 @@ mod tests {
             ),
             ("IssueUpdate", move_vars(issue, state, 0.0)),
             ("IssueUpdate", move_vars(issue, state, 1e15)),
+            (
+                "IssueUpdate",
+                title_vars(issue, "修复 the retry storm 🚨 — \"backoff\" resets"),
+            ),
+            (
+                "IssueUpdate",
+                description_update_vars(issue, "## 完了 ✅\n\n```rust\nlet x = 1;\n```"),
+            ),
+            ("IssueUpdate", description_update_vars(issue, "")),
+            ("IssueUpdate", state_vars(issue, state)),
+            (
+                "IssueCreate",
+                issue_create_vars(team, None, "Cap the backoff at 30s", "", None),
+            ),
+            (
+                "IssueCreate",
+                issue_create_vars(
+                    team,
+                    Some(issue),
+                    "子任务: read Retry-After 🚦",
+                    "Linear's header is in seconds.\n\n- [ ] honour it",
+                    Some(state),
+                ),
+            ),
+            ("IssueArchive", archive_vars(issue)),
         ];
         for (name, vars) in &rows {
             let declared = sdl
@@ -892,6 +1083,33 @@ mod tests {
         assert_eq!(
             move_vars("i", "s", 1012.5),
             json!({"id": "i", "input": {"stateId": "s", "sortOrder": 1012.5}})
+        );
+    }
+
+    /// An issue is filed with only what it is given: no description key for an empty one,
+    /// and the parent and the state only when named; each update sends its one field.
+    #[test]
+    fn a_new_issue_carries_only_what_it_is_given() {
+        assert_eq!(
+            issue_create_vars("t", None, "Cap it", "", None),
+            json!({"input": {"teamId": "t", "title": "Cap it"}})
+        );
+        assert_eq!(
+            issue_create_vars("t", Some("p"), "子任务", "Body\n", Some("s")),
+            json!({"input": {"teamId": "t", "title": "子任务", "description": "Body\n",
+                             "parentId": "p", "stateId": "s"}})
+        );
+        assert_eq!(
+            title_vars("i", "New"),
+            json!({"id": "i", "input": {"title": "New"}})
+        );
+        assert_eq!(
+            description_update_vars("i", ""),
+            json!({"id": "i", "input": {"description": ""}})
+        );
+        assert_eq!(
+            state_vars("i", "s"),
+            json!({"id": "i", "input": {"stateId": "s"}})
         );
     }
 
@@ -1016,7 +1234,8 @@ mod tests {
                 "delegate": {"id": "app-user"},
                 "parent": null,
                 "children": {"nodes": [
-                    {"identifier": "ENG-422", "title": "子任务 one", "state": {"name": "Done"}},
+                    {"id": "c-422", "identifier": "ENG-422", "title": "子任务 one",
+                     "state": {"name": "Done"}},
                 ]},
                 "inverseRelations": {"nodes": [
                     {"type": "blocks", "issue": {"identifier": "ENG-399", "state": {"type": "started"}}},
@@ -1029,7 +1248,8 @@ mod tests {
         }});
         let page = parse_issue_page("read issues", &data).unwrap();
         assert_eq!(page.next.as_deref(), Some("c2"));
-        let issue = &page.items[0];
+        let (issue, relations_after) = &page.items[0];
+        assert_eq!(*relations_after, None, "no relations page follows");
         assert_eq!(issue.title, "修复 the retry storm 🚨 — \"backoff\" resets");
         assert_eq!(issue.description, "");
         assert_eq!(issue.state.kind, "unstarted");
@@ -1042,6 +1262,7 @@ mod tests {
         assert_eq!(
             issue.children,
             [Child {
+                id: "c-422".into(),
                 identifier: "ENG-422".into(),
                 title: "子任务 one".into(),
                 state: "Done".into()
@@ -1550,5 +1771,133 @@ mod tests {
         let seen = stub.captured(2);
         assert_eq!(seen[0].json()["variables"], comments_vars("i", None));
         assert_eq!(seen[1].json()["variables"], comments_vars("i", Some("k1")));
+    }
+
+    /// An issue whose inverse relations run past the page `Issues` reads has the rest read
+    /// from its cursor to the last page, and only the `blocks` relations among them become
+    /// blockers; an issue with no next page costs no read.
+    #[test]
+    fn a_relations_cursor_is_read_and_only_blocks_are_kept_across_pages() {
+        let relation = |kind: &str, identifier: &str, state: &str| {
+            json!({"type": kind,
+                   "issue": {"identifier": identifier, "state": {"type": state}}})
+        };
+        let connection = |nodes: Vec<Value>, next: Option<&str>| {
+            json!({"nodes": nodes,
+                   "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next}})
+        };
+        let node = |id: &str, relations: Value| {
+            json!({
+                "id": id, "identifier": format!("ENG-{id}"), "title": "修复 🚨", "description": "",
+                "url": "u", "sortOrder": 1.0,
+                "state": {"id": "s", "name": "Todo", "type": "unstarted"},
+                "labels": {"nodes": []}, "assignee": null, "delegate": null, "parent": null,
+                "children": {"nodes": []}, "inverseRelations": relations,
+            })
+        };
+        let related: Vec<Value> = (0..20)
+            .map(|n| relation("related", &format!("ENG-{}", 300 + n), "started"))
+            .collect();
+        let issues = json!({"data": {"issues": {
+            "nodes": [
+                node("1", connection(related, Some("r20"))),
+                node("2", connection(vec![relation("blocks", "ENG-9", "completed")], None)),
+            ],
+            "pageInfo": {"hasNextPage": false, "endCursor": null},
+        }}});
+        let relations = |nodes: Vec<Value>, next: Option<&str>| {
+            http(
+                200,
+                "",
+                &json!({"data": {"issue": {"inverseRelations": connection(nodes, next)}}})
+                    .to_string(),
+            )
+        };
+        let stub = Stub::serve(vec![
+            http(200, "", &issues.to_string()),
+            relations(
+                vec![
+                    relation("similar", "ENG-400", "backlog"),
+                    relation("blocks", "ENG-401", "started"),
+                ],
+                Some("r22"),
+            ),
+            relations(vec![relation("blocks", "ENG-402", "canceled")], None),
+        ]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        let page = client.issues_in_state("t", "s", None).unwrap();
+        let blockers: Vec<Vec<&str>> = page
+            .items
+            .iter()
+            .map(|i| i.blockers.iter().map(|b| b.identifier.as_str()).collect())
+            .collect();
+        assert_eq!(blockers, [vec!["ENG-401", "ENG-402"], vec!["ENG-9"]]);
+        assert_eq!(page.items[0].blockers[1].state_kind, "canceled");
+        let seen = stub.captured(3);
+        assert_eq!(seen[1].json()["operationName"], "IssueRelations");
+        assert_eq!(seen[1].json()["variables"], relations_vars("1", "r20"));
+        assert_eq!(seen[2].json()["variables"], relations_vars("1", "r22"));
+    }
+
+    /// A description is read as Linear holds it, `""` for none; sub-issues are read to the
+    /// last page, each with its uuid; a new issue's identifier comes back.
+    #[test]
+    fn the_reads_and_the_create_read_their_replies() {
+        let children = |ids: &[&str], next: Option<&str>| {
+            let nodes: Vec<Value> = ids
+                .iter()
+                .map(|id| {
+                    json!({"id": id, "identifier": format!("ENG-{id}"), "title": "子任务 🚦",
+                                 "state": {"name": "In Progress"}})
+                })
+                .collect();
+            http(
+                200,
+                "",
+                &json!({"data": {"issue": {"children": {"nodes": nodes,
+                    "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next}}}}})
+                .to_string(),
+            )
+        };
+        let stub = Stub::serve(vec![
+            http(
+                200,
+                "",
+                &json!({"data": {"issue": {"description": "## 背景\n\nIt resets."}}}).to_string(),
+            ),
+            http(200, "", r#"{"data":{"issue":{"description":null}}}"#),
+            children(&["7", "8"], Some("k8")),
+            children(&["9"], None),
+            http(
+                200,
+                "",
+                r#"{"data":{"issueCreate":{"success":true,"issue":{"identifier":"ENG-130"}}}}"#,
+            ),
+        ]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        assert_eq!(
+            client.issue_description("i").unwrap(),
+            "## 背景\n\nIt resets."
+        );
+        assert_eq!(client.issue_description("i").unwrap(), "");
+        let subs = client.sub_issues("i").unwrap();
+        assert_eq!(
+            subs.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["7", "8", "9"]
+        );
+        assert_eq!(subs[2].identifier, "ENG-9");
+        assert_eq!(subs[2].state, "In Progress");
+        assert_eq!(
+            client
+                .create_issue("t", Some("i"), "Cap it", "", None)
+                .unwrap(),
+            "ENG-130"
+        );
+        let seen = stub.captured(5);
+        assert_eq!(seen[3].json()["variables"], children_vars("i", Some("k8")));
+        assert_eq!(
+            seen[4].json()["variables"],
+            issue_create_vars("t", Some("i"), "Cap it", "", None)
+        );
     }
 }

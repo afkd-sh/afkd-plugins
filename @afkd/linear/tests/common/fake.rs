@@ -18,9 +18,12 @@
 //! lasts as long as the fake says; anything else is a 401 `authentication error`. Ids are
 //! uuids minted in no order, and times come off the real clock to the millisecond (a claim's
 //! liveness is judged against the wall clock). A state's issues come back in their manual
-//! order, comments newest first, an edit stamps `editedAt`, a missing id is Linear's
-//! `Entity not found`. Every request is recorded, and an operation can be rate limited with
-//! a `Retry-After`, made to answer a status, or the whole fake taken out of reach.
+//! order, comments newest first, an issue's inverse relations 20 to the page `Issues` reads
+//! and 50 to the page after, an archived issue in no read, an edit stamps `editedAt`, a
+//! missing id is Linear's `Entity not found`. An issue filed with no state starts in the
+//! team's first backlog state, else its first unstarted one. Every request is recorded, and
+//! an operation can be rate limited with a `Retry-After`, made to answer a status, or the
+//! whole fake taken out of reach.
 
 #![allow(dead_code)]
 
@@ -138,6 +141,18 @@ struct Issue {
     delegate: Option<String>,
     parent: Option<String>,
     sort_order: f64,
+    /// Archived: in no read, as Linear leaves archived issues out unless asked.
+    archived: bool,
+}
+
+/// A relation between two issues: `kind` relates `source` to `target`, so a `blocks` one
+/// makes `source` a blocker of `target`.
+#[derive(Debug, Clone)]
+struct Relation {
+    id: String,
+    source: String,
+    target: String,
+    kind: String,
 }
 
 #[derive(Debug, Clone)]
@@ -157,8 +172,7 @@ struct Store {
     states: Vec<State>,
     labels: Vec<Label>,
     issues: Vec<Issue>,
-    /// `(blocker, blocked, type)`.
-    relations: Vec<(String, String, String)>,
+    relations: Vec<Relation>,
     comments: Vec<Comment>,
     tokens: Vec<Token>,
     token_lifetime: u64,
@@ -262,6 +276,42 @@ impl Store {
         json!({"id": s.id, "name": s.name, "type": s.kind})
     }
 
+    /// A sub-issue node, as `Issues` and `IssueChildren` select one.
+    fn child_json(&self, c: &Issue) -> Value {
+        json!({"id": c.id, "identifier": self.identifier(c), "title": c.title,
+               "state": {"name": self.state(&c.state).map_or("", |s| s.name.as_str())}})
+    }
+
+    /// The issue's sub-issues, archived ones left out, in the order they were filed.
+    fn children(&self, issue: &str) -> Vec<&Issue> {
+        self.issues
+            .iter()
+            .filter(|c| c.parent.as_deref() == Some(issue) && !c.archived)
+            .collect()
+    }
+
+    /// One page of the relations `target` is the target of, after the cursor `after`, as an
+    /// `inverseRelations` connection.
+    fn inverse_relations(&self, target: &str, after: Option<&str>, first: usize) -> Value {
+        let relations: Vec<&Relation> = self
+            .relations
+            .iter()
+            .filter(|r| r.target == target)
+            .collect();
+        let (kept, info) = page(relations, |r| r.id.clone(), after, first);
+        let nodes: Vec<Value> = kept
+            .iter()
+            .filter_map(|r| {
+                let source = self.issues.iter().find(|i| i.id == r.source)?;
+                Some(json!({"type": r.kind, "issue": {
+                    "identifier": self.identifier(source),
+                    "state": {"type": self.state(&source.state).map_or("", |s| s.kind.as_str())},
+                }}))
+            })
+            .collect();
+        json!({"nodes": nodes, "pageInfo": info})
+    }
+
     /// An issue node, every field the `Issues` document selects.
     fn issue_json(&self, issue: &Issue) -> Value {
         let labels: Vec<Value> = issue
@@ -272,27 +322,10 @@ impl Store {
             .map(|l| json!({"name": l.name}))
             .collect();
         let children: Vec<Value> = self
-            .issues
-            .iter()
-            .filter(|c| c.parent.as_deref() == Some(&issue.id))
+            .children(&issue.id)
+            .into_iter()
             .take(20)
-            .map(|c| {
-                json!({"identifier": self.identifier(c), "title": c.title,
-                       "state": {"name": self.state(&c.state).map_or("", |s| s.name.as_str())}})
-            })
-            .collect();
-        let inverse: Vec<Value> = self
-            .relations
-            .iter()
-            .filter(|(_, target, _)| *target == issue.id)
-            .take(20)
-            .filter_map(|(source, _, kind)| {
-                let source = self.issues.iter().find(|i| i.id == *source)?;
-                Some(json!({"type": kind, "issue": {
-                    "identifier": self.identifier(source),
-                    "state": {"type": self.state(&source.state).map_or("", |s| s.kind.as_str())},
-                }}))
-            })
+            .map(|c| self.child_json(c))
             .collect();
         let parent = issue
             .parent
@@ -313,7 +346,7 @@ impl Store {
             "delegate": issue.delegate.as_ref().map(|id| json!({"id": id})),
             "parent": parent,
             "children": {"nodes": children},
-            "inverseRelations": {"nodes": inverse},
+            "inverseRelations": self.inverse_relations(&issue.id, None, 20),
         })
     }
 
@@ -385,6 +418,7 @@ impl Store {
         let mut issues: Vec<&Issue> = self
             .issues
             .iter()
+            .filter(|i| !i.archived)
             .filter(|i| state.is_none_or(|s| i.state == s))
             .filter(|i| {
                 label.is_none_or(|name| {
@@ -607,6 +641,7 @@ impl FakeLinear {
             delegate: None,
             parent: None,
             sort_order,
+            archived: false,
         });
         id
     }
@@ -648,11 +683,14 @@ impl FakeLinear {
 
     /// Relate `source` to `target` as `kind`: `blocks` makes `source` a blocker of `target`.
     pub fn relate(&self, source: &str, target: &str, kind: &str) {
-        lock(&self.store).relations.push((
-            source.to_string(),
-            target.to_string(),
-            kind.to_string(),
-        ));
+        let mut s = lock(&self.store);
+        let id = s.mint();
+        s.relations.push(Relation {
+            id,
+            source: source.to_string(),
+            target: target.to_string(),
+            kind: kind.to_string(),
+        });
     }
 
     /// Move an issue to the bottom of the state named `state`, as a person does.
@@ -751,6 +789,43 @@ impl FakeLinear {
             .filter_map(|id| s.labels.iter().find(|l| l.id == *id))
             .map(|l| l.name.clone())
             .collect()
+    }
+
+    /// An issue's title.
+    pub fn title_of(&self, issue: &str) -> String {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at].title.clone()
+    }
+
+    /// An issue's description, `""` for none.
+    pub fn description_of(&self, issue: &str) -> String {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at].description.clone().unwrap_or_default()
+    }
+
+    /// Whether an issue is archived.
+    pub fn archived(&self, issue: &str) -> bool {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at].archived
+    }
+
+    /// The id of an issue's parent, if it has one.
+    pub fn parent_of(&self, issue: &str) -> Option<String> {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at].parent.clone()
+    }
+
+    /// The id of the issue titled `title`, if there is one.
+    pub fn find_by_title(&self, title: &str) -> Option<String> {
+        lock(&self.store)
+            .issues
+            .iter()
+            .find(|i| i.title == title)
+            .map(|i| i.id.clone())
     }
 
     /// The name of the state an issue sits in.
@@ -1206,6 +1281,28 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             let nodes: Vec<Value> = kept.iter().map(|i| s.issue_json(i)).collect();
             Ok(json!({"issues": {"nodes": nodes, "pageInfo": info}}))
         }
+        "IssueRelations" => {
+            let issue = var("id");
+            if s.issue_at(&issue).is_none() {
+                return Err(Refusal::NotFound("Issue"));
+            }
+            let connection = s.inverse_relations(&issue, vars["after"].as_str(), 50);
+            Ok(json!({"issue": {"inverseRelations": connection}}))
+        }
+        "IssueDescription" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            Ok(json!({"issue": {"description": s.issues[at].description}}))
+        }
+        "IssueChildren" => {
+            let issue = var("id");
+            if s.issue_at(&issue).is_none() {
+                return Err(Refusal::NotFound("Issue"));
+            }
+            let children = s.children(&issue);
+            let (kept, info) = page(children, |c| c.id.clone(), vars["after"].as_str(), 50);
+            let nodes: Vec<Value> = kept.iter().map(|c| s.child_json(c)).collect();
+            Ok(json!({"issue": {"children": {"nodes": nodes, "pageInfo": info}}}))
+        }
         "IssueComments" => {
             let issue = var("id");
             if s.issue_at(&issue).is_none() {
@@ -1372,16 +1469,74 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
         }
         "IssueUpdate" => {
             let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
-            if let Some(state) = vars["input"]["stateId"].as_str() {
+            let input = &vars["input"];
+            if let Some(state) = input["stateId"].as_str() {
                 if s.state(state).is_none() {
                     return Err(Refusal::NotFound("WorkflowState"));
                 }
                 s.issues[at].state = state.to_string();
             }
-            if let Some(order) = vars["input"]["sortOrder"].as_f64() {
+            if let Some(order) = input["sortOrder"].as_f64() {
                 s.issues[at].sort_order = order;
             }
+            if let Some(title) = input["title"].as_str() {
+                s.issues[at].title = title.to_string();
+            }
+            if let Some(text) = input["description"].as_str() {
+                s.issues[at].description = (!text.is_empty()).then(|| text.to_string());
+            }
             Ok(json!({"issueUpdate": {"success": true}}))
+        }
+        "IssueCreate" => {
+            let input = &vars["input"];
+            if input["teamId"].as_str() != Some(s.team_id.as_str()) {
+                return Err(Refusal::NotFound("Team"));
+            }
+            let parent = input["parentId"].as_str().map(str::to_string);
+            if parent.as_deref().is_some_and(|p| s.issue_at(p).is_none()) {
+                return Err(Refusal::NotFound("Issue"));
+            }
+            let state = match input["stateId"].as_str() {
+                Some(state) if s.state(state).is_none() => {
+                    return Err(Refusal::NotFound("WorkflowState"))
+                }
+                Some(state) => state.to_string(),
+                None => ["backlog", "unstarted"]
+                    .iter()
+                    .find_map(|kind| s.states.iter().find(|st| st.kind == *kind))
+                    .or(s.states.first())
+                    .map(|st| st.id.clone())
+                    .ok_or(Refusal::NotFound("WorkflowState"))?,
+            };
+            let id = s.mint();
+            let number = s.issues.len() as u32 + 101;
+            let sort_order = s
+                .issues
+                .iter()
+                .map(|i| i.sort_order)
+                .fold(-1000.0_f64, f64::max)
+                + 1000.0;
+            let issue = Issue {
+                id,
+                number,
+                title: input["title"].as_str().unwrap_or_default().to_string(),
+                description: input["description"].as_str().map(str::to_string),
+                state,
+                labels: Vec::new(),
+                assignee: None,
+                delegate: None,
+                parent,
+                sort_order,
+                archived: false,
+            };
+            let identifier = s.identifier(&issue);
+            s.issues.push(issue);
+            Ok(json!({"issueCreate": {"success": true, "issue": {"identifier": identifier}}}))
+        }
+        "IssueArchive" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            s.issues[at].archived = true;
+            Ok(json!({"issueArchive": {"success": true}}))
         }
         other => Err(Refusal::Invalid(format!(
             "the fake answers no operation {other}"

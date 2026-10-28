@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::action::{ACTIONS, HANDLE as ACTION_HANDLE};
 use crate::plugin::LINEAR_KIND;
 use crate::settings::SETTINGS;
 use crate::wire::IssueFields;
@@ -260,14 +261,89 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
     );
 }
 
-/// The core declares no `[[action]]`, so every `call` is refused by name, and no
-/// `[[value]]`, since a plugin exposes none.
+/// The `[[action]]`s are the ones [`from_call`](crate::action::from_call) decodes, in its
+/// order, each taking the issue's handle first and then the parameters it reads: a new
+/// issue's description defaults to none, and its state is named only, left out for the
+/// team's default. A plugin exposes no values, so there is no `[[value]]`.
 #[test]
-fn the_core_declares_no_action() {
+fn the_actions_are_the_ones_the_code_answers() {
     let tables = tables(MANIFEST);
-    for header in ["action", "action.param", "value"] {
-        assert!(named(&tables, header).is_empty(), "{header}");
+    let actions: Vec<String> = named(&tables, "action")
+        .iter()
+        .map(|t| t["name"].clone())
+        .collect();
+    assert_eq!(
+        actions,
+        ACTIONS.iter().map(|a| quoted(a)).collect::<Vec<_>>()
+    );
+
+    // Each `[[action.param]]` belongs to the `[[action]]` above it.
+    let mut params: BTreeMap<String, Vec<BTreeMap<String, String>>> = BTreeMap::new();
+    let mut action = String::new();
+    for (header, t) in &tables {
+        match header.as_str() {
+            "action" => action = t["name"].trim_matches('"').to_string(),
+            "action.param" => params.entry(action.clone()).or_default().push(t.clone()),
+            _ => {}
+        }
     }
+    let required = |name: &str| {
+        table(&[
+            ("name", &quoted(name)),
+            ("type", "\"string\""),
+            ("required", "true"),
+        ])
+    };
+    let new_issue = vec![
+        required("title"),
+        table(&[
+            ("name", "\"description\""),
+            ("type", "\"string\""),
+            ("default", "\"\""),
+        ]),
+        table(&[
+            ("name", "\"state\""),
+            ("type", "\"string\""),
+            ("named_only", "true"),
+        ]),
+    ];
+    let issue = table(&[
+        ("name", &quoted(ACTION_HANDLE)),
+        ("type", "\"Issue\""),
+        ("required", "true"),
+    ]);
+    let mut want = BTreeMap::from([
+        ("comment".to_string(), vec![required("text")]),
+        ("describe".to_string(), vec![required("text")]),
+        ("rename".to_string(), vec![required("title")]),
+        ("move_to".to_string(), vec![required("state")]),
+        ("add_label".to_string(), vec![required("label")]),
+        ("remove_label".to_string(), vec![required("label")]),
+        ("create_issue".to_string(), new_issue.clone()),
+        ("create_sub_issue".to_string(), new_issue),
+        ("list_comments".to_string(), vec![required("to")]),
+        ("read_description".to_string(), vec![required("to")]),
+        ("list_sub_issues".to_string(), vec![required("to")]),
+        (
+            "move_sub_issue".to_string(),
+            vec![required("sub_issue"), required("state")],
+        ),
+    ]);
+    for action in ACTIONS {
+        want.entry(action.to_string())
+            .or_default()
+            .insert(0, issue.clone());
+    }
+    assert_eq!(params, want, "archive takes the issue alone");
+    assert_eq!(
+        ACTION_HANDLE, HANDLE,
+        "an action takes the issue a slot is passed"
+    );
+
+    assert!(
+        named(&tables, "value").is_empty(),
+        "a plugin exposes no values"
+    );
 }
 
 /// A plugin's kinds, actions, withables and handle types share one namespace (lang-v2

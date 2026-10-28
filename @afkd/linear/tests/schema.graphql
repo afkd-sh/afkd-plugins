@@ -77,6 +77,13 @@ type Mutation {
     id: String!
     labelId: String!
   ): IssuePayload!
+  issueArchive(
+    id: String!
+    trash: Boolean
+  ): IssueArchivePayload!
+  issueCreate(
+    input: IssueCreateInput!
+  ): IssuePayload!
   issueLabelCreate(
     input: IssueLabelCreateInput!
     replaceTeamLabels: Boolean
@@ -175,6 +182,10 @@ type Issue {
   url: String!
 }
 
+type IssueArchivePayload {
+  success: Boolean!
+}
+
 type IssueConnection {
   nodes: [Issue!]!
   pageInfo: PageInfo!
@@ -196,6 +207,7 @@ type IssueLabelPayload {
 }
 
 type IssuePayload {
+  issue: Issue
   success: Boolean!
 }
 
@@ -207,6 +219,7 @@ type IssueRelation {
 
 type IssueRelationConnection {
   nodes: [IssueRelation!]!
+  pageInfo: PageInfo!
 }
 
 type PageInfo {
@@ -267,6 +280,14 @@ input IDComparator {
   eq: ID
 }
 
+input IssueCreateInput {
+  description: String
+  parentId: String
+  stateId: String
+  teamId: String!
+  title: String
+}
+
 input IssueFilter {
   labels: IssueLabelCollectionFilter
   state: WorkflowStateFilter
@@ -292,8 +313,10 @@ input IssueSortInput {
 }
 
 input IssueUpdateInput {
+  description: String
   sortOrder: Float
   stateId: String
+  title: String
 }
 
 input ManualSort {

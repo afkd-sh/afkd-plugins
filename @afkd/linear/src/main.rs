@@ -9,12 +9,14 @@
 //! issues one per run, by the scheme `@afkd/trello` claims cards with: a claim comment raced
 //! and settled on the issue, the same watermark, attempt and park comments, and the same
 //! journal keys, session threads, run env and brief. It talks to Linear's GraphQL API
-//! ([`client`]) as an API key or as an OAuth app ([`auth`]). The slots are afkd's; this core
-//! declares no action, so a `call` is refused by name.
+//! ([`client`]) as an API key or as an OAuth app ([`auth`]). The slots are afkd's, and the
+//! actions they call on an issue — comment, describe, rename, move, label, file an issue or
+//! a sub-issue, archive, and read its thread, description and sub-issues — are [`action`]'s.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod action;
 mod auth;
 mod claim;
 mod client;

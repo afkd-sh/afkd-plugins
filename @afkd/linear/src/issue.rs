@@ -12,8 +12,11 @@
 //! Work is only ever *claimed from a `pick_from` state*, or re-claimed by the parked sweep
 //! from wherever a badged issue sits. A state's issues are read in the team's manual order,
 //! which plays the part of a Trello list's position. A parked issue is the sweep's alone,
-//! wherever it sits: the core has no action that moves a claimed issue on, so a parked one
-//! is usually still in the state it was claimed from, and the state scan passes it over.
+//! wherever it sits: one whose slots did not move it on is still in the state it was claimed
+//! from, and the state scan passes it over.
+//!
+//! The actions a slot calls on an issue ([`crate::action`]) come through here too: a write
+//! is [`deliver`](LinearUnits::deliver)ed like the kind's own, and a read is done at once.
 //!
 //! Every marker text that crosses the tracker is trello's, byte for byte, with one
 //! difference: `[afkd-ran]`'s `upto=` is in epoch **milliseconds**, since Linear stamps a
@@ -26,6 +29,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::action::{self, action_line, IssueAction, Read};
 use crate::claim::{
     claim_renewal_text, claim_text, is_claim, unescape, won_claim, ClaimMarker, CLAIM_LIFETIME,
     CLAIM_SETTLE,
@@ -37,7 +41,7 @@ use crate::common::{
 };
 use crate::outbox::{lost_line, named, queued_behind_line, queued_line, Outbox, Write, RETRY_FOR};
 use crate::settings::{DiscussWith, IssueConfig, MemberRef};
-use crate::tracker::{Comment, Issue, LinearError, State, Tracker};
+use crate::tracker::{state_named, Child, Comment, Issue, LinearError, State, Team, Tracker};
 use crate::wire::{Facts, IssueFields, UnitOutcome, WireFile, WireUnit};
 use crate::{PARK_FILE, TASK_FILE};
 
@@ -108,6 +112,11 @@ impl Unit {
         &self.issue.identifier
     }
 
+    /// The issue, as the claiming read saw it.
+    pub(crate) fn issue(&self) -> &Issue {
+        &self.issue
+    }
+
     /// The ids afkd's own comments carry.
     pub(crate) fn me(&self) -> &SelfIds {
         &self.me
@@ -135,7 +144,7 @@ pub(crate) struct SelfIds(Vec<String>);
 
 impl SelfIds {
     /// The viewer's id alone.
-    fn viewer(id: String) -> Self {
+    pub(crate) fn viewer(id: String) -> Self {
         Self(vec![id])
     }
 
@@ -394,23 +403,53 @@ impl LinearUnits {
         Ok(id)
     }
 
+    /// The team, its id resolved once and kept: what an action's write is done in.
+    fn team(&self) -> Result<Team, LinearError> {
+        Ok(Team {
+            id: self.team_id()?,
+            key: self.team_key.clone(),
+        })
+    }
+
     /// Every `pick_from` name resolved to its state, in the order named. An unknown name
     /// fails the poll naming it.
     fn sources(&self, team_id: &str) -> Result<Vec<State>, LinearError> {
         let states = self.tracker.states(team_id)?;
         self.pick_from
             .iter()
-            .map(|name| {
-                states
-                    .iter()
-                    .find(|s| s.name == *name)
-                    .cloned()
-                    .ok_or_else(|| LinearError::NoSuch {
-                        stage: "resolve state",
-                        what: format!("workflow state named '{name}' in team {}", self.team_key),
-                    })
-            })
+            .map(|name| state_named(&states, name, &self.team_key))
             .collect()
+    }
+
+    /// Do the write `action` a slot called on `issue`, in the service's team, or queue it
+    /// as [`deliver`](Self::deliver) does; one that lands is narrated. A refusal no retry
+    /// can fix is the caller's error.
+    pub(crate) fn act(
+        &self,
+        issue: &Issue,
+        action: IssueAction,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Result<(), LinearError> {
+        let team = self.team()?;
+        let line = action_line(&action, &team, issue);
+        if self.deliver(issue, Write::Act { team, action }, now, diag)? == Delivery::Landed {
+            diag.narrate(&line);
+        }
+        Ok(())
+    }
+
+    /// Do the read `read` a slot called on `issue` now, and write it to `to`, the comments
+    /// rendered for a reader whose own ids are `me` ([`action::read`]).
+    pub(crate) fn read(
+        &self,
+        issue: &Issue,
+        me: &SelfIds,
+        read: Read,
+        to: &str,
+        diag: &dyn Diag,
+    ) -> Result<(), String> {
+        action::read(&*self.tracker, issue, me, read, to, diag)
     }
 
     /// The intake gates' identities for one poll: the viewer, the `require_member` user and
@@ -663,8 +702,8 @@ impl LinearUnits {
             return Ok(Considered::Passed);
         }
         // Parked: the sweep re-claims it once a human answers, wherever it sits. A parked
-        // issue still sits in the state it was claimed from, since nothing moves it, so
-        // claiming it here would run it again unanswered.
+        // issue no slot moved on still sits in the state it was claimed from, so claiming it
+        // here would run it again unanswered.
         if issue.labels.iter().any(|l| l == AWAITING_LABEL) {
             return Ok(Considered::Passed);
         }
@@ -1318,14 +1357,18 @@ fn render_family(issue: &Issue) -> String {
     if !issue.children.is_empty() {
         let mut s = String::from("## Sub-issues\n");
         for child in &issue.children {
-            s.push_str(&format!(
-                "\n- {} ({}) {}",
-                child.identifier, child.state, child.title
-            ));
+            s.push('\n');
+            s.push_str(&sub_issue_line(child));
         }
         parts.push(s);
     }
     parts.join("\n\n")
+}
+
+/// One sub-issue as the brief lists it, and `list_sub_issues` writes it: its identifier,
+/// its state and its title.
+pub(crate) fn sub_issue_line(child: &Child) -> String {
+    format!("- {} ({}) {}", child.identifier, child.state, child.title)
 }
 
 /// Text of the run-end watermark comment: the marker, `owner`, and the delivery boundary
@@ -1444,7 +1487,7 @@ fn delivered_upto(comments: &[Comment], me: &SelfIds, feedback: &[Comment]) -> S
 
 /// Whether a comment is one of afkd's bookkeeping **control markers** (claim / attempt /
 /// ran / park), dropped from the brief entirely.
-fn is_control_marker(text: &str) -> bool {
+pub(crate) fn is_control_marker(text: &str) -> bool {
     is_claim(text) || starts_with_marker(text, ATTEMPT_MARKER) || is_ran(text) || is_park(text)
 }
 
@@ -1480,6 +1523,17 @@ fn render_comment(c: &Comment, me: &SelfIds) -> String {
     format!("**{speaker}:** {}", c.text.trim())
 }
 
+/// Comments rendered as the brief renders a section of its thread, and `list_comments`
+/// writes the thread: each [`render_comment`], a blank line between two, every one ending
+/// its line. `""` for none.
+pub(crate) fn render_comments(comments: &[&Comment], me: &SelfIds) -> String {
+    comments
+        .iter()
+        .map(|c| format!("{}\n", render_comment(c, me)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The brief afkd writes to `task.md`: the task text, the issue's parent and sub-issues,
 /// then the **full comment thread** — prior conversation and the new, actionable comments,
 /// each under its own heading, both oldest-first. Control markers are dropped.
@@ -1500,20 +1554,12 @@ fn brief_text(issue: &Issue, comments: &[Comment], me: &SelfIds) -> String {
     prior.sort_by(|a, b| (a.posted_at, &a.id).cmp(&(b.posted_at, &b.id)));
 
     if !prior.is_empty() {
-        s.push_str("\n\n## Earlier conversation\n");
-        for c in &prior {
-            s.push('\n');
-            s.push_str(&render_comment(c, me));
-            s.push('\n');
-        }
+        s.push_str("\n\n## Earlier conversation\n\n");
+        s.push_str(&render_comments(&prior, me));
     }
     if !new.is_empty() {
-        s.push_str("\n\n## New comments\n");
-        for c in &new {
-            s.push('\n');
-            s.push_str(&render_comment(c, me));
-            s.push('\n');
-        }
+        s.push_str("\n\n## New comments\n\n");
+        s.push_str(&render_comments(&new.iter().collect::<Vec<_>>(), me));
     }
     s
 }
@@ -1841,11 +1887,13 @@ mod tests {
             });
             i.children = vec![
                 Child {
+                    id: "ENG-8".into(),
                     identifier: "ENG-8".into(),
                     title: "Cap the backoff".into(),
                     state: "Todo".into(),
                 },
                 Child {
+                    id: "ENG-9".into(),
                     identifier: "ENG-9".into(),
                     title: "Read Retry-After 🚦".into(),
                     state: "Done".into(),
@@ -1869,6 +1917,85 @@ mod tests {
         );
         f.tracker.add_issue("Todo", "ENG-2", "Bare", "");
         assert_eq!(brief_text(&f.tracker.issue("ENG-2"), &[], &me()), "Bare");
+    }
+
+    /// What `list_comments` and `list_sub_issues` write is what the brief renders of the
+    /// same issue: the thread its two sections hold, back to back, and the lines of its
+    /// `## Sub-issues` — over a thread of multi-line, wide and empty comments, afkd's own
+    /// words and a control marker, and sub-issues with wide titles.
+    #[test]
+    fn the_reads_write_what_the_brief_renders() {
+        let f = fx(json!({}));
+        f.tracker.add_issue("Todo", "ENG-7", TITLE, BODY);
+        f.tracker.edit_issue("ENG-7", |i| {
+            i.children = [
+                ("ENG-8", "In Progress", "Cap the backoff at 30s"),
+                (
+                    "ENG-9",
+                    "Done ✅",
+                    "子任务: read Retry-After 🚦 — \"seconds\"",
+                ),
+            ]
+            .iter()
+            .map(|(id, state, title)| Child {
+                id: format!("uuid-{id}"),
+                identifier: (*id).into(),
+                title: (*title).into(),
+                state: (*state).into(),
+            })
+            .collect();
+        });
+        let at = |millis: u64| UNIX_EPOCH + Duration::from_millis(millis);
+        for (id, author, text, millis) in [
+            (
+                "h1",
+                "u-phil",
+                "Please cap it.\n\n- at 30s\n- per header",
+                1_000,
+            ),
+            ("a1", SELF_ID, "  Which header? 🤔  ", 2_000),
+            ("m1", SELF_ID, "[afkd-ran] owner=a upto=2000", 2_500),
+            (
+                "h2",
+                "u-chen",
+                "看起来不对 🚨\n\n```\nPOST /graphql 401\n```",
+                3_000,
+            ),
+            ("h3", "u-alvaro", "", 3_500),
+        ] {
+            f.tracker
+                .push_comment("ENG-7", id, text, author, at(millis));
+        }
+        let issue = f.tracker.issue("ENG-7");
+        let brief = brief_text(&issue, &f.tracker.comments_on("ENG-7"), &me());
+        let (_, thread) = brief
+            .split_once("## Earlier conversation\n\n")
+            .expect("an earlier section");
+        let (earlier, new) = thread
+            .split_once("\n\n## New comments\n\n")
+            .expect("a new section");
+        let subs = brief
+            .split_once("## Sub-issues\n\n")
+            .and_then(|(_, rest)| rest.split_once("\n\n## "))
+            .expect("a sub-issue section")
+            .0;
+
+        let dir = TempDir::new("parity");
+        let read = |read: Read, name: &str| {
+            let to = dir.path().join(name).display().to_string();
+            f.units.read(&issue, &me(), read, &to, &f.diag).unwrap();
+            std::fs::read_to_string(&to).unwrap()
+        };
+        assert_eq!(
+            read(Read::Comments, "thread.md"),
+            format!("{earlier}\n{new}")
+        );
+        assert_eq!(read(Read::SubIssues, "subs.md"), format!("{subs}\n"));
+        assert!(new.ends_with("**u-alvaro:** \n"), "{new}");
+        assert!(
+            earlier.contains("**afkd:** Which header? 🤔\n"),
+            "{earlier}"
+        );
     }
 
     /// An issue is blocked while any `blocks` blocker is in a state not done; a completed,
@@ -1913,6 +2040,7 @@ mod tests {
                 state_kind: "completed".into(),
             }];
             i.children = vec![Child {
+                id: "ENG-8".into(),
                 identifier: "ENG-8".into(),
                 title: "c".into(),
                 state: "Todo".into(),

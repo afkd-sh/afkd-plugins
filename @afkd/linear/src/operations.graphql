@@ -62,6 +62,7 @@ query Issues($filter: IssueFilter!, $sort: [IssueSortInput!]!, $first: Int!, $af
       }
       children(first: 20) {
         nodes {
+          id
           identifier
           title
           state {
@@ -79,11 +80,60 @@ query Issues($filter: IssueFilter!, $sort: [IssueSortInput!]!, $first: Int!, $af
             }
           }
         }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
       }
     }
     pageInfo {
       hasNextPage
       endCursor
+    }
+  }
+}
+
+query IssueRelations($id: String!, $after: String) {
+  issue(id: $id) {
+    inverseRelations(first: 50, after: $after) {
+      nodes {
+        type
+        issue {
+          identifier
+          state {
+            type
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueDescription($id: String!) {
+  issue(id: $id) {
+    description
+  }
+}
+
+query IssueChildren($id: String!, $after: String) {
+  issue(id: $id) {
+    children(first: 50, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        state {
+          name
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
     }
   }
 }
@@ -197,6 +247,21 @@ mutation IssueLabelCreate($input: IssueLabelCreateInput!) {
 
 mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) {
+    success
+  }
+}
+
+mutation IssueCreate($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    success
+    issue {
+      identifier
+    }
+  }
+}
+
+mutation IssueArchive($id: String!) {
+  issueArchive(id: $id) {
     success
   }
 }

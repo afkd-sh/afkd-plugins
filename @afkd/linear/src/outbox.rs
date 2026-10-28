@@ -10,6 +10,9 @@
 //! limit named, which is what Linear asks for. Then it gives up, with one loud line naming
 //! the issue and the write it lost.
 //!
+//! A slot's action is one such write, queued behind the issue's earlier ones like the
+//! plugin's own.
+//!
 //! A refusal no retry can fix — a document Linear refused, an entity it does not have — is
 //! never queued: the one inline try's error is the caller's. The queue lives in memory, so a
 //! plugin afkd ends names what it still owes ([`Outbox::abandon`]).
@@ -18,9 +21,10 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::action::{self, action_line, IssueAction};
 use crate::common::{lock, Clock, Diag};
 use crate::issue::ACTION_TAG;
-use crate::tracker::{Issue, LinearError, Tracker};
+use crate::tracker::{Issue, LinearError, Team, Tracker};
 
 /// How long after a failed write its first retry comes.
 pub(crate) const RETRY_FIRST: Duration = Duration::from_secs(5);
@@ -38,6 +42,9 @@ const QUOTE_MAX: usize = 80;
 /// One write to an issue the plugin owes Linear.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Write {
+    /// An action a slot called, done in the service's team: the worker resolves a state's
+    /// name in it, since a state is a team's.
+    Act { team: Team, action: IssueAction },
     /// A comment of the plugin's own: an attempt note, or the discuss path's backstop.
     Note(String),
     /// The run-end `[afkd-ran]` watermark, and the prior watermarks it supersedes, which
@@ -49,6 +56,22 @@ impl Write {
     /// The short phrase every log line names the write by.
     pub(crate) fn what(&self) -> String {
         match self {
+            Write::Act { action, .. } => match action {
+                IssueAction::Comment(text) => format!("the comment {}", quoted(text)),
+                IssueAction::Describe(_) => "the new description".to_string(),
+                IssueAction::Rename(title) => format!("renaming it to \"{title}\""),
+                IssueAction::MoveTo { state } => format!("moving it to state \"{state}\""),
+                IssueAction::AddLabel { name } => format!("adding the label \"{name}\""),
+                IssueAction::RemoveLabel { name } => format!("removing the label \"{name}\""),
+                IssueAction::CreateIssue(new) => format!("creating issue \"{}\"", new.title),
+                IssueAction::CreateSubIssue(new) => {
+                    format!("creating sub-issue \"{}\"", new.title)
+                }
+                IssueAction::Archive => "archiving it".to_string(),
+                IssueAction::MoveSubIssue { sub_issue, state } => {
+                    format!("moving sub-issue {sub_issue} to state \"{state}\"")
+                }
+            },
             Write::Note(text) => format!("the comment {}", quoted(text)),
             Write::Watermark { .. } => "the [afkd-ran] watermark".to_string(),
         }
@@ -58,6 +81,7 @@ impl Write {
     /// [`prune`]'s, once the watermark has landed.
     pub(crate) fn perform(&self, tracker: &dyn Tracker, issue: &Issue) -> Result<(), LinearError> {
         match self {
+            Write::Act { team, action } => action::perform(tracker, team, issue, action),
             Write::Note(text) | Write::Watermark { text, .. } => {
                 tracker.post_comment(&issue.id, text).map(drop)
             }
@@ -148,14 +172,17 @@ pub(crate) fn prune(tracker: &dyn Tracker, priors: &[String], diag: &dyn Diag) {
     }
 }
 
-/// What a write that landed from the queue leaves behind: its success line, and for a
-/// watermark, the pruned priors.
+/// What a write that landed from the queue leaves behind: its success line — an action's
+/// own, as it says when it lands at once — and for a watermark, the pruned priors.
 fn landed(tracker: &dyn Tracker, issue: &Issue, write: &Write, diag: &dyn Diag) {
-    diag.narrate(&format!(
-        "{ACTION_TAG} posting {} on {}",
-        write.what(),
-        named(issue)
-    ));
+    match write {
+        Write::Act { team, action } => diag.narrate(&action_line(action, team, issue)),
+        Write::Note(_) | Write::Watermark { .. } => diag.narrate(&format!(
+            "{ACTION_TAG} posting {} on {}",
+            write.what(),
+            named(issue)
+        )),
+    }
     if let Write::Watermark { priors, .. } = write {
         prune(tracker, priors, diag);
     }
@@ -392,6 +419,7 @@ mod tests {
     //! the worker thread itself is `tests/wire.rs`'s.
 
     use super::*;
+    use crate::action::NewIssue;
     use crate::common::{CaptureDiag, FakeClock};
     use crate::tracker::MockTracker;
 
@@ -701,6 +729,47 @@ mod tests {
         );
     }
 
+    /// A slot's action queued behind the issue's earlier writes lands after them, done in
+    /// the team it was queued with — a state's name resolved there — and says so in its own
+    /// success line.
+    #[test]
+    fn a_queued_action_lands_in_order_with_its_own_line() {
+        let (outbox, tracker, clock, diag) = (
+            Outbox::default(),
+            tracker(),
+            FakeClock::new(),
+            CaptureDiag::default(),
+        );
+        tracker.add_state("Done ✅", "completed");
+        let first = issue(&tracker, "ENG-1");
+        tracker.go_down();
+        outbox.queue_retry(&first, note("[afkd-attempt] 1/2: boom"), clock.now(), None);
+        let moved = Write::Act {
+            team: Team {
+                id: crate::tracker::TEAM_ID.into(),
+                key: "ENG".into(),
+            },
+            action: IssueAction::MoveTo {
+                state: "Done ✅".into(),
+            },
+        };
+        outbox.queue_behind(&first, moved, clock.now());
+        tracker.clear_failure();
+        clock.advance(RETRY_FIRST);
+        assert_eq!(outbox.deliver_due(&tracker, &clock, &diag), None);
+        assert_eq!(tracker.issue("ENG-1").state.name, "Done ✅");
+        assert_eq!(
+            diag.narrated(),
+            [
+                format!(
+                    "[linear] posting the comment \"[afkd-attempt] 1/2: boom\" on issue ENG-1 \
+                     \"{TITLE}\""
+                ),
+                format!("[linear] moving issue ENG-1 \"{TITLE}\" to state \"Done ✅\""),
+            ]
+        );
+    }
+
     /// A watermark that lands from the queue prunes the priors it supersedes; a prune that
     /// fails is said and dropped, never queued again.
     #[test]
@@ -850,7 +919,65 @@ mod tests {
 
     #[test]
     fn every_write_has_its_phrase() {
+        let act = |action: IssueAction| Write::Act {
+            team: Team {
+                id: "team-eng".into(),
+                key: "ENG".into(),
+            },
+            action,
+        };
+        let new = |title: &str| NewIssue {
+            title: title.into(),
+            description: "body".into(),
+            state: None,
+        };
         for (write, what) in [
+            (
+                act(IssueAction::Comment("## 完了 ✅\n\n- took 3m".into())),
+                "the comment \"## 完了 ✅…\"",
+            ),
+            (
+                act(IssueAction::Describe("long\nbody".into())),
+                "the new description",
+            ),
+            (
+                act(IssueAction::Rename("新しい 🚀".into())),
+                "renaming it to \"新しい 🚀\"",
+            ),
+            (
+                act(IssueAction::MoveTo {
+                    state: "Done ✅".into(),
+                }),
+                "moving it to state \"Done ✅\"",
+            ),
+            (
+                act(IssueAction::AddLabel {
+                    name: "needs review 👀".into(),
+                }),
+                "adding the label \"needs review 👀\"",
+            ),
+            (
+                act(IssueAction::RemoveLabel {
+                    name: "Redo".into(),
+                }),
+                "removing the label \"Redo\"",
+            ),
+            (
+                act(IssueAction::CreateIssue(new("Cap it"))),
+                "creating issue \"Cap it\"",
+            ),
+            (
+                act(IssueAction::CreateSubIssue(new("子任务"))),
+                "creating sub-issue \"子任务\"",
+            ),
+            (act(IssueAction::Archive), "archiving it"),
+            (
+                act(IssueAction::MoveSubIssue {
+                    sub_issue: "ENG-124".into(),
+                    state: "Done ✅".into(),
+                }),
+                "moving sub-issue ENG-124 to state \"Done ✅\"",
+            ),
             (
                 note("## 完了 ✅\n\n- took 3m"),
                 "the comment \"## 完了 ✅…\"",

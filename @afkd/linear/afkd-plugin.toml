@@ -1,12 +1,13 @@
 name = "@afkd/linear"
-version = "0.1.0"
+version = "0.2.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 exec = "afkd-linear"
 
-# The item a run claims, `linear.Issue` in a config: every slot is passed it. afkd carries
-# `id` (the issue's identifier, `ENG-123`) and `key` (afkd's claim key) for every handle; the
+# The item a run claims, `linear.Issue` in a config: every slot is passed it, and every
+# action takes it first. afkd carries `id` (the issue's identifier, `ENG-123`) and `key`
+# (afkd's claim key) for every handle; the
 # fields below are the rest of what the plugin knows about an issue. Every one is always sent,
 # since a field left out is not delivered and a slot reading it would fail its run: an issue
 # with no parent sends `parent` as `""`, and one with no label, sub-issue or blocker an empty
@@ -167,3 +168,214 @@ claims = true
     [[kind.slot.param]]
     name = "outcome"
     type = "afkd.Outcome"
+
+# The actions a slot calls, each on the issue it is passed first. A write is done in the
+# service's team, and queued and retried like every write when Linear is down.
+
+# A comment on the issue, its text verbatim.
+[[action]]
+name = "comment"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "text"
+  type = "string"
+  required = true
+
+# The issue's description, replaced with `text`.
+[[action]]
+name = "describe"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "text"
+  type = "string"
+  required = true
+
+# The issue's title, replaced with `title`.
+[[action]]
+name = "rename"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "title"
+  type = "string"
+  required = true
+
+# The issue moved to the team's workflow state named `state`.
+[[action]]
+name = "move_to"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "state"
+  type = "string"
+  required = true
+
+# The label named `label` put on the issue: the team's, else the workspace's, else one
+# created for the team.
+[[action]]
+name = "add_label"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+# The label named `label` taken off the issue; a name with no label is a no-op.
+[[action]]
+name = "remove_label"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "label"
+  type = "string"
+  required = true
+
+# A new issue in the service's team, titled `title` and described `description`.
+[[action]]
+name = "create_issue"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "title"
+  type = "string"
+  required = true
+
+  [[action.param]]
+  name = "description"
+  type = "string"
+  default = ""
+
+  # The workflow state it starts in, by name; the team's default when left out.
+  [[action.param]]
+  name = "state"
+  type = "string"
+  named_only = true
+
+# A new sub-issue of the issue, in the service's team, as `create_issue` files one.
+[[action]]
+name = "create_sub_issue"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "title"
+  type = "string"
+  required = true
+
+  [[action.param]]
+  name = "description"
+  type = "string"
+  default = ""
+
+  # The workflow state it starts in, by name; the team's default when left out.
+  [[action.param]]
+  name = "state"
+  type = "string"
+  named_only = true
+
+# The issue archived.
+[[action]]
+name = "archive"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+# The issue's thread, oldest first and as the brief renders it, written to the absolute
+# path `to`. A read, never queued: now or refused.
+[[action]]
+name = "list_comments"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "to"
+  type = "string"
+  required = true
+
+# The issue's description as Linear holds it now, written to the absolute path `to`.
+[[action]]
+name = "read_description"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "to"
+  type = "string"
+  required = true
+
+# The issue's sub-issues, a line each with its state as the brief lists them, written to
+# the absolute path `to`.
+[[action]]
+name = "list_sub_issues"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "to"
+  type = "string"
+  required = true
+
+# The issue's sub-issue `sub_issue`, by identifier, moved to the team's workflow state
+# named `state`.
+[[action]]
+name = "move_sub_issue"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "sub_issue"
+  type = "string"
+  required = true
+
+  [[action.param]]
+  name = "state"
+  type = "string"
+  required = true

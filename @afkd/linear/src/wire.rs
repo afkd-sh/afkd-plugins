@@ -64,10 +64,13 @@ pub(crate) enum Request {
         #[serde(default)]
         reason: Option<String>,
     },
-    /// One action a slot of afkd's calls, by its own name. Answered by every proto 2 plugin,
-    /// so it is never listed; this plugin declares no action, so it reads only the name it
-    /// refuses, and none of the arguments afkd bound.
-    Call { action: String },
+    /// One action a slot of afkd's calls, by its own name, and the arguments afkd bound to
+    /// its parameters, by name. Answered by every proto 2 plugin, so it is never listed.
+    Call {
+        action: String,
+        #[serde(default)]
+        args: serde_json::Map<String, serde_json::Value>,
+    },
     /// A call from a later afkd.
     #[serde(other)]
     Unknown,
@@ -341,20 +344,30 @@ mod tests {
         ));
     }
 
-    /// A `call` decodes with its action's name, for the plugin to refuse by name, whatever
-    /// arguments afkd bound, and also when it leaves `args` out.
+    /// A `call` decodes with its action's name and the arguments afkd bound, each as it was
+    /// sent, a field it does not know aside; one that leaves `args` out has none.
     #[test]
     fn a_call_decodes_with_its_action() {
         let call: Request = serde_json::from_str(
             r#"{"call":"call","action":"comment",
-                "args":{"issue":{"id":"ENG-421","key":"c#m"},"text":"Väntar på svar 🚨"},
+                "args":{"issue":{"id":"ENG-421","key":"c#m"},"text":"Väntar på svar 🚨\n\n- ok"},
                 "later":1}"#,
         )
         .unwrap();
-        assert!(matches!(&call, Request::Call { action, .. } if action == "comment"));
+        let Request::Call { action, args } = call else {
+            panic!("not a call: {call:?}");
+        };
+        assert_eq!(action, "comment");
+        assert_eq!(
+            serde_json::Value::Object(args),
+            serde_json::json!({"issue": {"id": "ENG-421", "key": "c#m"},
+                               "text": "Väntar på svar 🚨\n\n- ok"})
+        );
 
         let bare: Request = serde_json::from_str(r#"{"call":"call","action":"archive"}"#).unwrap();
-        assert!(matches!(bare, Request::Call { action } if action == "archive"));
+        assert!(
+            matches!(bare, Request::Call { action, args } if action == "archive" && args.is_empty())
+        );
     }
 
     /// The `hello` afkd writes: the identity it carries decodes, and one without it (an

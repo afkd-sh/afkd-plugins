@@ -7,8 +7,9 @@
 //! trait, the plain value types it exchanges, the typed [`LinearError`], and the mock.
 //!
 //! The trait carries only what the kind needs, **by meaning** — resolve a team or a user,
-//! read a state's issues, read/post/edit/delete comments, badge an issue, put it back — so
-//! the GraphQL mapping stays confined to the real adapter.
+//! read a state's issues, read/post/edit/delete comments, badge an issue, put it back, and
+//! the reads and writes a slot's actions make — so the GraphQL mapping stays confined to
+//! the real adapter.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -74,6 +75,8 @@ pub(crate) struct Related {
 /// One sub-issue, as the brief lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Child {
+    /// Its uuid, which a move of it names.
+    pub(crate) id: String,
     pub(crate) identifier: String,
     pub(crate) title: String,
     /// The name of the state it sits in.
@@ -116,6 +119,23 @@ pub(crate) struct Comment {
 pub(crate) struct Page<T> {
     pub(crate) items: Vec<T>,
     pub(crate) next: Option<String>,
+}
+
+/// The state of `states` named `name`, a state of the team `team_key`, or the refusal that
+/// names both.
+pub(crate) fn state_named(
+    states: &[State],
+    name: &str,
+    team_key: &str,
+) -> Result<State, LinearError> {
+    states
+        .iter()
+        .find(|s| s.name == name)
+        .cloned()
+        .ok_or_else(|| LinearError::NoSuch {
+            stage: "resolve state",
+            what: format!("workflow state named '{name}' in team {team_key}"),
+        })
 }
 
 /// The `errors[].extensions` kinds Linear names a failure a later try can get past by:
@@ -291,6 +311,36 @@ pub(crate) trait Tracker {
         state_id: &str,
     ) -> Result<(), LinearError>;
 
+    /// Issue `issue_id`'s description as Linear holds it now, `""` when it has none.
+    fn issue_description(&self, issue_id: &str) -> Result<String, LinearError>;
+
+    /// Every sub-issue of issue `issue_id`, in Linear's order.
+    fn sub_issues(&self, issue_id: &str) -> Result<Vec<Child>, LinearError>;
+
+    /// Retitle issue `issue_id` to `title`.
+    fn set_title(&self, issue_id: &str, title: &str) -> Result<(), LinearError>;
+
+    /// Replace issue `issue_id`'s description with `text`.
+    fn set_description(&self, issue_id: &str, text: &str) -> Result<(), LinearError>;
+
+    /// Move issue `issue_id` to state `state_id`, wherever Linear places it there.
+    fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError>;
+
+    /// File a new issue in team `team_id` titled `title`, described `description` (none when
+    /// empty), under the issue `parent_id` when there is one, in state `state_id` or else
+    /// the team's default; its identifier comes back.
+    fn create_issue(
+        &self,
+        team_id: &str,
+        parent_id: Option<&str>,
+        title: &str,
+        description: &str,
+        state_id: Option<&str>,
+    ) -> Result<String, LinearError>;
+
+    /// Archive issue `issue_id`.
+    fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError>;
+
     /// The `Authorization` header value a run reaches Linear with, as of now: the API key, or
     /// `Bearer` and the app's current token.
     fn authorization(&self) -> Result<String, LinearError>;
@@ -353,6 +403,34 @@ impl<T: Tracker + ?Sized> Tracker for std::sync::Arc<T> {
     ) -> Result<(), LinearError> {
         (**self).move_to_bottom(team_id, issue_id, state_id)
     }
+    fn issue_description(&self, issue_id: &str) -> Result<String, LinearError> {
+        (**self).issue_description(issue_id)
+    }
+    fn sub_issues(&self, issue_id: &str) -> Result<Vec<Child>, LinearError> {
+        (**self).sub_issues(issue_id)
+    }
+    fn set_title(&self, issue_id: &str, title: &str) -> Result<(), LinearError> {
+        (**self).set_title(issue_id, title)
+    }
+    fn set_description(&self, issue_id: &str, text: &str) -> Result<(), LinearError> {
+        (**self).set_description(issue_id, text)
+    }
+    fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError> {
+        (**self).set_state(issue_id, state_id)
+    }
+    fn create_issue(
+        &self,
+        team_id: &str,
+        parent_id: Option<&str>,
+        title: &str,
+        description: &str,
+        state_id: Option<&str>,
+    ) -> Result<String, LinearError> {
+        (**self).create_issue(team_id, parent_id, title, description, state_id)
+    }
+    fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError> {
+        (**self).archive_issue(issue_id)
+    }
     fn authorization(&self) -> Result<String, LinearError> {
         (**self).authorization()
     }
@@ -392,12 +470,29 @@ mod mock {
         AddLabel { issue: String, label: String },
         /// A named label was taken off an issue.
         RemoveLabel { issue: String, label: String },
+        /// An issue was retitled.
+        SetTitle { issue: String, title: String },
+        /// An issue's description was replaced.
+        SetDescription { issue: String, text: String },
+        /// An issue was moved to a state, placed where Linear places it.
+        SetState { issue: String, state: String },
+        /// An issue was filed.
+        Create {
+            team: String,
+            parent: Option<String>,
+            title: String,
+            description: String,
+            state: Option<String>,
+        },
+        /// An issue was archived.
+        Archive(String),
     }
 
-    /// One issue on the mock, and its comments in the order posted.
+    /// One issue on the mock, its comments in the order posted, and whether it is archived.
     struct Stored {
         issue: Issue,
         comments: Vec<Comment>,
+        archived: bool,
     }
 
     /// An in-memory [`Tracker`] with controllable comment post times.
@@ -472,6 +567,7 @@ mod mock {
                     sort_order,
                 },
                 comments: Vec::new(),
+                archived: false,
             });
         }
 
@@ -594,6 +690,13 @@ mod mock {
                 .unwrap_or_default()
         }
 
+        /// Whether an issue is archived.
+        pub(crate) fn archived(&self, id: &str) -> bool {
+            lock(&self.issues)
+                .iter()
+                .any(|s| s.issue.id == id && s.archived)
+        }
+
         /// An issue as it stands.
         pub(crate) fn issue(&self, id: &str) -> Issue {
             lock(&self.issues)
@@ -684,7 +787,7 @@ mod mock {
             self.guard("read issues")?;
             let mut issues: Vec<Issue> = lock(&self.issues)
                 .iter()
-                .filter(|s| s.issue.state.id == state_id)
+                .filter(|s| s.issue.state.id == state_id && !s.archived)
                 .map(|s| s.issue.clone())
                 .collect();
             issues.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
@@ -704,7 +807,7 @@ mod mock {
             self.guard("read parked issues")?;
             Ok(lock(&self.issues)
                 .iter()
-                .filter(|s| s.issue.labels.iter().any(|l| l == label))
+                .filter(|s| !s.archived && s.issue.labels.iter().any(|l| l == label))
                 .map(|s| s.issue.clone())
                 .collect())
         }
@@ -841,6 +944,84 @@ mod mock {
                 issue: issue_id.to_string(),
                 state: state_id.to_string(),
             });
+            Ok(())
+        }
+
+        fn issue_description(&self, issue_id: &str) -> Result<String, LinearError> {
+            self.guard("read description")?;
+            self.issue_mut(issue_id, "read description", |s| {
+                s.issue.description.clone()
+            })
+        }
+
+        fn sub_issues(&self, issue_id: &str) -> Result<Vec<Child>, LinearError> {
+            self.guard("read sub-issues")?;
+            self.issue_mut(issue_id, "read sub-issues", |s| s.issue.children.clone())
+        }
+
+        fn set_title(&self, issue_id: &str, title: &str) -> Result<(), LinearError> {
+            self.guard("rename issue")?;
+            self.issue_mut(issue_id, "rename issue", |s| {
+                s.issue.title = title.to_string()
+            })?;
+            lock(&self.actions).push(Action::SetTitle {
+                issue: issue_id.to_string(),
+                title: title.to_string(),
+            });
+            Ok(())
+        }
+
+        fn set_description(&self, issue_id: &str, text: &str) -> Result<(), LinearError> {
+            self.guard("describe issue")?;
+            self.issue_mut(issue_id, "describe issue", |s| {
+                s.issue.description = text.to_string()
+            })?;
+            lock(&self.actions).push(Action::SetDescription {
+                issue: issue_id.to_string(),
+                text: text.to_string(),
+            });
+            Ok(())
+        }
+
+        fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError> {
+            self.guard("move issue")?;
+            let state = lock(&self.states)
+                .iter()
+                .find(|s| s.id == state_id)
+                .cloned()
+                .ok_or_else(|| not_found("move issue", "WorkflowState"))?;
+            self.issue_mut(issue_id, "move issue", |s| s.issue.state = state)?;
+            lock(&self.actions).push(Action::SetState {
+                issue: issue_id.to_string(),
+                state: state_id.to_string(),
+            });
+            Ok(())
+        }
+
+        fn create_issue(
+            &self,
+            team_id: &str,
+            parent_id: Option<&str>,
+            title: &str,
+            description: &str,
+            state_id: Option<&str>,
+        ) -> Result<String, LinearError> {
+            self.guard("create issue")?;
+            let identifier = format!("ENG-{}", 900 + lock(&self.issues).len());
+            lock(&self.actions).push(Action::Create {
+                team: team_id.to_string(),
+                parent: parent_id.map(str::to_string),
+                title: title.to_string(),
+                description: description.to_string(),
+                state: state_id.map(str::to_string),
+            });
+            Ok(identifier)
+        }
+
+        fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError> {
+            self.guard("archive issue")?;
+            self.issue_mut(issue_id, "archive issue", |s| s.archived = true)?;
+            lock(&self.actions).push(Action::Archive(issue_id.to_string()));
             Ok(())
         }
 

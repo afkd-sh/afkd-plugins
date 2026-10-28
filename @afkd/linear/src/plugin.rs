@@ -2,8 +2,11 @@
 //! wire ([`crate::wire`]) and the `issue` kind's vendor half ([`crate::issue`]).
 //!
 //! **afkd runs the slots.** `on_claim` after a `poll` hands a unit over, and `on_done`,
-//! `on_park` or `on_fail` after its `finish`. The core declares no action, so a `call` from
-//! a slot is refused naming it; afkd's own validate refuses such a call before any run.
+//! `on_park` or `on_fail` after its `finish`; each action a slot calls is one `call`, naming
+//! the issue it acts on by its handle — the id and key of a unit this plugin handed over,
+//! never an implied claim — which this plugin does on that unit's issue
+//! ([`crate::action`]). A finished unit's issue is kept a while for that
+//! ([`FINISHED_MAX`]), since its post-run slot's calls arrive after `finish`.
 //!
 //! What the wire forces, as for `@afkd/trello`:
 //!
@@ -20,27 +23,33 @@
 //! - **A write Linear could not take is retried after the reply**, by the outbox's worker
 //!   thread ([`crate::outbox`]), each issue's writes in order, for up to an hour.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
+use crate::action::{from_call, Call, Op};
 use crate::auth::Auth;
 use crate::client::LinearClient;
 use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
-use crate::issue::{is_afkd, Identity, LinearUnits, Unit};
+use crate::issue::{is_afkd, Identity, LinearUnits, SelfIds, Unit};
 use crate::outbox::Outbox;
 use crate::rfc3339::format_utc;
 use crate::settings::{issue_config, IssueConfig};
-use crate::tracker::Tracker;
+use crate::tracker::{Issue, Tracker};
 use crate::wire::{
     fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
 };
 
 /// The one kind this plugin provides, its main one: `service(linear)` in a config.
 pub(crate) const LINEAR_KIND: &str = "issue";
+
+/// How many finished units' issues a post-run slot's `call`s can still reach. afkd sends
+/// them straight after `finish`, one unit at a time, so a handful would do; the rest is
+/// headroom, and the oldest goes first.
+const FINISHED_MAX: usize = 16;
 
 /// The optional calls the kind answers, exactly as `hello` lists them: every one afkd has.
 const CALLS: &[&str] = &["release", "renew", "comments", "attempt_failed", "classify"];
@@ -76,6 +85,16 @@ struct Armed {
     units: LinearUnits,
     /// The units handed over and not yet finished or released, by key.
     live: BTreeMap<String, LiveUnit>,
+    /// The issues of the units most recently finished, by key and oldest first, for the
+    /// post-run slot's `call`s; at most [`FINISHED_MAX`].
+    finished: VecDeque<(String, Held)>,
+}
+
+/// What a `call` on a finished unit's issue needs of it: the issue, and the ids afkd's own
+/// comments carry on it.
+struct Held {
+    issue: Issue,
+    me: SelfIds,
 }
 
 /// A unit afkd is running.
@@ -182,11 +201,9 @@ impl Plugin {
             } => on_armed(armed, clock, |a| {
                 a.finish(&key, outcome, &facts, clock.now(), diag)
             }),
-            Request::Call { action } => on_armed(armed, clock, |_| {
-                let error = format!("@afkd/linear declares no action `{action}`");
-                diag.err(&error);
-                Answer::Reply(json!({"ok": false, "error": error}).to_string())
-            }),
+            Request::Call { action, args } => {
+                on_armed(armed, clock, |a| a.call(&action, &args, clock.now(), diag))
+            }
             Request::Unknown => {
                 diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
                 Answer::Reply(json!({"ok": false}).to_string())
@@ -248,6 +265,7 @@ fn arm(
     let armed = Armed {
         units: LinearUnits::new(connect(&cfg, Arc::clone(&auth)), &cfg, id),
         live: BTreeMap::new(),
+        finished: VecDeque::new(),
     };
     Ok((armed, cfg, auth))
 }
@@ -305,6 +323,7 @@ impl Armed {
     /// straight back, or one whose `on_claim` failed — and forget it.
     fn release(&mut self, key: &str, now: Instant, diag: &dyn Diag) -> Answer {
         self.live.remove(key);
+        self.finished.retain(|(finished, _)| finished != key);
         let released = self.units.release_stale(key, now, diag);
         Answer::Reply(json!({ "released": released }).to_string())
     }
@@ -403,8 +422,9 @@ impl Armed {
         Answer::Reply(json!({ "ok": ok }).to_string())
     }
 
-    /// Finish a unit. A finish that did not land is `held`: afkd keeps the claim and sends
-    /// `release` for the key on a later beat, which replays what is owed.
+    /// Finish a unit, and keep its issue for the post-run slot's `call`s. A finish that did
+    /// not land is `held`: afkd keeps the claim and sends `release` for the key on a later
+    /// beat, which replays what is owed.
     fn finish(
         &mut self,
         key: &str,
@@ -428,7 +448,60 @@ impl Armed {
             ));
             json!({"ok": true, "held": true})
         };
+        if self.finished.len() == FINISHED_MAX {
+            self.finished.pop_front();
+        }
+        let held = Held {
+            issue: live.unit.issue().clone(),
+            me: live.unit.me().clone(),
+        };
+        self.finished.push_back((key.to_string(), held));
         Answer::Reply(reply.to_string())
+    }
+
+    /// Do one action a slot called, on the issue of the unit its handle names — a live one,
+    /// or one finished since. `{"ok":false}` with the sentence, diagnosed too, for an action
+    /// afkd would not have bound, a handle naming no issue, a read that could not be written,
+    /// or a Linear that refused it. A write Linear could not be reached for is taken for
+    /// delivery and `ok`: the outbox retries it, and the slot's next write queues behind it.
+    /// A read is done now or refused, never queued.
+    fn call(
+        &self,
+        action: &str,
+        args: &Map<String, Value>,
+        now: Instant,
+        diag: &dyn Diag,
+    ) -> Answer {
+        let refuse = |error: String| {
+            diag.err(&error);
+            Answer::Reply(json!({"ok": false, "error": error}).to_string())
+        };
+        let Call { key, op } = match from_call(action, args) {
+            Ok(call) => call,
+            Err(problem) => return refuse(problem),
+        };
+        let (issue, me) = match self.live.get(&key) {
+            Some(live) => (live.unit.issue(), live.unit.me()),
+            None => match self.finished.iter().find(|(finished, _)| *finished == key) {
+                Some((_, held)) => (&held.issue, &held.me),
+                None => {
+                    return refuse(format!(
+                        "{action} for {key}, which this plugin holds no issue for"
+                    ))
+                }
+            },
+        };
+        let done = match op {
+            Op::Act(act) => self
+                .units
+                .act(issue, act, now, diag)
+                .map_err(|e| e.to_string()),
+            Op::Read { read, to } => self.units.read(issue, me, read, &to, diag),
+        };
+        match done {
+            Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
+            Err(problem) => refuse(problem),
+        }
     }
 }
 
@@ -547,6 +620,15 @@ mod tests {
             )
         }
 
+        /// Call `action` on the issue whose key is `key`, its handle first, as afkd binds it.
+        fn act(&mut self, action: &str, args: Value, key: &Value) -> Value {
+            let mut bound = json!({"issue": {"id": "ENG-1", "key": key}});
+            for (k, v) in args.as_object().unwrap() {
+                bound[k] = v.clone();
+            }
+            self.call(json!({"call": "call", "action": action, "args": bound}))
+        }
+
         fn claims_on(&self, id: &str) -> usize {
             self.tracker
                 .comments_on(id)
@@ -660,22 +742,160 @@ mod tests {
         }
     }
 
-    /// The core declares no action, so a `call` is refused naming the one asked for, and
-    /// the next request is still answered.
+    /// A `call` the plugin cannot do answers `ok:false` with its sentence — which afkd fails
+    /// the slot's call with — and says it on the diagnostic channel too: an action it does
+    /// not declare, a handle that is no handle, a key it holds no issue for, and a Linear
+    /// that refused it. The next request is still answered.
     #[test]
-    fn a_call_is_refused_naming_the_action() {
+    fn a_call_the_plugin_cannot_do_answers_its_sentence() {
         let mut f = Fixture::armed(settings());
         let key = f.poll()["unit"]["key"].clone();
-        assert_eq!(
-            f.call(json!({"call": "call", "action": "comment",
-                          "args": {"issue": {"id": "ENG-1", "key": key}, "text": "done 🚀"}})),
-            json!({"ok": false, "error": "@afkd/linear declares no action `comment`"})
-        );
-        assert_eq!(f.diag.errs(), ["@afkd/linear declares no action `comment`"]);
+        let mut expect = Vec::new();
+        for (action, args, error) in [
+            (
+                "assign",
+                json!({"issue": {"id": "ENG-1", "key": key}, "who": "me"}),
+                "no action `assign`".to_string(),
+            ),
+            (
+                "comment",
+                json!({"issue": "ENG-1", "text": "done 🚀"}),
+                "comment: parameter issue must be an item handle".to_string(),
+            ),
+            (
+                "comment",
+                json!({"issue": {"id": "ENG-9", "key": "ENG-9#c9"}, "text": "done 🚀"}),
+                "comment for ENG-9#c9, which this plugin holds no issue for".to_string(),
+            ),
+            (
+                "move_to",
+                json!({"issue": {"id": "ENG-1", "key": key}, "state": "Nirgendwo 🚫"}),
+                "linear resolve state: no workflow state named 'Nirgendwo 🚫' in team ENG"
+                    .to_string(),
+            ),
+        ] {
+            assert_eq!(
+                f.call(json!({"call": "call", "action": action, "args": args})),
+                json!({"ok": false, "error": error})
+            );
+            expect.push(error);
+        }
+        assert_eq!(f.diag.errs(), expect);
+        assert_eq!(f.tracker.issue("ENG-1").state.name, "Todo");
         assert_eq!(
             f.call(json!({"call": "renew", "key": key, "renewal": 1})),
             json!({"ok": true})
         );
+    }
+
+    /// A slot's action on the live issue lands and is narrated; a read writes its file.
+    #[test]
+    fn a_call_on_the_live_issue_is_done_and_narrated() {
+        let mut f = Fixture::armed(settings());
+        let key = f.poll()["unit"]["key"].clone();
+        assert_eq!(
+            f.act("move_to", json!({"state": "In Progress"}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(f.tracker.issue("ENG-1").state.name, "In Progress");
+        let dir = TempDir::new("call");
+        let to = dir.path().join("description.md");
+        assert_eq!(
+            f.act("read_description", json!({"to": to}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "Body");
+        assert_eq!(
+            f.diag.narrated()[1..],
+            [
+                format!("[linear] moving issue ENG-1 \"{TITLE}\" to state \"In Progress\""),
+                format!(
+                    "[linear] writing the description of issue ENG-1 \"{TITLE}\" to {}",
+                    to.display()
+                ),
+            ]
+        );
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+    }
+
+    /// `poll` and `finish` move nothing themselves, and the post-run slot's calls, which
+    /// afkd sends after `finish`, still reach the finished issue — a `held` one's too — until
+    /// afkd releases the key.
+    #[test]
+    fn a_post_run_call_reaches_a_finished_issue_until_it_is_released() {
+        let mut f = Fixture::armed(settings());
+        let key = f.poll()["unit"]["key"].clone();
+        f.tracker.fail(
+            "delete comment",
+            LinearError::Transport {
+                stage: "delete comment",
+                reason: "mock failure".into(),
+            },
+        );
+        assert_eq!(f.finish(&key, "clean"), json!({"ok": true, "held": true}));
+        assert_eq!(
+            f.tracker.issue("ENG-1").state.name,
+            "Todo",
+            "finish moves nothing"
+        );
+
+        assert_eq!(
+            f.act("move_to", json!({"state": "In Progress"}), &key),
+            json!({"ok": true})
+        );
+        assert_eq!(f.tracker.issue("ENG-1").state.name, "In Progress");
+        let dir = TempDir::new("finished");
+        let to = dir.path().join("thread.md");
+        assert_eq!(
+            f.act("list_comments", json!({"to": to}), &key),
+            json!({"ok": true}),
+            "a read reaches it too"
+        );
+        f.tracker.clear_failure();
+        assert_eq!(
+            f.call(json!({"call": "release", "key": key})),
+            json!({"released": true})
+        );
+        let released = f.diag.errs().len();
+        assert_eq!(
+            f.act("comment", json!({"text": "late"}), &key),
+            json!({"ok": false, "error": format!(
+                "comment for {}, which this plugin holds no issue for",
+                key.as_str().unwrap()
+            )})
+        );
+        assert_eq!(
+            f.diag.errs().len(),
+            released + 1,
+            "the refusal is diagnosed"
+        );
+    }
+
+    /// The finished issues a post-run call reaches are bounded: past [`FINISHED_MAX`] the
+    /// oldest is forgotten, and the newer ones still answer.
+    #[test]
+    fn the_finished_issues_a_call_reaches_are_bounded() {
+        let mut f = Fixture::armed(settings());
+        for n in 2..=FINISHED_MAX + 1 {
+            f.tracker
+                .add_issue("Todo", &format!("ENG-{n}"), &format!("課題 {n} 🚧"), "");
+        }
+        let mut keys = Vec::new();
+        for _ in 0..=FINISHED_MAX {
+            let key = f.poll()["unit"]["key"].clone();
+            assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
+            // The `on_done` afkd runs next, so the next poll claims the next issue.
+            assert_eq!(
+                f.act("move_to", json!({"state": "In Progress"}), &key),
+                json!({"ok": true})
+            );
+            keys.push(key);
+        }
+        let comment = json!({"text": "see the run log"});
+        assert_eq!(f.act("comment", comment.clone(), &keys[0])["ok"], false);
+        for key in &keys[1..] {
+            assert_eq!(f.act("comment", comment.clone(), key), json!({"ok": true}));
+        }
     }
 
     /// A call from a later afkd is refused and the next request is still answered; one

@@ -5,10 +5,13 @@
 //!
 //! - The **install** leg installs the tree the release holds and runs one issue through it
 //!   on a real daemon with an API key, its slots reading every field the issue's handle
-//!   declares; the **app** leg does the same as an OAuth app, on a token the plugin fetched.
+//!   declares, its run reading the description and moving the issue through the plugin's
+//!   actions, and its `on_done` commenting on the finished issue; the **app** leg does the
+//!   same as an OAuth app, on a token the plugin fetched.
 //! - The **validate** legs hold `afkd validate` to a `service(linear)` that writes every
-//!   setting in both credential forms, to refusing one without `team` or `pick_from`, and to
-//!   refusing a call of an action the core does not declare.
+//!   setting in both credential forms, to one whose slots call every action the plugin
+//!   declares, to refusing one without `team` or `pick_from`, and to refusing a call of an
+//!   action the plugin does not declare.
 //!
 //! The Linear is the plugin's own loopback fake ([`fake`]), which holds every request to
 //! Linear's schema: each leg ends with its record of refused requests empty. No leg touches
@@ -22,9 +25,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use common::fake::{
-    operation_document, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, TEAM,
-};
+use common::fake::{Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, TEAM};
 use common::*;
 use tempfile::TempDir;
 
@@ -136,11 +137,11 @@ const FIELDS: &str = "fields.txt";
 const CLAIMED: &str = "claimed.txt";
 const DONE: &str = "done.txt";
 const AUTH: &str = "auth.txt";
+const API_URL: &str = "api_url.txt";
 
-/// The request, under the service's work dir, `on_run` ends by sending to Linear: the
-/// issue moved to Done, as a config of the core moves one, since the core has no action
-/// that does.
-const MOVE: &str = "move.json";
+/// The file, under the service's work dir, `on_run` writes the issue's description to
+/// through the plugin's `read_description`.
+const DESCRIPTION: &str = "description.md";
 
 /// How long a claim, a run or a finish may take. Generous, because it bounds a failure
 /// rather than timing a success: the first beat is immediate.
@@ -153,7 +154,6 @@ struct Seeded {
     epic: String,
     child: String,
     blocker: String,
-    done: String,
 }
 
 /// The team the service picks from: the states it reads, and one issue in Todo — a
@@ -163,7 +163,7 @@ fn seed() -> Seeded {
     let fake = FakeLinear::start();
     fake.state("Todo", "unstarted");
     fake.state("In Progress", "started");
-    let done = fake.state("Done", "completed");
+    fake.state("Done", "completed");
     let chen = fake.user("陳大文", "chen", "chen@acme.example");
     let epic = fake.issue("In Progress", "Epic: 重试 that works", "");
     let blocker = fake.issue("Done", "Upgrade the client", "");
@@ -184,7 +184,6 @@ fn seed() -> Seeded {
         epic,
         child,
         blocker,
-        done,
     }
 }
 
@@ -192,9 +191,9 @@ fn seed() -> Seeded {
 /// `auth`. It writes no `every`, so the cadence is afkd's default and its first beat is at
 /// once. `on_claim` writes the state it claimed from; the run holds until the test creates
 /// `release` — bounded, so a test that never does cannot wedge it — then writes every field
-/// of the issue's handle to [`FIELDS`], a line each, and the credential its env carries, and
-/// moves the issue to Done through Linear's API with that credential, as a script of the
-/// operator's would; `on_done` writes the title.
+/// of the issue's handle to [`FIELDS`], a line each, and the endpoint and credential its env
+/// carries, writes the description to [`DESCRIPTION`] and moves the issue to Done through
+/// the plugin's actions; `on_done` writes the title and comments on the finished issue.
 fn service(home: &Path, base_url: &str, auth: &str) -> String {
     format!(
         r#"import "core"
@@ -211,6 +210,8 @@ widgets :: service(linear) {{
   }}
   on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
     $ echo done #{{issue.title}} >> {DONE}
+    landed := linear.comment(issue, "landed #{{issue.title}} ✅")
+    if landed != nil {{ fail("linear.comment: #{{landed.message}}") }}
   }}
 
   work_dir "{home}"
@@ -230,8 +231,12 @@ widgets :: service(linear) {{
       $ echo blocked_by #{{blocker}} >> {FIELDS}
     }}
     $ printenv LINEAR_AUTHORIZATION > {AUTH}
+    $ printenv LINEAR_API_URL > {API_URL}
     $ cat $AFKD_SCRATCH_DIR/task.md
-    $ curl -sSf -X POST "$LINEAR_API_URL" -H "Authorization: $LINEAR_AUTHORIZATION" -H "Content-Type: application/json" --data-binary @{MOVE}
+    described := linear.read_description(issue, "{home}/{DESCRIPTION}")
+    if described != nil {{ fail("linear.read_description: #{{described.message}}") }}
+    moved := linear.move_to(issue, "Done")
+    if moved != nil {{ fail("linear.move_to: #{{moved.message}}") }}
   }}
 }}
 "#,
@@ -326,20 +331,16 @@ fn read(path: &Path) -> String {
 /// Drive the seeded issue through the plugin, installed in `home`, on a real daemon, its
 /// service authenticating as `auth` writes it: it is **claimed** (the claim comment, and
 /// `on_claim` read its state), **run** (its run dir is named for the issue, its task carries
-/// the issue and its thread whole, and `on_run` read every field of its handle and the
-/// credential as the plugin sent them) and **finished** (the `[afkd-ran]` watermark posted,
-/// the claim released, and `on_done` read its title), and the daemon then drains clean.
+/// the issue and its thread whole, and `on_run` read every field of its handle, the endpoint
+/// and the credential as the plugin sent them, read its description and moved it to Done
+/// through the plugin) and **finished** (the `[afkd-ran]` watermark posted, the claim
+/// released, and `on_done` read its title and commented on it through the plugin), and the
+/// daemon then drains clean.
 /// Returns the seeded team, for the leg's own checks.
 fn drive_one_issue(home: &Path, auth: &str) -> Seeded {
     let seeded = seed();
     let (fake, issue) = (&seeded.fake, seeded.issue.as_str());
     write_config(home, &service(home, fake.base_url(), auth));
-    let move_to_done = serde_json::json!({
-        "operationName": "IssueUpdate",
-        "query": operation_document("IssueUpdate").expect("the plugin's IssueUpdate"),
-        "variables": {"id": issue, "input": {"stateId": seeded.done, "sortOrder": 5000.0}},
-    });
-    std::fs::write(home.join(MOVE), move_to_done.to_string()).expect("write the move");
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
 
@@ -382,18 +383,23 @@ fn drive_one_issue(home: &Path, auth: &str) -> Seeded {
     }
 
     std::fs::write(home.join("release"), "").expect("release the run");
+    let landed = format!("landed {TITLE} ✅");
     wait_for(home, fake, issue, &daemon, "the issue is finished", || {
+        let thread = fake.comments(issue);
         !claimed(fake, issue)
-            && fake
-                .comments(issue)
-                .iter()
-                .any(|c| c.body.starts_with("[afkd-ran]"))
+            && thread.iter().any(|c| c.body.starts_with("[afkd-ran]"))
+            && thread.iter().any(|c| c.body == landed)
             && home.join(DONE).exists()
     });
+    assert_eq!(fake.state_of(issue), "Done", "the run's move_to moved it");
     assert_eq!(
-        fake.state_of(issue),
-        "Done",
-        "the run moved it with its own credential"
+        read(&home.join(DESCRIPTION)),
+        BODY,
+        "the run's read_description wrote it"
+    );
+    assert_eq!(
+        read(&home.join(API_URL)),
+        format!("{}/graphql\n", fake.base_url())
     );
     assert_eq!(run_dirs(home).len(), 1, "one run, never claimed again");
     assert_eq!(read(&home.join(CLAIMED)), "claimed Todo\n");
@@ -565,6 +571,74 @@ discuss :: service(linear) {{
     assert_eq!(code, Some(0), "every setting validates:\n{report}");
 }
 
+/// A service whose slots call every action the plugin declares, each checked for its error —
+/// a new issue in a named state and one in the team's default, a sub-issue, absolute paths
+/// for the reads, wide and multi-line texts — validates: afkd types every call against the
+/// manifest.
+#[test]
+fn every_action_validates_from_its_slots() {
+    let home = installed();
+    write_config(
+        home.path(),
+        &format!(
+            r###"import "core"
+import "@afkd/linear"
+
+widgets :: service(linear) {{
+  team      "{TEAM}"
+  api_key   "{API_KEY}"
+  pick_from "Todo"
+  work_dir  "/srv/acme/widgets"
+
+  on_claim proc(issue: linear.Issue) {{
+    moved := linear.move_to(issue, "In Progress 🚧")
+    if moved != nil {{ fail("linear.move_to: #{{moved.message}}") }}
+    labelled := linear.add_label(issue, "afkd/working")
+    if labelled != nil {{ fail("linear.add_label: #{{labelled.message}}") }}
+  }}
+  on_run proc(run: core.Run, issue: linear.Issue) {{
+    thread := linear.list_comments(issue, "/srv/acme/widgets/thread 計画.md")
+    if thread != nil {{ fail("linear.list_comments: #{{thread.message}}") }}
+    described := linear.read_description(issue, "/srv/acme/widgets/description.md")
+    if described != nil {{ fail("linear.read_description: #{{described.message}}") }}
+    subs := linear.list_sub_issues(issue, "/srv/acme/widgets/subs.md")
+    if subs != nil {{ fail("linear.list_sub_issues: #{{subs.message}}") }}
+    $ cat $AFKD_SCRATCH_DIR/task.md
+  }}
+  on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
+    said := linear.comment(issue, "## 完了 ✅\n\nlanded #{{issue.title}} in #{{outcome.duration}}.")
+    if said != nil {{ fail("linear.comment: #{{said.message}}") }}
+    described := linear.describe(issue, "Done by afkd — 修复 🚀")
+    if described != nil {{ fail("linear.describe: #{{described.message}}") }}
+    renamed := linear.rename(issue, "[done] #{{issue.title}}")
+    if renamed != nil {{ fail("linear.rename: #{{renamed.message}}") }}
+    unlabelled := linear.remove_label(issue, "afkd/working")
+    if unlabelled != nil {{ fail("linear.remove_label: #{{unlabelled.message}}") }}
+    for sub in issue.sub_issues {{
+      closed := linear.move_sub_issue(issue, sub, "Done")
+      if closed != nil {{ fail("linear.move_sub_issue: #{{closed.message}}") }}
+    }}
+    archived := linear.archive(issue)
+    if archived != nil {{ fail("linear.archive: #{{archived.message}}") }}
+  }}
+  on_fail proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
+    filed := linear.create_issue(issue, "Follow up on #{{issue.title}}", "It failed:\n\n#{{outcome.duration}}", state="Backlog 📥")
+    if filed != nil {{ fail("linear.create_issue: #{{filed.message}}") }}
+    bare := linear.create_issue(issue, "Look again 👀")
+    if bare != nil {{ fail("linear.create_issue: #{{bare.message}}") }}
+  }}
+  on_park proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
+    split := linear.create_sub_issue(issue, "Answer the question 🙋", "Asked on #{{issue.url}}")
+    if split != nil {{ fail("linear.create_sub_issue: #{{split.message}}") }}
+  }}
+}}
+"###
+        ),
+    );
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "every action validates:\n{report}");
+}
+
 /// `team` and `pick_from` are required: a service without either is refused at validate,
 /// naming the setting and the service.
 #[test]
@@ -606,8 +680,8 @@ widgets :: service(linear) {{
     }
 }
 
-/// The core declares no action, so a slot calling one is a load error naming the plugin;
-/// the same file without the call is valid.
+/// A slot calling an action the plugin does not declare is a load error naming the action
+/// and the plugin, and listing the actions it has; the same file without the call is valid.
 #[test]
 fn a_call_to_an_undeclared_action_is_a_load_error() {
     let home = installed();
@@ -633,7 +707,7 @@ widgets :: service(linear) {{
 "#
         )
     };
-    write_config(home.path(), &config(r#"linear.comment(issue, "x")"#));
+    write_config(home.path(), &config(r#"linear.assign(issue, "me")"#));
     let (code, report) = validate(home.path());
     assert_eq!(
         code,
@@ -641,10 +715,13 @@ widgets :: service(linear) {{
         "a call of an undeclared action is refused:\n{report}"
     );
     assert!(
-        report.contains("comment"),
-        "the refusal names the action:\n{report}"
+        report.contains(r#"plugin linear has no action "assign""#),
+        "the refusal names the action and the plugin as the file imports it:\n{report}"
     );
-    assert!(report.contains("@afkd/linear"), "and the plugin:\n{report}");
+    assert!(
+        report.contains("move_sub_issue"),
+        "and lists the actions it has:\n{report}"
+    );
     write_config(home.path(), &config(r#"$ echo #{issue.title}"#));
     let (code, report) = validate(home.path());
     assert_eq!(
