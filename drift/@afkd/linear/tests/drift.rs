@@ -8,6 +8,8 @@
 //!   declares, its run reading the description and moving the issue through the plugin's
 //!   actions, and its `on_done` commenting on the finished issue; the **app** leg does the
 //!   same as an OAuth app, on a token the plugin fetched.
+//! - The **files** leg runs one issue whose run puts a PNG into its description and into a
+//!   comment through `files=`, and fetches both back with `fetch_files`, byte for byte.
 //! - The **validate** legs hold `afkd validate` to a `service(linear)` that writes every
 //!   setting in both credential forms, to one whose slots call every action the plugin
 //!   declares, to refusing one without `team` or `pick_from`, and to refusing a call of an
@@ -25,7 +27,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use common::fake::{Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, TEAM};
+use common::fake::{png, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, TEAM};
 use common::*;
 use tempfile::TempDir;
 
@@ -573,8 +575,8 @@ discuss :: service(linear) {{
 
 /// A service whose slots call every action the plugin declares, each checked for its error —
 /// a new issue in a named state and one in the team's default, a sub-issue, absolute paths
-/// for the reads, wide and multi-line texts — validates: afkd types every call against the
-/// manifest.
+/// for the reads, a comment and a description with files and without, wide and multi-line
+/// texts — validates: afkd types every call against the manifest.
 #[test]
 fn every_action_validates_from_its_slots() {
     let home = installed();
@@ -603,13 +605,19 @@ widgets :: service(linear) {{
     if described != nil {{ fail("linear.read_description: #{{described.message}}") }}
     subs := linear.list_sub_issues(issue, "/srv/acme/widgets/subs.md")
     if subs != nil {{ fail("linear.list_sub_issues: #{{subs.message}}") }}
+    files := linear.fetch_files(issue, "/srv/acme/widgets/files 計画")
+    if files != nil {{ fail("linear.fetch_files: #{{files.message}}") }}
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
   on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
     said := linear.comment(issue, "## 完了 ✅\n\nlanded #{{issue.title}} in #{{outcome.duration}}.")
     if said != nil {{ fail("linear.comment: #{{said.message}}") }}
+    shown := linear.comment(issue, "After the fix:", files=["/srv/acme/widgets/screen shot — 修复.png", "/srv/acme/widgets/run.log"])
+    if shown != nil {{ fail("linear.comment: #{{shown.message}}") }}
     described := linear.describe(issue, "Done by afkd — 修复 🚀")
     if described != nil {{ fail("linear.describe: #{{described.message}}") }}
+    pictured := linear.describe(issue, "", files=["/srv/acme/widgets/before.png"])
+    if pictured != nil {{ fail("linear.describe: #{{pictured.message}}") }}
     renamed := linear.rename(issue, "[done] #{{issue.title}}")
     if renamed != nil {{ fail("linear.rename: #{{renamed.message}}") }}
     unlabelled := linear.remove_label(issue, "afkd/working")
@@ -637,6 +645,125 @@ widgets :: service(linear) {{
     );
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "every action validates:\n{report}");
+}
+
+/// The screenshot the files leg's run puts up: spaces, an em dash and wide CJK.
+const SHOT: &str = "screen shot — 修复.png";
+
+/// The marker the files leg's run writes once it has fetched its files.
+const FETCHED: &str = "fetched.txt";
+
+/// The files leg's service: its run puts [`SHOT`] into the issue's description and into a
+/// comment, fetches the issue's files into `fetched/`, moves it to Done and writes
+/// [`FETCHED`], each action checked for its error.
+fn files_service(home: &Path, base_url: &str) -> String {
+    format!(
+        r###"import "core"
+import "@afkd/linear"
+
+widgets :: service(linear) {{
+  team      "{TEAM}"
+  base_url  "{base_url}"
+  api_key   "{API_KEY}"
+  pick_from "Todo"
+
+  work_dir "{home}"
+  on_run proc(run: core.Run, issue: linear.Issue) {{
+    described := linear.describe(issue, "## 背景\n\nBefore:", files=["{home}/{SHOT}"])
+    if described != nil {{ fail("linear.describe: #{{described.message}}") }}
+    said := linear.comment(issue, "After the fix ✅", files=["{home}/{SHOT}"])
+    if said != nil {{ fail("linear.comment: #{{said.message}}") }}
+    $ mkdir -p fetched
+    fetched := linear.fetch_files(issue, "{home}/fetched")
+    if fetched != nil {{ fail("linear.fetch_files: #{{fetched.message}}") }}
+    moved := linear.move_to(issue, "Done")
+    if moved != nil {{ fail("linear.move_to: #{{moved.message}}") }}
+    $ echo fetched > {FETCHED}
+  }}
+}}
+"###,
+        home = home.display()
+    )
+}
+
+/// A run puts a PNG on its issue through a real daemon — into the description and into a
+/// comment, each embedding it at its asset url — and fetches both back byte for byte, the
+/// description's first; every request conforms, and the PUTs carried no credential.
+#[test]
+fn files_leg_a_run_puts_a_png_on_its_issue_and_fetches_it_back() {
+    let home = installed();
+    let home = home.path();
+    let seeded = seed();
+    let (fake, issue) = (&seeded.fake, seeded.issue.as_str());
+    std::fs::write(home.join(SHOT), png()).expect("write the screenshot");
+    write_config(home, &files_service(home, fake.base_url()));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    wait_for(
+        home,
+        fake,
+        issue,
+        &daemon,
+        "the run fetched its files",
+        || home.join(FETCHED).exists(),
+    );
+    let fetched = home.join("fetched");
+    let mut names: Vec<String> = std::fs::read_dir(&fetched)
+        .expect("the fetched dir")
+        .map(|e| {
+            e.expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, [format!("1-{SHOT}"), format!("2-{SHOT}")]);
+    for name in &names {
+        assert_eq!(
+            std::fs::read(fetched.join(name)).expect("a fetched file"),
+            png(),
+            "{name} byte for byte"
+        );
+    }
+    let description = fake.description_of(issue);
+    let in_description = fake.asset_urls_of(&description);
+    assert_eq!(
+        description,
+        format!("## 背景\n\nBefore:\n\n![{SHOT}]({})", in_description[0])
+    );
+    let comment = fake
+        .comments(issue)
+        .into_iter()
+        .find(|c| c.body.starts_with("After the fix ✅"))
+        .expect("the comment");
+    let in_comment = fake.asset_urls_of(&comment.body);
+    assert_eq!(
+        comment.body,
+        format!("After the fix ✅\n\n![{SHOT}]({})", in_comment[0])
+    );
+    for url in [&in_description[0], &in_comment[0]] {
+        assert_eq!(fake.file(url), Some(png()), "{url} holds the PNG");
+    }
+    let puts = fake.puts();
+    assert_eq!(puts.len(), 2);
+    assert!(puts.iter().all(|p| p.header("authorization").is_none()));
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fake.invalid_requests(),
+        Vec::<String>::new(),
+        "requests Linear's schema refuses"
+    );
 }
 
 /// `team` and `pick_from` are required: a service without either is refused at validate,

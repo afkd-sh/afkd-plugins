@@ -13,12 +13,17 @@
 //! ones, and retried by the [`Outbox`](crate::outbox::Outbox) when Linear cannot take it.
 //! A read cannot hand a value back, since a plugin exposes none, so it writes what it read
 //! to the absolute path `to`: now or refused, never queued.
+//!
+//! A comment or a description can carry files: `files` names them by absolute path, each is
+//! read when the slot calls and put up when the write lands, and the text goes out with each
+//! embedded ([`crate::file`]). `fetch_files` writes the files an issue carries back.
 
 use std::path::Path;
 
 use serde_json::{Map, Value};
 
 use crate::common::Diag;
+use crate::file::{self, Upload};
 use crate::issue::{is_control_marker, render_comments, sub_issue_line, SelfIds, ACTION_TAG};
 use crate::outbox::named;
 use crate::tracker::{state_named, Issue, LinearError, Team, Tracker};
@@ -43,6 +48,7 @@ pub(crate) const ACTIONS: &[&str] = &[
     "read_description",
     "list_sub_issues",
     "move_sub_issue",
+    "fetch_files",
 ];
 
 /// An issue to file: its title, its description (`""` for none), and the name of the state
@@ -57,10 +63,10 @@ pub(crate) struct NewIssue {
 /// A write a slot asks for on the issue it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IssueAction {
-    /// Post a comment, verbatim.
-    Comment(String),
-    /// Replace the description.
-    Describe(String),
+    /// Post a comment, its text verbatim and each file embedded after it.
+    Comment { text: String, files: Vec<Upload> },
+    /// Replace the description, its text verbatim and each file embedded after it.
+    Describe { text: String, files: Vec<Upload> },
     /// Retitle the issue.
     Rename(String),
     /// Move the issue to the team's state of this name.
@@ -102,13 +108,41 @@ impl Read {
     }
 }
 
+/// Where a text with files goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Post {
+    /// A new comment.
+    Comment,
+    /// The description, replaced.
+    Description,
+}
+
+impl Post {
+    /// The action that asks for it.
+    fn action(self) -> &'static str {
+        match self {
+            Post::Comment => "comment",
+            Post::Description => "describe",
+        }
+    }
+}
+
 /// What one decoded `call` asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Op {
     /// A write to the issue, delivered — or queued — like every other.
     Act(IssueAction),
+    /// A comment or a description, with the files at the absolute `paths` in it: a write
+    /// once [`posted`] has read them.
+    Post {
+        into: Post,
+        text: String,
+        paths: Vec<String>,
+    },
     /// A read of the issue, written to the absolute path `to`.
     Read { read: Read, to: String },
+    /// The files the issue carries, written into the directory `to`.
+    FetchFiles { to: String },
 }
 
 /// One decoded `call`: the issue it acts on, by the key its handle carries, and what to do.
@@ -167,9 +201,16 @@ fn decode(action: &str, args: &Map<String, Value>) -> Result<Op, String> {
             },
         })
     };
+    let post = |into: Post| {
+        Ok::<_, String>(Op::Post {
+            into,
+            text: string("text")?,
+            paths: strings(action, args, "files")?,
+        })
+    };
     Ok(Op::Act(match action {
-        "comment" => IssueAction::Comment(string("text")?),
-        "describe" => IssueAction::Describe(string("text")?),
+        "comment" => return post(Post::Comment),
+        "describe" => return post(Post::Description),
         "rename" => IssueAction::Rename(string("title")?),
         "move_to" => IssueAction::MoveTo {
             state: string("state")?,
@@ -190,6 +231,7 @@ fn decode(action: &str, args: &Map<String, Value>) -> Result<Op, String> {
         "list_comments" => return read(Read::Comments),
         "read_description" => return read(Read::Description),
         "list_sub_issues" => return read(Read::SubIssues),
+        "fetch_files" => return Ok(Op::FetchFiles { to: string("to")? }),
         _ => return Err(format!("no action `{action}`")),
     }))
 }
@@ -201,6 +243,33 @@ fn string(action: &str, args: &Map<String, Value>, param: &str) -> Result<String
         Some(_) => Err(format!("{action}: parameter {param} must be a string")),
         None => Err(format!("{action}: parameter {param} is required")),
     }
+}
+
+/// The list of strings `param` of `action`, `[]` when absent, or the sentence refusing its
+/// type.
+fn strings(action: &str, args: &Map<String, Value>, param: &str) -> Result<Vec<String>, String> {
+    let refuse = || format!("{action}: parameter {param} must be a list of strings");
+    match args.get(param) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_string).ok_or_else(refuse))
+            .collect(),
+        Some(_) => Err(refuse()),
+    }
+}
+
+/// The write a [`Op::Post`] asks for, each file at `paths` read now, or the sentence that
+/// refuses the first that cannot be.
+pub(crate) fn posted(into: Post, text: String, paths: &[String]) -> Result<IssueAction, String> {
+    let files = paths
+        .iter()
+        .map(|path| file::read_upload(into.action(), path))
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(match into {
+        Post::Comment => IssueAction::Comment { text, files },
+        Post::Description => IssueAction::Describe { text, files },
+    })
 }
 
 /// The id of `team`'s state named `name`.
@@ -233,8 +302,14 @@ pub(crate) fn perform(
     };
     match action {
         // Verbatim: afkd has already interpolated whatever `#{…}` the slot wrote.
-        IssueAction::Comment(text) => tracker.post_comment(&issue.id, text).map(drop),
-        IssueAction::Describe(text) => tracker.set_description(&issue.id, text),
+        IssueAction::Comment { text, files } => {
+            let body = file::embedded(tracker, text, files)?;
+            tracker.post_comment(&issue.id, &body).map(drop)
+        }
+        IssueAction::Describe { text, files } => {
+            let body = file::embedded(tracker, text, files)?;
+            tracker.set_description(&issue.id, &body)
+        }
         IssueAction::Rename(title) => tracker.set_title(&issue.id, title),
         IssueAction::MoveTo { state } => {
             tracker.set_state(&issue.id, &state_id(tracker, team, state)?)
@@ -257,14 +332,25 @@ pub(crate) fn perform(
     }
 }
 
+/// How a log line names the files a write carries: ` with ` and their names, or nothing.
+pub(crate) fn with_files(files: &[Upload]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+    format!(" with {}", names.join(", "))
+}
+
 /// The success line for `action` done on `issue`: the issue named, and what was done in
 /// the words the slot wrote it with — never a comment's or a description's text, which can
-/// be long and many lines.
+/// be long and many lines, but the names of the files it carries.
 pub(crate) fn action_line(action: &IssueAction, team: &Team, issue: &Issue) -> String {
     let issue = named(issue);
     let done = match action {
-        IssueAction::Comment(_) => format!("commenting on {issue}"),
-        IssueAction::Describe(_) => format!("describing {issue}"),
+        IssueAction::Comment { files, .. } => {
+            format!("commenting on {issue}{}", with_files(files))
+        }
+        IssueAction::Describe { files, .. } => format!("describing {issue}{}", with_files(files)),
         IssueAction::Rename(title) => format!("renaming {issue} to \"{title}\""),
         IssueAction::MoveTo { state } => format!("moving {issue} to state \"{state}\""),
         IssueAction::AddLabel { name } => format!("adding label \"{name}\" to {issue}"),
@@ -359,7 +445,8 @@ pub(crate) fn read(
 mod tests {
     use super::*;
     use crate::common::{CaptureDiag, TempDir};
-    use crate::tracker::{Action, Child, MockTracker, SELF_ID, TEAM_ID};
+    use crate::file::upload;
+    use crate::tracker::{Action, Child, MockTracker, MOCK_UPLOADS, SELF_ID, TEAM_ID};
     use serde_json::json;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -419,15 +506,19 @@ mod tests {
 
     /// Every action in [`ACTIONS`] decodes from the arguments afkd binds for it, on the issue
     /// its handle names, each text byte for byte: a multi-line markdown comment carrying CJK
-    /// and a literal `@{run:x}` afkd did not interpolate, an empty description, a wide
-    /// state, an emoji label, a new issue with and without a state, and absolute paths with
-    /// spaces and wide glyphs.
+    /// and a literal `@{run:x}` afkd did not interpolate with two files, an empty
+    /// description with none, a wide state, an emoji label, a new issue with and without a
+    /// state, and absolute paths with spaces and wide glyphs.
     #[test]
     fn every_action_decodes_from_its_bound_arguments() {
         let markdown = "## 完了 ✅\n\n- took 3m\n- log: @{run:x}\n\nsee the run log.";
+        let shots = [
+            "/srv/acme/計画 1/screen shot — 修复.png",
+            "/srv/acme/run.log",
+        ];
         let decoded: Vec<Op> = [
-            ("comment", json!({"text": markdown})),
-            ("describe", json!({"text": ""})),
+            ("comment", json!({"text": markdown, "files": shots})),
+            ("describe", json!({"text": "", "files": []})),
             ("rename", json!({"title": TITLE})),
             ("move_to", json!({"state": "Blockerat / Väntar"})),
             ("add_label", json!({"label": "needs review 👀"})),
@@ -451,6 +542,7 @@ mod tests {
                 "move_sub_issue",
                 json!({"sub_issue": "ENG-124", "state": "Done ✅"}),
             ),
+            ("fetch_files", json!({"to": "/srv/acme/計画 1/files"})),
         ]
         .into_iter()
         .map(|(action, args)| call(action, args).expect(action))
@@ -458,8 +550,16 @@ mod tests {
         assert_eq!(
             decoded,
             [
-                Op::Act(IssueAction::Comment(markdown.into())),
-                Op::Act(IssueAction::Describe(String::new())),
+                Op::Post {
+                    into: Post::Comment,
+                    text: markdown.into(),
+                    paths: shots.map(str::to_string).to_vec(),
+                },
+                Op::Post {
+                    into: Post::Description,
+                    text: String::new(),
+                    paths: Vec::new(),
+                },
                 Op::Act(IssueAction::Rename(TITLE.into())),
                 Op::Act(IssueAction::MoveTo {
                     state: "Blockerat / Väntar".into()
@@ -497,9 +597,21 @@ mod tests {
                     sub_issue: "ENG-124".into(),
                     state: "Done ✅".into(),
                 }),
+                Op::FetchFiles {
+                    to: "/srv/acme/計画 1/files".into()
+                },
             ]
         );
         assert_eq!(decoded.len(), ACTIONS.len());
+        assert_eq!(
+            call("describe", json!({"text": "x"})),
+            Ok(Op::Post {
+                into: Post::Description,
+                text: "x".into(),
+                paths: Vec::new(),
+            }),
+            "no files is none"
+        );
         assert_eq!(
             call("archive", json!({"state": "Done"})),
             Ok(Op::Act(IssueAction::Archive)),
@@ -525,6 +637,21 @@ mod tests {
                 "describe",
                 json!({"title": "x"}),
                 "describe: parameter text is required",
+            ),
+            (
+                "comment",
+                json!({"text": "x", "files": "/srv/acme/shot.png"}),
+                "comment: parameter files must be a list of strings",
+            ),
+            (
+                "describe",
+                json!({"text": "x", "files": ["/srv/acme/shot.png", 7]}),
+                "describe: parameter files must be a list of strings",
+            ),
+            (
+                "fetch_files",
+                json!({}),
+                "fetch_files: parameter to is required",
             ),
             (
                 "rename",
@@ -638,8 +765,14 @@ mod tests {
             state: state.map(str::to_string),
         };
         for action in [
-            IssueAction::Comment("## 完了 ✅\n\nok".into()),
-            IssueAction::Describe("New body.".into()),
+            IssueAction::Comment {
+                text: "## 完了 ✅\n\nok".into(),
+                files: Vec::new(),
+            },
+            IssueAction::Describe {
+                text: "New body.".into(),
+                files: Vec::new(),
+            },
             IssueAction::Rename("Renamed 🚀".into()),
             IssueAction::MoveTo {
                 state: "Done ✅".into(),
@@ -729,6 +862,118 @@ mod tests {
         assert_eq!(t.actions().len(), before, "a refused write sends nothing");
     }
 
+    /// A comment or a description with files puts each up before it is sent, an image
+    /// embedded and any other file linked after the text, and with no text the files alone.
+    /// The outbox's copy of the write, retried after it landed, puts nothing up again; an
+    /// upload Linear cannot take sends nothing, and is the caller's to queue.
+    #[test]
+    fn a_write_with_files_puts_each_up_once_and_embeds_it() {
+        let t = tracker();
+        let issue = t.issue("ENG-1");
+        let files = vec![upload("screen shot — 修复.png"), upload("run.log")];
+        let comment = IssueAction::Comment {
+            text: "After the fix ✅".into(),
+            files: files.clone(),
+        };
+        let queued = comment.clone();
+        perform(&t, &team(), &issue, &comment).unwrap();
+        let url = |n: usize| format!("{MOCK_UPLOADS}acme/{n}/asset-{n}");
+        let body = format!(
+            "After the fix ✅\n\n![screen shot — 修复.png]({})\n\n[run.log]({})",
+            url(1),
+            url(2)
+        );
+        assert_eq!(t.comments_on("ENG-1")[0].text, body);
+        assert_eq!(t.file(&url(1)).as_deref(), Some(&*files[0].bytes));
+        assert_eq!(t.file(&url(2)).as_deref(), Some(&*files[1].bytes));
+        perform(&t, &team(), &issue, &queued).unwrap();
+        assert_eq!(
+            t.comments_on("ENG-1")[1].text,
+            body,
+            "the retry sends the same text"
+        );
+        let uploads = |t: &MockTracker| {
+            t.actions()
+                .into_iter()
+                .filter(|a| matches!(a, Action::Upload { .. }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            uploads(&t),
+            [
+                Action::Upload {
+                    name: "screen shot — 修复.png".into(),
+                    content_type: "image/png".into(),
+                    len: files[0].bytes.len(),
+                },
+                Action::Upload {
+                    name: "run.log".into(),
+                    content_type: "text/plain".into(),
+                    len: files[1].bytes.len(),
+                },
+            ],
+            "each put up once"
+        );
+
+        let describe = IssueAction::Describe {
+            text: String::new(),
+            files: vec![upload("shot.png")],
+        };
+        t.fail(
+            "upload file",
+            LinearError::Status {
+                stage: "upload file",
+                status: 503,
+                retry_after: None,
+            },
+        );
+        let e = perform(&t, &team(), &issue, &describe).unwrap_err();
+        assert!(e.transient(), "{e}");
+        assert_eq!(t.issue("ENG-1").description, "The body.", "nothing sent");
+        t.clear_failure();
+        perform(&t, &team(), &issue, &describe).unwrap();
+        assert_eq!(
+            t.issue("ENG-1").description,
+            format!("![shot.png]({})", url(3))
+        );
+        assert_eq!(uploads(&t).len(), 3);
+    }
+
+    /// A post's files are read at the call, each named by its path's last part; the first
+    /// that cannot be read refuses the whole write in its action's words.
+    #[test]
+    fn a_posts_files_are_read_at_the_call() {
+        let dir = TempDir::new("posted");
+        let shot = dir.path().join("screen shot — 修复.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\n\0\xff").unwrap();
+        let shot = shot.display().to_string();
+        let Ok(IssueAction::Comment { text, files }) = posted(
+            Post::Comment,
+            "After ✅".into(),
+            std::slice::from_ref(&shot),
+        ) else {
+            panic!("a comment with its file");
+        };
+        assert_eq!(text, "After ✅");
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            (
+                files[0].name.as_str(),
+                files[0].content_type.as_str(),
+                &*files[0].bytes
+            ),
+            (
+                "screen shot — 修复.png",
+                "image/png",
+                &b"\x89PNG\r\n\x1a\n\0\xff"[..]
+            )
+        );
+        assert_eq!(
+            posted(Post::Description, String::new(), &[shot, "shot.png".into()]),
+            Err("describe: files must be absolute, not \"shot.png\"".to_string())
+        );
+    }
+
     /// The success line names the issue and what was done to it in the slot's own words —
     /// the state, the label, the new title — and never a comment's or a description's text.
     #[test]
@@ -743,12 +988,32 @@ mod tests {
         };
         for (action, line) in [
             (
-                IssueAction::Comment("## 完了 ✅\n\nmany lines".into()),
+                IssueAction::Comment {
+                    text: "## 完了 ✅\n\nmany lines".into(),
+                    files: Vec::new(),
+                },
                 format!("[linear] commenting on {named}"),
             ),
             (
-                IssueAction::Describe("New body\nwith lines".into()),
+                IssueAction::Comment {
+                    text: "## 完了 ✅".into(),
+                    files: vec![upload("screen shot — 修复.png"), upload("run.log")],
+                },
+                format!("[linear] commenting on {named} with screen shot — 修复.png, run.log"),
+            ),
+            (
+                IssueAction::Describe {
+                    text: "New body\nwith lines".into(),
+                    files: Vec::new(),
+                },
                 format!("[linear] describing {named}"),
+            ),
+            (
+                IssueAction::Describe {
+                    text: String::new(),
+                    files: vec![upload("shot.png")],
+                },
+                format!("[linear] describing {named} with shot.png"),
             ),
             (
                 IssueAction::Rename("新しい 🚀".into()),

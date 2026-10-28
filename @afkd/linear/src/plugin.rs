@@ -30,7 +30,7 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
-use crate::action::{from_call, Call, Op};
+use crate::action::{from_call, posted, Call, Op};
 use crate::auth::Auth;
 use crate::client::LinearClient;
 use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
@@ -461,10 +461,11 @@ impl Armed {
 
     /// Do one action a slot called, on the issue of the unit its handle names — a live one,
     /// or one finished since. `{"ok":false}` with the sentence, diagnosed too, for an action
-    /// afkd would not have bound, a handle naming no issue, a read that could not be written,
-    /// or a Linear that refused it. A write Linear could not be reached for is taken for
-    /// delivery and `ok`: the outbox retries it, and the slot's next write queues behind it.
-    /// A read is done now or refused, never queued.
+    /// afkd would not have bound, a handle naming no issue, a file that could not be read, a
+    /// read that could not be written, or a Linear that refused it. A write Linear could not
+    /// be reached for is taken for delivery and `ok`: the outbox retries it, and the slot's
+    /// next write queues behind it. Its files are read here, at the call, so a retry sends
+    /// what the slot saw. A read is done now or refused, never queued.
     fn call(
         &self,
         action: &str,
@@ -496,7 +497,13 @@ impl Armed {
                 .units
                 .act(issue, act, clock, diag)
                 .map_err(|e| e.to_string()),
+            Op::Post { into, text, paths } => posted(into, text, &paths).and_then(|act| {
+                self.units
+                    .act(issue, act, clock, diag)
+                    .map_err(|e| e.to_string())
+            }),
             Op::Read { read, to } => self.units.read(issue, me, read, &to, diag),
+            Op::FetchFiles { to } => self.units.fetch_files(issue, &to, diag),
         };
         match done {
             Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),

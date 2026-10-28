@@ -1,5 +1,5 @@
 name = "@afkd/linear"
-version = "0.2.1"
+version = "0.3.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -186,6 +186,14 @@ name = "comment"
   type = "string"
   required = true
 
+  # Files to put on the issue, by absolute path, each read when the slot calls and embedded
+  # after the text on a paragraph of its own: an image shown, any other file linked.
+  [[action.param]]
+  name = "files"
+  type = "list[string]"
+  named_only = true
+  default = []
+
 # The issue's description, replaced with `text`.
 [[action]]
 name = "describe"
@@ -199,6 +207,13 @@ name = "describe"
   name = "text"
   type = "string"
   required = true
+
+  # Files to put on the issue, embedded after the text as `comment`'s are.
+  [[action.param]]
+  name = "files"
+  type = "list[string]"
+  named_only = true
+  default = []
 
 # The issue's title, replaced with `title`.
 [[action]]
@@ -377,5 +392,22 @@ name = "move_sub_issue"
 
   [[action.param]]
   name = "state"
+  type = "string"
+  required = true
+
+# Every file Linear hosts that the issue embeds or links — its description's, then its
+# thread's oldest first, each once — written into the existing directory `to`, numbered in
+# that order: `1-screenshot.png`, `2-run.log`. A read, never queued; an issue with no file
+# writes nothing.
+[[action]]
+name = "fetch_files"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "to"
   type = "string"
   required = true

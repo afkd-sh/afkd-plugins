@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use common::fake::{utc, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, SCOPE, TEAM};
+use common::fake::{
+    png, utc, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, SCOPE, TEAM,
+    UPLOAD_CACHE_CONTROL, UPLOAD_HEADER,
+};
 use common::{Plugin, TempDir, DEVELOP, DISCUSS, MAX_LINE, OWNER};
 
 /// An issue title carrying the delimiter a success line wraps it in, wide CJK, an emoji and
@@ -2143,6 +2146,315 @@ fn an_unknown_action_or_a_bad_handle_is_refused_with_its_sentence() {
         Vec::<String>::new(),
         "nothing posted"
     );
+    end(plugin, &t.fake);
+}
+
+// --- files ---
+
+/// The screenshot's file name: spaces, an em dash and wide CJK.
+const SHOT: &str = "screen shot — 修复.png";
+
+/// Write [`png`] into `dir` as [`SHOT`], and return its path.
+fn shot_in(dir: &TempDir) -> std::path::PathBuf {
+    let path = dir.path().join(SHOT);
+    std::fs::write(&path, png()).unwrap();
+    path
+}
+
+/// The names in `dir`, sorted.
+fn names_in(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A PNG goes up into the description and into a comment — `FileUpload` asked for its name,
+/// type and size, then its bytes PUT with the signed header, its type and the cache header
+/// and no credential — and each embeds it at its own asset url, after the text. Fetched
+/// back, the description's comes first and the comment's second, both byte for byte.
+#[test]
+fn a_png_is_uploaded_into_a_comment_and_the_description_and_fetched_back_byte_for_byte() {
+    let t = team();
+    let mut plugin = Plugin::armed(settings(&t.fake));
+    let unit = plugin.poll()["unit"].clone();
+    let dir = TempDir::new("shot");
+    let shot = shot_in(&dir);
+    assert_eq!(
+        act(
+            &mut plugin,
+            &unit,
+            "describe",
+            json!({"text": "## 背景\n\nBefore:", "files": [shot]})
+        ),
+        json!({"ok": true})
+    );
+    assert_eq!(
+        act(
+            &mut plugin,
+            &unit,
+            "comment",
+            json!({"text": "After the fix ✅", "files": [shot]})
+        ),
+        json!({"ok": true})
+    );
+
+    let uploads = t.fake.uploads();
+    assert_eq!(uploads.len(), 2);
+    for upload in &uploads {
+        assert_eq!(
+            (
+                upload.filename.as_str(),
+                upload.content_type.as_str(),
+                upload.size
+            ),
+            (SHOT, "image/png", png().len())
+        );
+        assert_eq!(t.fake.file(&upload.asset_url), Some(png()), "byte for byte");
+    }
+    let asked: Vec<Value> = t
+        .fake
+        .seen()
+        .into_iter()
+        .filter(|s| s.operation == "FileUpload")
+        .map(|s| s.variables)
+        .collect();
+    assert_eq!(
+        asked,
+        vec![json!({"contentType": "image/png", "filename": SHOT, "size": png().len()}); 2]
+    );
+    let puts = t.fake.puts();
+    assert_eq!(puts.len(), 2);
+    for put in &puts {
+        assert_eq!((put.status, put.len), (200, png().len()));
+        assert_eq!(put.header("content-type"), Some("image/png"));
+        assert_eq!(put.header("cache-control"), Some(UPLOAD_CACHE_CONTROL));
+        assert!(put.header(UPLOAD_HEADER).is_some(), "{put:?}");
+        assert_eq!(
+            put.header("authorization"),
+            None,
+            "no credential to storage"
+        );
+    }
+    let asset = |n: usize| uploads[n].asset_url.clone();
+    assert_eq!(
+        t.fake.description_of(&t.issue),
+        format!("## 背景\n\nBefore:\n\n![{SHOT}]({})", asset(0))
+    );
+    assert_eq!(
+        said(&t.fake, &t.issue, "After the fix"),
+        [format!("After the fix ✅\n\n![{SHOT}]({})", asset(1))]
+    );
+
+    let fetched = dir.path().join("fetched 計画");
+    std::fs::create_dir(&fetched).unwrap();
+    assert_eq!(
+        act(&mut plugin, &unit, "fetch_files", json!({"to": fetched})),
+        json!({"ok": true})
+    );
+    let first = format!("1-{SHOT}");
+    let second = format!("2-{SHOT}");
+    assert_eq!(names_in(&fetched), [first.clone(), second.clone()]);
+    for name in [&first, &second] {
+        assert_eq!(std::fs::read(fetched.join(name)).unwrap(), png(), "{name}");
+    }
+    let gets: Vec<_> = t
+        .fake
+        .seen()
+        .into_iter()
+        .filter(|s| s.method == "GET")
+        .collect();
+    assert_eq!(
+        gets.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+        [
+            asset(0).trim_start_matches(t.fake.base_url()),
+            asset(1).trim_start_matches(t.fake.base_url())
+        ]
+    );
+    assert!(gets
+        .iter()
+        .all(|s| s.authorization.as_deref() == Some(API_KEY)));
+    let stderr = plugin.stderr_lines_soon(4);
+    for line in [
+        format!("[linear] describing {} with {SHOT}\n", named()),
+        format!("[linear] commenting on {} with {SHOT}\n", named()),
+        format!(
+            "[linear] writing 2 files from {} to {}: {first}, {second}\n",
+            named(),
+            fetched.display()
+        ),
+    ] {
+        assert!(stderr.contains(&line), "{line:?} in:\n{stderr}");
+    }
+    end(plugin, &t.fake);
+}
+
+/// What a person pasted is fetched too, its link's text naming it: an image and a log in a
+/// comment, each fetched with the credential. An image hosted elsewhere and a bare url are
+/// not fetched, and nothing is asked of any other host.
+#[test]
+fn fetch_files_writes_a_pasted_image_and_skips_links_off_linear() {
+    let t = team();
+    let image = t.fake.seed_file("image.png", "image/png", &png());
+    let log = "POST /graphql 401\r\n看起来不对 🚨\n".repeat(3);
+    let text = t.fake.seed_file("log.txt", "text/plain", log.as_bytes());
+    t.fake.comment(
+        &t.issue,
+        Author::User(t.chen.clone()),
+        &format!(
+            "Here it is:\n\n![image.png]({image})\n\n[log.txt]({text}) and \
+             ![x](https://example.com/x.png), also https://uploads.linear.app/o/1/bare"
+        ),
+        60,
+    );
+    let mut plugin = Plugin::armed(settings(&t.fake));
+    let unit = plugin.poll()["unit"].clone();
+    let dir = TempDir::new("pasted");
+    assert_eq!(
+        act(&mut plugin, &unit, "fetch_files", json!({"to": dir.path()})),
+        json!({"ok": true})
+    );
+    assert_eq!(names_in(dir.path()), ["1-image.png", "2-log.txt"]);
+    assert_eq!(
+        std::fs::read(dir.path().join("1-image.png")).unwrap(),
+        png()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("2-log.txt")).unwrap(),
+        log
+    );
+    let gets: Vec<_> = t
+        .fake
+        .seen()
+        .into_iter()
+        .filter(|s| s.method == "GET")
+        .collect();
+    assert_eq!(gets.len(), 2, "only the two Linear files");
+    assert!(gets
+        .iter()
+        .all(|s| s.authorization.as_deref() == Some(API_KEY)));
+    end(plugin, &t.fake);
+}
+
+/// A PUT the storage cannot take queues the comment like any write Linear cannot take, and
+/// the call answers `ok`. The file is read at the call, so with it deleted the retry still
+/// puts its bytes up, and the comment lands embedding them: two PUTs in all, the failed one
+/// and the one that landed.
+#[test]
+fn an_upload_linear_cannot_take_is_queued_and_lands_with_the_bytes_read_at_the_call() {
+    let t = team();
+    let mut plugin = Plugin::armed(settings(&t.fake));
+    let unit = plugin.poll()["unit"].clone();
+    let dir = TempDir::new("queued");
+    let shot = shot_in(&dir);
+    t.fake.fail_uploads(1, 503);
+    assert_eq!(
+        act(
+            &mut plugin,
+            &unit,
+            "comment",
+            json!({"text": "After the fix ✅", "files": [shot]})
+        ),
+        json!({"ok": true})
+    );
+    std::fs::remove_file(&shot).unwrap();
+    assert!(plugin.stderr_soon("is queued").contains(&format!(
+        "linear could not take a write for {}: linear upload file: Linear returned status 503; \
+         the comment \"After the fix ✅\" with {SHOT} is queued and retried for up to 1h\n",
+        named()
+    )));
+    assert!(
+        within(Duration::from_secs(20), || !said(
+            &t.fake,
+            &t.issue,
+            "After the fix"
+        )
+        .is_empty()),
+        "the outbox never delivered; stderr: {}",
+        plugin.stderr()
+    );
+    let posted = said(&t.fake, &t.issue, "After the fix");
+    let assets = t.fake.asset_urls_of(&posted[0]);
+    assert_eq!(assets.len(), 1, "{posted:?}");
+    assert_eq!(t.fake.file(&assets[0]), Some(png()));
+    let statuses: Vec<u16> = t.fake.puts().iter().map(|p| p.status).collect();
+    assert_eq!(statuses, [503, 200]);
+    assert!(plugin
+        .stderr_soon("commenting on")
+        .contains(&format!("[linear] commenting on {} with {SHOT}\n", named())));
+    end(plugin, &t.fake);
+}
+
+/// An issue with no file writes nothing and says so. A `to` that is relative, a file or
+/// missing is refused, and so is a file that is relative or missing — before anything is
+/// asked of Linear, and with nothing posted.
+#[test]
+fn fetch_files_with_no_file_writes_nothing_and_a_bad_to_or_path_is_refused() {
+    let t = team();
+    let mut plugin = Plugin::armed(settings(&t.fake));
+    let unit = plugin.poll()["unit"].clone();
+    let dir = TempDir::new("none");
+    let to = dir.path().join("files");
+    std::fs::create_dir(&to).unwrap();
+    assert_eq!(
+        act(&mut plugin, &unit, "fetch_files", json!({"to": to})),
+        json!({"ok": true})
+    );
+    assert!(names_in(&to).is_empty());
+    assert!(plugin.stderr_soon("nothing written").contains(&format!(
+        "[linear] no files on {}; nothing written to {}\n",
+        named(),
+        to.display()
+    )));
+
+    let file = dir.path().join("a file.txt");
+    std::fs::write(&file, "x").unwrap();
+    let missing = dir.path().join("nowhere");
+    for (to, error) in [
+        (
+            json!("files"),
+            "fetch_files: to must be absolute, not \"files\"".to_string(),
+        ),
+        (
+            json!(file),
+            format!("fetch_files: {} is not a directory", file.display()),
+        ),
+        (
+            json!(missing),
+            format!("fetch_files: no directory at {}", missing.display()),
+        ),
+    ] {
+        assert_eq!(
+            act(&mut plugin, &unit, "fetch_files", json!({ "to": to })),
+            json!({"ok": false, "error": error})
+        );
+    }
+    let gone = dir.path().join(SHOT);
+    for (files, error) in [
+        (
+            json!(["shot.png"]),
+            "comment: files must be absolute, not \"shot.png\"".to_string(),
+        ),
+        (
+            json!([gone]),
+            format!("comment: no file at {}", gone.display()),
+        ),
+    ] {
+        assert_eq!(
+            act(
+                &mut plugin,
+                &unit,
+                "comment",
+                json!({"text": "After the fix ✅", "files": files})
+            ),
+            json!({"ok": false, "error": error})
+        );
+    }
+    assert!(!operations(&t.fake).iter().any(|o| o == "FileUpload"));
+    assert!(t.fake.puts().is_empty());
+    assert!(said(&t.fake, &t.issue, "After the fix").is_empty());
     end(plugin, &t.fake);
 }
 

@@ -312,9 +312,18 @@ fn the_actions_are_the_ones_the_code_answers() {
         ("type", "\"Issue\""),
         ("required", "true"),
     ]);
+    let post = vec![
+        required("text"),
+        table(&[
+            ("name", "\"files\""),
+            ("type", "\"list[string]\""),
+            ("named_only", "true"),
+            ("default", "[]"),
+        ]),
+    ];
     let mut want = BTreeMap::from([
-        ("comment".to_string(), vec![required("text")]),
-        ("describe".to_string(), vec![required("text")]),
+        ("comment".to_string(), post.clone()),
+        ("describe".to_string(), post),
         ("rename".to_string(), vec![required("title")]),
         ("move_to".to_string(), vec![required("state")]),
         ("add_label".to_string(), vec![required("label")]),
@@ -328,6 +337,7 @@ fn the_actions_are_the_ones_the_code_answers() {
             "move_sub_issue".to_string(),
             vec![required("sub_issue"), required("state")],
         ),
+        ("fetch_files".to_string(), vec![required("to")]),
     ]);
     for action in ACTIONS {
         want.entry(action.to_string())

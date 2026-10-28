@@ -21,7 +21,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::action::{self, action_line, IssueAction};
+use crate::action::{self, action_line, with_files, IssueAction};
 use crate::common::{lock, Clock, Diag};
 use crate::issue::ACTION_TAG;
 use crate::tracker::{Issue, LinearError, Team, Tracker};
@@ -57,8 +57,12 @@ impl Write {
     pub(crate) fn what(&self) -> String {
         match self {
             Write::Act { action, .. } => match action {
-                IssueAction::Comment(text) => format!("the comment {}", quoted(text)),
-                IssueAction::Describe(_) => "the new description".to_string(),
+                IssueAction::Comment { text, files } => {
+                    format!("the comment {}{}", quoted(text), with_files(files))
+                }
+                IssueAction::Describe { files, .. } => {
+                    format!("the new description{}", with_files(files))
+                }
                 IssueAction::Rename(title) => format!("renaming it to \"{title}\""),
                 IssueAction::MoveTo { state } => format!("moving it to state \"{state}\""),
                 IssueAction::AddLabel { name } => format!("adding the label \"{name}\""),
@@ -421,6 +425,7 @@ mod tests {
     use super::*;
     use crate::action::NewIssue;
     use crate::common::{CaptureDiag, FakeClock};
+    use crate::file::upload;
     use crate::tracker::MockTracker;
 
     /// The issue every test writes to: the delimiter a log line wraps it in, wide CJK, an
@@ -933,12 +938,39 @@ mod tests {
         };
         for (write, what) in [
             (
-                act(IssueAction::Comment("## 完了 ✅\n\n- took 3m".into())),
+                act(IssueAction::Comment {
+                    text: "## 完了 ✅\n\n- took 3m".into(),
+                    files: Vec::new(),
+                }),
                 "the comment \"## 完了 ✅…\"",
             ),
             (
-                act(IssueAction::Describe("long\nbody".into())),
+                act(IssueAction::Comment {
+                    text: "After the fix ✅".into(),
+                    files: vec![upload("screen shot — 修复.png"), upload("run.log")],
+                }),
+                "the comment \"After the fix ✅\" with screen shot — 修复.png, run.log",
+            ),
+            (
+                act(IssueAction::Comment {
+                    text: String::new(),
+                    files: vec![upload("shot.png")],
+                }),
+                "the comment \"\" with shot.png",
+            ),
+            (
+                act(IssueAction::Describe {
+                    text: "long\nbody".into(),
+                    files: Vec::new(),
+                }),
                 "the new description",
+            ),
+            (
+                act(IssueAction::Describe {
+                    text: "## 背景\n\nBefore:".into(),
+                    files: vec![upload("shot.png")],
+                }),
+                "the new description with shot.png",
             ),
             (
                 act(IssueAction::Rename("新しい 🚀".into())),

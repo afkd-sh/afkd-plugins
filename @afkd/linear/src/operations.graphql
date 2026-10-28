@@ -265,3 +265,17 @@ mutation IssueArchive($id: String!) {
     success
   }
 }
+
+mutation FileUpload($contentType: String!, $filename: String!, $size: Int!) {
+  fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+    success
+    uploadFile {
+      uploadUrl
+      assetUrl
+      headers {
+        key
+        value
+      }
+    }
+  }
+}

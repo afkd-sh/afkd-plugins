@@ -7,12 +7,13 @@
 //! trait, the plain value types it exchanges, the typed [`LinearError`], and the mock.
 //!
 //! The trait carries only what the kind needs, **by meaning** — resolve a team or a user,
-//! read a state's issues, read/post/edit/delete comments, badge an issue, put it back, and
-//! the reads and writes a slot's actions make — so the GraphQL mapping stays confined to
-//! the real adapter.
+//! read a state's issues, read/post/edit/delete comments, badge an issue, put it back, the
+//! reads and writes a slot's actions make, and the files they put up and fetch — so the
+//! GraphQL mapping stays confined to the real adapter.
 
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::file::Upload;
 use crate::settings::MemberRef;
 
 /// A team, as `team` names it by key.
@@ -341,6 +342,18 @@ pub(crate) trait Tracker {
     /// Archive issue `issue_id`.
     fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError>;
 
+    /// Put `upload` in Linear's file storage — a signed upload asked for, then the bytes
+    /// sent to it — and return the asset url a comment or a description links it at.
+    fn upload_file(&self, upload: &Upload) -> Result<String, LinearError>;
+
+    /// The bytes of the file Linear hosts at `url`, fetched with the credential. A url
+    /// [`is_linear_file`](Tracker::is_linear_file) does not take is refused, and nothing is
+    /// sent: the credential goes to no other host.
+    fn download(&self, url: &str) -> Result<Vec<u8>, LinearError>;
+
+    /// Whether `url` is a file Linear hosts, which [`download`](Tracker::download) fetches.
+    fn is_linear_file(&self, url: &str) -> bool;
+
     /// The `Authorization` header value a run reaches Linear with, as of now: the API key, or
     /// `Bearer` and the app's current token.
     fn authorization(&self) -> Result<String, LinearError>;
@@ -431,6 +444,15 @@ impl<T: Tracker + ?Sized> Tracker for std::sync::Arc<T> {
     fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError> {
         (**self).archive_issue(issue_id)
     }
+    fn upload_file(&self, upload: &Upload) -> Result<String, LinearError> {
+        (**self).upload_file(upload)
+    }
+    fn download(&self, url: &str) -> Result<Vec<u8>, LinearError> {
+        (**self).download(url)
+    }
+    fn is_linear_file(&self, url: &str) -> bool {
+        (**self).is_linear_file(url)
+    }
     fn authorization(&self) -> Result<String, LinearError> {
         (**self).authorization()
     }
@@ -440,7 +462,7 @@ impl<T: Tracker + ?Sized> Tracker for std::sync::Arc<T> {
 }
 
 #[cfg(test)]
-pub(crate) use mock::{Action, MockTracker, SELF_ID, TEAM_ID};
+pub(crate) use mock::{Action, MockTracker, MOCK_UPLOADS, SELF_ID, TEAM_ID};
 
 #[cfg(test)]
 mod mock {
@@ -456,6 +478,9 @@ mod mock {
 
     /// The one team's id; its key is `ENG`.
     pub(crate) const TEAM_ID: &str = "team-eng";
+
+    /// Where the mock's files live: every asset url it hands out, and every one it fetches.
+    pub(crate) const MOCK_UPLOADS: &str = "https://uploads.linear.app/";
 
     /// What a recorded write was.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -486,6 +511,12 @@ mod mock {
         },
         /// An issue was archived.
         Archive(String),
+        /// A file was put up.
+        Upload {
+            name: String,
+            content_type: String,
+            len: usize,
+        },
     }
 
     /// One issue on the mock, its comments in the order posted, and whether it is archived.
@@ -524,6 +555,8 @@ mod mock {
         /// Who a posted comment is authored by, when not [`SELF_ID`]: an app whose comments
         /// come back under its bot actor.
         post_author: Mutex<Option<String>>,
+        /// The files the mock holds, by asset url: those put up and those seeded.
+        files: Mutex<Vec<(String, Vec<u8>)>>,
     }
 
     impl MockTracker {
@@ -667,6 +700,19 @@ mod mock {
         /// Author every comment posted from now on as `author`.
         pub(crate) fn post_as(&self, author: &str) {
             *lock(&self.post_author) = Some(author.to_string());
+        }
+
+        /// Hold `bytes` at `url`, as a file a person pasted.
+        pub(crate) fn seed_file(&self, url: &str, bytes: &[u8]) {
+            lock(&self.files).push((url.to_string(), bytes.to_vec()));
+        }
+
+        /// The bytes the mock holds at `url`.
+        pub(crate) fn file(&self, url: &str) -> Option<Vec<u8>> {
+            lock(&self.files)
+                .iter()
+                .find(|(at, _)| at == url)
+                .map(|(_, bytes)| bytes.clone())
         }
 
         pub(crate) fn actions(&self) -> Vec<Action> {
@@ -1023,6 +1069,32 @@ mod mock {
             self.issue_mut(issue_id, "archive issue", |s| s.archived = true)?;
             lock(&self.actions).push(Action::Archive(issue_id.to_string()));
             Ok(())
+        }
+
+        fn upload_file(&self, upload: &Upload) -> Result<String, LinearError> {
+            self.guard("upload file")?;
+            let mut files = lock(&self.files);
+            let url = format!("{MOCK_UPLOADS}acme/{n}/asset-{n}", n = files.len() + 1);
+            files.push((url.clone(), upload.bytes.to_vec()));
+            lock(&self.actions).push(Action::Upload {
+                name: upload.name.clone(),
+                content_type: upload.content_type.clone(),
+                len: upload.bytes.len(),
+            });
+            Ok(url)
+        }
+
+        fn download(&self, url: &str) -> Result<Vec<u8>, LinearError> {
+            self.guard("fetch file")?;
+            self.file(url).ok_or(LinearError::Status {
+                stage: "fetch file",
+                status: 404,
+                retry_after: None,
+            })
+        }
+
+        fn is_linear_file(&self, url: &str) -> bool {
+            url.starts_with(MOCK_UPLOADS)
         }
 
         fn authorization(&self) -> Result<String, LinearError> {

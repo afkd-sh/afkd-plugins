@@ -39,6 +39,7 @@ use crate::common::{
     lock, Clock, Diag, ScanBudget, ENV_API_URL, ENV_AUTHORIZATION, ENV_ISSUE, ENV_ISSUE_ID,
     ENV_TEAM_ID,
 };
+use crate::file;
 use crate::outbox::{lost_line, named, queued_behind_line, queued_line, Outbox, Write, RETRY_FOR};
 use crate::settings::{DiscussWith, IssueConfig, MemberRef};
 use crate::tracker::{state_named, Child, Comment, Issue, LinearError, State, Team, Tracker};
@@ -452,6 +453,17 @@ impl LinearUnits {
         diag: &dyn Diag,
     ) -> Result<(), String> {
         action::read(&*self.tracker, issue, me, read, to, diag)
+    }
+
+    /// Fetch the files `issue` carries now, and write them into the directory `to`
+    /// ([`file::fetch`]).
+    pub(crate) fn fetch_files(
+        &self,
+        issue: &Issue,
+        to: &str,
+        diag: &dyn Diag,
+    ) -> Result<(), String> {
+        file::fetch(&*self.tracker, issue, to, diag)
     }
 
     /// The intake gates' identities for one poll: the viewer, the `require_member` user and

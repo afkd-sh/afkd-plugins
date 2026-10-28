@@ -73,6 +73,13 @@ type Mutation {
     input: CommentUpdateInput!
     skipEditedAt: Boolean
   ): CommentPayload!
+  fileUpload(
+    contentType: String!
+    filename: String!
+    makePublic: Boolean
+    metaData: JSON
+    size: Int!
+  ): UploadPayload!
   issueAddLabel(
     id: String!
     labelId: String!
@@ -246,6 +253,22 @@ type TeamConnection {
   nodes: [Team!]!
 }
 
+type UploadFile {
+  assetUrl: String!
+  headers: [UploadFileHeader!]!
+  uploadUrl: String!
+}
+
+type UploadFileHeader {
+  key: String!
+  value: String!
+}
+
+type UploadPayload {
+  success: Boolean!
+  uploadFile: UploadFile
+}
+
 type User {
   displayName: String!
   email: String!
@@ -359,6 +382,8 @@ enum PaginationSortOrder {
 }
 
 scalar DateTime
+
+scalar JSON
 
 input CommentFilter {
 }

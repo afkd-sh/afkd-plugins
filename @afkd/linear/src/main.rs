@@ -12,6 +12,8 @@
 //! ([`client`]) as an API key or as an OAuth app ([`auth`]). The slots are afkd's, and the
 //! actions they call on an issue — comment, describe, rename, move, label, file an issue or
 //! a sub-issue, archive, and read its thread, description and sub-issues — are [`action`]'s.
+//! A comment or a description carries files, and an issue's files are fetched back
+//! ([`file`]).
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -21,6 +23,7 @@ mod auth;
 mod claim;
 mod client;
 mod common;
+mod file;
 mod http;
 mod issue;
 #[cfg(test)]

@@ -1,7 +1,8 @@
 //! The HTTP spine the Linear client rides: the pooled agent, the call deadline every request
 //! is clipped to, and one POST that hands back the status, the `Retry-After` and the body
 //! whatever the status was, since Linear answers a refused request with a JSON `errors`
-//! body on a 4xx as well as on a 200.
+//! body on a 4xx as well as on a 200. Beside it, the two a file takes: the PUT of its bytes
+//! to the url Linear signed, and the GET of a file's bytes, capped.
 //!
 //! The agent and its expiry are `@afkd/trello`'s: idle past [`AGENT_MAX_IDLE`] or alive
 //! past [`AGENT_MAX_AGE`], and the pool is rebuilt rather than kept warm forever. So is the
@@ -10,8 +11,11 @@
 //! once it is gone no request is sent at all.
 //!
 //! The credential rides a header here, not the URL, but [`transport_reason`] stays URL-free
-//! all the same: a failure line is logged, and a URL is no part of what it needs to say.
+//! all the same: a failure line is logged, and a URL is no part of what it needs to say — a
+//! signed upload url least of all. A redirect never carries the `Authorization` header on
+//! (ureq's `RedirectAuthHeaders::Never`, kept).
 
+use std::io::Read;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -76,6 +80,23 @@ pub(crate) struct Reply {
     pub(crate) status: u16,
     pub(crate) retry_after: Option<Duration>,
     pub(crate) body: String,
+}
+
+/// What a GET of a file came back with: its status, the wait a `Retry-After` header asked
+/// for, and its body as bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BytesReply {
+    pub(crate) status: u16,
+    pub(crate) retry_after: Option<Duration>,
+    pub(crate) body: Vec<u8>,
+}
+
+/// The wait the `Retry-After` header of `resp` asked for.
+fn retry_after_of<B>(resp: &ureq::http::Response<B>) -> Option<Duration> {
+    resp.headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_retry_after)
 }
 
 /// A timeout-configured HTTP client bound to one API root.
@@ -179,11 +200,7 @@ impl Http {
             reason: transport_reason(&e),
         })?;
         let status = resp.status().as_u16();
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_retry_after);
+        let retry_after = retry_after_of(&resp);
         let body = resp
             .body_mut()
             .read_to_string()
@@ -196,6 +213,87 @@ impl Http {
             retry_after,
             body,
         })
+    }
+
+    /// PUT `body` to the absolute `url` with exactly `headers`, and read the reply whatever
+    /// its status: the status and the `Retry-After` are what an upload needs, and its body
+    /// is kept as far as it reads as text.
+    pub(crate) fn put(
+        &self,
+        stage: &'static str,
+        url: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<Reply, LinearError> {
+        let mut req = self.agent().put(url);
+        for (name, value) in headers {
+            req = req.header(name.as_str(), value.as_str());
+        }
+        if let Some(global) = self.request_budget(stage)? {
+            req = req.config().timeout_global(Some(global)).build();
+        }
+        let mut resp = req.send(body).map_err(|e| LinearError::Transport {
+            stage,
+            reason: transport_reason(&e),
+        })?;
+        Ok(Reply {
+            status: resp.status().as_u16(),
+            retry_after: retry_after_of(&resp),
+            body: resp.body_mut().read_to_string().unwrap_or_default(),
+        })
+    }
+
+    /// GET the absolute `url` with `authorization` as its `Authorization` header when there
+    /// is one, and read the reply's bytes whatever its status, up to `cap`: a body past it is
+    /// an undecodable reply, read no further.
+    pub(crate) fn get_bytes(
+        &self,
+        stage: &'static str,
+        url: &str,
+        authorization: Option<&str>,
+        cap: u64,
+    ) -> Result<BytesReply, LinearError> {
+        let mut req = self.agent().get(url);
+        if let Some(authorization) = authorization {
+            req = req.header("Authorization", authorization);
+        }
+        if let Some(global) = self.request_budget(stage)? {
+            req = req.config().timeout_global(Some(global)).build();
+        }
+        let mut resp = req.call().map_err(|e| LinearError::Transport {
+            stage,
+            reason: transport_reason(&e),
+        })?;
+        let mut body = Vec::new();
+        resp.body_mut()
+            .as_reader()
+            .take(cap + 1)
+            .read_to_end(&mut body)
+            .map_err(|e| LinearError::Decode {
+                stage,
+                reason: e.to_string(),
+            })?;
+        if body.len() as u64 > cap {
+            return Err(LinearError::Decode {
+                stage,
+                reason: format!("over the {} a file may hold", size(cap)),
+            });
+        }
+        Ok(BytesReply {
+            status: resp.status().as_u16(),
+            retry_after: retry_after_of(&resp),
+            body,
+        })
+    }
+}
+
+/// `bytes` as a person reads a cap: whole mebibytes as such, anything else in bytes.
+fn size(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if bytes > 0 && bytes.is_multiple_of(MIB) {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes} bytes")
     }
 }
 

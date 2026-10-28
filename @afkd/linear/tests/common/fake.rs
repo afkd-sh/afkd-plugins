@@ -24,6 +24,17 @@
 //! team's first backlog state, else its first unstarted one. Every request is recorded, and
 //! an operation can be rate limited with a `Retry-After`, made to answer a status, or the
 //! whole fake taken out of reach.
+//!
+//! **Files go up and come back as Linear's upload guide has them.** `FileUpload` mints a
+//! signed upload url on the fake itself (`/signed/…`), an asset url under `/uploads/…`, and
+//! one header the PUT must carry. The PUT must carry that header, the `Content-Type` and the
+//! `Cache-Control` the guide names, exactly `size` bytes and **no** `Authorization`: one that
+//! does not is answered 403 and recorded in [`FakeLinear::invalid_requests`], as is a PUT to
+//! a url the fake never signed. A `GET` of an asset url takes the credential GraphQL takes
+//! (else a 401), and serves the bytes put there, or a 404 before they are. A test can seed a
+//! file a person pasted ([`FakeLinear::seed_file`]) and fail the next PUTs with a status
+//! ([`FakeLinear::fail_uploads`]). [`png`] is the one file fixture, a valid PNG holding every
+//! byte value.
 
 #![allow(dead_code)]
 
@@ -96,6 +107,7 @@ pub struct Comment {
 /// One request as the fake saw it.
 #[derive(Debug, Clone)]
 pub struct Seen {
+    pub method: String,
     pub path: String,
     /// The operation's name, `""` for the token endpoint.
     pub operation: String,
@@ -162,9 +174,64 @@ struct Token {
     revoked: bool,
 }
 
+/// One file `FileUpload` signed for, and its bytes once they were PUT.
+#[derive(Debug, Clone)]
+struct Upload {
+    filename: String,
+    content_type: String,
+    size: usize,
+    /// The path the PUT goes to, its signature included.
+    upload_path: String,
+    /// The path the asset is fetched from.
+    asset_path: String,
+    /// The header the PUT must carry, and its value.
+    header: (String, String),
+    bytes: Option<Vec<u8>>,
+}
+
+/// One file the fake signed an upload for, as a test reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenUpload {
+    pub filename: String,
+    pub content_type: String,
+    pub size: usize,
+    pub asset_url: String,
+    /// Whether its bytes were PUT.
+    pub landed: bool,
+}
+
+/// One PUT to the storage, as the fake saw it: its path, its headers as sent, its length, and
+/// the status it was answered.
+#[derive(Debug, Clone)]
+pub struct SeenPut {
+    pub path: String,
+    pub headers: Vec<(String, String)>,
+    pub len: usize,
+    pub status: u16,
+}
+
+impl SeenPut {
+    /// The value of the header `name`, in any case.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// The `Cache-Control` Linear's upload guide has the PUT carry.
+pub const UPLOAD_CACHE_CONTROL: &str = "public, max-age=31536000";
+
+/// The header the fake signs every upload with.
+pub const UPLOAD_HEADER: &str = "x-goog-meta-afkd";
+
 #[derive(Default)]
 struct Store {
     counter: u64,
+    /// The fake's own root, which its signed and asset urls are under.
+    base: String,
+    org_id: String,
     team_id: String,
     key_user: String,
     app_user: String,
@@ -196,6 +263,10 @@ struct Store {
     invalid: Vec<String>,
     down: bool,
     dropped: Vec<Seen>,
+    uploads: Vec<Upload>,
+    puts: Vec<SeenPut>,
+    /// How many more PUTs to answer with a status instead, and the status.
+    upload_faults: (u32, u16),
 }
 
 /// The wall clock now, in epoch milliseconds.
@@ -435,6 +506,20 @@ impl Store {
         Ok(issues)
     }
 
+    /// A new upload of `size` bytes, signed and with nothing put there yet.
+    fn sign(&mut self, filename: &str, content_type: &str, size: usize) -> Upload {
+        let (id, sig, asset) = (self.mint(), self.mint(), self.mint());
+        Upload {
+            filename: filename.to_string(),
+            content_type: content_type.to_string(),
+            size,
+            upload_path: format!("/signed/{id}?sig={sig}"),
+            asset_path: format!("/uploads/{}/{id}/{asset}", self.org_id),
+            header: (UPLOAD_HEADER.to_string(), format!("upload {sig}")),
+            bytes: None,
+        }
+    }
+
     /// Who the `Authorization` header authenticates as, if anyone.
     fn viewer(&self, authorization: Option<&str>) -> Option<String> {
         match authorization? {
@@ -520,12 +605,14 @@ impl FakeLinear {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let base = format!("http://{}", listener.local_addr().expect("local addr"));
         let store = Arc::new(Mutex::new(Store {
+            base: base.clone(),
             token_lifetime: 2_591_999,
             comments_page: 100,
             ..Store::default()
         }));
         {
             let mut s = lock(&store);
+            s.org_id = s.mint();
             s.team_id = s.mint();
             let key_user = s.mint();
             s.users.push(User {
@@ -922,6 +1009,68 @@ impl FakeLinear {
         lock(&self.store).races.push(issue.to_string());
     }
 
+    /// Hold `bytes` at a new asset url, as a file a person pasted into an issue, and return
+    /// the url.
+    pub fn seed_file(&self, filename: &str, content_type: &str, bytes: &[u8]) -> String {
+        let mut s = lock(&self.store);
+        let upload = s.sign(filename, content_type, bytes.len());
+        let url = format!("{}{}", s.base, upload.asset_path);
+        s.uploads.push(Upload {
+            bytes: Some(bytes.to_vec()),
+            ..upload
+        });
+        url
+    }
+
+    /// The bytes held at the asset url `url`, once they were put there.
+    pub fn file(&self, url: &str) -> Option<Vec<u8>> {
+        let s = lock(&self.store);
+        let path = url.strip_prefix(&s.base)?;
+        s.uploads
+            .iter()
+            .find(|u| u.asset_path == path)
+            .and_then(|u| u.bytes.clone())
+    }
+
+    /// Every upload signed, seeded ones included, in order.
+    pub fn uploads(&self) -> Vec<SeenUpload> {
+        let s = lock(&self.store);
+        s.uploads
+            .iter()
+            .map(|u| SeenUpload {
+                filename: u.filename.clone(),
+                content_type: u.content_type.clone(),
+                size: u.size,
+                asset_url: format!("{}{}", s.base, u.asset_path),
+                landed: u.bytes.is_some(),
+            })
+            .collect()
+    }
+
+    /// Every PUT to the storage, in order.
+    pub fn puts(&self) -> Vec<SeenPut> {
+        lock(&self.store).puts.clone()
+    }
+
+    /// Answer the next `n` PUTs with `status`, storing nothing.
+    pub fn fail_uploads(&self, n: u32, status: u16) {
+        lock(&self.store).upload_faults = (n, status);
+    }
+
+    /// Every asset url of this fake that `text` names, in order.
+    pub fn asset_urls_of(&self, text: &str) -> Vec<String> {
+        let prefix = format!("{}/uploads/", self.base);
+        text.match_indices(&prefix)
+            .map(|(at, _)| {
+                let rest = &text[at..];
+                let end = rest
+                    .find(|c: char| c == ')' || c == '>' || c.is_whitespace())
+                    .unwrap_or(rest.len());
+                rest[..end].to_string()
+            })
+            .collect()
+    }
+
     /// Every request answered, in order.
     pub fn seen(&self) -> Vec<Seen> {
         lock(&self.store).seen.clone()
@@ -973,9 +1122,12 @@ impl FakeLinear {
 
 /// One request as read off the socket.
 struct Raw {
+    method: String,
     path: String,
+    /// Every header but the length, as sent.
+    headers: Vec<(String, String)>,
     authorization: Option<String>,
-    body: String,
+    body: Vec<u8>,
 }
 
 fn read_request(stream: &TcpStream) -> Option<Raw> {
@@ -984,8 +1136,9 @@ fn read_request(stream: &TcpStream) -> Option<Raw> {
     if reader.read_line(&mut start).ok()? == 0 {
         return None;
     }
+    let method = start.split_whitespace().next()?.to_string();
     let path = start.split_whitespace().nth(1)?.to_string();
-    let (mut length, mut authorization) = (0usize, None);
+    let (mut length, mut authorization, mut headers) = (0usize, None, Vec::new());
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).ok()? == 0 {
@@ -998,22 +1151,37 @@ fn read_request(stream: &TcpStream) -> Option<Raw> {
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
                 length = value.trim().parse().unwrap_or(0);
-            } else if name.eq_ignore_ascii_case("authorization") {
-                authorization = Some(value.trim().to_string());
+            } else {
+                if name.eq_ignore_ascii_case("authorization") {
+                    authorization = Some(value.trim().to_string());
+                }
+                headers.push((name.trim().to_string(), value.trim().to_string()));
             }
         }
     }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body).ok()?;
     Some(Raw {
+        method,
         path,
+        headers,
         authorization,
-        body: String::from_utf8_lossy(&body).into_owned(),
+        body,
     })
 }
 
 /// One reply: its status, its extra headers, and its JSON body.
 type Reply = (u16, Vec<(String, String)>, Value);
+
+/// What a request is answered with: a JSON reply, or a file's bytes and their type.
+enum Served {
+    Json(Reply),
+    Bytes {
+        status: u16,
+        content_type: String,
+        body: Vec<u8>,
+    },
+}
 
 /// An `errors` body of one error.
 fn error(message: &str, code: &str, kind: &str) -> Value {
@@ -1029,11 +1197,21 @@ fn serve(stream: TcpStream, store: &Mutex<Store>, schema: &Sdl, docs: &HashMap<S
         let mut s = lock(store);
         answer(&mut s, schema, docs, &raw)
     };
-    let Some((status, headers, body)) = reply else {
+    let (status, headers, content_type, body) = match reply {
         // Out of reach: the stream drops here, closed with no reply.
-        return;
+        None => return,
+        Some(Served::Json((status, headers, body))) => (
+            status,
+            headers,
+            "application/json".to_string(),
+            body.to_string().into_bytes(),
+        ),
+        Some(Served::Bytes {
+            status,
+            content_type,
+            body,
+        }) => (status, Vec::new(), content_type, body),
     };
-    let body = body.to_string();
     let extra: String = headers
         .iter()
         .map(|(k, v)| format!("{k}: {v}\r\n"))
@@ -1041,17 +1219,24 @@ fn serve(stream: TcpStream, store: &Mutex<Store>, schema: &Sdl, docs: &HashMap<S
     let mut stream = stream;
     let _ = write!(
         stream,
-        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n{extra}\r\n{body}",
+        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
+         Connection: close\r\n{extra}\r\n",
         body.len()
     );
+    let _ = stream.write_all(&body);
     let _ = stream.flush();
 }
 
 /// Answer one request, or `None` to drop it unanswered.
-fn answer(s: &mut Store, schema: &Sdl, docs: &HashMap<String, String>, raw: &Raw) -> Option<Reply> {
-    let request: Value = serde_json::from_str(&raw.body).unwrap_or(Value::Null);
+fn answer(
+    s: &mut Store,
+    schema: &Sdl,
+    docs: &HashMap<String, String>,
+    raw: &Raw,
+) -> Option<Served> {
+    let request: Value = serde_json::from_slice(&raw.body).unwrap_or(Value::Null);
     let seen = Seen {
+        method: raw.method.clone(),
         path: raw.path.clone(),
         operation: request["operationName"]
             .as_str()
@@ -1060,7 +1245,7 @@ fn answer(s: &mut Store, schema: &Sdl, docs: &HashMap<String, String>, raw: &Raw
         variables: request["variables"].clone(),
         authorization: raw.authorization.clone(),
         form: if raw.path == "/oauth/token" {
-            raw.body.clone()
+            String::from_utf8_lossy(&raw.body).into_owned()
         } else {
             String::new()
         },
@@ -1071,11 +1256,121 @@ fn answer(s: &mut Store, schema: &Sdl, docs: &HashMap<String, String>, raw: &Raw
         return None;
     }
     s.seen.push(seen);
-    Some(match raw.path.as_str() {
-        "/oauth/token" => token(s, &raw.body),
+    if raw.method == "PUT" && raw.path.starts_with("/signed/") {
+        return Some(put(s, raw));
+    }
+    if raw.method == "GET" && raw.path.starts_with("/uploads/") {
+        return Some(asset(s, raw));
+    }
+    Some(Served::Json(match raw.path.as_str() {
+        "/oauth/token" => token(s, &String::from_utf8_lossy(&raw.body)),
         "/graphql" => graphql(s, schema, docs, raw, &request),
         _ => (404, Vec::new(), json!({"error": "not found"})),
-    })
+    }))
+}
+
+/// A PUT of a file's bytes to the url `FileUpload` signed: stored when it carries what the
+/// upload guide asks for, else a 403 recorded as invalid. A failure the test injected comes
+/// first, and stores nothing.
+fn put(s: &mut Store, raw: &Raw) -> Served {
+    let header = |name: &str| {
+        raw.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    };
+    let answer = |status: u16| Served::Bytes {
+        status,
+        content_type: "text/plain".into(),
+        body: Vec::new(),
+    };
+    let mut seen = SeenPut {
+        path: raw.path.clone(),
+        headers: raw.headers.clone(),
+        len: raw.body.len(),
+        status: 200,
+    };
+    if s.upload_faults.0 > 0 {
+        s.upload_faults.0 -= 1;
+        seen.status = s.upload_faults.1;
+        s.puts.push(seen);
+        return answer(s.upload_faults.1);
+    }
+    let problem = match s.uploads.iter().find(|u| u.upload_path == raw.path) {
+        None => Some(format!(
+            "a PUT to {}, which the fake never signed",
+            raw.path
+        )),
+        Some(_) if raw.authorization.is_some() => {
+            Some("a PUT to the storage carried an Authorization header".to_string())
+        }
+        Some(u) if u.bytes.is_some() => Some(format!("a second PUT of {}", u.filename)),
+        Some(u) if header(&u.header.0) != Some(u.header.1.as_str()) => Some(format!(
+            "a PUT of {} without the signed header {}",
+            u.filename, u.header.0
+        )),
+        Some(u) if header("content-type") != Some(u.content_type.as_str()) => Some(format!(
+            "a PUT of {} as {:?}, signed as {}",
+            u.filename,
+            header("content-type"),
+            u.content_type
+        )),
+        Some(u) if header("cache-control") != Some(UPLOAD_CACHE_CONTROL) => Some(format!(
+            "a PUT of {} with Cache-Control {:?}",
+            u.filename,
+            header("cache-control")
+        )),
+        Some(u) if raw.body.len() != u.size => Some(format!(
+            "a PUT of {} bytes for {}, signed for {}",
+            raw.body.len(),
+            u.filename,
+            u.size
+        )),
+        Some(_) => None,
+    };
+    if let Some(problem) = problem {
+        s.invalid.push(problem);
+        seen.status = 403;
+        s.puts.push(seen);
+        return answer(403);
+    }
+    if let Some(u) = s.uploads.iter_mut().find(|u| u.upload_path == raw.path) {
+        u.bytes = Some(raw.body.clone());
+    }
+    s.puts.push(seen);
+    answer(200)
+}
+
+/// A GET of an asset url: its bytes for a caller GraphQL would take, once they were put
+/// there; a 401 for anyone else, and a 404 for an asset with no bytes.
+fn asset(s: &mut Store, raw: &Raw) -> Served {
+    if s.viewer(raw.authorization.as_deref()).is_none() {
+        return Served::Json((
+            401,
+            Vec::new(),
+            error(
+                "Authentication required, not authenticated",
+                "AUTHENTICATION_ERROR",
+                "authentication error",
+            ),
+        ));
+    }
+    match s
+        .uploads
+        .iter()
+        .find(|u| u.asset_path == raw.path && u.bytes.is_some())
+    {
+        Some(u) => Served::Bytes {
+            status: 200,
+            content_type: u.content_type.clone(),
+            body: u.bytes.clone().unwrap_or_default(),
+        },
+        None => Served::Bytes {
+            status: 404,
+            content_type: "text/plain".into(),
+            body: b"Not Found".to_vec(),
+        },
+    }
 }
 
 /// The token endpoint: a token for the app's credentials, with the grant and the scope.
@@ -1538,6 +1833,23 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             s.issues[at].archived = true;
             Ok(json!({"issueArchive": {"success": true}}))
         }
+        "FileUpload" => {
+            let (content_type, filename) = (var("contentType"), var("filename"));
+            if content_type.is_empty() || filename.is_empty() {
+                return Err(Refusal::Invalid(
+                    "the fake signs no upload without a content type and a file name".into(),
+                ));
+            }
+            let size = vars["size"].as_u64().unwrap_or_default() as usize;
+            let upload = s.sign(&filename, &content_type, size);
+            let node = json!({
+                "uploadUrl": format!("{}{}", s.base, upload.upload_path),
+                "assetUrl": format!("{}{}", s.base, upload.asset_path),
+                "headers": [{"key": upload.header.0, "value": upload.header.1}],
+            });
+            s.uploads.push(upload);
+            Ok(json!({"fileUpload": {"success": true, "uploadFile": node}}))
+        }
         other => Err(Refusal::Invalid(format!(
             "the fake answers no operation {other}"
         ))),
@@ -1574,4 +1886,50 @@ fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A valid PNG of one black pixel that also holds every byte value: a private ancillary chunk,
+/// `afKd`, carries 0 to 255 twice and a multipart-looking `--` line, so the bytes hold NUL,
+/// CR LF, `0xFF` and invalid UTF-8. Each chunk carries its real CRC, so a decoder takes it.
+pub fn png() -> Vec<u8> {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let crc = crc32(&out[start..]);
+        out.extend_from_slice(&crc.to_be_bytes());
+    }
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    // 1×1, 8-bit greyscale, no interlace.
+    chunk(&mut png, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0, 0, 0]);
+    let mut every: Vec<u8> = (0..=255u8).chain(0..=255u8).collect();
+    every.extend_from_slice(b"\r\n--afkd-boundary--\r\n");
+    chunk(&mut png, b"afKd", &every);
+    // The scanline (filter 0, one black pixel) as a zlib stream of one stored block.
+    chunk(
+        &mut png,
+        b"IDAT",
+        &[
+            0x78, 0x01, 0x01, 0x02, 0x00, 0xfd, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01,
+        ],
+    );
+    chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+/// The CRC-32 a PNG chunk carries (ISO 3309, reflected, `0xEDB88320`).
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
 }

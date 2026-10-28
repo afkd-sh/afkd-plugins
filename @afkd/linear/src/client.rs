@@ -9,6 +9,11 @@
 //!
 //! Linear answers a request it refuses with an `errors` body, on a 200 as well as on a 4xx,
 //! so every reply is read for `errors` before its `data` ([`graphql_data`]).
+//!
+//! A file goes up as Linear's upload guide has it: `FileUpload` signs an upload url, and the
+//! bytes are PUT there with the headers Linear returned and never the credential. A file
+//! comes back with the credential, from Linear's file host ([`UPLOADS_BASE`]) or the API
+//! root and from no other.
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime};
@@ -16,6 +21,7 @@ use std::time::{Instant, SystemTime};
 use serde_json::{json, Value};
 
 use crate::auth::Auth;
+use crate::file::{Upload, MAX_FILE_BYTES};
 use crate::http::{Http, Reply, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT};
 use crate::rfc3339::parse_rfc3339_millis;
 use crate::settings::MemberRef;
@@ -28,6 +34,12 @@ pub(crate) const LINEAR_BASE: &str = "https://api.linear.app";
 
 /// Where the GraphQL endpoint sits under the API root.
 pub(crate) const GRAPHQL_PATH: &str = "/graphql";
+
+/// Where Linear keeps the files put on its issues, each fetched with the credential.
+pub(crate) const UPLOADS_BASE: &str = "https://uploads.linear.app";
+
+/// The `Cache-Control` an upload's PUT carries, as Linear's upload guide writes it.
+const UPLOAD_CACHE_CONTROL: &str = "public, max-age=31536000";
 
 /// How many issues one `Issues` page holds: small, with its nested connections, to keep a
 /// query far under Linear's complexity cap.
@@ -223,6 +235,12 @@ pub(crate) fn archive_vars(issue_id: &str) -> Value {
     json!({ "id": issue_id })
 }
 
+/// `FileUpload`: a signed upload for a file named `filename` of `size` bytes and the type
+/// `content_type`. Private, Linear's default, since `makePublic` is left out.
+pub(crate) fn file_upload_vars(content_type: &str, filename: &str, size: usize) -> Value {
+    json!({ "contentType": content_type, "filename": filename, "size": size })
+}
+
 // --- the client ---
 
 /// A [`Tracker`] backed by Linear's GraphQL API.
@@ -231,6 +249,8 @@ pub(crate) struct LinearClient {
     http: Http,
     /// The credential, shared with the outbox worker's client so an app fetches one token.
     auth: Arc<Auth>,
+    /// The API root, its trailing `/` dropped: a file under it is Linear's too.
+    base: String,
     /// The viewer's id, fetched once: the credential is fixed for the client's life.
     viewer: OnceLock<String>,
 }
@@ -242,6 +262,7 @@ impl LinearClient {
         Self {
             http: Http::new(base, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT),
             auth,
+            base: base.trim_end_matches('/').to_string(),
             viewer: OnceLock::new(),
         }
     }
@@ -584,6 +605,60 @@ impl Tracker for LinearClient {
             .map(drop)
     }
 
+    fn upload_file(&self, upload: &Upload) -> Result<String, LinearError> {
+        let stage = "upload file";
+        let vars = file_upload_vars(&upload.content_type, &upload.name, upload.bytes.len());
+        let signed = parse_upload(stage, &self.post_graphql(stage, "FileUpload", vars)?)?;
+        let headers = put_headers(&upload.content_type, signed.headers);
+        let reply = self
+            .http
+            .put(stage, &signed.upload_url, &headers, &upload.bytes)?;
+        if !(200..300).contains(&reply.status) {
+            return Err(LinearError::Status {
+                stage,
+                status: reply.status,
+                retry_after: reply.retry_after,
+            });
+        }
+        Ok(signed.asset_url)
+    }
+
+    fn download(&self, url: &str) -> Result<Vec<u8>, LinearError> {
+        let stage = "fetch file";
+        if !self.is_linear_file(url) {
+            return Err(LinearError::NoSuch {
+                stage,
+                what: format!("file Linear hosts at {url}"),
+            });
+        }
+        let send = || {
+            let authorization = self.auth.header(&self.http, Instant::now())?;
+            let reply = self
+                .http
+                .get_bytes(stage, url, Some(&authorization), MAX_FILE_BYTES)?;
+            if (200..300).contains(&reply.status) {
+                Ok(reply.body)
+            } else {
+                Err(LinearError::Status {
+                    stage,
+                    status: reply.status,
+                    retry_after: reply.retry_after,
+                })
+            }
+        };
+        match send() {
+            Err(e) if refused_credential(&e) && self.auth.invalidate() => send(),
+            result => result,
+        }
+    }
+
+    fn is_linear_file(&self, url: &str) -> bool {
+        [UPLOADS_BASE, self.base.as_str()].iter().any(|root| {
+            url.strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
+
     fn authorization(&self) -> Result<String, LinearError> {
         self.auth.header(&self.http, Instant::now())
     }
@@ -652,6 +727,68 @@ pub(crate) fn graphql_data(stage: &'static str, reply: &Reply) -> Result<Value, 
             reason: "the reply carries no data".to_string(),
         }),
     }
+}
+
+/// What `FileUpload` signs: where to PUT the bytes, the headers to PUT them with, and the
+/// asset url the file is linked at once they are there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SignedUpload {
+    pub(crate) upload_url: String,
+    pub(crate) asset_url: String,
+    pub(crate) headers: Vec<(String, String)>,
+}
+
+/// The signed upload of a `FileUpload` reply. Linear answers one it could not prepare with
+/// `success: false` or no `uploadFile`, which is its refusal.
+pub(crate) fn parse_upload(stage: &'static str, data: &Value) -> Result<SignedUpload, LinearError> {
+    let payload = &data["fileUpload"];
+    let file = &payload["uploadFile"];
+    if payload["success"] != true || !file.is_object() {
+        return Err(LinearError::Refused {
+            stage,
+            status: 200,
+            message: "Linear could not prepare the upload".to_string(),
+            kind: String::new(),
+            retry_after: None,
+        });
+    }
+    let headers = file
+        .get("headers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| LinearError::Decode {
+            stage,
+            reason: "an upload carries no `headers`".to_string(),
+        })?
+        .iter()
+        .map(|h| Ok((str_at(stage, h, "key")?, str_at(stage, h, "value")?)))
+        .collect::<Result<_, LinearError>>()?;
+    Ok(SignedUpload {
+        upload_url: str_at(stage, file, "uploadUrl")?,
+        asset_url: str_at(stage, file, "assetUrl")?,
+        headers,
+    })
+}
+
+/// The headers an upload's PUT carries: its `Content-Type` and the `Cache-Control` Linear's
+/// guide asks for, then every header Linear signed, each of those standing in for one of the
+/// first two of the same name. No `Authorization`: the url is signed, and the credential is
+/// not the storage's.
+pub(crate) fn put_headers(
+    content_type: &str,
+    signed: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let mut headers = vec![
+        ("Content-Type".to_string(), content_type.to_string()),
+        (
+            "Cache-Control".to_string(),
+            UPLOAD_CACHE_CONTROL.to_string(),
+        ),
+    ];
+    for (name, value) in signed {
+        headers.retain(|(kept, _)| !kept.eq_ignore_ascii_case(&name));
+        headers.push((name, value));
+    }
+    headers
 }
 
 /// The string at `key` of `value`, or a decode error naming the key.
@@ -926,6 +1063,7 @@ mod tests {
         "IssueUpdate",
         "IssueCreate",
         "IssueArchive",
+        "FileUpload",
     ];
 
     /// Every document conforms to Linear's schema — its selection, its variable types and
@@ -1030,6 +1168,14 @@ mod tests {
                 ),
             ),
             ("IssueArchive", archive_vars(issue)),
+            (
+                "FileUpload",
+                file_upload_vars("image/png", "screen shot — 修复.png", 10 * 1024 * 1024),
+            ),
+            (
+                "FileUpload",
+                file_upload_vars("application/octet-stream", "Makefile", 0),
+            ),
         ];
         for (name, vars) in &rows {
             let declared = sdl
@@ -1352,6 +1498,7 @@ mod tests {
 
     /// What the stub saw for one request.
     struct Captured {
+        method: String,
         path: String,
         headers: Vec<String>,
         body: String,
@@ -1418,6 +1565,7 @@ mod tests {
         let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
         let mut start = String::new();
         reader.read_line(&mut start).expect("read start line");
+        let method = start.split(' ').next().unwrap_or("").to_string();
         let path = start.split(' ').nth(1).unwrap_or("").to_string();
         let mut headers = Vec::new();
         let mut length = 0usize;
@@ -1436,6 +1584,7 @@ mod tests {
         let mut body = vec![0u8; length];
         reader.read_exact(&mut body).expect("read body");
         Captured {
+            method,
             path,
             headers,
             body: String::from_utf8_lossy(&body).into_owned(),
@@ -1899,5 +2048,219 @@ mod tests {
             seen[4].json()["variables"],
             issue_create_vars("t", Some("i"), "Cap it", "", None)
         );
+    }
+
+    /// A signed upload is read off its reply, every header Linear signed kept in order; an
+    /// upload Linear could not prepare — `success: false`, or no `uploadFile` — is its
+    /// refusal, and a reply missing a part is undecodable.
+    #[test]
+    fn a_signed_upload_is_read_or_refused() {
+        let file = json!({"uploadUrl": "https://storage.example/signed/1?sig=a%2Bb",
+                          "assetUrl": "https://uploads.linear.app/o/1/2",
+                          "headers": [{"key": "x-goog-meta-afkd", "value": "t1"},
+                                      {"key": "content-type", "value": "image/png"}]});
+        assert_eq!(
+            parse_upload(
+                "upload file",
+                &json!({"fileUpload": {"success": true, "uploadFile": file}})
+            ),
+            Ok(SignedUpload {
+                upload_url: "https://storage.example/signed/1?sig=a%2Bb".into(),
+                asset_url: "https://uploads.linear.app/o/1/2".into(),
+                headers: vec![
+                    ("x-goog-meta-afkd".into(), "t1".into()),
+                    ("content-type".into(), "image/png".into()),
+                ],
+            })
+        );
+        for refused in [
+            json!({"fileUpload": {"success": false, "uploadFile": file}}),
+            json!({"fileUpload": {"success": true, "uploadFile": null}}),
+        ] {
+            assert_eq!(
+                parse_upload("upload file", &refused)
+                    .unwrap_err()
+                    .to_string(),
+                "linear upload file: Linear refused it (200): Linear could not prepare the upload"
+            );
+        }
+        let mut headless = file.clone();
+        headless.as_object_mut().unwrap().remove("headers");
+        let e = parse_upload(
+            "upload file",
+            &json!({"fileUpload": {"success": true, "uploadFile": headless}}),
+        )
+        .unwrap_err();
+        assert!(matches!(e, LinearError::Decode { .. }), "{e}");
+        assert_eq!(
+            put_headers(
+                "image/png",
+                vec![
+                    ("x-goog-meta-afkd".into(), "t1".into()),
+                    ("content-type".into(), "image/png; v=1".into()),
+                ]
+            ),
+            [
+                (
+                    "Cache-Control".to_string(),
+                    "public, max-age=31536000".to_string()
+                ),
+                ("x-goog-meta-afkd".to_string(), "t1".to_string()),
+                ("content-type".to_string(), "image/png; v=1".to_string()),
+            ],
+            "a signed header stands in for ours of the same name"
+        );
+    }
+
+    /// A file goes up in two requests: `FileUpload` to the API with the credential, then a
+    /// PUT of the bytes to the signed url with its type, the cache header and every header
+    /// Linear signed — and no credential. The asset url comes back; a storage that cannot
+    /// take the bytes is a status a retry can get past.
+    #[test]
+    fn a_file_goes_up_signed_and_never_with_the_credential() {
+        let storage = Stub::serve(vec![http(200, "", ""), http(503, "Retry-After: 4\r\n", "")]);
+        let signed = |n: u32| {
+            http(
+                200,
+                "",
+                &json!({"data": {"fileUpload": {"success": true, "uploadFile": {
+                    "uploadUrl": format!("{}/signed/{n}?sig=s%2B{n}", storage.base),
+                    "assetUrl": format!("https://uploads.linear.app/o/{n}/a"),
+                    "headers": [{"key": "x-goog-meta-afkd", "value": format!("tok {n}")}]}}}})
+                .to_string(),
+            )
+        };
+        let api = Stub::serve(vec![signed(1), signed(2)]);
+        let client = api.client(AuthConfig::ApiKey("lin_api_7f3a".into()));
+        let shot = crate::file::upload("screen shot — 修复.png");
+        assert_eq!(
+            client.upload_file(&shot).unwrap(),
+            "https://uploads.linear.app/o/1/a"
+        );
+        let e = client.upload_file(&shot).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "linear upload file: Linear returned status 503"
+        );
+        assert!(e.transient());
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(4)));
+        let asked = api.captured(2);
+        assert_eq!(asked[0].path, "/graphql");
+        assert_eq!(
+            asked[0].header("authorization").as_deref(),
+            Some("lin_api_7f3a")
+        );
+        assert_eq!(asked[0].json()["operationName"], "FileUpload");
+        assert_eq!(
+            asked[0].json()["variables"],
+            file_upload_vars("image/png", "screen shot — 修复.png", shot.bytes.len())
+        );
+        let puts = storage.captured(2);
+        for (n, put) in puts.iter().enumerate() {
+            assert_eq!(
+                (put.method.as_str(), put.path.as_str()),
+                (
+                    "PUT",
+                    format!("/signed/{}?sig=s%2B{}", n + 1, n + 1).as_str()
+                )
+            );
+            assert_eq!(put.header("content-type").as_deref(), Some("image/png"));
+            assert_eq!(
+                put.header("cache-control").as_deref(),
+                Some("public, max-age=31536000")
+            );
+            assert_eq!(
+                put.header("x-goog-meta-afkd"),
+                Some(format!("tok {}", n + 1))
+            );
+            assert_eq!(
+                put.header("authorization"),
+                None,
+                "no credential to storage"
+            );
+            assert_eq!(put.body, String::from_utf8_lossy(&shot.bytes));
+        }
+    }
+
+    /// A file is fetched with the credential from Linear's file host or the API root only:
+    /// any other url — a lookalike host, plain http, a port that only starts like the
+    /// root's, another site — is refused before a request is built. A refused app token is
+    /// fetched again and the download sent once more.
+    #[test]
+    fn a_file_is_fetched_with_the_credential_from_linear_only() {
+        let stub = Stub::serve(vec![
+            token(1),
+            http(401, "", UNAUTHORIZED),
+            token(2),
+            http(200, "", "\u{0}\r\n--修复 🚨"),
+        ]);
+        let client = stub.client(app());
+        let base = stub.base.clone();
+        for url in [
+            "https://example.com/x.png".to_string(),
+            "http://uploads.linear.app/o/1/a".to_string(),
+            "https://uploads.linear.app.evil.example/o/1/a".to_string(),
+            "https://uploads.linear.app".to_string(),
+            format!("{base}0/uploads/x"),
+            String::new(),
+        ] {
+            assert!(!client.is_linear_file(&url), "{url}");
+            assert_eq!(
+                client.download(&url).unwrap_err().to_string(),
+                format!("linear fetch file: no file Linear hosts at {url}")
+            );
+        }
+        assert!(client.is_linear_file("https://uploads.linear.app/o/1/a"));
+        let url = format!("{base}/uploads/o/1/a");
+        assert!(client.is_linear_file(&url));
+        assert_eq!(
+            client.download(&url).unwrap(),
+            "\u{0}\r\n--修复 🚨".as_bytes()
+        );
+        let seen = stub.captured(4);
+        let sent: Vec<String> = seen
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} {} {}",
+                    r.method,
+                    r.path,
+                    r.header("authorization").unwrap_or_default()
+                )
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                "POST /oauth/token ",
+                "GET /uploads/o/1/a Bearer tok-1",
+                "POST /oauth/token ",
+                "GET /uploads/o/1/a Bearer tok-2",
+            ],
+            "only the one url was asked for"
+        );
+    }
+
+    /// A file's body is read to its cap and no further: one byte past it is refused, the
+    /// cap itself is taken.
+    #[test]
+    fn a_files_body_is_read_to_its_cap() {
+        let stub = Stub::serve(vec![
+            http(200, "", "0123456789abcdefX"),
+            http(200, "", "0123456789abcdef"),
+        ]);
+        let http = Http::new(&stub.base, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT);
+        let url = format!("{}/uploads/o/1/a", stub.base);
+        assert_eq!(
+            http.get_bytes("fetch file", &url, None, 16)
+                .unwrap_err()
+                .to_string(),
+            "linear fetch file: undecodable response (over the 16 bytes a file may hold)"
+        );
+        assert_eq!(
+            http.get_bytes("fetch file", &url, None, 16).unwrap().body,
+            b"0123456789abcdef"
+        );
+        assert_eq!(stub.captured(2).len(), 2);
     }
 }
