@@ -119,6 +119,17 @@ query IssueDescription($id: String!) {
   }
 }
 
+query IssueLabelIds($id: String!) {
+  issue(id: $id) {
+    identifier
+    labels(first: 100) {
+      nodes {
+        id
+      }
+    }
+  }
+}
+
 query IssueChildren($id: String!, $after: String) {
   issue(id: $id) {
     children(first: 50, after: $after) {

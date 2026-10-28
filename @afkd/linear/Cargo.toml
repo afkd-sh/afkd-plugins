@@ -1,6 +1,6 @@
 [package]
 name = "afkd-linear"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 publish = false
 description = "The @afkd/linear trigger plugin: Linear issues as afkd units, over the plugin wire"

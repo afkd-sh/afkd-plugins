@@ -1784,13 +1784,16 @@ fn add_label_puts_a_label_on_creating_it_when_the_team_lacks_it() {
     end(plugin, &t.fake);
 }
 
-/// A label comes off; a name no label has is a no-op that answers `ok` and sends no removal.
+/// A label comes off; a name no label has, and a label the issue does not carry, are no-ops
+/// that answer `ok` and send no removal, since Linear refuses to take off a label that is not
+/// there.
 #[test]
 fn remove_label_takes_it_off_and_an_unknown_name_is_a_no_op() {
     let t = team();
     for label in ["afkd/ready", "Väntar på svar"] {
         t.fake.label(&t.issue, label);
     }
+    t.fake.team_label("Build Failed", "#eb5757");
     let mut plugin = Plugin::armed(settings(&t.fake));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(
@@ -1820,6 +1823,16 @@ fn remove_label_takes_it_off_and_an_unknown_name_is_a_no_op() {
         json!({"ok": true})
     );
     assert_eq!(removals(&t.fake), 1, "nothing to take off");
+    assert_eq!(
+        act(
+            &mut plugin,
+            &unit,
+            "remove_label",
+            json!({"label": "Build Failed"})
+        ),
+        json!({"ok": true})
+    );
+    assert_eq!(removals(&t.fake), 1, "the issue does not carry it");
     assert_eq!(t.fake.labels(&t.issue), ["afkd/ready"]);
     assert!(plugin.stderr_lines_soon(3).contains(&format!(
         "[linear] removing label \"Väntar på svar\" from {}\n",

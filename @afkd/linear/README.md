@@ -233,7 +233,7 @@ first. A state or a label is named by its name, in the service's team:
 | `linear.rename(issue, "<title>")`                            | replace the title                       |
 | `linear.move_to(issue, "<state>")`                           | move the issue to a workflow state; its place there is Linear's to pick |
 | `linear.add_label(issue, "<label>")`                         | put on the team's label of that name, else the workspace's, else one created for the team |
-| `linear.remove_label(issue, "<label>")`                      | take a label off; a name with no label is a no-op |
+| `linear.remove_label(issue, "<label>")`                      | take a label off; a name with no label, or a label the issue does not carry, is a no-op |
 | `linear.delegate(issue, "<to>")`                             | delegate the issue to `"me"`, the app, or to an app's user by display name or email |
 | `linear.create_issue(issue, "<title>", "<description>", state="<state>")` | file a new issue in the team, in the team's default state when `state` is left out |
 | `linear.create_sub_issue(issue, "<title>", "<description>", state="<state>")` | file a new sub-issue of the issue, as `create_issue` does |

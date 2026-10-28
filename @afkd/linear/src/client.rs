@@ -143,6 +143,11 @@ pub(crate) fn description_vars(issue_id: &str) -> Value {
     json!({ "id": issue_id })
 }
 
+/// `IssueLabelIds`: the ids of the labels on the issue.
+pub(crate) fn issue_label_ids_vars(issue_id: &str) -> Value {
+    json!({ "id": issue_id })
+}
+
 /// `IssueChildren`: one page of an issue's sub-issues, from `after`.
 pub(crate) fn children_vars(issue_id: &str, after: Option<&str>) -> Value {
     json!({ "id": issue_id, "after": after })
@@ -518,6 +523,14 @@ impl Tracker for LinearClient {
         let Some(label_id) = self.find_label(stage, team_id, name)? else {
             return Ok(());
         };
+        // Linear refuses to take off a label the issue does not carry.
+        let carried = self.post_graphql(stage, "IssueLabelIds", issue_label_ids_vars(issue_id))?;
+        if !nodes(stage, &carried["issue"]["labels"])?
+            .iter()
+            .any(|l| l["id"].as_str() == Some(label_id.as_str()))
+        {
+            return Ok(());
+        }
         self.post_graphql(
             stage,
             "IssueRemoveLabel",
@@ -1064,6 +1077,7 @@ mod tests {
         "Issues",
         "IssueRelations",
         "IssueDescription",
+        "IssueLabelIds",
         "IssueChildren",
         "IssueComments",
         "Users",
@@ -1129,6 +1143,7 @@ mod tests {
             ("Issues", last_in_state_vars(team, state)),
             ("IssueRelations", relations_vars(issue, "eyJpZCI6InIyMCJ9")),
             ("IssueDescription", description_vars(issue)),
+            ("IssueLabelIds", issue_label_ids_vars(issue)),
             ("IssueChildren", children_vars(issue, None)),
             ("IssueChildren", children_vars(issue, cursor)),
             ("IssueComments", comments_vars(issue, None)),

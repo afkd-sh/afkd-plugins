@@ -1829,8 +1829,10 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                 if !labels.contains(&label) {
                     labels.push(label);
                 }
-            } else {
+            } else if labels.contains(&label) {
                 labels.retain(|l| *l != label);
+            } else {
+                return Err(Refusal::Invalid("Label not on issue".into()));
             }
             let field = if name == "IssueAddLabel" {
                 "issueAddLabel"
