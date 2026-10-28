@@ -8,8 +8,8 @@
 //! text already interpolated. The issue is the handle the action takes first, never an
 //! implied current one.
 //!
-//! A write — a comment, a new title or description, a move, a label, a new issue, an
-//! archive — goes the way the kind's own writes go: in order behind the issue's earlier
+//! A write — a comment, a new title or description, a move, a label, a delegate, a new
+//! issue, an archive — goes the way the kind's own writes go: in order behind the issue's earlier
 //! ones, and retried by the [`Outbox`](crate::outbox::Outbox) when Linear cannot take it.
 //! A read cannot hand a value back, since a plugin exposes none, so it writes what it read
 //! to the absolute path `to`: now or refused, never queued.
@@ -26,6 +26,7 @@ use crate::common::Diag;
 use crate::file::{self, Upload};
 use crate::issue::{is_control_marker, render_comments, sub_issue_line, SelfIds, ACTION_TAG};
 use crate::outbox::named;
+use crate::settings::member_ref;
 use crate::tracker::{state_named, Issue, LinearError, Team, Tracker};
 
 /// The parameter every action takes first: the issue it acts on, as a `linear.Issue`
@@ -41,6 +42,7 @@ pub(crate) const ACTIONS: &[&str] = &[
     "move_to",
     "add_label",
     "remove_label",
+    "delegate",
     "create_issue",
     "create_sub_issue",
     "archive",
@@ -76,6 +78,8 @@ pub(crate) enum IssueAction {
     AddLabel { name: String },
     /// Take the label of this name off; a name with no label is a no-op.
     RemoveLabel { name: String },
+    /// Delegate the issue to the user `to` names: `me`, or a display name or email.
+    Delegate { to: String },
     /// File an issue in the service's team.
     CreateIssue(NewIssue),
     /// File an issue under this one, in the service's team.
@@ -221,6 +225,7 @@ fn decode(action: &str, args: &Map<String, Value>) -> Result<Op, String> {
         "remove_label" => IssueAction::RemoveLabel {
             name: string("label")?,
         },
+        "delegate" => IssueAction::Delegate { to: string("to")? },
         "create_issue" => IssueAction::CreateIssue(new_issue()?),
         "create_sub_issue" => IssueAction::CreateSubIssue(new_issue()?),
         "archive" => IssueAction::Archive,
@@ -316,6 +321,9 @@ pub(crate) fn perform(
         }
         IssueAction::AddLabel { name } => tracker.add_label(&team.id, &issue.id, name),
         IssueAction::RemoveLabel { name } => tracker.remove_label(&team.id, &issue.id, name),
+        IssueAction::Delegate { to } => {
+            tracker.set_delegate(&issue.id, &tracker.resolve_user(&member_ref(to))?)
+        }
         IssueAction::CreateIssue(new) => create(None, new),
         IssueAction::CreateSubIssue(new) => create(Some(&issue.id), new),
         IssueAction::Archive => tracker.archive_issue(&issue.id),
@@ -355,6 +363,7 @@ pub(crate) fn action_line(action: &IssueAction, team: &Team, issue: &Issue) -> S
         IssueAction::MoveTo { state } => format!("moving {issue} to state \"{state}\""),
         IssueAction::AddLabel { name } => format!("adding label \"{name}\" to {issue}"),
         IssueAction::RemoveLabel { name } => format!("removing label \"{name}\" from {issue}"),
+        IssueAction::Delegate { to } => format!("delegating {issue} to \"{to}\""),
         IssueAction::CreateIssue(new) => format!(
             "creating issue \"{}\" in team {} from {issue}",
             new.title, team.key
@@ -523,6 +532,7 @@ mod tests {
             ("move_to", json!({"state": "Blockerat / Väntar"})),
             ("add_label", json!({"label": "needs review 👀"})),
             ("remove_label", json!({"label": "Redo"})),
+            ("delegate", json!({"to": "me"})),
             (
                 "create_issue",
                 json!({"title": "Cap it", "description": markdown, "state": "Backlog 📥"}),
@@ -570,6 +580,7 @@ mod tests {
                 Op::Act(IssueAction::RemoveLabel {
                     name: "Redo".into()
                 }),
+                Op::Act(IssueAction::Delegate { to: "me".into() }),
                 Op::Act(IssueAction::CreateIssue(NewIssue {
                     title: "Cap it".into(),
                     description: markdown.into(),
@@ -674,6 +685,7 @@ mod tests {
                 json!({"label": true}),
                 "remove_label: parameter label must be a string",
             ),
+            ("delegate", json!({}), "delegate: parameter to is required"),
             (
                 "create_issue",
                 json!({"description": ""}),
@@ -752,12 +764,14 @@ mod tests {
     }
 
     /// Every write is the request it means, in the service's team: a state named to its id,
-    /// a new issue under its parent or none, a label by the team, and a sub-issue moved by
-    /// its own id. A name the team lacks is refused with the sentence `sources` uses, and a
-    /// sub-issue that is not this issue's is refused naming both.
+    /// a new issue under its parent or none, a label by the team, a delegate named to its
+    /// user, and a sub-issue moved by its own id. A name the team lacks is refused with the
+    /// sentence `sources` uses, a user nobody is named with the one the `require_member` gate
+    /// uses, and a sub-issue that is not this issue's is refused naming both.
     #[test]
     fn each_write_does_what_it_names() {
         let t = tracker();
+        t.seed_user("vesper@oauthapp.example", "u-vesper");
         let issue = t.issue("ENG-1");
         let new = |state: Option<&str>| NewIssue {
             title: "子任务: cap it".into(),
@@ -783,6 +797,10 @@ mod tests {
             IssueAction::RemoveLabel {
                 name: "reviewed".into(),
             },
+            IssueAction::Delegate {
+                to: "vesper@oauthapp.example".into(),
+            },
+            IssueAction::Delegate { to: "me".into() },
             IssueAction::CreateIssue(new(Some("In Progress"))),
             IssueAction::CreateSubIssue(new(None)),
             IssueAction::MoveSubIssue {
@@ -824,6 +842,14 @@ mod tests {
                     issue: "ENG-1".into(),
                     label: "reviewed".into()
                 },
+                Action::SetDelegate {
+                    issue: "ENG-1".into(),
+                    user: "u-vesper".into()
+                },
+                Action::SetDelegate {
+                    issue: "ENG-1".into(),
+                    user: SELF_ID.into()
+                },
                 create(None, Some("In Progress")),
                 create(Some("ENG-1"), None),
                 Action::SetState {
@@ -853,6 +879,13 @@ mod tests {
                     state: "Done ✅".into(),
                 },
                 "linear move issue: no sub-issue ENG-9 of ENG-1",
+            ),
+            (
+                IssueAction::Delegate {
+                    to: "ghost@acme.example".into(),
+                },
+                "linear resolve user: no user whose display name or email is \
+                 'ghost@acme.example'",
             ),
         ] {
             let e = perform(&t, &team(), &issue, &action).unwrap_err();
@@ -1036,6 +1069,12 @@ mod tests {
                     name: "Redo".into(),
                 },
                 format!("[linear] removing label \"Redo\" from {named}"),
+            ),
+            (
+                IssueAction::Delegate {
+                    to: "陳大文".into(),
+                },
+                format!("[linear] delegating {named} to \"陳大文\""),
             ),
             (
                 IssueAction::CreateIssue(new("Cap it")),

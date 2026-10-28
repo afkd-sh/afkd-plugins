@@ -328,6 +328,7 @@ fn the_actions_are_the_ones_the_code_answers() {
         ("move_to".to_string(), vec![required("state")]),
         ("add_label".to_string(), vec![required("label")]),
         ("remove_label".to_string(), vec![required("label")]),
+        ("delegate".to_string(), vec![required("to")]),
         ("create_issue".to_string(), new_issue.clone()),
         ("create_sub_issue".to_string(), new_issue),
         ("list_comments".to_string(), vec![required("to")]),

@@ -7,7 +7,8 @@
 //!   on a real daemon with an API key, its slots reading every field the issue's handle
 //!   declares, its run reading the description and moving the issue through the plugin's
 //!   actions, and its `on_done` commenting on the finished issue; the **app** leg does the
-//!   same as an OAuth app, on a token the plugin fetched.
+//!   same as an OAuth app, on a token the plugin fetched, claiming the issue nobody holds
+//!   with `require_member "me", "none"` and delegating it to the app from `on_claim`.
 //! - The **files** leg runs one issue whose run puts a PNG into its description and into a
 //!   comment through `files=`, and fetches both back with `fetch_files`, byte for byte.
 //! - The **validate** legs hold `afkd validate` to a `service(linear)` that writes every
@@ -218,14 +219,15 @@ fn seed() -> Seeded {
     }
 }
 
-/// The service that drives the seeded issue, `home` its work dir, its credential written as
-/// `auth`. It writes no `every`, so the cadence is afkd's default and its first beat is at
-/// once. `on_claim` writes the state it claimed from; the run holds until the test creates
+/// The service that drives the seeded issue, `home` its work dir, its credential and any gate
+/// written as `keys`. It writes no `every`, so the cadence is afkd's default and its first
+/// beat is at once. `on_claim` writes the state it claimed from, then runs the statements
+/// `claim` holds, a line each; the run holds until the test creates
 /// `release` — bounded, so a test that never does cannot wedge it — then writes every field
 /// of the issue's handle to [`FIELDS`], a line each, and the endpoint and credential its env
 /// carries, writes the description to [`DESCRIPTION`] and moves the issue to Done through
 /// the plugin's actions; `on_done` writes the title and comments on the finished issue.
-fn service(home: &Path, base_url: &str, auth: &str) -> String {
+fn service(home: &Path, base_url: &str, keys: &str, claim: &str) -> String {
     format!(
         r#"import "core"
 import "@afkd/linear"
@@ -233,12 +235,12 @@ import "@afkd/linear"
 widgets :: service(linear) {{
   team      "{TEAM}"
   base_url  "{base_url}"
-  {auth}
+  {keys}
   pick_from "Todo"
 
   on_claim proc(issue: linear.Issue) {{
     $ echo claimed #{{issue.state}} >> {CLAIMED}
-  }}
+{claim}  }}
   on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
     $ echo done #{{issue.title}} >> {DONE}
     landed := linear.comment(issue, "landed #{{issue.title}} ✅")
@@ -360,18 +362,18 @@ fn read(path: &Path) -> String {
 }
 
 /// Drive the seeded issue through the plugin, installed in `home`, on a real daemon, its
-/// service authenticating as `auth` writes it: it is **claimed** (the claim comment, and
-/// `on_claim` read its state), **run** (its run dir is named for the issue, its task carries
+/// service writing `keys` and its `on_claim` running `claim` (see [`service`]): it is
+/// **claimed** (the claim comment, and `on_claim` read its state), **run** (its run dir is named for the issue, its task carries
 /// the issue and its thread whole, and `on_run` read every field of its handle, the endpoint
 /// and the credential as the plugin sent them, read its description and moved it to Done
 /// through the plugin) and **finished** (the `[afkd-ran]` watermark posted, the claim
 /// released, and `on_done` read its title and commented on it through the plugin), and the
 /// daemon then drains clean.
 /// Returns the seeded team, for the leg's own checks.
-fn drive_one_issue(home: &Path, auth: &str) -> Seeded {
+fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
     let seeded = seed();
     let (fake, issue) = (&seeded.fake, seeded.issue.as_str());
-    write_config(home, &service(home, fake.base_url(), auth));
+    write_config(home, &service(home, fake.base_url(), keys, claim));
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
 
@@ -499,7 +501,7 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
         .mode();
     assert!(mode & 0o111 != 0, "{} is executable", exec.display());
 
-    let seeded = drive_one_issue(home.path(), &format!("api_key   \"{API_KEY}\""));
+    let seeded = drive_one_issue(home.path(), &format!("api_key   \"{API_KEY}\""), "");
     assert_eq!(read(&home.path().join(AUTH)), format!("{API_KEY}\n"));
     assert_eq!(seeded.fake.token_fetches(), 0, "a key fetches no token");
 }
@@ -509,10 +511,21 @@ fn app_auth_leg_runs_one_issue_with_a_fetched_token() {
     let home = installed();
     let seeded = drive_one_issue(
         home.path(),
-        &format!("client_id     \"{CLIENT_ID}\"\n  client_secret \"{CLIENT_SECRET}\""),
+        &format!(
+            "client_id      \"{CLIENT_ID}\"\n  client_secret  \"{CLIENT_SECRET}\"\n  \
+             require_member \"me\", \"none\""
+        ),
+        "    delegated := linear.delegate(issue, \"me\")\n    \
+         if delegated != nil { fail(\"linear.delegate: #{delegated.message}\") }\n",
     );
     let fake = &seeded.fake;
     assert!(fake.token_fetches() >= 1, "the app fetched its token");
+    assert_eq!(
+        fake.delegate_of(&seeded.issue),
+        Some(fake.app_user()),
+        "`require_member \"me\", \"none\"` claimed the free issue and `on_claim` delegated it \
+         to the app"
+    );
     let graphql: Vec<_> = fake
         .seen()
         .into_iter()
@@ -561,7 +574,7 @@ develop :: service(linear) {{
   base_url       "https://api.linear.app"
   api_key        "{API_KEY}"
   pick_from      "Todo", "Backlog 📥"
-  require_member "me"
+  require_member "me", "none"
   require_label  "afkd/ready"
   without_label  "Hold", "Blockerat / Väntar"
   every          2m
@@ -635,6 +648,8 @@ widgets :: service(linear) {{
     if moved != nil {{ fail("linear.move_to: #{{moved.message}}") }}
     labelled := linear.add_label(issue, "afkd/working")
     if labelled != nil {{ fail("linear.add_label: #{{labelled.message}}") }}
+    delegated := linear.delegate(issue, "me")
+    if delegated != nil {{ fail("linear.delegate: #{{delegated.message}}") }}
   }}
   on_run proc(run: core.Run, issue: linear.Issue) {{
     thread := linear.list_comments(issue, "/srv/acme/widgets/thread 計画.md")

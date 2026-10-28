@@ -67,6 +67,7 @@ impl Write {
                 IssueAction::MoveTo { state } => format!("moving it to state \"{state}\""),
                 IssueAction::AddLabel { name } => format!("adding the label \"{name}\""),
                 IssueAction::RemoveLabel { name } => format!("removing the label \"{name}\""),
+                IssueAction::Delegate { to } => format!("delegating it to \"{to}\""),
                 IssueAction::CreateIssue(new) => format!("creating issue \"{}\"", new.title),
                 IssueAction::CreateSubIssue(new) => {
                     format!("creating sub-issue \"{}\"", new.title)
@@ -993,6 +994,12 @@ mod tests {
                     name: "Redo".into(),
                 }),
                 "removing the label \"Redo\"",
+            ),
+            (
+                act(IssueAction::Delegate {
+                    to: "vesper@oauthapp.example".into(),
+                }),
+                "delegating it to \"vesper@oauthapp.example\"",
             ),
             (
                 act(IssueAction::CreateIssue(new("Cap it"))),

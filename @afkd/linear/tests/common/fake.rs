@@ -980,6 +980,13 @@ impl FakeLinear {
         s.issues[at].title.clone()
     }
 
+    /// The id of the user an issue is delegated to, if anyone.
+    pub fn delegate_of(&self, issue: &str) -> Option<String> {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.issues[at].delegate.clone()
+    }
+
     /// An issue's description, `""` for none.
     pub fn description_of(&self, issue: &str) -> String {
         let s = lock(&self.store);
@@ -1857,6 +1864,12 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             }
             if let Some(text) = input["description"].as_str() {
                 s.issues[at].description = (!text.is_empty()).then(|| text.to_string());
+            }
+            if let Some(user) = input["delegateId"].as_str() {
+                if s.user(user).is_none() {
+                    return Err(Refusal::NotFound("User"));
+                }
+                s.issues[at].delegate = Some(user.to_string());
             }
             Ok(json!({"issueUpdate": {"success": true}}))
         }

@@ -346,6 +346,7 @@ input IssueSortInput {
 }
 
 input IssueUpdateInput {
+  delegateId: String
   description: String
   sortOrder: Float
   stateId: String

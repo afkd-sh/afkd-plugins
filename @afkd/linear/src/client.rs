@@ -208,6 +208,11 @@ pub(crate) fn state_vars(issue_id: &str, state_id: &str) -> Value {
     json!({ "id": issue_id, "input": { "stateId": state_id } })
 }
 
+/// `IssueUpdate`: the issue delegated to the user.
+pub(crate) fn delegate_vars(issue_id: &str, user_id: &str) -> Value {
+    json!({ "id": issue_id, "input": { "delegateId": user_id } })
+}
+
 /// `IssueCreate`: a new issue in the team titled `title`, and only what else is given: the
 /// description when it is not empty, the parent, the state.
 pub(crate) fn issue_create_vars(
@@ -584,6 +589,15 @@ impl Tracker for LinearClient {
     fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError> {
         self.post_graphql("move issue", "IssueUpdate", state_vars(issue_id, state_id))
             .map(drop)
+    }
+
+    fn set_delegate(&self, issue_id: &str, user_id: &str) -> Result<(), LinearError> {
+        self.post_graphql(
+            "delegate issue",
+            "IssueUpdate",
+            delegate_vars(issue_id, user_id),
+        )
+        .map(drop)
     }
 
     fn create_issue(
@@ -1151,6 +1165,10 @@ mod tests {
             ("IssueUpdate", description_update_vars(issue, "")),
             ("IssueUpdate", state_vars(issue, state)),
             (
+                "IssueUpdate",
+                delegate_vars(issue, "8e7d6c5b-4a39-4281-b0c9-d8e7f6a5b4c3"),
+            ),
+            (
                 "IssueCreate",
                 issue_create_vars(team, None, "Cap the backoff at 30s", "", None),
             ),
@@ -1253,6 +1271,10 @@ mod tests {
         assert_eq!(
             state_vars("i", "s"),
             json!({"id": "i", "input": {"stateId": "s"}})
+        );
+        assert_eq!(
+            delegate_vars("i", "u"),
+            json!({"id": "i", "input": {"delegateId": "u"}})
         );
     }
 

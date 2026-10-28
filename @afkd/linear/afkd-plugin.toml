@@ -1,5 +1,5 @@
 name = "@afkd/linear"
-version = "0.4.1"
+version = "0.5.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -85,9 +85,11 @@ claims = true
   type = "list[string]"
   required = true
 
+  # Who must hold an issue for it to be claimed, any one of them: `me`, a user by display
+  # name or email as assignee or delegate, or `none` for an issue with neither.
   [[kind.setting]]
   name = "require_member"
-  type = "string"
+  type = "list[string]"
 
   [[kind.setting]]
   name = "require_label"
@@ -269,6 +271,21 @@ name = "remove_label"
 
   [[action.param]]
   name = "label"
+  type = "string"
+  required = true
+
+# The issue delegated to `to`: `me`, the app the service runs as, or an app's user by display
+# name or email.
+[[action]]
+name = "delegate"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "to"
   type = "string"
   required = true
 

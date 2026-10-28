@@ -41,7 +41,7 @@ use crate::common::{
 };
 use crate::file;
 use crate::outbox::{lost_line, named, queued_behind_line, queued_line, Outbox, Write, RETRY_FOR};
-use crate::settings::{DiscussWith, IssueConfig, MemberRef};
+use crate::settings::{DiscussWith, Holder, IssueConfig};
 use crate::tracker::{state_named, Child, Comment, Issue, LinearError, State, Team, Tracker};
 use crate::wire::{Facts, IssueFields, UnitOutcome, WireFile, WireUnit};
 use crate::{PARK_FILE, TASK_FILE};
@@ -217,12 +217,29 @@ struct DiscussGate {
     allowed: HashSet<String>,
 }
 
+/// The `require_member` gate resolved for one poll: the ids of the members it names, and
+/// whether an issue nobody holds passes too.
+struct MemberGate {
+    ids: Vec<String>,
+    nobody: bool,
+}
+
+impl MemberGate {
+    /// Whether `issue` passes: nobody holds it and the gate takes that, or one of the members
+    /// is its assignee or its delegate.
+    fn holds(&self, issue: &Issue) -> bool {
+        let held_by = |who: &Option<String>| who.as_ref().is_some_and(|id| self.ids.contains(id));
+        (self.nobody && issue.assignee.is_none() && issue.delegate.is_none())
+            || held_by(&issue.assignee)
+            || held_by(&issue.delegate)
+    }
+}
+
 /// The intake gates' identities, resolved once per poll.
 struct Gates {
     /// The viewer: the tail boundary's and the brief's self.
     me: SelfIds,
-    /// The `require_member` user's id.
-    member: Option<String>,
+    member: Option<MemberGate>,
     discuss: Option<DiscussGate>,
 }
 
@@ -303,7 +320,7 @@ pub(crate) struct LinearUnits {
     api_url: String,
     /// The workflow states new work is claimed from, by name, in the order written.
     pick_from: Vec<String>,
-    require_member: Option<MemberRef>,
+    require_member: Option<Vec<Holder>>,
     require_label: Option<String>,
     without_label: Vec<String>,
     discuss_with: Option<DiscussWith>,
@@ -466,14 +483,26 @@ impl LinearUnits {
         file::fetch(&*self.tracker, issue, to, diag)
     }
 
-    /// The intake gates' identities for one poll: the viewer, the `require_member` user and
-    /// the `discuss_with` allow-list, self removed from it. Unset gates resolve nothing but
-    /// the viewer, which the claim itself needs.
+    /// The intake gates' identities for one poll: the viewer, the `require_member` users,
+    /// resolved in the order written, and the `discuss_with` allow-list, self removed from it.
+    /// Unset gates resolve nothing but the viewer, which the claim itself needs.
     fn resolve_gates(&self) -> Result<Gates, LinearError> {
         let me = SelfIds::viewer(self.tracker.viewer()?);
         let member = match &self.require_member {
             None => None,
-            Some(who) => Some(self.tracker.resolve_user(who)?),
+            Some(holders) => {
+                let mut gate = MemberGate {
+                    ids: Vec::new(),
+                    nobody: false,
+                };
+                for holder in holders {
+                    match holder {
+                        Holder::Member(who) => gate.ids.push(self.tracker.resolve_user(who)?),
+                        Holder::Nobody => gate.nobody = true,
+                    }
+                }
+                Some(gate)
+            }
         };
         let discuss = match &self.discuss_with {
             None => None,
@@ -630,7 +659,8 @@ impl LinearUnits {
     /// work.
     ///
     /// The gates run cheapest first, strictly before the claim comment is posted, so a
-    /// skipped issue is never commented on: the member (assignee or delegate), the deny
+    /// skipped issue is never commented on: the holder (a member as assignee or delegate, or
+    /// nobody), the deny
     /// label, the required label, blocked-by and the park badge off the state read, then off
     /// the issue's comments a live claim and the `discuss_with` tail. A badged issue is the
     /// parked sweep's alone.
@@ -698,8 +728,7 @@ impl LinearUnits {
     ) -> Result<Considered, LinearError> {
         let gates = &beat.gates;
         if let Some(member) = &gates.member {
-            let held_by = |who: &Option<String>| who.as_ref() == Some(member);
-            if !held_by(&issue.assignee) && !held_by(&issue.delegate) {
+            if !member.holds(&issue) {
                 return Ok(Considered::Passed);
             }
         }
@@ -2108,7 +2137,7 @@ mod tests {
     /// over the rest; an unknown name fails the poll.
     #[test]
     fn require_member_matches_the_assignee_or_the_delegate() {
-        let f = fx(json!({"require_member": "chen@acme.example"}));
+        let f = fx(json!({"require_member": ["chen@acme.example"]}));
         f.tracker.seed_user("chen@acme.example", "u-chen");
         f.tracker.add_issue("Todo", "ENG-1", "nobody's", "");
         f.tracker.add_issue("Todo", "ENG-2", "Phil's", "");
@@ -2119,7 +2148,7 @@ mod tests {
             .edit_issue("ENG-3", |i| i.assignee = Some("u-chen".into()));
         assert_eq!(f.wire().id, "ENG-3");
 
-        let f = fx(json!({"require_member": "me"}));
+        let f = fx(json!({"require_member": ["me"]}));
         f.tracker
             .add_issue("Todo", "ENG-1", "assigned to a human", "");
         f.tracker
@@ -2132,11 +2161,46 @@ mod tests {
         });
         assert_eq!(f.wire().id, "ENG-2");
 
-        let f = fx(json!({"require_member": "ghost@acme.example"}));
+        let f = fx(json!({"require_member": ["ghost@acme.example"]}));
         f.tracker.add_issue("Todo", "ENG-1", "t", "");
         let e = f.poll_err();
         assert_eq!(
             e.to_string(),
+            "linear resolve user: no user whose display name or email is 'ghost@acme.example'"
+        );
+        assert!(f.tracker.comments_on("ENG-1").is_empty(), "nothing posted");
+    }
+
+    /// `require_member "me", "none"` claims what nobody holds and what is the app's own, and
+    /// passes over an issue a person or another app holds without a word on it.
+    #[test]
+    fn require_member_none_or_me_claims_what_nobody_holds_and_what_is_mine() {
+        let f = fx(json!({"require_member": [["me", "none"]]}));
+        f.tracker.seed_user("vesper@oauthapp.example", "u-vesper");
+        f.tracker.add_issue("Todo", "ENG-1", "Phil's", "");
+        f.tracker
+            .edit_issue("ENG-1", |i| i.assignee = Some("u-phil".into()));
+        f.tracker
+            .add_issue("Todo", "ENG-2", "delegated to vesper 🌑", "");
+        f.tracker
+            .edit_issue("ENG-2", |i| i.delegate = Some("u-vesper".into()));
+        f.tracker.add_issue("Todo", "ENG-3", "nobody's", "");
+        f.tracker
+            .add_issue("Todo", "ENG-4", "delegated to the app", "");
+        f.tracker
+            .edit_issue("ENG-4", |i| i.delegate = Some(SELF_ID.into()));
+        assert_eq!(f.wire().id, "ENG-3");
+        assert_eq!(f.wire().id, "ENG-4");
+        assert!(f.poll().is_none(), "nothing else passes");
+        for held in ["ENG-1", "ENG-2"] {
+            assert!(f.tracker.comments_on(held).is_empty(), "{held} untouched");
+        }
+
+        // An unknown entry fails the poll even beside `me` and `none`.
+        let f = fx(json!({"require_member": [["me", "none", "ghost@acme.example"]]}));
+        f.tracker.add_issue("Todo", "ENG-1", "t", "");
+        assert_eq!(
+            f.poll_err().to_string(),
             "linear resolve user: no user whose display name or email is 'ghost@acme.example'"
         );
         assert!(f.tracker.comments_on("ENG-1").is_empty(), "nothing posted");

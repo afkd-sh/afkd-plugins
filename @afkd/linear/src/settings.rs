@@ -21,6 +21,11 @@ use crate::client::LINEAR_BASE;
 /// no reserved word of its own, so this is the plugin's.
 pub(crate) const ME: &str = "me";
 
+/// The `require_member` operand for an issue nobody holds: one with neither an assignee nor a
+/// delegate. It is reserved there only, so `discuss_with` and `delegate` still read it as a
+/// name.
+pub(crate) const NONE: &str = "none";
+
 /// Who a `require_member` gate or a `discuss_with` entry names: [`ME`], or a workspace user
 /// by display name or email.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +34,15 @@ pub(crate) enum MemberRef {
     Me,
     /// A user named by their display name or their email, whichever matches.
     Named(String),
+}
+
+/// One `require_member` entry: a member who holds the issue, or nobody holding it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Holder {
+    /// The issue is assigned or delegated to this member.
+    Member(MemberRef),
+    /// The issue has neither an assignee nor a delegate.
+    Nobody,
 }
 
 /// Whose comment drives a `discuss_with` grooming issue: any non-afkd author, or a named
@@ -85,8 +99,9 @@ pub(crate) struct IssueConfig {
     /// The workflow states new issues are drawn from, by name, in the order written; never
     /// empty, since the setting is required.
     pub(crate) pick_from: Vec<String>,
-    /// The intake gate: when set, only issues assigned or delegated to this user are claimed.
-    pub(crate) require_member: Option<MemberRef>,
+    /// The intake gate: when set, only issues one of these entries holds are claimed, an issue
+    /// passing if any entry matches; never empty.
+    pub(crate) require_member: Option<Vec<Holder>>,
     /// The label intake gate: when set, only issues carrying a label of this exact name are
     /// eligible to claim.
     pub(crate) require_label: Option<String>,
@@ -145,7 +160,7 @@ pub(crate) const SETTINGS: &[Declared] = &[
     ("client_id", "string", &[]),
     ("client_secret", "string", &[]),
     ("pick_from", "list[string]", &[("required", "true")]),
-    ("require_member", "string", &[]),
+    ("require_member", "list[string]", &[]),
     ("require_label", "string", &[]),
     ("without_label", "list[string]", &[]),
     ("discuss_with", "list[string]", &[]),
@@ -178,7 +193,12 @@ pub(crate) fn issue_config(settings: &Value) -> Result<IssueConfig, SettingsErro
                  claimed from",
             )
         })?,
-        require_member: required_scalar(settings, "require_member")?.map(|who| member_ref(&who)),
+        require_member: nonempty_list(
+            settings,
+            "require_member",
+            "`require_member` expects one or more members",
+        )?
+        .map(|entries| entries.iter().map(|s| holder(s)).collect()),
         require_label: required_scalar(settings, "require_label")?,
         without_label: nonempty_list(
             settings,
@@ -239,6 +259,15 @@ pub(crate) fn member_ref(who: &str) -> MemberRef {
     match who {
         ME => MemberRef::Me,
         name => MemberRef::Named(name.to_string()),
+    }
+}
+
+/// One `require_member` entry: [`NONE`] (case-sensitively) is nobody holding the issue, and
+/// any other text is a member, read by [`member_ref`].
+fn holder(who: &str) -> Holder {
+    match who {
+        NONE => Holder::Nobody,
+        who => Holder::Member(member_ref(who)),
     }
 }
 
@@ -464,8 +493,45 @@ mod tests {
             ("Me", MemberRef::Named("Me".into())),
         ] {
             assert_eq!(
-                cfg(json!({ "require_member": written })).require_member,
-                Some(want)
+                cfg(json!({ "require_member": [written] })).require_member,
+                Some(vec![Holder::Member(want)])
+            );
+        }
+    }
+
+    /// `none` is nobody holding the issue, alone or beside members, in the order written; a
+    /// differently-cased `None` is a name, and a valueless list faults.
+    #[test]
+    fn require_member_reads_none_beside_members() {
+        for (value, want) in [
+            (
+                json!([["me", "none"]]),
+                vec![Holder::Member(MemberRef::Me), Holder::Nobody],
+            ),
+            (json!(["none"]), vec![Holder::Nobody]),
+            (
+                json!([["none", "陳大文", "None"]]),
+                vec![
+                    Holder::Nobody,
+                    Holder::Member(MemberRef::Named("陳大文".into())),
+                    Holder::Member(MemberRef::Named("None".into())),
+                ],
+            ),
+        ] {
+            assert_eq!(
+                cfg(json!({ "require_member": value })).require_member,
+                Some(want),
+                "{value}"
+            );
+        }
+        for value in [json!(true), json!([true]), json!([{}])] {
+            let e = err(json!({ "require_member": value }));
+            assert_eq!(
+                (e.key.as_str(), e.problem.as_str()),
+                (
+                    "require_member",
+                    "`require_member` expects one or more members"
+                )
             );
         }
     }
@@ -474,7 +540,7 @@ mod tests {
     /// absent, which would silently claim any issue.
     #[test]
     fn a_single_valued_gate_without_one_value_faults() {
-        for key in ["require_member", "require_label", "api_key"] {
+        for key in ["require_label", "api_key"] {
             for value in [json!(true), json!({}), json!(["a", "b"])] {
                 let e = err(json!({ key: value }));
                 assert_eq!(e.key, key);

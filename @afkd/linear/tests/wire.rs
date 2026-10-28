@@ -415,7 +415,7 @@ fn require_member_me_matches_the_assignee() {
     t.fake.assign(&t.issue, &t.phil);
     let mine = t.fake.issue("Todo", "Mine", "");
     t.fake.assign(&mine, &t.fake.key_user());
-    let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"require_member": "me"})));
+    let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"require_member": ["me"]})));
     assert_eq!(plugin.poll()["unit"]["thread"], mine);
     assert!(claims(&t.fake, &t.issue).is_empty());
     end(plugin, &t.fake);
@@ -430,7 +430,10 @@ fn require_member_me_matches_the_delegate() {
     let handed = t.fake.issue("Todo", "Handed to the app 🤖", "");
     t.fake.assign(&handed, &t.phil);
     t.fake.delegate(&handed, &t.fake.app_user());
-    let mut plugin = Plugin::armed(with(app_settings(&t.fake), json!({"require_member": "me"})));
+    let mut plugin = Plugin::armed(with(
+        app_settings(&t.fake),
+        json!({"require_member": ["me"]}),
+    ));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(unit["thread"], handed);
     assert_eq!(unit["self"], t.fake.app_user());
@@ -445,7 +448,7 @@ fn require_member_names_a_user_by_display_name_and_by_email() {
         t.fake.assign(&t.issue, &t.phil);
         let chens = t.fake.issue("Todo", "Chen's", "");
         t.fake.assign(&chens, &t.chen);
-        let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"require_member": name})));
+        let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"require_member": [name]})));
         assert_eq!(plugin.poll()["unit"]["thread"], chens, "{name}");
         end(plugin, &t.fake);
     }
@@ -457,7 +460,103 @@ fn require_member_unknown_user_is_an_idle_beat_naming_it() {
     let t = team();
     let mut plugin = Plugin::armed(with(
         settings(&t.fake),
-        json!({"require_member": "ghost@acme.example"}),
+        json!({"require_member": ["ghost@acme.example"]}),
+    ));
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    assert_eq!(
+        plugin.stderr_soon("ghost"),
+        "afkd-linear: linear resolve user: no user whose display name or email is \
+         'ghost@acme.example'\n"
+    );
+    assert!(claims(&t.fake, &t.issue).is_empty());
+    end(plugin, &t.fake);
+}
+
+/// `require_member "me", "none"`, for an app, over four Todo issues — one assigned to a
+/// person, one delegated to another app, one nobody holds, one delegated to this app —
+/// claims the free one and then the app's, and never touches the other two.
+#[test]
+fn require_member_me_or_none_claims_a_free_issue_and_the_apps_own_and_skips_the_rest() {
+    let t = team();
+    let vesper = t
+        .fake
+        .user("Vesper (app)", "vesper", "vesper@oauthapp.example");
+    t.fake.assign(&t.issue, &t.phil);
+    let vespers = t.fake.issue("Todo", "Vesper's 🌑", "");
+    t.fake.delegate(&vespers, &vesper);
+    let free = t.fake.issue("Todo", "Nobody's — 自由", "");
+    let mine = t.fake.issue("Todo", "Handed to the app 🤖", "");
+    t.fake.delegate(&mine, &t.fake.app_user());
+    let mut plugin = Plugin::armed(with(
+        app_settings(&t.fake),
+        json!({"require_member": [["me", "none"]]}),
+    ));
+    assert_eq!(plugin.poll()["unit"]["thread"], free);
+    assert_eq!(plugin.poll()["unit"]["thread"], mine);
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    for held in [&t.issue, &vespers] {
+        assert!(claims(&t.fake, held).is_empty(), "{held} is not touched");
+    }
+    end(plugin, &t.fake);
+}
+
+/// `on_claim` delegating the free issue to `me` makes it the app's: the issue's delegate is
+/// the viewer, the request sends just that, and once the claim is released the next poll
+/// claims the same issue again, now held by the app.
+#[test]
+fn delegate_me_hands_the_issue_to_the_app_and_the_next_poll_still_passes_it() {
+    let t = team();
+    t.fake.assign(&t.issue, &t.phil);
+    let free = t.fake.issue("Todo", "Nobody's — 自由", "");
+    let mut plugin = Plugin::armed(with(
+        app_settings(&t.fake),
+        json!({"require_member": [["me", "none"]]}),
+    ));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(unit["thread"], free);
+    assert_eq!(
+        act(&mut plugin, &unit, "delegate", json!({"to": "me"})),
+        json!({"ok": true})
+    );
+    assert_eq!(t.fake.delegate_of(&free), Some(t.fake.app_user()));
+    let update = t
+        .fake
+        .seen()
+        .into_iter()
+        .rfind(|s| s.operation == "IssueUpdate")
+        .expect("the delegate request");
+    assert_eq!(
+        update.variables,
+        json!({"id": free, "input": {"delegateId": t.fake.app_user()}})
+    );
+    let line = format!(
+        "[linear] delegating issue {} \"Nobody's — 自由\" to \"me\"\n",
+        unit["id"].as_str().unwrap()
+    );
+    let stderr = plugin.stderr_soon("delegating");
+    assert!(stderr.contains(&line), "{stderr}");
+
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": unit["key"]})),
+        json!({"released": true})
+    );
+    assert!(claims(&t.fake, &free).is_empty());
+    assert_eq!(plugin.poll()["unit"]["thread"], free);
+    assert!(
+        claims(&t.fake, &t.issue).is_empty(),
+        "Phil's is not touched"
+    );
+    end(plugin, &t.fake);
+}
+
+/// An unknown name in a `require_member` list fails the poll as a lone one does, even
+/// beside `me` and `none`, and posts nothing.
+#[test]
+fn require_member_list_with_an_unknown_name_is_an_idle_beat_naming_it() {
+    let t = team();
+    let mut plugin = Plugin::armed(with(
+        settings(&t.fake),
+        json!({"require_member": [["me", "none", "ghost@acme.example"]]}),
     ));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert_eq!(
@@ -1622,6 +1721,31 @@ fn move_to_moves_the_issue_into_the_named_state() {
         stderr.contains(&format!("[linear] moving {} to state \"Done\"\n", named())),
         "{stderr}"
     );
+    end(plugin, &t.fake);
+}
+
+/// A delegate to a user nobody is named is refused with the sentence the `require_member`
+/// gate uses, nothing is sent, and the issue stays with nobody.
+#[test]
+fn delegate_to_an_unknown_user_is_refused_with_its_sentence() {
+    let t = team();
+    let mut plugin = Plugin::armed(app_settings(&t.fake));
+    let unit = plugin.poll()["unit"].clone();
+    let refusal =
+        "linear resolve user: no user whose display name or email is 'ghost@acme.example'";
+    assert_eq!(
+        act(
+            &mut plugin,
+            &unit,
+            "delegate",
+            json!({"to": "ghost@acme.example"})
+        ),
+        json!({"ok": false, "error": refusal})
+    );
+    assert!(!operations(&t.fake).contains(&"IssueUpdate".to_string()));
+    assert_eq!(t.fake.delegate_of(&t.issue), None);
+    let stderr = plugin.stderr_soon("ghost");
+    assert!(stderr.contains(&format!("{refusal}\n")), "{stderr}");
     end(plugin, &t.fake);
 }
 

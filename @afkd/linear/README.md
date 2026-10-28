@@ -2,7 +2,7 @@
 
 A **provider** plugin with one trigger kind, [`service(linear)`](#servicelinear-issues): it
 fires when an issue lands in a watched workflow state of a Linear team, and gives the
-service's slots the actions that move, label, comment on, describe and file issues as work
+service's slots the actions that move, label, delegate, comment on, describe and file issues as work
 starts, finishes, or fails, that work an issue's sub-issues, and that put a file on an issue
 and fetch its files back. It also ships the `linear` skill an agent works the issue through:
 read and post comments, fetch and put up files, move the issue and its sub-issues, label
@@ -153,7 +153,7 @@ run.
 | `client_secret`  | `string`       | the OAuth app's client secret          |
 | `base_url`       | `string`       | API root; defaults to `https://api.linear.app` (a test seam) |
 | `pick_from`      | `list[string]` | the workflow states new issues are drawn from, by name, in the order written; required |
-| `require_member` | `string`       | `"me"` or a user's display name or email: only claim issues assigned or delegated to them; default unset |
+| `require_member` | `list[string]` | `"me"`, users by display name or email, or `"none"`: only claim issues assigned or delegated to one of them, `"none"` an issue nobody holds; default unset |
 | `require_label`  | `string`       | only claim issues carrying a label of this exact name; default unset |
 | `without_label`  | `list[string]` | never claim issues carrying any of these labels (deny wins over `require_label`); default unset |
 | `discuss_with`   | `list[string]` | `[ "anyone" ]` or users, `[ "chen@acme.example", "me" ]`: claim an issue on first sight or when an allowed author comments after afkd last did; default unset |
@@ -234,6 +234,7 @@ first. A state or a label is named by its name, in the service's team:
 | `linear.move_to(issue, "<state>")`                           | move the issue to a workflow state; its place there is Linear's to pick |
 | `linear.add_label(issue, "<label>")`                         | put on the team's label of that name, else the workspace's, else one created for the team |
 | `linear.remove_label(issue, "<label>")`                      | take a label off; a name with no label is a no-op |
+| `linear.delegate(issue, "<to>")`                             | delegate the issue to `"me"`, the app, or to an app's user by display name or email |
 | `linear.create_issue(issue, "<title>", "<description>", state="<state>")` | file a new issue in the team, in the team's default state when `state` is left out |
 | `linear.create_sub_issue(issue, "<title>", "<description>", state="<state>")` | file a new sub-issue of the issue, as `create_issue` does |
 | `linear.archive(issue)`                                      | archive the issue                       |
@@ -310,9 +311,11 @@ plugin puts back — its run crashed, or afkd handed it back unrun — goes to t
 the state it was claimed from, so an issue that keeps crashing cannot starve the head of the
 queue.
 
-`require_member` claims only an issue assigned or delegated to the user it names: `"me"`,
-whoever the credential authenticates as, or a user by display name or email. An issue
-assigned to anyone else is passed over, not waited on. `require_label` claims only issues
+`require_member` claims only an issue assigned or delegated to a user it names: `"me"`,
+whoever the credential authenticates as, or a user by display name or email. It takes one
+entry or several, `require_member "me", "chen@acme.example"`, and an issue passes if any
+entry matches; `"none"` is an issue with neither an assignee nor a delegate. An issue held
+by anyone else is passed over, not waited on. `require_label` claims only issues
 carrying a label of that exact name, and `without_label` never claims one carrying any of
 the labels it names; **deny wins**, so an issue carrying both is skipped.
 
@@ -333,6 +336,41 @@ implement :: service(linear) {
     if moved != nil { fail("linear.move_to: #{moved.message}") }
     unlabelled := linear.remove_label(issue, "afkd/ready")
     if unlabelled != nil { fail("linear.remove_label: #{unlabelled.message}") }
+  }
+
+  work_dir "/srv/acme/widgets"
+  on_run proc(run: core.Run, issue: linear.Issue) {
+    $ cat $AFKD_SCRATCH_DIR/task.md
+  }
+}
+```
+
+**Claiming what nobody holds.** `require_member "me", "none"` picks an issue that is free or
+already the app's, and `on_claim` delegating it to `"me"` makes it the app's. So the issue
+still passes under `"me"` when it comes back from another state — answered out of Needs
+Info, or moved back from Backlog — and an issue another app or a person holds is never
+touched. **Each computer gets its own app**: `"me"` is the app, so two afkd on one app both
+read every issue the app holds as their own, and both fetch and renew a token for that one
+app.
+
+```conf
+import "core"
+import "core:env"
+import "@afkd/linear"
+
+LINEAR_CLIENT_ID     :: env.get("LINEAR_CLIENT_ID") ?? ""
+LINEAR_CLIENT_SECRET :: env.get("LINEAR_CLIENT_SECRET") ?? ""
+
+develop :: service(linear) {
+  team           "ENG"
+  client_id      LINEAR_CLIENT_ID
+  client_secret  LINEAR_CLIENT_SECRET
+  pick_from      "Todo"
+  require_member "me", "none"
+
+  on_claim proc(issue: linear.Issue) {
+    delegated := linear.delegate(issue, "me")
+    if delegated != nil { fail("linear.delegate: #{delegated.message}") }
   }
 
   work_dir "/srv/acme/widgets"
@@ -439,7 +477,8 @@ being torn down, and agent, gate and plugin all name the same file.
 - **Blocked issues wait.** An issue blocked by one that is not yet completed, canceled or a
   duplicate is never claimed, and its handle carries `blocked_by`.
 - **`require_member` reads the assignee and the delegate**, so an issue delegated to an
-  app is the app's, and `"me"` is the app when it is one.
+  app is the app's, and `"me"` is the app when it is one. It also takes `"none"`, an issue
+  nobody holds, and `delegate` hands an issue to an app.
 - **No `min_age`.**
 - **Files are links, not attachments.** A file is a markdown link in the description or a
   comment, so `files=` on `comment` and `describe` puts one up and `fetch_files` reads every
