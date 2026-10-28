@@ -1243,7 +1243,7 @@ fn a_park_finish_labels_marks_and_releases() {
         &unit,
         Author::User(t.fake.key_user()),
     );
-    assert_eq!(t.fake.labels(&t.issue), ["Awaiting Reply"]);
+    assert_eq!(t.fake.labels(&t.issue), ["Needs Info"]);
     assert!(
         operations(&t.fake).contains(&"IssueLabelCreate".to_string()),
         "created"
@@ -1263,16 +1263,19 @@ fn a_park_finish_labels_marks_and_releases() {
         "the release is last"
     );
     assert!(plugin.stderr_soon("parked issue").contains(&format!(
-        "[linear] parked issue ENG-101 \"{TITLE}\" awaiting a reply (label \"Awaiting Reply\")\n"
+        "[linear] parked issue ENG-101 \"{TITLE}\" awaiting a reply (label \"Needs Info\")\n"
     )));
     end(plugin, &t.fake);
 }
 
-/// A parked issue waits, its question unanswered, in the state it sat in; a human's reply
-/// re-arms it ahead of `pick_from`, the badge and owner marker coming off.
+/// A park on a team that already has its `Needs Info` label badges the issue with that label,
+/// creating none beside it. The parked issue waits, its question unanswered, in the state it
+/// sat in; a human's reply re-arms it ahead of `pick_from`, the badge and owner marker coming
+/// off.
 #[test]
 fn a_parked_issue_answered_is_reclaimed_and_unbadged() {
     let t = team();
+    let needs_info = t.fake.team_label("Needs Info", "#f2c94c");
     let mut plugin = Plugin::armed(settings(&t.fake));
     let unit = plugin.poll()["unit"].clone();
     park(
@@ -1281,6 +1284,15 @@ fn a_parked_issue_answered_is_reclaimed_and_unbadged() {
         &t.issue,
         &unit,
         Author::User(t.fake.key_user()),
+    );
+    assert_eq!(
+        t.fake.label_ids(&t.issue),
+        [needs_info],
+        "the team's own label"
+    );
+    assert!(
+        !operations(&t.fake).contains(&"IssueLabelCreate".to_string()),
+        "no second label is created"
     );
     let next = t.fake.issue("Todo", "Queued behind it", "");
     let unit = plugin.poll()["unit"].clone();
@@ -2476,13 +2488,9 @@ fn the_fake_refuses_a_nonconforming_request() {
             "filter": {"team": {"id": {"eq": fake.team_id()}}, "labels": labels},
             "sort": [{"manual": {"order": "Ascending"}}], "first": 25}})
     };
-    let (status, body) = fake.post_raw(&request(
-        json!({"some": {"name": {"eq": "Awaiting Reply"}}}),
-    ));
+    let (status, body) = fake.post_raw(&request(json!({"some": {"name": {"eq": "Needs Info"}}})));
     assert_eq!((status, body["errors"].is_null()), (200, true), "{body}");
-    let (status, body) = fake.post_raw(&request(
-        json!({"some": {"title": {"eq": "Awaiting Reply"}}}),
-    ));
+    let (status, body) = fake.post_raw(&request(json!({"some": {"title": {"eq": "Needs Info"}}})));
     assert_eq!(status, 400);
     assert_eq!(
         body["errors"][0]["message"],
@@ -2490,7 +2498,7 @@ fn the_fake_refuses_a_nonconforming_request() {
     );
     assert_eq!(body["errors"][0]["extensions"]["type"], "graphql error");
     // SDL-valid, but not the filter the plugin means: refused all the same.
-    let (status, _) = fake.post_raw(&request(json!({"name": {"eq": "Awaiting Reply"}})));
+    let (status, _) = fake.post_raw(&request(json!({"name": {"eq": "Needs Info"}})));
     assert_eq!(status, 400);
     assert_eq!(
         fake.invalid_requests(),

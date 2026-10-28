@@ -115,7 +115,10 @@ def add_team_arg(parser):
     parser.add_argument(
         "--team",
         metavar="ID",
-        help="the team states and labels are read from (defaults to $LINEAR_TEAM_ID)",
+        help=(
+            "the team states and labels are read from, by its id as $LINEAR_TEAM_ID holds it,"
+            " not its key (ENG), which Linear refuses (defaults to $LINEAR_TEAM_ID)"
+        ),
     )
 
 

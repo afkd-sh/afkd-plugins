@@ -4,7 +4,7 @@
 # The "I cannot build this as it stands" action of the bundled `linear` skill. In one step it
 # posts its one argument as a comment on the issue this run works on and then writes the park
 # marker `park` into the run's scratch dir ($AFKD_SCRATCH_DIR). The plugin reads that marker
-# when the run ends and parks the issue instead of failing it: the `Awaiting Reply` label goes
+# when the run ends and parks the issue instead of failing it: the `Needs Info` label goes
 # on, the claim is released, and nothing else moves. A later poll finds the issue once a human
 # replies, and a fresh run starts with the answer in its brief. The marker is written only
 # after the comment lands, so a failed post never parks an issue with no question on it, and

@@ -111,8 +111,9 @@ Nothing hands it to an agent on its own; a `skills` list has to name it. It read
 `LINEAR_API_URL`, `LINEAR_AUTHORIZATION`, `LINEAR_TEAM_ID`, `LINEAR_ISSUE_ID` and
 `LINEAR_ISSUE` every `service(linear)` run carries: the GraphQL endpoint, the
 `Authorization` header the run reaches Linear with, the team's id, and the active issue's id
-and identifier (`ENG-123`). A script takes `--issue` and `--team` to reach another issue or
-team. Each script is a `python3` program of the standard library alone.
+and identifier (`ENG-123`). A script takes `--issue` and `--team` (the team's id, not its
+key) to reach another issue or team. Each script is a `python3` program of the standard
+library alone.
 
 | Script                | What it does                                                        |
 |-----------------------|---------------------------------------------------------------------|
@@ -372,19 +373,19 @@ when the issue is too ambiguous to build — or its premise does not hold at all
 can **ask first**. Give an agent the `@afkd/linear/linear` skill (see
 [above](#name-the-skill)); its `ask.py` posts the agent's message on the issue and writes the
 marker `park` into the run's scratch dir (`$AFKD_SCRATCH_DIR`). The plugin reads that marker
-at the end of the run and *parks* the issue instead of failing it: it adds the
-`Awaiting Reply` label, posts an `[afkd-park]` marker naming the service, releases the
-claim, and **moves nothing** — the issue keeps its state, its place and its unspent
-attempts. `on_fail` does not run, and `on_park` does, for extras.
+at the end of the run and *parks* the issue instead of failing it: it adds the `Needs Info`
+label, posts an `[afkd-park]` marker naming the service, releases the claim, and **moves
+nothing** — the issue keeps its state, its place and its unspent attempts. `on_fail` does
+not run, and `on_park` does, for extras.
 
 The label is also how afkd **finds the issue again**. Once a beat, before it reads
-`pick_from`, the plugin asks Linear which of the team's issues carry `Awaiting Reply`; one
-whose thread has gained a comment afkd did not write, newer than afkd's own last word, is
-claimed again right there — wherever it sits — the label and the marker come off, and the
-reply arrives under **New comments** in the fresh brief. `without_label` still vetoes it,
-and a blocker added while it waited still holds it back. An issue goes back only to the
-service its `[afkd-park]` marker names; one parked by a service no longer configured is
-taken over by whichever service finds it, with one line in the log.
+`pick_from`, the plugin asks Linear which of the team's issues carry `Needs Info`; one whose
+thread has gained a comment afkd did not write, newer than afkd's own last word, is claimed
+again right there — wherever it sits — the label and the marker come off, and the reply
+arrives under **New comments** in the fresh brief. `without_label` still vetoes it, and a
+blocker added while it waited still holds it back. An issue goes back only to the service
+its `[afkd-park]` marker names; one parked by a service no longer configured is taken over
+by whichever service finds it, with one line in the log.
 
 A **multi-step** run must stop at the ask itself, so nothing runs past the question:
 

@@ -935,7 +935,7 @@ mod tests {
                 "Query.issues(sort)[0].manual.order: Asc is not a member of PaginationSortOrder",
             ),
             (
-                "mutation M($t: String) { issueLabelCreate(input: {name: \"Awaiting Reply\", teamId: $t}) { success } }",
+                "mutation M($t: String) { issueLabelCreate(input: {name: \"Needs Info\", teamId: $t}) { success } }",
                 "mutation M($t: String) { issueLabelCreate(input: {teamId: $t}) { success } }",
                 "Mutation.issueLabelCreate(input): IssueLabelCreateInput needs its field name",
             ),
@@ -983,7 +983,7 @@ mod tests {
             .expect("the Issues document")
             .variables;
         let base = json!({
-            "filter": {"team": {"id": {"eq": "t"}}, "labels": {"some": {"name": {"eq": "Awaiting Reply"}}}},
+            "filter": {"team": {"id": {"eq": "t"}}, "labels": {"some": {"name": {"eq": "Needs Info"}}}},
             "sort": [{"manual": {"order": "Ascending"}}],
             "first": 25,
             "after": null,

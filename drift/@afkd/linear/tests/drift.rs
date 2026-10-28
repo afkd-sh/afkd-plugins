@@ -989,7 +989,7 @@ fn literal(text: &str) -> String {
 
 /// A run works its issue through the installed skill on a real daemon: its comment and its
 /// question land on the issue verbatim, and the question parks it as the plugin parks one —
-/// the `Awaiting Reply` label on, an `[afkd-park]` marker naming the service, the claim
+/// the `Needs Info` label on, an `[afkd-park]` marker naming the service, the claim
 /// released. `afkd plugins` lists the skill, and every request conforms.
 #[test]
 fn skill_leg_a_run_comments_and_parks_through_the_installed_skill() {
@@ -1002,7 +1002,10 @@ fn skill_leg_a_run_comments_and_parks_through_the_installed_skill() {
         .lines()
         .find(|l| l.starts_with(NAME))
         .unwrap_or_else(|| panic!("afkd plugins lists {NAME}:\n{listed}"));
-    assert!(line.contains("skill linear"), "the skill is supplied:\n{listed}");
+    assert!(
+        line.contains("skill linear"),
+        "the skill is supplied:\n{listed}"
+    );
 
     let seeded = seed();
     let (fake, issue) = (&seeded.fake, seeded.issue.as_str());
@@ -1013,7 +1016,7 @@ fn skill_leg_a_run_comments_and_parks_through_the_installed_skill() {
     let daemon = spawn_headless_streaming(home, &[]);
     wait_for(home, fake, issue, &daemon, "the issue is parked", || {
         let thread = fake.comments(issue);
-        fake.labels(issue).iter().any(|l| l == "Awaiting Reply")
+        fake.labels(issue).iter().any(|l| l == "Needs Info")
             && thread.iter().any(|c| c.body.starts_with("[afkd-park]"))
             && !claimed(fake, issue)
     });
@@ -1028,9 +1031,17 @@ fn skill_leg_a_run_comments_and_parks_through_the_installed_skill() {
         .iter()
         .find(|c| c.body.starts_with("[afkd-park]"))
         .expect("the park marker");
-    assert!(parked.body.contains("widgets"), "{:?} names the service", parked.body);
+    assert!(
+        parked.body.contains("widgets"),
+        "{:?} names the service",
+        parked.body
+    );
     assert_eq!(fake.state_of(issue), "Todo", "a park moves nothing");
-    assert_eq!(run_dirs(home).len(), 1, "one run, parked, not claimed again");
+    assert_eq!(
+        run_dirs(home).len(),
+        1,
+        "one run, parked, not claimed again"
+    );
 
     daemon.signal(libc::SIGINT);
     let out = daemon.reap(Duration::from_secs(10));

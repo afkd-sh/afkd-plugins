@@ -3,9 +3,10 @@
 #
 # It holds every type, field and argument @afkd/linear or its skill selects or sends, and no
 # other. Each type keeps a subset of its fields, each kept field carries every argument Linear
-# declares for it, and every line is Linear's own with its docstring dropped. An input type keeps
-# every field it requires. CommentFilter and UserSortInput are empty: kept arguments name them, and the plugin
-# never sends them. tests/common/sdl.rs reads it, and holds every request to it.
+# declares for it, and every line is Linear's own with its docstring dropped. An input type
+# keeps every field it requires. CommentFilter and UserSortInput are empty: kept arguments name
+# them, and the plugin never sends them. tests/common/sdl.rs reads it, and holds every request
+# to it.
 #
 # To check it against Linear's at that commit (it prints every line that is not Linear's, so
 # nothing when all are):

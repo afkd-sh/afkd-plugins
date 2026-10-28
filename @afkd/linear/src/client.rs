@@ -1110,7 +1110,7 @@ mod tests {
             ("States", states_vars(team)),
             ("Issues", issues_in_state_vars(team, state, None)),
             ("Issues", issues_in_state_vars(team, state, cursor)),
-            ("Issues", parked_vars(team, "Awaiting Reply", None)),
+            ("Issues", parked_vars(team, "Needs Info", None)),
             ("Issues", parked_vars(team, "Väntar på svar 🚦", cursor)),
             ("Issues", last_in_state_vars(team, state)),
             ("IssueRelations", relations_vars(issue, "eyJpZCI6InIyMCJ9")),
@@ -1121,7 +1121,7 @@ mod tests {
             ("IssueComments", comments_vars(issue, cursor)),
             ("Users", users_vars("陳大文")),
             ("Users", users_vars("chen@acme.example")),
-            ("Labels", labels_vars("Awaiting Reply")),
+            ("Labels", labels_vars("Needs Info")),
             (
                 "CommentCreate",
                 comment_create_vars(issue, "[afkd-claim] owner=afkd-4242"),
@@ -1137,10 +1137,7 @@ mod tests {
             ("CommentDelete", comment_delete_vars(issue)),
             ("IssueAddLabel", issue_label_vars(issue, state)),
             ("IssueRemoveLabel", issue_label_vars(issue, state)),
-            (
-                "IssueLabelCreate",
-                label_create_vars("Awaiting Reply", team),
-            ),
+            ("IssueLabelCreate", label_create_vars("Needs Info", team)),
             ("IssueUpdate", move_vars(issue, state, 0.0)),
             ("IssueUpdate", move_vars(issue, state, 1e15)),
             (
@@ -1200,10 +1197,10 @@ mod tests {
     #[test]
     fn the_issue_filters_are_the_ones_the_scan_means() {
         assert_eq!(
-            parked_vars("t", "Awaiting Reply", None),
+            parked_vars("t", "Needs Info", None),
             json!({
                 "filter": {"team": {"id": {"eq": "t"}},
-                           "labels": {"some": {"name": {"eq": "Awaiting Reply"}}}},
+                           "labels": {"some": {"name": {"eq": "Needs Info"}}}},
                 "sort": [{"manual": {"order": "Ascending"}}],
                 "first": 25,
                 "after": null,
@@ -1830,11 +1827,9 @@ mod tests {
         ]);
         let client = stub.client(AuthConfig::ApiKey("k".into()));
         for _ in 0..3 {
-            client.add_label("t-eng", "i-1", "Awaiting Reply").unwrap();
+            client.add_label("t-eng", "i-1", "Needs Info").unwrap();
         }
-        client
-            .remove_label("t-eng", "i-1", "Awaiting Reply")
-            .unwrap();
+        client.remove_label("t-eng", "i-1", "Needs Info").unwrap();
         let seen = stub.captured(8);
         let sent: Vec<(String, Value)> = seen
             .iter()
@@ -1857,7 +1852,7 @@ mod tests {
             sent[5],
             (
                 "IssueLabelCreate".into(),
-                label_create_vars("Awaiting Reply", "t-eng")
+                label_create_vars("Needs Info", "t-eng")
             )
         );
         assert_eq!(

@@ -38,10 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # A red suite must not publish, so the plugin's own suite — its unit tests and the wire
-      # contract suite against the loopback fake Linear — runs here, `--locked` as the release
-      # build below is. The drift gate under `drift/` needs an afkd on PATH, so it runs on a
-      # host that has one, not here.
+      # A red suite must not publish, so the plugin's own suite — its unit tests, the wire
+      # contract suite against the loopback fake Linear and the skill suite, which runs the
+      # skill's scripts against that same fake — runs here, `--locked` as the release build
+      # below is. The drift gate under `drift/` needs an afkd on PATH, so it runs on a host
+      # that has one, not here.
       - name: The plugin's own suite
         working-directory: '@afkd/linear'
         run: cargo test --locked

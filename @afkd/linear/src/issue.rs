@@ -71,7 +71,7 @@ const PARK_MARKER: &str = "[afkd-park]";
 /// The label the kind adds when a run **parks** an issue awaiting a human reply, and takes
 /// off again on the next claim. It also does the finding: the parked sweep asks Linear for
 /// the issues carrying it.
-const AWAITING_LABEL: &str = "Awaiting Reply";
+const NEEDS_INFO_LABEL: &str = "Needs Info";
 
 /// How many badged issues one beat considers, from a rotating cursor. A bound, not a limit
 /// on how many issues may be parked: the cursor still reaches every one within a few beats.
@@ -178,7 +178,7 @@ struct PendingFinish {
     returns_to: String,
     /// The issue itself: its title for the log lines, its id for every call.
     issue: Issue,
-    /// Whether the [`AWAITING_LABEL`] **badge** a park owes is still unwritten. The badge is
+    /// Whether the [`NEEDS_INFO_LABEL`] **badge** a park owes is still unwritten. The badge is
     /// what the next beat's sweep re-finds the issue by, so a park whose label write failed
     /// is *not* delivered.
     park: bool,
@@ -503,7 +503,7 @@ impl LinearUnits {
     }
 
     /// The parked-issue sweep, run **ahead of** the `pick_from` scan on every beat: ask
-    /// Linear which of the team's issues carry [`AWAITING_LABEL`], and re-claim the first one
+    /// Linear which of the team's issues carry [`NEEDS_INFO_LABEL`], and re-claim the first one
     /// a human has answered — wherever it sits.
     ///
     /// The reply test is the feedback delta ([`feedback_comments`]), so afkd's own comments
@@ -520,7 +520,7 @@ impl LinearUnits {
         clock: &dyn Clock,
         budget: &ScanBudget,
     ) -> Result<ParkScan, LinearError> {
-        let badged = self.tracker.parked_issues(team_id, AWAITING_LABEL)?;
+        let badged = self.tracker.parked_issues(team_id, NEEDS_INFO_LABEL)?;
         if badged.is_empty() {
             return Ok(ParkScan::Nothing);
         }
@@ -718,7 +718,7 @@ impl LinearUnits {
         // Parked: the sweep re-claims it once a human answers, wherever it sits. A parked
         // issue no slot moved on still sits in the state it was claimed from, so claiming it
         // here would run it again unanswered.
-        if issue.labels.iter().any(|l| l == AWAITING_LABEL) {
+        if issue.labels.iter().any(|l| l == NEEDS_INFO_LABEL) {
             return Ok(Considered::Passed);
         }
         let comments = self.tracker.issue_comments(&issue.id)?;
@@ -793,10 +793,10 @@ impl LinearUnits {
         diag.narrate(&claimed_line(&issue));
         // The issue is being worked, so it is no longer waiting on anyone: take the badge
         // off, and the owner marker with it. Best-effort: the claim is won either way.
-        if issue.labels.iter().any(|l| l == AWAITING_LABEL) {
+        if issue.labels.iter().any(|l| l == NEEDS_INFO_LABEL) {
             if let Err(e) = self
                 .tracker
-                .remove_label(team_id, &issue.id, AWAITING_LABEL)
+                .remove_label(team_id, &issue.id, NEEDS_INFO_LABEL)
             {
                 diag.err(&e);
             }
@@ -905,7 +905,7 @@ impl LinearUnits {
         if owed.park {
             match self.team_id().and_then(|team_id| {
                 self.tracker
-                    .add_label(&team_id, &owed.issue.id, AWAITING_LABEL)
+                    .add_label(&team_id, &owed.issue.id, NEEDS_INFO_LABEL)
             }) {
                 Ok(()) => {
                     diag.narrate(&parked_line(&owed.issue));
@@ -1109,7 +1109,7 @@ impl LinearUnits {
 
     /// The end of a unit's run: either the durable `[afkd-ran]` watermark (the default path)
     /// or the last-speaker backstop (the `discuss_with` path), and the lease release last of
-    /// all. A park adds the [`AWAITING_LABEL`] badge first, and the [`PARK_MARKER`] naming
+    /// all. A park adds the [`NEEDS_INFO_LABEL`] badge first, and the [`PARK_MARKER`] naming
     /// this service after the branch and **before** the release, so the issue is never
     /// badged, unclaimed and ownerless at once.
     ///
@@ -1128,10 +1128,10 @@ impl LinearUnits {
         let issue = &unit.issue;
         let mut park_owed = matches!(outcome, UnitOutcome::Park);
         if park_owed {
-            match self
-                .team_id()
-                .and_then(|team_id| self.tracker.add_label(&team_id, &issue.id, AWAITING_LABEL))
-            {
+            match self.team_id().and_then(|team_id| {
+                self.tracker
+                    .add_label(&team_id, &issue.id, NEEDS_INFO_LABEL)
+            }) {
                 Ok(()) => {
                     diag.narrate(&parked_line(issue));
                     park_owed = false;
@@ -1344,7 +1344,7 @@ fn orphan_line(issue: &Issue, gone: &str) -> String {
 /// The success line for a parked issue, naming the badge a person will see in Linear.
 fn parked_line(issue: &Issue) -> String {
     format!(
-        "{ACTION_TAG} parked {} awaiting a reply (label \"{AWAITING_LABEL}\")",
+        "{ACTION_TAG} parked {} awaiting a reply (label \"{NEEDS_INFO_LABEL}\")",
         issue_words(issue)
     )
 }
@@ -2678,13 +2678,13 @@ mod tests {
         let f = fx(json!({}));
         f.tracker.add_issue("Todo", "ENG-1", TITLE, "");
         park(&f, "ENG-1");
-        assert_eq!(f.tracker.issue("ENG-1").labels, [AWAITING_LABEL]);
+        assert_eq!(f.tracker.issue("ENG-1").labels, [NEEDS_INFO_LABEL]);
         assert!(f
             .texts("ENG-1")
             .contains(&"[afkd-park] service=afkd::develop".to_string()));
         assert!(f.texts("ENG-1").iter().all(|t| !is_claim(t)));
         assert!(f.diag.narrated().contains(&format!(
-            "[linear] parked issue ENG-1 \"{TITLE}\" awaiting a reply (label \"Awaiting Reply\")"
+            "[linear] parked issue ENG-1 \"{TITLE}\" awaiting a reply (label \"Needs Info\")"
         )));
         f.tracker.add_issue("Todo", "ENG-2", "queued", "");
         assert_eq!(
@@ -2719,7 +2719,7 @@ mod tests {
         let parked = |service: &str| {
             let f = fx(json!({}));
             f.tracker.add_issue("In Progress", "ENG-1", "t", "");
-            f.tracker.seed_label("ENG-1", AWAITING_LABEL);
+            f.tracker.seed_label("ENG-1", NEEDS_INFO_LABEL);
             let at = |ago: u64| SystemTime::now() - Duration::from_secs(ago);
             f.tracker
                 .push_comment("ENG-1", "q", "Which one?", SELF_ID, at(120));
@@ -2841,7 +2841,7 @@ mod tests {
             f.units.release_stale(&unit.key(), f.clock.now(), &f.diag),
             Some(true)
         );
-        assert_eq!(f.tracker.issue("ENG-1").labels, [AWAITING_LABEL]);
+        assert_eq!(f.tracker.issue("ENG-1").labels, [NEEDS_INFO_LABEL]);
         assert!(f.texts("ENG-1").iter().all(|t| !is_claim(t)));
     }
 }

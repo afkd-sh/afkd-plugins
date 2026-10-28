@@ -782,15 +782,6 @@ impl FakeLinear {
         });
     }
 
-    /// The id of every issue the fake holds, in the order they were filed.
-    pub fn issue_ids(&self) -> Vec<String> {
-        lock(&self.store)
-            .issues
-            .iter()
-            .map(|i| i.id.clone())
-            .collect()
-    }
-
     /// Add a user; returns its id.
     pub fn user(&self, name: &str, display_name: &str, email: &str) -> String {
         let mut s = lock(&self.store);

@@ -53,8 +53,8 @@ cannot be built as written — and run the helper with that as its single argume
 !`"${CLAUDE_PLUGIN_ROOT}/skills/linear/ask.py" "<REPLACE WITH YOUR QUESTIONS>"`
 
 In one step it posts your message as a comment on the active issue **and** parks the run.
-afkd then **parks the issue**: it adds the `Awaiting Reply` label, releases its claim, and
-moves nothing else — the issue keeps its state, its place and its unspent attempts.
+afkd then **parks the issue**: it adds the `Needs Info` label, releases its claim, and moves
+nothing else — the issue keeps its state, its place and its unspent attempts.
 Nothing re-picks it while it waits. When a human replies in the thread, afkd finds the
 labelled issue on a later poll, re-claims it wherever it sits, and a fresh run starts with
 the answer under **New comments** in its brief.
@@ -126,7 +126,8 @@ moves nothing. Optional flags:
   that is not in the state exits non-zero and moves nothing, and an ISSUE that is the
   issue being moved is refused. Exclusive with `--pos` and with each other.
 - `--issue REF` — move a different issue (overrides `$LINEAR_ISSUE_ID`).
-- `--team ID` — read the states of a different team (overrides `$LINEAR_TEAM_ID`).
+- `--team ID` — read the states of a different team, named by its id, not its key
+  (overrides `$LINEAR_TEAM_ID`).
 
 **Blast radius:** the credential is workspace-wide, so an `--issue` override can move
 **any** issue it reaches. Sharper still: moving an issue **into** a state the afkd linear
@@ -178,7 +179,8 @@ It files the issue in this run's team. Optional flags:
   the state exits non-zero and files nothing. Exclusive with `--pos` and with each other;
   all three need `--state`.
 - `--parent ISSUE` — file it as a sub-issue of ISSUE (see [Sub-issues](#sub-issues)).
-- `--team ID` — file it in a different team (overrides `$LINEAR_TEAM_ID`).
+- `--team ID` — file it in a different team, named by its id, not its key (overrides
+  `$LINEAR_TEAM_ID`).
 
 On success it prints the new issue's identifier, its title and its url.
 
@@ -212,7 +214,8 @@ refused and nothing moves. To split work into a new sub-issue, file it with
 `create_issue.py --parent` (see [File a new issue](#file-a-new-issue)).
 
 Both take `--issue REF` to work a different issue's sub-issues (overrides
-`$LINEAR_ISSUE_ID`), and `move_sub_issue.py` takes `--team ID` too.
+`$LINEAR_ISSUE_ID`), and `move_sub_issue.py` takes `--team ID` (the team's id, not its key)
+too.
 **Blast radius:** the credential is workspace-wide, so a `move_sub_issue.py --issue` can
 move the sub-issues of **any** issue it reaches — use the override deliberately; the
 default (no flag) stays scoped to this run's issue.
@@ -241,7 +244,8 @@ Remove a label the same way:
 A name that matches no label errors non-zero; so does one that two labels carry (a team
 label and a workspace label of one name, say), naming each id — pass the id you mean.
 Adding a label the issue already has, or removing one it does not, is a no-op success
-(it never duplicates and never errors). Both take `--issue REF` and `--team ID`.
+(it never duplicates and never errors). Both take `--issue REF` and `--team ID` (the
+team's id, not its key).
 
 **Blast radius:** the credential is workspace-wide, so an `--issue` override can flag or
 unflag **any** issue it reaches. The default (no flag) stays scoped to this run's issue.
@@ -255,8 +259,8 @@ issues. First list the states:
 
 It prints one `id  type  name` line per state, in the order the team's workflow shows
 them; the type is Linear's category (`triage`, `backlog`, `unstarted`, `started`,
-`completed`, `canceled`). The team defaults from the environment; pass `--team ID` to
-browse a different team.
+`completed`, `canceled`). The team defaults from the environment; pass `--team ID` (the
+team's id, not its key) to browse a different team.
 
 Then list the issues in one state, named by its exact name or id:
 
@@ -315,8 +319,9 @@ merged into this run (`LINEAR_AUTHORIZATION`, `LINEAR_API_URL`); you do not pass
 locators are read **from the environment only** — the active issue from
 `$LINEAR_ISSUE_ID` (its identifier is `$LINEAR_ISSUE`) and the team from
 `$LINEAR_TEAM_ID` — each overridable with the `--issue` / `--team` flag. An issue is
-named by its identifier (`ENG-12`) or its id, either one, wherever a helper takes one. The
-helper paths are passed on the command line because `CLAUDE_PLUGIN_ROOT` is not exported
+named by its identifier (`ENG-12`) or its id, either one, wherever a helper takes one. A
+team is named by its id, as `$LINEAR_TEAM_ID` holds it, never by its key (`ENG`): Linear
+answers a key with `Argument Validation Error`. The helper paths are passed on the command line because `CLAUDE_PLUGIN_ROOT` is not exported
 into Bash subprocesses.
 
 `AFKD_SCRATCH_DIR` — the per-run scratch dir — is additionally required by
