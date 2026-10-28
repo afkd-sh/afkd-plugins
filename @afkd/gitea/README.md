@@ -430,8 +430,8 @@ type:
 | `on_park`  | run, item, outcome   | after a run that ended waiting on a human reply | —                  |
 | `on_fail`  | run, item, outcome   | after a run that failed            | after a round that failed       |
 
-`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`ok`,
-`duration`, `error`). The item is the plugin's handle for it — a **`gitea.Issue`** on
+`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`duration`,
+`error`). The item is the plugin's handle for it — a **`gitea.Issue`** on
 `service(gitea)`, written `issue` in the examples here, and a **`gitea.Pull_Request`** on
 `service(gitea.pr)`, written `pr`:
 

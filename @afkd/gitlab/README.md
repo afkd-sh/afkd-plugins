@@ -178,7 +178,8 @@ retries. There is no clarification gate and no `on_park`.
 
 **Saying what happened.** A `gitlab.comment(issue, …)` in `on_done`/`on_fail` can carry
 the run's own facts, which afkd interpolates before the plugin sees the text: the
-outcome's `#{outcome.duration}` and `#{outcome.error}`, and the run's `#{run.id}`.
+outcome's `#{outcome.duration}` and, once `outcome.error != nil` has narrowed it,
+`#{outcome.error.message}`, and the run's `#{run.id}`.
 
 ```conf
 import "core"
@@ -193,7 +194,9 @@ widgets :: service(gitlab) {
     gitlab.close(issue)
   }
   on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
-    gitlab.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error}")
+    if outcome.error != nil {
+      gitlab.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error.message}")
+    }
     gitlab.unassign(issue)
   }
 
@@ -338,8 +341,8 @@ Neither kind parks, so neither has `on_park`:
 | `on_done`  | run, item, outcome | after a run that finished                                  |
 | `on_fail`  | run, item, outcome | after a run that failed                                    |
 
-`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`ok`,
-`duration`, `error`). The item is the plugin's handle for it — a **`gitlab.Issue`** on
+`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`duration`,
+`error`). The item is the plugin's handle for it — a **`gitlab.Issue`** on
 `service(gitlab)`, written `issue` in the examples here, and a **`gitlab.Merge_Request`** on
 `service(gitlab.mr)`, written `mr`:
 

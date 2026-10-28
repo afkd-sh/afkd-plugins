@@ -515,7 +515,8 @@ widgets :: service(gitea) {{
     if gitea.remove_label(issue, "afkd/ready") != nil {{ fail("remove_label afkd/ready") }}
     if gitea.unassign(issue) != nil {{ fail("unassign") }}
     if gitea.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
-    if gitea.comment(issue, "attempts spent: #{{outcome.error}}") != nil {{ fail("comment") }}
+    if outcome.error == nil {{ fail("on_fail without an error") }}
+    if gitea.comment(issue, "attempts spent: #{{outcome.error.message}}") != nil {{ fail("comment") }}
     if gitea.remove_label(issue, "afkd/claimed") != nil {{ fail("remove_label afkd/claimed") }}
   }}
 

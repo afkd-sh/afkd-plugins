@@ -523,7 +523,8 @@ widgets :: service(gitlab) {{
     if gitlab.remove_label(issue, "afkd::ready") != nil {{ fail("remove_label afkd::ready") }}
     if gitlab.unassign(issue) != nil {{ fail("unassign") }}
     if gitlab.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
-    if gitlab.comment(issue, "attempts spent: #{{outcome.error}}") != nil {{ fail("comment") }}
+    if outcome.error == nil {{ fail("on_fail without an error") }}
+    if gitlab.comment(issue, "attempts spent: #{{outcome.error.message}}") != nil {{ fail("comment") }}
     if gitlab.remove_label(issue, "afkd::claimed") != nil {{ fail("remove_label afkd::claimed") }}
   }}
 

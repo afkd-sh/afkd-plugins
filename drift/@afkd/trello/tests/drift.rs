@@ -203,17 +203,17 @@ widgets :: service(trello) {{
   every        1s
   max_attempts 1
 
-  on_claim(card: trello.Card) {{
+  on_claim proc(card: trello.Card) {{
     trello.add_member(card)
     trello.move_to(card, "In Progress", at=.top)
   }}
-  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
     trello.move_to(card, "Review", at=.top)
     trello.comment(card, "done in #{{outcome.duration}}: #{{card.title}}")
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, card: trello.Card) {{
+  on_run proc(run: core.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{card.title}} >> {FIELDS}
     $ echo url #{{card.url}} >> {FIELDS}
@@ -494,16 +494,16 @@ widgets :: service(trello) {{
   every        1s
   max_attempts 2
 
-  on_claim(card: trello.Card) {{
+  on_claim proc(card: trello.Card) {{
     trello.move_to(card, "In Progress", at=.top)
   }}
-  on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+  on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
     trello.move_to(card, "Backlog", at=.bottom)
     trello.add_label(card, "Problem")
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, card: trello.Card) {{
+  on_run proc(run: core.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -679,19 +679,19 @@ widgets :: service(trello) {{
   every        1s
   max_attempts 1
 
-  on_claim(card: trello.Card) {{
+  on_claim proc(card: trello.Card) {{
     plan := trello.fetch_attachment(card, "plan.md", "{home}/earlier-plan.md")
     if plan != nil {{ fail("trello.fetch_attachment: #{{plan.message}}") }}
     patch := trello.fetch_attachment(card, "work.patch", "{home}/earlier.patch")
     if patch != nil {{ fail("trello.fetch_attachment: #{{patch.message}}") }}
     trello.move_to(card, "In Progress", at=.top)
   }}
-  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
     trello.move_to(card, "Review", at=.top)
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, card: trello.Card) {{
+  on_run proc(run: core.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     attached := trello.attach(card, "{home}/work.patch", "work.patch")
     if attached != nil {{ fail("trello.attach: #{{attached.message}}") }}
@@ -855,7 +855,7 @@ critic :: agent(claude) {
   deny            GIT_WRITES
 }
 
-// Confine the pipeline to the repo plus its Rust/claude toolchain.
+// Confines the pipeline to the repo plus its Rust/claude toolchain.
 // The run's scratch dir is bound automatically.
 repo_jail :: sandbox {
   network host
@@ -889,7 +889,7 @@ repo_jail :: sandbox {
 // Fresh marker state each run, and a tree that starts where master is.
 prep :: proc() {
   fetched := git.fetch("origin", "master")
-  if !fetched.ok { fail("git fetch: #{fetched.error}") }
+  if fetched.error != nil { fail("git fetch: #{fetched.error.message}") }
   $ git reset --hard
   $ git checkout -B master origin/master
   $ rm -f $AFKD_SCRATCH_DIR/plan.md $AFKD_SCRATCH_DIR/*.ok \
@@ -906,15 +906,15 @@ prompt :: proc(name: string) -> string {
   return text
 }
 
-// Build, then critique, up to three times.
+// Builds, then critiques, up to three times.
 gate :: proc(run: core.Run, phase: string, build: string, critique: string) -> Verdict {
   for _ in 0..<3 {
     built := builder <- prompt(build)
-    if !built.ok { fail("builder: #{built.error}") }
+    if built.error != nil { fail("builder: #{built.error.message}") }
     if fs.is_file("#{run.scratch_dir}/#{phase}.blocked") { return .blocked }
 
     critiqued := critic <- prompt(critique)
-    if !critiqued.ok { fail("critic: #{critiqued.error}") }
+    if critiqued.error != nil { fail("critic: #{critiqued.error.message}") }
     if fs.is_file("#{run.scratch_dir}/#{phase}.ok") { return .approved }
   }
   return .rejected
@@ -938,16 +938,16 @@ implement :: proc(run: core.Run) {
   }
 }
 
-// Commit the approved work, then check the fact rather than the agent's word.
+// Commits the approved work, then checks the fact rather than the agent's word.
 commit :: proc(run: core.Run) {
   committed := builder <- prompt("40-commit.md")
-  if !committed.ok { fail("builder: #{committed.error}") }
+  if committed.error != nil { fail("builder: #{committed.error.message}") }
   if fs.is_file("#{run.scratch_dir}/commit.blocked") {
     fail("commit blocked: approval stale, real change needed - see card comment")
   }
 
   fetched := git.fetch("origin", "master")
-  if !fetched.ok { fail("git fetch: #{fetched.error}") }
+  if fetched.error != nil { fail("git fetch: #{fetched.error.message}") }
   merged, err := git.is_merged("HEAD", into="origin/master")
   if err != nil { fail("cannot tell whether HEAD reached origin/master: #{err.message}") }
   if !merged { fail("the commit never reached origin/master - the push did not land") }
@@ -969,23 +969,23 @@ develop :: service(trello) {
   max_attempts 2
   every        1m~3m
 
-  on_claim(card: trello.Card) {
+  on_claim proc(card: trello.Card) {
     added := trello.add_member(card)
     if added != nil { fail("trello.add_member: #{added.message}") }
     moved := trello.move_to(card, "In Progress", at=.top)
     if moved != nil { fail("trello.move_to: #{moved.message}") }
   }
-  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
     moved := trello.move_to(card, "Review", at=.top)
     if moved != nil { fail("trello.move_to: #{moved.message}") }
     commented := trello.comment(card, "afkd landed this card in #{outcome.duration}.")
     if commented != nil { fail("trello.comment: #{commented.message}") }
   }
-  on_park(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_park proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
     commented := trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
     if commented != nil { fail("trello.comment: #{commented.message}") }
   }
-  on_fail(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
     moved := trello.move_to(card, "Backlog", at=.bottom)
     if moved != nil { fail("trello.move_to: #{moved.message}") }
     labelled := trello.add_label(card, "Problem")
@@ -1002,7 +1002,7 @@ develop :: service(trello) {
     PNPM_CONFIG_STORE_DIR: PNPM_STORE,
   }
 
-  on_run(run: core.Run, card: trello.Card) { task(run) }
+  on_run proc(run: core.Run, card: trello.Card) { task(run) }
 }
 "##;
 
@@ -1052,10 +1052,10 @@ widgets :: service(trello) {{
   token     "REPLACE_ME"
   pick_from "Up for Grabs"
 
-  on_done(run: core.Run, card: trello.Card, outcome: core.Outcome) {{ {call} }}
+  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, card: trello.Card) {{
+  on_run proc(run: core.Run, card: trello.Card) {{
     $ true
   }}
 }}

@@ -516,7 +516,8 @@ widgets :: service(github) {{
     if github.remove_label(issue, "afkd/ready") != nil {{ fail("remove_label afkd/ready") }}
     if github.unassign(issue) != nil {{ fail("unassign") }}
     if github.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
-    if github.comment(issue, "attempts spent: #{{outcome.error}}") != nil {{ fail("comment") }}
+    if outcome.error == nil {{ fail("on_fail without an error") }}
+    if github.comment(issue, "attempts spent: #{{outcome.error.message}}") != nil {{ fail("comment") }}
     if github.remove_label(issue, "afkd/claimed") != nil {{ fail("remove_label afkd/claimed") }}
   }}
 
