@@ -70,12 +70,51 @@ export const BASE = 1_000_000;
 /// The step between two frames of a capture, in milliseconds.
 export const STEP = 10;
 
-/// Every frame of one recorded capture under `fixtures/`, in the order the daemon sent it.
-export function readCapture(file) {
+/// Every frame of one recorded capture under `fixtures/`, verbatim, in the order the daemon
+/// sent it.
+export function readRecording(file) {
   return readFileSync(join(HERE, "fixtures", file), "utf8")
     .split("\n")
     .filter((line) => line !== "")
     .map((line) => JSON.parse(line));
+}
+
+/// The lane table each capture's `meta.snapshot` would carry, for the captures a daemon
+/// recorded before it sent one: `[{ name, capacity, held, waiting }]` as the registry held it
+/// at that attach. Those configs have no `with queue(…)` block, so the registry then counted
+/// exactly the lane members' runs. It is the JS twin of afkd's `model::testkit::set_lane`, which
+/// states the table afkd's own goldens draw their band from: without it these boards would draw
+/// no `Queues` section, as an older daemon's do.
+///
+/// A stated table is the attach's, and the capture's later runs do not move it, so a test that
+/// cuts a capture past a lane member's run edge folds the table of its own cut. `blocks.jsonl`
+/// carries the daemon's own table and is not listed.
+export const STATED_LANES = Object.freeze({
+  // Nothing running at the attach.
+  "fire.jsonl": [{ name: "heavy", capacity: 2, held: 0, waiting: 0 }],
+  // ops.sleeper and ops.vacuum running, ops.nightly queued behind them.
+  "snapshot.jsonl": [{ name: "heavy", capacity: 2, held: 2, waiting: 1 }],
+  // Nothing running at the attach.
+  "reload.jsonl": [{ name: "heavy", capacity: 2, held: 0, waiting: 0 }],
+  // Nothing running at the attach.
+  "trace-burst.jsonl": [{ name: "heavy", capacity: 2, held: 0, waiting: 0 }],
+  // ops.sleeper running.
+  "noise.jsonl": [{ name: "heavy", capacity: 2, held: 1, waiting: 0 }],
+  // Nothing running at the attach; the family and ops.vacuum on the lane at its declared 2.
+  "lane.jsonl": [{ name: "ops.heavy", capacity: 2, held: 0, waiting: 0 }],
+});
+
+/// Every frame of one recorded capture under `fixtures/`, as [`readRecording`] reads it, but
+/// with a `meta.snapshot` that carries no `lanes` key given the capture's [`STATED_LANES`] table
+/// when it has one. The table goes **into** the snapshot frame rather than in a frame of its
+/// own, so no frame count, `until` cut or [`STEP`] instant moves.
+export function readCapture(file) {
+  const stated = STATED_LANES[file];
+  return readRecording(file).map((frame) =>
+    stated !== undefined && frame.type === "meta" && frame.meta === "snapshot" && !("lanes" in frame)
+      ? { ...frame, lanes: stated.map((lane) => ({ ...lane })) }
+      : frame,
+  );
 }
 
 /**

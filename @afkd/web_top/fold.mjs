@@ -92,6 +92,10 @@ export function seed(options = {}) {
     families: {},
     memberOf: {},
     load: { at: null, cpuPct: null, memUsed: null, memTotal: null, rxBps: null, txBps: null, history: [] },
+    // The daemon's lane table, `[{ lane, capacity, held, waiting }]` as [`queues`] reads it, or
+    // `null` when the snapshot carried none (an older daemon). Set only by the snapshot and
+    // `meta.lanes`, and moved by `queue_parallelism`.
+    lanes: null,
     // What the fold has seen. `ignored` counts the frames whose `type`/`event`/`meta`/`op`
     // tag this module does not know — the forward-compat path, which is a count and never
     // a fault.
@@ -969,6 +973,8 @@ function foldMeta(board, frame, now) {
         // Presence *is* the drain: a client attaching after the edge seeds `quitting`,
         // back-dated so it reads the drain's true age and not this connection's.
         quittingSince: anchorPast(now, frame.quitting_ms),
+        // The daemon's lane table, replaced with everything else on a reattach.
+        lanes: readLanes(frame.lanes),
       }));
     }
     case "quitting":
@@ -1011,9 +1017,10 @@ function foldMeta(board, frame, now) {
     case "queue_parallelism": {
       // `Meta::QueueCapacity` — a lane's capacity moved, by this tab, another tab, `afkd top` or
       // a reload putting the declared capacity back. `model.rs`'s `QueueCapacity` arm: the
-      // capacity is the **lane's**, so every card naming the lane takes it, and the `Queues` row
-      // follows because `queues()` reads its capacity off those cards. A lane no card names
-      // folds to nothing. The wire keeps the pre-rename spelling, `parallelism`.
+      // capacity is the **lane's**, so every card naming the lane takes it, and the lane table's
+      // row takes it on the same frame, so the `Queues` row moves before the daemon's next
+      // `meta.lanes`. A lane the table lacks gains no row. The wire keeps the pre-rename
+      // spelling, `parallelism`.
       //
       // A frame serde would refuse — a queue that is not a string, a capacity that is not a
       // `u32` — takes the ignore path. The empty name is **not** a lane: `""` is how an unqueued
@@ -1034,7 +1041,17 @@ function foldMeta(board, frame, now) {
       // family after an event that names no service.
       const families = {};
       for (const [base, family] of Object.entries(next.families)) families[base] = refold(family, next.services);
-      return folded({ ...next, families });
+      const lanes = next.lanes === null ? null : next.lanes.map((l) => (l.lane === queue ? { ...l, capacity } : l));
+      return folded({ ...next, families, lanes });
+    }
+    case "lanes": {
+      // `Meta::Lanes` — the daemon's lane table, a `with queue(…)` block's hold and wait counted.
+      // `top.rs`'s `Meta::Lanes` arm hands it to `DashboardModel::set_lanes`, which replaces the
+      // table whole. The daemon sends it on its one-second tick, and only when it changed. A
+      // frame without a readable table is one serde would refuse, so it takes the ignore path.
+      const lanes = readLanes(frame.lanes);
+      if (lanes === null) return ignore(board);
+      return folded({ ...board, lanes });
     }
     case "reloaded": {
       // The whole reconcile verdict, not only the orphan/stale markers: an `added` service
@@ -1557,39 +1574,17 @@ export function groups(board) {
 }
 
 /**
- * The queue lanes, mirroring `QueueLane` / `DashboardModel::queue_lanes`. Sorted by lane
- * name, which for the resolved `package.name` spellings is the operator-visible order.
+ * The queue lanes, mirroring `QueueLane` / `DashboardModel::queue_lanes` over the daemon's lane
+ * table: the snapshot's `lanes`, replaced whole by each `meta.lanes`. Sorted by lane name, which
+ * for the resolved `package.name` spellings is the operator-visible order.
  *
- * `capacity` is the **max** over members (a husk that learned its lane from a live event
- * reports none, and must not drag the lane's capacity down to nothing), `held` counts the
- * members holding a slot and `waiting` those at the door.
- *
- * A member holds a slot when it is `Busy` or `Checking`, **or** when it is `Stopping` with a
- * run still in flight: a stop that lands mid-run keeps the lane until the run settles. That
- * is `queue_lanes`' rule over `CardModel::is_in_flight` (in flight and `Busy` or `Stopping`),
- * spelled with the badge so the two clients stay one rule. An idle or armed member being
- * stopped, or one in its cleanup after its run settled, holds nothing.
+ * `held` counts the places taken, a `with queue(…)` block's included, and `waiting` the takers
+ * at the door, runs and blocks alike; a lane only a block reaches, which no service's `queue`
+ * names, is listed. A board without a table (an older daemon) has no rows. The daemon counts,
+ * never the board: it is never a badge census, since no card's badge says a block holds a lane.
  */
 export function queues(board) {
-  const lanes = [];
-  const byName = {};
-  for (const name of board.order) {
-    const svc = board.services[name];
-    if (svc === undefined || svc.queue === "") continue;
-    let lane = byName[svc.queue];
-    if (lane === undefined) {
-      lane = { lane: svc.queue, members: [], capacity: null, held: 0, waiting: 0 };
-      byName[svc.queue] = lane;
-      lanes.push(lane);
-    }
-    lane.members.push(name);
-    if (svc.queueCapacity !== null) {
-      lane.capacity = lane.capacity === null ? svc.queueCapacity : Math.max(lane.capacity, svc.queueCapacity);
-    }
-    const draining = svc.badge === "Stopping" && svc.inFlightSince !== null;
-    if (svc.badge === "Busy" || svc.badge === "Checking" || draining) lane.held += 1;
-    if (svc.badge === "Queued") lane.waiting += 1;
-  }
+  const lanes = (board.lanes ?? []).map((l) => ({ ...l }));
   lanes.sort((a, b) => (a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : 0));
   return lanes;
 }
@@ -1615,6 +1610,22 @@ function toText(value) {
 /// Whether `value` is a JSON integer a `u32` holds — what serde decodes the wire's capacity as.
 export function isWireU32(value) {
   return Number.isInteger(value) && value >= 0 && value <= WIRE_U32_MAX;
+}
+
+/// The wire's lane table as the board holds it, `{ lane, capacity, held, waiting }` in the
+/// daemon's order — `top.rs::lane_readings`. `null` unless every entry reads as `LaneState` does:
+/// a string `name` and three `u32` counts, an unknown extra key ignored. Anything else is a
+/// table serde would refuse.
+function readLanes(value) {
+  if (!Array.isArray(value)) return null;
+  const lanes = [];
+  for (const entry of value) {
+    if (!isObject(entry) || typeof entry.name !== "string") return null;
+    const { capacity, held, waiting } = entry;
+    if (!isWireU32(capacity) || !isWireU32(held) || !isWireU32(waiting)) return null;
+    lanes.push({ lane: entry.name, capacity, held, waiting });
+  }
+  return lanes;
 }
 
 function toNumber(value, fallback) {

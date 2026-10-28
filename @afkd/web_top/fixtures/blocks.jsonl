@@ -1,0 +1,43 @@
+{"afkd":"welcome","proto":1,"daemon":"0.2.441","auth":"none"}
+{"type":"meta","meta":"snapshot","services":[{"name":"holder","state":"busy","trigger_label":"Manual","trigger_detail":"manual","trigger_fields":[],"confined":false,"busy_ms":96,"group":"","icon":"🔹","description":"","queue":"heavy","queue_priority":"normal","queue_parallelism":1,"orphan":false,"stale":false,"last_activity_ms":96,"state_ms":96,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"blocker","state":"queued","trigger_label":"Manual","trigger_detail":"manual","trigger_fields":[],"confined":false,"busy_ms":49,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","waiting_on":"heavy","orphan":false,"stale":false,"last_activity_ms":48,"state_ms":47,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":754,"lanes":[{"name":"gpu","capacity":1,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":1,"waiting":1}]}
+{"type":"meta","meta":"host_load","cpu_pct":67,"mem_used":6293626880,"mem_total":32964644864,"rx_bps":7804,"tx_bps":718271}
+{"type":"meta","meta":"lanes","lanes":[{"name":"gpu","capacity":1,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":1,"waiting":1}]}
+{"type":"meta","meta":"host_load","cpu_pct":76,"mem_used":6331396096,"mem_total":32964644864,"rx_bps":8236,"tx_bps":618743}
+{"type":"log","service":"holder","stream":"stderr","line":"[holder]  [OK] run_cmd: for _ in $(seq 400); do [ -f release.marker ] && break; sleep 0.05; done (exit 0, 1.62s)"}
+{"type":"trace","service":"holder","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":1619,"out":{"out":"lines","n":0}}}
+{"type":"event","event":"run_ok","service":"holder","elapsed_ms":1619}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":2,"status":"ok","elapsed_ms":1571}}
+{"type":"event","event":"run_queue_entered","service":"blocker"}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":3,"kind":"queue","label":"heavy","detail":""},"at":{"year":2026,"month":10,"day":28,"hour":8,"minute":53,"second":47,"millis":221}}}
+{"type":"event","event":"step_entered","service":"blocker","breadcrumb":"queue heavy"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] enter heavy"}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":4,"parent":3,"kind":"cmd","label":"true","detail":""},"at":{"year":2026,"month":10,"day":28,"hour":8,"minute":53,"second":47,"millis":222}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [RUN] run_cmd: true"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [OK] run_cmd: true (exit 0, 1ms)"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":4,"status":"ok","elapsed_ms":1,"out":{"out":"lines","n":0}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] leave heavy"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":3,"status":"ok","elapsed_ms":2}}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":5,"kind":"queue","label":"gpu","detail":""},"at":{"year":2026,"month":10,"day":28,"hour":8,"minute":53,"second":47,"millis":223}}}
+{"type":"event","event":"step_entered","service":"blocker","breadcrumb":"queue gpu"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] enter gpu"}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":6,"parent":5,"kind":"cmd","label":"true","detail":""},"at":{"year":2026,"month":10,"day":28,"hour":8,"minute":53,"second":47,"millis":224}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [RUN] run_cmd: true"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [OK] run_cmd: true (exit 0, 1ms)"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":6,"status":"ok","elapsed_ms":1,"out":{"out":"lines","n":0}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] leave gpu"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":5,"status":"ok","elapsed_ms":1}}
+{"type":"event","event":"run_ok","service":"blocker","elapsed_ms":1576}
+{"type":"meta","meta":"host_load","cpu_pct":83,"mem_used":6539694080,"mem_total":32964644864,"rx_bps":9368,"tx_bps":679617}
+{"type":"meta","meta":"lanes","lanes":[{"name":"gpu","capacity":1,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":0,"waiting":0}]}
+{"type":"meta","meta":"host_load","cpu_pct":81,"mem_used":6383362048,"mem_total":32964644864,"rx_bps":12824,"tx_bps":681170}
+{"type":"meta","meta":"host_load","cpu_pct":95,"mem_used":6152675328,"mem_total":32964644864,"rx_bps":76963,"tx_bps":805391}
+{"type":"meta","meta":"queue_parallelism","queue":"gpu","parallelism":2}
+{"type":"meta","meta":"host_load","cpu_pct":76,"mem_used":6154780672,"mem_total":32964644864,"rx_bps":8808,"tx_bps":757882}
+{"type":"meta","meta":"lanes","lanes":[{"name":"gpu","capacity":2,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":0,"waiting":0}]}
+{"type":"meta","meta":"host_load","cpu_pct":79,"mem_used":6142742528,"mem_total":32964644864,"rx_bps":9227,"tx_bps":667180}
+{"type":"meta","meta":"host_load","cpu_pct":79,"mem_used":5923094528,"mem_total":32964644864,"rx_bps":22878,"tx_bps":735326}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"blocker"}
+{"type":"event","event":"service_stopping","service":"holder"}
+{"type":"event","event":"service_paused","service":"blocker","paused":true}
+{"type":"event","event":"service_paused","service":"holder","paused":true}

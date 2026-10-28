@@ -36,7 +36,7 @@ import {
   selectedIndex,
   typingOf,
 } from "./session.mjs";
-import { NO_AFKD_SRC, afkdSource } from "./testkit.mjs";
+import { NO_AFKD_SRC, afkdSource, readCapture } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
 
@@ -58,9 +58,7 @@ function foldCapture(file, { until, lines } = {}) {
   let board = seed({ logLines: 2000 });
   let at = BASE;
   let n = 0;
-  for (const line of readFileSync(join(HERE, "fixtures", file), "utf8").split("\n")) {
-    if (line === "") continue;
-    const frame = JSON.parse(line);
+  for (const frame of readCapture(file)) {
     if (until !== undefined && until(frame)) break;
     board = fold(board, frame, (at += STEP));
     n += 1;
@@ -954,7 +952,7 @@ function laneSent(session, board, chord, at) {
   return out.commands[0];
 }
 
-test("l and h on a lane row ask for the lane's capacity one step either way, read over its members", () => {
+test("l and h on a lane row ask for the lane's capacity one step either way, read off the daemon's table", () => {
   const { board, at } = liveBoard("lane.jsonl");
   const lane = queues(board).find((l) => l.lane === "ops.heavy");
   assert.equal(lane.capacity, 2, "the capture's lane opens at its declared 2");
@@ -965,11 +963,11 @@ test("l and h on a lane row ask for the lane's capacity one step either way, rea
   assert.deepEqual(laneSent(session, board, key("right"), at).parallelism, 3);
   assert.deepEqual(laneSent(session, board, key("left"), at).parallelism, 1);
 
-  // The lane row's number is the `max` over its members, so a member that reads lower does not
-  // drag it down — and `+` on that member steps from its own number, not the lane's.
+  // The lane row's number is the daemon's table, so a member that reads lower does not move it —
+  // and `+` on that member steps from its own number, not the lane's.
   const skewed = { ...board, services: { ...board.services, "ops.vacuum": { ...board.services["ops.vacuum"], queueCapacity: 1 } } };
   assert.equal(queues(skewed).find((l) => l.lane === "ops.heavy").capacity, 2);
-  assert.equal(laneSent(onRow(skewed, "queue", "ops.heavy"), skewed, key("l"), at).parallelism, 3, "the lane row reads the max");
+  assert.equal(laneSent(onRow(skewed, "queue", "ops.heavy"), skewed, key("l"), at).parallelism, 3, "the lane row reads the table");
   assert.equal(laneSent(onRow(skewed, "service", "ops.vacuum"), skewed, key("+"), at).parallelism, 2, "a card reads its own");
 });
 
@@ -996,18 +994,16 @@ test("a capacity the daemon never sent reads as a lane of one, and narrowing a p
     assert.equal(laneSent(session, paused.board, key(kind === "queue" ? "l" : "+"), paused.at).parallelism, 1, `${name} widens from 0`);
   }
 
-  // A lane whose daemon sent no capacity at all — wire skew — has no number to step from, so it
-  // reads as the default lane of one: widen asks for 2 and narrow for 0.
+  // A card whose daemon sent no capacity at all — wire skew — has no number to step from, so it
+  // reads as the default lane of one: widen asks for 2 and narrow for 0. Only a card can lack
+  // one: a lane row's capacity is the daemon's table, which always carries one.
   const { board, at } = liveBoard("lane.jsonl");
   const services = { ...board.services };
   for (const [name, svc] of Object.entries(services)) if (svc.queue === "ops.heavy") services[name] = { ...svc, queueCapacity: null };
   const unknown = { ...board, services };
-  assert.equal(queues(unknown)[0].capacity, null);
-  for (const [kind, name, widen, narrow] of [["service", "ops.vacuum", "+", "-"], ["queue", "ops.heavy", "l", "h"]]) {
-    const session = onRow(unknown, kind, name);
-    assert.equal(laneSent(session, unknown, key(widen), at).parallelism, 2, `${name} widens to 2`);
-    assert.equal(laneSent(session, unknown, key(narrow), at).parallelism, 0, `${name} narrows to 0`);
-  }
+  const session = onRow(unknown, "service", "ops.vacuum");
+  assert.equal(laneSent(session, unknown, key("+"), at).parallelism, 2, "ops.vacuum widens to 2");
+  assert.equal(laneSent(session, unknown, key("-"), at).parallelism, 0, "ops.vacuum narrows to 0");
 });
 
 test("a lane key with no lane to act on flashes afkd top's refusal and sends nothing", () => {

@@ -2,7 +2,9 @@
 //
 // Every board here is **folded from a recorded capture** under `fixtures/` at a fixed
 // synthetic clock — the rule `fixtures/README.md` states, and the reason a re-capture cannot
-// quietly make an assertion vacuous. Nothing hand-writes a wire frame.
+// quietly make an assertion vacuous. Nothing hand-writes a wire frame into a capture: the one
+// thing a test states is the lane table a capture recorded before afkd sent one would carry
+// (`testkit.mjs`'s `STATED_LANES`, and the drain's own table below).
 //
 // The screens are diffed against committed goldens under `goldens/`. The suite never writes
 // one: a mismatch fails with the whole screen in the message, and regenerating is a
@@ -23,7 +25,7 @@ import { DEFAULT_KEYS, DESCRIPTIONS, REFUSED_WHILE_QUITTING, SCOPES, all, glyphs
 import { COL_WIDTH, COPIES_MARK, TREND_LADDER, bodyHeight as bodyHeightOf, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
 import { URGENCY, copiesOf, rowRecord } from "./fold.mjs";
 import { newSession as bootSession, press } from "./session.mjs";
-import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, liveBoard, paneBody, readCapture, screenText } from "./testkit.mjs";
+import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, foldFrames, liveBoard, paneBody, readCapture, readRecording, screenText } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
 
@@ -183,9 +185,13 @@ test("the drain is its own screen", () => {
   // The same capture folded **whole**. Adversarial against the live screen in four ways at
   // once: the header reads `Quitting` off a different anchor with its own drain count, the
   // reload hint is gone (the input side refuses it, so it reads as unbound) while the operator
-  // hints stay, the rows are a shelf of receding `Stopped` ones, and the lane is held only by
-  // the run still draining.
-  const { board, at } = drainedBoard();
+  // hints stay, the rows are a shelf of receding `Stopped` ones, and the band reads the daemon's
+  // lane table at the drain's end.
+  const drained = drainedBoard();
+  const at = drained.at;
+  // The table afkd's registry held at the end of the drain: nightly's queued run refused,
+  // vacuum's settled, sleeper's still draining. The capture predates `meta.lanes`.
+  const board = fold(drained.board, { type: "meta", meta: "lanes", lanes: [{ name: "heavy", capacity: 2, held: 1, waiting: 0 }] }, at);
   const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
   assertGrid(rows, 100, 30);
   assertGolden("drain-100x30.txt", rows);
@@ -200,6 +206,32 @@ test("the drain is its own screen", () => {
   assert.ok(!footer.includes("reload"), "the reload is refused while draining, so it is not advertised");
   const live = layout({ ...board, quittingSince: null }, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
   assert.ok(footerOf(live, 3).join("\n").includes("Ctrl+R reload"), "…which the undrained footer carries");
+});
+
+test("the Queues section lists a lane only a block reaches, at the daemon's counts", () => {
+  // `blocks.jsonl` attached while `blocker`'s `with queue(heavy)` block waited behind
+  // `holder`'s run: `gpu` is a lane no service names, and blocker is on no lane, so no badge
+  // says it waits. Both rows read the snapshot's own table.
+  const frames = readCapture("blocks.jsonl");
+  const { board, at } = foldFrames(frames.slice(0, frames.findIndex((f) => f.type === "meta" && f.meta === "snapshot") + 1));
+  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.441" });
+  assertGrid(rows, 100, 30);
+  const lines = screenText(rows).split("\n");
+  const laneLine = (lane) => lines.find((line) => line.startsWith("🧵 ") && line.slice(3).split(/\s+/)[0] === lane);
+  assert.match(laneLine("gpu") ?? "", /\s1\s+0\s+0\s*$/, "gpu is listed, free, though no service names it");
+  assert.match(laneLine("heavy") ?? "", /\s1\s+1\s+1\s*$/, "heavy counts holder's hold and the block's wait");
+});
+
+test("a daemon that sends no lane table draws no Queues section", () => {
+  // `snapshot.jsonl` as recorded, before afkd sent `lanes`: its services still name `heavy`,
+  // but the band is the daemon's table and there is none, as an older daemon's board reads.
+  const frames = readRecording("snapshot.jsonl");
+  const { board, at } = foldFrames(frames.slice(0, frames.findIndex((f) => f.type === "meta" && f.meta === "quitting")));
+  assert.ok(Object.values(board.services).some((s) => s.queue === "heavy"), "the capture's services name a lane");
+  assert.ok(!visibleRows(board).some((row) => row.kind === "queuesHeader" || row.kind === "queue"), "no lane rows");
+  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
+  assertGrid(rows, 100, 30);
+  assert.ok(!screenText(rows).split("\n").some((line) => line.startsWith("Queue ")), "no Queues header");
 });
 
 test("the reconcile markers ride the name", () => {
@@ -876,9 +908,8 @@ function wedgedBoard() {
   let board = seed({ logLines: 2000 });
   let at = BASE;
   let n = 0;
-  for (const line of readFileSync(join(HERE, "fixtures", "noise.jsonl"), "utf8").split("\n")) {
-    if (line === "") continue;
-    board = fold(board, JSON.parse(line), (at += STEP));
+  for (const frame of readCapture("noise.jsonl")) {
+    board = fold(board, frame, (at += STEP));
     n += 1;
     if (n >= 25) break;
   }

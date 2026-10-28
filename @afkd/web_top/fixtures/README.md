@@ -60,7 +60,7 @@ the lane can be filled and a third fire parks `queued`; a service that prints an
 adversarial line set; one that exits non-zero; one nested workflow
 (`in_parallel` → `times` → `if`); and one removed by the reload.
 
-## The eleven captures
+## The twelve captures
 
 | File | What was driven |
 |---|---|
@@ -74,6 +74,7 @@ adversarial line set; one that exits non-zero; one nested workflow
 | `reload.jsonl` | A real reconcile: a running service removed (`orphaned`, then a `meta.dropped` when it stops), one whose display metadata drifted (`changed`), one whose recipe drifted while running (`stale`), one added (`added`), and the post-reload `order`. |
 | `packages.jsonl` | A v2 board of two packages and `main`: `claude.brownout` alone in `claude`, the `selfdev.develop` family (`instances 2`) and `selfdev.discuss` in `selfdev`, and a bare `janitor`; one copy of the family run by name, so its row goes busy. The board a grouped view spells member leaves on. |
 | `lane.jsonl` | One lane's capacity moved over the wire: `ops.heavy` at its declared 2, holding a two-copy family and a single service, asked for 3, 0 (the pause), 40 (answered 32, the daemon's clamp) and an unknown lane (answered by `meta.error`), then put back to 2 by a reload of the unchanged config. |
+| `blocks.jsonl` | A `with queue(…)` block waiting on a lane: attached while `blocker`'s block waits on `heavy` behind `holder`'s run, so the snapshot's `lanes` table lists `gpu`, a lane no service names, and counts the block's wait on `heavy`; then the release, a `meta.lanes` that frees both lanes, and `gpu` widened to 2. |
 | `family.jsonl` | Multi-copy services: an `instances 3` service with two of its copies run by name, so their logs and trees interleave and their trace ids collide, beside a single service in the same package; and an `instances auto` pool whose run mints a copy (`meta.spawned`), which is then stopped by name and retired (`meta.dropped`). |
 
 `meta.host_load` rides along in all of them.
@@ -232,6 +233,64 @@ command sent on the recorder's own wire as `{"type":"command","command":"queue_p
 4. `reload` with the config unchanged — the daemon puts the declared 2 back, broadcasts it, and
    says so in the reload summary;
 5. the daemon takes its `SIGINT` with the recorder still attached.
+
+### The eighth session: a block on a lane
+
+`blocks.jsonl` was recorded on its own, the same way as the fifth, against `afkd 0.2.441`
+(release, master at `9b1e1a21`): a throwaway daemon started with `env -i` and an isolated `HOME`
+under `/tmp`, so no `AFKD_HOME` / `XDG_*` reached it, its working directory that `HOME` because
+the config's marker file is a relative path, and the same recorder, so the file opens on the
+daemon's `welcome`. None of the earlier files was re-recorded, so no existing golden moved.
+
+Its config, `daemon.afkd`, verbatim:
+
+```afkd
+import "core"; import "core:manual"
+
+heavy :: queue
+gpu :: queue
+
+holder :: service(manual) {
+  queue heavy
+  on_run proc(run: core.Run) {
+    $ for _ in $(seq 400); do [ -f release.marker ] && break; sleep 0.05; done
+  }
+}
+
+blocker :: service(manual) {
+  on_run proc(run: core.Run) {
+    $ true
+    with queue(heavy) {
+      $ true
+    }
+    with queue(gpu) {
+      $ true
+    }
+  }
+}
+```
+
+The session, in order:
+
+1. `afkd run holder`, and once it is busy, `afkd run blocker`, whose `with queue(heavy)` block
+   waits behind holder's run (`service blocker: queued (heavy)` in the daemon's log);
+2. attach — the snapshot carries `lanes` `gpu` 1/0/0 and `heavy` 1/1/1, holder `busy` on `heavy`,
+   and blocker `queued`, on no lane, `waiting_on` `heavy`;
+3. 1.5s later, `touch release.marker`: holder's run ends, the block is admitted, then the `gpu`
+   block runs, and the next tick's `meta.lanes` reads both lanes free;
+4. `gpu` 2, sent on the recorder's own wire as
+   `{"type":"command","command":"queue_parallelism",…}` — answered by a
+   `meta.queue_parallelism` broadcast and then a `meta.lanes` with `gpu` at 2;
+5. the daemon takes its `SIGINT` with the recorder still attached.
+
+## The lane table the earlier captures predate
+
+Every capture before the eighth was recorded before afkd sent a lane table, so their snapshots
+carry no `lanes` key, and folded as recorded they draw no `Queues` section, as an older daemon's
+board does. `testkit.mjs`'s `STATED_LANES` gives the snapshot of each capture whose config
+declares a lane the table afkd's registry held at that attach, and `readCapture` reads it into
+the snapshot frame. The recordings themselves are untouched: a stated table is a test's
+statement, not a frame the daemon wrote, and `readRecording` still reads each file as recorded.
 
 ## What is *not* in here, and why nothing hand-writes it
 

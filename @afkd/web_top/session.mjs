@@ -302,9 +302,9 @@ export function laneNotice(queue, capacity) {
 /**
  * The lane a lane key acts on at `row`, and the capacity that row is showing — `top_command`'s
  * lane arm. A **service** row on a lane is read first (`+`/`-`), with the card's own capacity;
- * a **lane** row in the `Queues` section is the fallback (`h`/`l`), with the lane's `max` over
- * its members. A family row is its row record, so it names its base. A selection that names
- * no lane is refused, with a clause saying what it is instead.
+ * a **lane** row in the `Queues` section is the fallback (`h`/`l`), with the capacity the
+ * daemon's lane table reports. A family row is its row record, so it names its base. A
+ * selection that names no lane is refused, with a clause saying what it is instead.
  */
 function laneOf(row) {
   if (row?.kind === "service") {

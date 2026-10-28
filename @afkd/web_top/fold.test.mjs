@@ -36,7 +36,7 @@ import {
   sanitize,
   seed,
 } from "./fold.mjs";
-import { NO_AFKD_SRC, afkdSource } from "./testkit.mjs";
+import { NO_AFKD_SRC, afkdSource, readCapture } from "./testkit.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -535,7 +535,7 @@ test("an invented type, an invented event tag and an extra field all fold to a n
 });
 
 test("every fixture replays end to end without throwing, ring bound included", () => {
-  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail", "lane"]) {
+  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail", "lane", "blocks"]) {
     const frames = readFixture(name);
     assert.ok(frames.length > 0, `${name} is not empty`);
     assert.doesNotThrow(() => replay(frames), `${name} folds clean`);
@@ -956,38 +956,13 @@ test("the group rollup takes the latest activity and the oldest fire over its me
   assert.ok(rolled.some((g) => g.anyCrashed), "…and a crashed member is really in a group");
 });
 
-test("the queue lanes read held, waiting and the max capacity", () => {
-  const snapshot = readFixture("snapshot").find((f) => f.type === "meta" && f.meta === "snapshot");
-  const onLanes = snapshot.services.filter((s) => s.queue !== "");
-  assert.ok(onLanes.length >= 3, `the capture puts several services on a lane (${onLanes.length})`);
-  assert.ok(onLanes.some((s) => s.state === "busy"), "…one holding a slot");
-  assert.ok(onLanes.some((s) => s.state === "queued"), "…one waiting at the door");
-
-  const lanes = queues(fold(seed(), snapshot, 1_000));
-  assert.deepEqual(
-    lanes.map((l) => l.lane),
-    [...new Set(onLanes.map((s) => s.queue))].sort(),
-    "one lane per named queue, sorted by name",
-  );
-  for (const lane of lanes) {
-    const members = onLanes.filter((s) => s.queue === lane.lane);
-    assert.deepEqual(lane.members, members.map((s) => s.name));
-    const holds = (s) => s.state === "busy" || s.state === "checking" || (s.state === "stopping" && s.busy_ms > 0);
-    assert.equal(lane.held, members.filter(holds).length, "held");
-    assert.equal(lane.waiting, members.filter((s) => s.state === "queued").length, "waiting");
-    const capacities = members.map((s) => s.queue_parallelism).filter((n) => n !== undefined);
-    assert.equal(lane.capacity, capacities.length === 0 ? null : Math.max(...capacities), "the max over members");
-  }
-  const heavy = lanes.find((l) => l.held > 0);
-  assert.ok(heavy && heavy.waiting > 0, "a lane reads both its holders and its waiters");
-});
-
 test("a lane broadcast moves every card on its lane, the family row and the Queues row", () => {
   // `lane.jsonl` asks for 3, 0 (the pause), 40 and an unknown lane, then reloads, and holds the
   // daemon's own answers: 3, 0, 32 (its clamp, not the 40 that was asked) and the declared 2 the
   // reload put back. The lane holds a two-copy family and a single service, beside one service
-  // on no lane.
-  const frames = readFixture("lane");
+  // on no lane. The capture predates the daemon's lane table, so its snapshot carries the stated
+  // one, and the Queues row follows each answer because the arm moves the table's row.
+  const frames = readCapture("lane.jsonl");
   const { boards } = replay(frames);
   const answers = frames
     .map((frame, at) => ({ frame, at }))
@@ -1017,12 +992,13 @@ test("a lane broadcast moves every card on its lane, the family row and the Queu
 
 test("a lane broadcast naming no lane, an unknown lane or a malformed capacity moves nothing", () => {
   // Built by editing the capture's own first answer, as the unknown-tag legs above do.
-  const frames = readFixture("lane");
+  const frames = readCapture("lane.jsonl");
   const at = frames.findIndex((f) => f.type === "meta" && f.meta === "queue_parallelism");
   const { board } = replay(frames.slice(0, at));
   const answer = frames[at];
   // `""` is how a card on no lane spells its lane, so it must not stamp them all, and a lane no
-  // card names folds to nothing. Both are well-formed, so they are folded rather than ignored.
+  // card names, which the table lacks too, folds to nothing. Both are well-formed, so they are
+  // folded rather than ignored.
   for (const queue of ["", "ops.ghost"]) {
     const next = fold(board, { ...copy(answer), queue }, 0);
     assert.deepEqual(sansFrames(next), sansFrames(board), `${JSON.stringify(queue)} moves no card`);
@@ -1045,67 +1021,182 @@ test("a lane broadcast naming no lane, an unknown lane or a malformed capacity m
   }
 });
 
-test("a lane-mate stopped mid-run holds its slot until its run settles", () => {
-  // The quit drain in the capture: every service on `heavy` is stopped, the two mid-run ones
-  // drain their runs under `Stopping` while the engine keeps their slots, and the queued one
-  // holds nothing. Same cases and numbers as afkd top's
-  // `a_lane_mate_stopped_mid_run_holds_its_slot_until_the_run_settles`.
-  const frames = readFixture("snapshot");
-  const snapshot = frames.find((f) => f.type === "meta" && f.meta === "snapshot");
-  assert.ok(frames.some((f) => f.type === "meta" && f.meta === "quitting"), "the capture drains the daemon");
-  const stopAt = (name) => frames.findIndex((f) => f.type === "event" && f.event === "service_stopping" && f.service === name);
-  const entry = (name) => snapshot.services.find((s) => s.name === name);
-  const laneOf = entry(
-    frames.find((f) => f.type === "event" && f.event === "service_stopping" && entry(f.service)?.busy_ms > 0).service,
-  ).queue;
-  const onLane = snapshot.services.filter((s) => s.queue === laneOf).sort((a, b) => stopAt(a.name) - stopAt(b.name));
-  const drained = onLane.find((s) => s.busy_ms > 0).name;
-  const mate = onLane.find((s) => s.busy_ms > 0 && stopAt(s.name) > stopAt(drained))?.name;
-  const neverRan = onLane.find((s) => s.state === "queued" && stopAt(s.name) >= 0 && stopAt(s.name) < stopAt(drained))?.name;
-  assert.ok(mate, `a second mid-run mate on ${laneOf} is stopped after ${drained}`);
-  assert.ok(neverRan, `a queued mate on ${laneOf} is stopped before ${drained}`);
-  const settleAt = frames.findIndex((f, i) => i > stopAt(drained) && f.type === "event" && f.event === "run_ok" && f.service === drained);
-  assert.ok(settleAt > stopAt(mate), `${drained}'s run settles after ${mate} is stopped`);
-  const held = (board) => queues(board).find((l) => l.lane === laneOf).held;
+// --- the daemon's lane table ------------------------------------------------------------
 
-  // (a) Stopped mid-run, the run still holds its slot beside the busy mate's.
-  const { boards } = replay(frames);
-  const atStop = boards[stopAt(drained)];
-  assert.equal(atStop.services[drained].badge, "Stopping");
-  assert.notEqual(atStop.services[drained].inFlightSince, null, `${drained}'s run is still in flight`);
-  assert.equal(atStop.services[mate].badge, "Busy");
-  assert.equal(atStop.services[neverRan].badge, "Stopping");
-  assert.equal(atStop.services[neverRan].inFlightSince, null, `${neverRan} never ran`);
-  assert.equal(held(atStop), 2, "the draining run and the busy mate; never the queued stop");
+/// A wire lane table as `queues()` returns its rows, in the wire's order.
+function laneRows(lanes) {
+  return lanes.map(({ name, capacity, held, waiting }) => ({ lane: name, capacity, held, waiting }));
+}
 
-  // (b)+(c) The drained run settles while the mate is still busy: the recorded frames up to
-  // the stop, then the drained service's own recorded `run_ok`, the frames between held back.
-  const { board: settled } = replay([...frames.slice(0, stopAt(drained) + 1), frames[settleAt]]);
-  assert.equal(settled.services[drained].badge, "Stopping", "it keeps draining its cleanup");
-  assert.equal(settled.services[drained].inFlightSince, null, "…with no run in flight");
-  assert.equal(settled.services[mate].badge, "Busy");
-  assert.equal(held(settled), 1, "a settled run holds nothing; the queued stop still holds nothing");
+/// Whether `frame` is a `meta.<meta>` frame.
+function isMeta(frame, meta) {
+  return frame.type === "meta" && frame.meta === meta;
+}
 
-  // In order, as recorded: both mid-run mates drain at once, then only the later one does.
-  assert.equal(held(boards[stopAt(mate)]), 2, "two runs drain under Stopping");
-  const end = boards[boards.length - 1];
-  assert.equal(end.services[mate].badge, "Stopping");
-  assert.notEqual(end.services[mate].inFlightSince, null);
-  assert.equal(held(end), 1, `${mate} still drains its run at the capture's end`);
+test("the lanes table is the snapshot's own, a lane only a block reaches included", () => {
+  // `blocks.jsonl` attached while `blocker`'s `with queue(heavy)` block waited behind `holder`'s
+  // run on `heavy`, and the daemon's table says so. No badge does: blocker is on no lane.
+  const frames = readFixture("blocks");
+  const at = frames.findIndex((f) => isMeta(f, "snapshot"));
+  const snapshot = frames[at];
+  const { board } = replay(frames.slice(0, at + 1));
+  deepFreeze(board);
+  assert.deepEqual(queues(board), laneRows(snapshot.lanes), "the snapshot's table, row for row");
+  assert.deepEqual(
+    queues(board),
+    [
+      { lane: "gpu", capacity: 1, held: 0, waiting: 0 },
+      { lane: "heavy", capacity: 1, held: 1, waiting: 1 },
+    ],
+    "gpu is listed, and heavy counts holder's hold and the block's wait",
+  );
+  assert.ok(Object.values(board.services).every((s) => s.queue !== "gpu"), "no service's queue names gpu");
+  assert.equal(board.services.holder.queue, "heavy");
+  assert.equal(board.services.blocker.queue, "", "blocker is on no lane, yet heavy counts its wait");
+  // A row is the caller's to keep: writing it does not reach the frozen board.
+  queues(board)[0].held = 9;
+  assert.equal(queues(board)[0].held, 0);
 });
 
-test("a lane-less service is in no lane, and an ungrouped one is in no group", () => {
+test("each meta.lanes frame replaces the table whole, and nothing else moves it", () => {
+  const frames = readFixture("blocks");
+  const { boards } = replay(frames);
+  const at = frames.findIndex((f) => isMeta(f, "snapshot"));
+  const tables = frames.map((frame, i) => ({ frame, i })).filter(({ frame }) => isMeta(frame, "lanes"));
+  assert.ok(tables.length >= 2, `the capture holds the daemon's live tables (${tables.length})`);
+  for (const { frame, i } of tables) {
+    assert.deepEqual(queues(boards[i]), laneRows(frame.lanes), `frame ${i} is the table`);
+    assert.equal(boards[i].frames.folded, boards[i - 1].frames.folded + 1, `frame ${i} is folded`);
+  }
+  // A run's edges, a block's trace and the drain's stops are badges, never the table: only the
+  // daemon's own frames move it.
+  for (let i = at + 1; i < frames.length; i += 1) {
+    if (isMeta(frames[i], "lanes") || isMeta(frames[i], "queue_parallelism")) continue;
+    assert.deepEqual(boards[i].lanes, boards[i - 1].lanes, `frame ${i} (${frames[i].event ?? frames[i].meta ?? frames[i].type}) leaves the table`);
+  }
+  // holder's release admits the block, and both settle: a later table reads every lane free.
+  const free = tables.find(({ frame, i }) => i > at && frame.lanes.every((l) => l.held === 0 && l.waiting === 0));
+  assert.ok(free, "a later meta.lanes frees every lane");
+  assert.deepEqual(
+    queues(boards[free.i]).map((l) => [l.lane, l.held, l.waiting]),
+    [
+      ["gpu", 0, 0],
+      ["heavy", 0, 0],
+    ],
+  );
+});
+
+test("a capacity broadcast moves the table's lane on the frame it lands, a lane no card names included", () => {
+  // The capture widens `gpu`, which only a block reaches, to 2 on the recorder's own wire.
+  const frames = readFixture("blocks");
+  const { boards } = replay(frames);
+  const at = frames.findIndex((f) => isMeta(f, "queue_parallelism"));
+  assert.deepEqual([frames[at].queue, frames[at].parallelism], ["gpu", 2], "the daemon's answer");
+  const before = boards[at - 1];
+  const after = boards[at];
+  assert.deepEqual(
+    queues(after),
+    queues(before).map((l) => (l.lane === "gpu" ? { ...l, capacity: 2 } : l)),
+    "gpu takes 2 at once, heavy unchanged",
+  );
+  assert.deepEqual(after.services, before.services, "no card names gpu, so none moved");
+  assert.equal(after.frames.folded, before.frames.folded + 1);
+  const next = frames.findIndex((f, i) => i > at && isMeta(f, "lanes"));
+  assert.ok(next > at, "the daemon sends the moved table on its next tick");
+  assert.deepEqual(queues(boards[next]), queues(after), "…and it agrees");
+
+  // A lane the table lacks gains no row, and a board without a table gains none.
+  const ghost = fold(after, { ...copy(frames[at]), queue: "ops.ghost" }, 0);
+  assert.deepEqual(sansFrames(ghost), sansFrames(after), "an unknown lane moves nothing");
+  assert.equal(ghost.frames.folded, after.frames.folded + 1);
+  assert.equal(fold(seed(), copy(frames[at]), 0).lanes, null, "no table, no row");
+});
+
+test("a snapshot without lanes, or with an unreadable table, has no table", () => {
+  // An older daemon's snapshot: its services name `heavy`, and still no lane is listed.
+  const older = readFixture("snapshot").find((f) => isMeta(f, "snapshot"));
+  assert.ok(!("lanes" in older), "snapshot.jsonl predates the daemon's table");
+  const board = fold(seed(), older, 1_000);
+  assert.ok(Object.values(board.services).some((s) => s.queue === "heavy"), "its services name a lane");
+  assert.equal(board.lanes, null);
+  assert.deepEqual(queues(board), []);
+
+  const snapshot = readFixture("blocks").find((f) => isMeta(f, "snapshot"));
+  const lane = snapshot.lanes[0];
+  // A table serde would refuse: not an array, an entry that is no object, a name that is no
+  // string, a count that is no `u32`.
+  for (const lanes of [
+    undefined,
+    null,
+    5,
+    "gpu",
+    { gpu: lane },
+    [lane, 7],
+    [{ ...lane, name: 3 }],
+    [{ ...lane, capacity: -1 }],
+    [{ ...lane, held: 1.5 }],
+    [{ ...lane, waiting: "0" }],
+    [{ ...lane, capacity: 4294967296 }],
+  ]) {
+    const seeded = fold(seed(), { ...copy(snapshot), lanes }, 1_000);
+    assert.equal(seeded.lanes, null, `${JSON.stringify(lanes)} is no table`);
+    assert.deepEqual(queues(seeded), []);
+    assert.equal(seeded.order.length, snapshot.services.length, "…and the services still seed");
+  }
+  // An empty table is a table: a daemon that declares no lane.
+  const empty = fold(seed(), { ...copy(snapshot), lanes: [] }, 1_000);
+  assert.deepEqual(empty.lanes, []);
+  assert.deepEqual(queues(empty), []);
+  // A key this fold does not know is ignored, as serde ignores it.
+  const decorated = fold(seed(), { ...copy(snapshot), lanes: snapshot.lanes.map((l) => ({ ...l, colour: "red" })) }, 1_000);
+  assert.deepEqual(queues(decorated), laneRows(snapshot.lanes));
+  // A reattach to an older daemon replaces the table with none.
+  assert.equal(fold(decorated, older, 2_000).lanes, null);
+});
+
+test("a table's lanes sort by name, a wide-glyph and a paused one alike", () => {
+  // The capture's own first table, renamed and widened: the daemon sends its table sorted, but
+  // the band sorts on its own, as `queue_lanes` does.
+  const frames = readFixture("blocks");
+  const at = frames.findIndex((f) => isMeta(f, "lanes"));
+  const { board } = replay(frames.slice(0, at));
+  const lanes = [
+    { name: "ops.重い", capacity: 0, held: 0, waiting: 3 },
+    { name: "gpu", capacity: 4294967295, held: 2, waiting: 0 },
+    { name: "ops.io", capacity: 1, held: 1, waiting: 0 },
+  ];
+  const next = fold(board, { ...copy(frames[at]), lanes }, 0);
+  assert.deepEqual(
+    queues(next).map((l) => [l.lane, l.capacity, l.held, l.waiting]),
+    [
+      ["gpu", 4294967295, 2, 0],
+      ["ops.io", 1, 1, 0],
+      ["ops.重い", 0, 0, 3],
+    ],
+  );
+  assert.deepEqual(next.lanes.map((l) => l.lane), ["ops.重い", "gpu", "ops.io"], "the board keeps the wire's order");
+});
+
+test("a meta.lanes frame serde would refuse is ignored and moves nothing", () => {
+  const frames = readFixture("blocks");
+  const at = frames.findIndex((f) => isMeta(f, "lanes"));
+  const { board } = replay(frames.slice(0, at));
+  const table = frames[at].lanes;
+  for (const lanes of [undefined, null, "x", 3, [{ ...table[0], held: 1.5 }], [{ ...table[0], waiting: "1" }], [{ ...table[0], name: null }]]) {
+    const next = fold(board, { ...copy(frames[at]), lanes }, 0);
+    assert.deepEqual(sansFrames(next), sansFrames(board), `${JSON.stringify(lanes)} moves nothing`);
+    assert.equal(next.frames.ignored, board.frames.ignored + 1, `${JSON.stringify(lanes)} is ignored`);
+  }
+});
+
+test("an ungrouped service is in no group", () => {
   const snapshot = readFixture("snapshot").find((f) => f.type === "meta" && f.meta === "snapshot");
-  const bare = snapshot.services.filter((s) => s.group === "" && s.queue === "");
+  const bare = snapshot.services.filter((s) => s.group === "");
   assert.ok(bare.length >= 2, "the capture has bare, top-level services");
 
   const board = fold(seed(), snapshot, 1_000);
   const named = new Set(groups(board).flatMap((g) => g.members));
-  const laned = new Set(queues(board).flatMap((l) => l.members));
-  for (const svc of bare) {
-    assert.ok(!named.has(svc.name), `${svc.name} is a top-level row, not a group member`);
-    assert.ok(!laned.has(svc.name), `…and on no lane`);
-  }
+  for (const svc of bare) assert.ok(!named.has(svc.name), `${svc.name} is a top-level row, not a group member`);
 });
 
 test("the run tree evicts a whole completed root at a time, and never the live run", () => {
