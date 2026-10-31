@@ -245,7 +245,7 @@ daemon's `welcome`. None of the earlier files was re-recorded, so no existing go
 Its config, `daemon.afkd`, verbatim:
 
 ```afkd
-import "core"; import "core:manual"
+import "core"; import "service:manual"
 
 heavy :: queue
 gpu :: queue
