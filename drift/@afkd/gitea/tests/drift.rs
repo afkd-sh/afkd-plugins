@@ -179,15 +179,15 @@ widgets :: service(gitea) {{
   every        1s
   max_attempts 1
 
-  on_claim(issue: gitea.Issue) {{ gitea.assign_me(issue) }}
-  on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {{
+  on_claim proc(issue: gitea.Issue) {{ gitea.assign_me(issue) }}
+  on_done proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {{
     gitea.remove_label(issue, "afkd/claimed")
     gitea.comment(issue, "done in #{{outcome.duration}} by #{{BOT}}: #{{issue.title}}")
     gitea.close(issue)
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, issue: gitea.Issue) {{
+  on_run proc(run: core.Run, issue: gitea.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -394,12 +394,12 @@ reviews :: service(gitea.pr) {{
   every        1s
   max_attempts 1
 
-  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {{
+  on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {{
     gitea.pr_comment(pr, "round answered: #{{pr.title}}")
   }}
 
   work_dir "{work}"
-  on_run(run: core.Run, pr: gitea.Pull_Request) {{
+  on_run proc(run: core.Run, pr: gitea.Pull_Request) {{
     $ echo title #{{pr.title}} >> {FIELDS}
     $ echo url #{{pr.url}} >> {FIELDS}
     $ echo number #{{pr.number}} >> {FIELDS}
@@ -508,10 +508,10 @@ widgets :: service(gitea) {{
   every        1s
   max_attempts 2
 
-  on_claim(issue: gitea.Issue) {{
+  on_claim proc(issue: gitea.Issue) {{
     if gitea.assign_me(issue) != nil {{ fail("assign_me") }}
   }}
-  on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {{
+  on_fail proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {{
     if gitea.remove_label(issue, "afkd/ready") != nil {{ fail("remove_label afkd/ready") }}
     if gitea.unassign(issue) != nil {{ fail("unassign") }}
     if gitea.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
@@ -521,7 +521,7 @@ widgets :: service(gitea) {{
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, issue: gitea.Issue) {{
+  on_run proc(run: core.Run, issue: gitea.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -673,23 +673,23 @@ issues :: service(gitea) {
   max_attempts 2
   every        1m~3m
 
-  on_claim(issue: gitea.Issue) {
+  on_claim proc(issue: gitea.Issue) {
     _ = gitea.assign_me(issue)
     _ = gitea.add_label(issue, "afkd/working ⚙")
   }
-  on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
+  on_done proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     _ = gitea.remove_label(issue, "afkd/working ⚙")
     _ = gitea.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     _ = gitea.close(issue)
   }
-  on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     _ = gitea.remove_label(issue, "afkd/working ⚙")
     _ = gitea.unassign(issue)
   }
-  on_park(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { _ = gitea.add_label(issue, "needs/human") }
+  on_park proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { _ = gitea.add_label(issue, "needs/human") }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitea.Issue) {
+  on_run proc(run: core.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -701,21 +701,21 @@ reviews :: service(gitea.pr) {
   author_me true
   every     2m
 
-  on_claim(pr: gitea.Pull_Request) {
+  on_claim proc(pr: gitea.Pull_Request) {
     _ = gitea.pr_assign_me(pr)
     _ = gitea.pr_add_label(pr, "afkd/reviewing 👀")
   }
-  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
+  on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
     _ = gitea.pr_remove_label(pr, "afkd/reviewing 👀")
     _ = gitea.pr_comment(pr, "round answered by #{BOT} in #{outcome.duration}")
   }
-  on_fail(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
     _ = gitea.pr_unassign(pr)
     _ = gitea.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, pr: gitea.Pull_Request) {
+  on_run proc(run: core.Run, pr: gitea.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -791,10 +791,10 @@ reviews :: service(gitea.pr) {{
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {{ {call} }}
+  on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, pr: gitea.Pull_Request) {{
+  on_run proc(run: core.Run, pr: gitea.Pull_Request) {{
     $ true
   }}
 }}

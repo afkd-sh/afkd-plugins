@@ -181,15 +181,15 @@ widgets :: service(github) {{
   every        1s
   max_attempts 1
 
-  on_claim(issue: github.Issue) {{ github.assign_me(issue) }}
-  on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
+  on_claim proc(issue: github.Issue) {{ github.assign_me(issue) }}
+  on_done proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
     github.remove_label(issue, "afkd/claimed")
     github.comment(issue, "done in #{{outcome.duration}} by #{{BOT}}: #{{issue.title}}")
     github.close(issue)
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, issue: github.Issue) {{
+  on_run proc(run: core.Run, issue: github.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -401,12 +401,12 @@ reviews :: service(github.pr) {{
   every        1s
   max_attempts 1
 
-  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {{
+  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {{
     github.pr_comment(pr, "round answered: #{{pr.title}}")
   }}
 
   work_dir "{work}"
-  on_run(run: core.Run, pr: github.Pull_Request) {{
+  on_run proc(run: core.Run, pr: github.Pull_Request) {{
     $ echo title #{{pr.title}} >> {FIELDS}
     $ echo url #{{pr.url}} >> {FIELDS}
     $ echo number #{{pr.number}} >> {FIELDS}
@@ -509,10 +509,10 @@ widgets :: service(github) {{
   every        1s
   max_attempts 2
 
-  on_claim(issue: github.Issue) {{
+  on_claim proc(issue: github.Issue) {{
     if github.assign_me(issue) != nil {{ fail("assign_me") }}
   }}
-  on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
+  on_fail proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
     if github.remove_label(issue, "afkd/ready") != nil {{ fail("remove_label afkd/ready") }}
     if github.unassign(issue) != nil {{ fail("unassign") }}
     if github.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
@@ -522,7 +522,7 @@ widgets :: service(github) {{
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, issue: github.Issue) {{
+  on_run proc(run: core.Run, issue: github.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -671,22 +671,22 @@ issues :: service(github) {
   max_attempts 2
   every        1m~3m
 
-  on_claim(issue: github.Issue) {
+  on_claim proc(issue: github.Issue) {
     _ = github.assign_me(issue)
     _ = github.add_label(issue, "afkd/working ⚙")
   }
-  on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_done proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     _ = github.remove_label(issue, "afkd/working ⚙")
     _ = github.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     _ = github.close(issue)
   }
-  on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     _ = github.remove_label(issue, "afkd/working ⚙")
     _ = github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: github.Issue) {
+  on_run proc(run: core.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -697,21 +697,21 @@ reviews :: service(github.pr) {
   author_me true
   every     2m
 
-  on_claim(pr: github.Pull_Request) {
+  on_claim proc(pr: github.Pull_Request) {
     _ = github.pr_assign_me(pr)
     _ = github.pr_add_label(pr, "afkd/reviewing 👀")
   }
-  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
+  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     _ = github.pr_remove_label(pr, "afkd/reviewing 👀")
     _ = github.pr_comment(pr, "round answered by #{BOT} in #{outcome.duration}")
   }
-  on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     _ = github.pr_unassign(pr)
     _ = github.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, pr: github.Pull_Request) {
+  on_run proc(run: core.Run, pr: github.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -790,10 +790,10 @@ reviews :: service(github.pr) {{
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {{ {call} }}
+  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, pr: github.Pull_Request) {{
+  on_run proc(run: core.Run, pr: github.Pull_Request) {{
     $ true
   }}
 }}

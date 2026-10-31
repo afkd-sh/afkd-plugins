@@ -73,22 +73,22 @@ develop :: service(github) {
   source_label "afkd/ready"
   every        1m~3m
 
-  on_claim(issue: github.Issue) {
+  on_claim proc(issue: github.Issue) {
     github.assign_me(issue)
     github.add_label(issue, "afkd/working")
   }
-  on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_done proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.remove_label(issue, "afkd/working")
     github.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     github.close(issue)
   }
-  on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.remove_label(issue, "afkd/working")
     github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: github.Issue) { task() }
+  on_run proc(run: core.Run, issue: github.Issue) { task() }
 }
 
 reviews :: service(github.pr) {
@@ -97,15 +97,15 @@ reviews :: service(github.pr) {
   author_me true
   every     2m~4m
 
-  on_claim(pr: github.Pull_Request) { github.pr_add_label(pr, "afkd/reviewing") }
-  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
+  on_claim proc(pr: github.Pull_Request) { github.pr_add_label(pr, "afkd/reviewing") }
+  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     github.pr_remove_label(pr, "afkd/reviewing")
     github.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
+  on_fail proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, pr: github.Pull_Request) { task() }
+  on_run proc(run: core.Run, pr: github.Pull_Request) { task() }
 }
 ```
 
@@ -192,11 +192,11 @@ widgets :: service(github) {
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_done proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     github.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
     github.close(issue)
   }
-  on_fail(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
     if outcome.error != nil {
       github.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error.message}")
     }
@@ -204,7 +204,7 @@ widgets :: service(github) {
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: github.Issue) {
+  on_run proc(run: core.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -228,7 +228,7 @@ widgets :: service(github) {
   every 4m~6m
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: github.Issue) {
+  on_run proc(run: core.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -311,18 +311,18 @@ reviews :: service(github.pr) {
   token     "REPLACE_ME"
   author_me true
 
-  on_claim(pr: github.Pull_Request) {
+  on_claim proc(pr: github.Pull_Request) {
     github.pr_assign_me(pr)
     github.pr_add_label(pr, "afkd/reviewing")
   }
-  on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
-  on_fail(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
+  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
+  on_fail proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
     github.pr_remove_label(pr, "afkd/reviewing")
     github.pr_unassign(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, pr: github.Pull_Request) {
+  on_run proc(run: core.Run, pr: github.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -334,8 +334,8 @@ Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), ea
 the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
 run its outcome — by position, and a slot writes every one of them, in order, each with its
 type:
-`on_claim(issue: github.Issue)` on `service(github)`, and
-`on_done(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome)` on `service(github.pr)`.
+`on_claim proc(issue: github.Issue)` on `service(github)`, and
+`on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome)` on `service(github.pr)`.
 Neither kind parks, so neither has `on_park`:
 
 | Slot       | Passed             | Runs                                                       |

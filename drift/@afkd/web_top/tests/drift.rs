@@ -107,7 +107,7 @@ const SERVICES: Tree = Tree {
 import "ops"
 
 never :: service(manual) {
-  on_run(run: core.Run) {
+  on_run proc(run: core.Run) {
     $ touch never.txt
   }
 }
@@ -119,7 +119,7 @@ never :: service(manual) {
 kanshi :: service(manual) {
   description "ウェブ — the wide one"
 
-  on_run(run: core.Run) {
+  on_run proc(run: core.Run) {
     $ touch fired.txt
     $ echo ライン one
   }
@@ -1030,8 +1030,8 @@ fn the_verbs_accept_the_shipped_manifest() {
 /// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
 const V2_MAIN: &str = "\
      import \"core\"\nimport \"core:interval\"\nimport \"core:manual\"\n\n\
-     tick :: service(interval) {\n  every 1h\n\n  on_run(run: core.Run) {\n    $ true\n  }\n}\n\n\
-     hello :: service(manual) {\n  on_run(run: core.Run) {\n    $ echo ライン one\n  }\n}\n";
+     tick :: service(interval) {\n  every 1h\n\n  on_run proc(run: core.Run) {\n    $ true\n  }\n}\n\n\
+     hello :: service(manual) {\n  on_run proc(run: core.Run) {\n    $ echo ライン one\n  }\n}\n";
 
 /// A home whose config directory holds [`V2_MAIN`] and nothing else.
 fn v2_home() -> TempDir {
@@ -2954,13 +2954,13 @@ janitor :: service(interval) {
   description "sweeps the floor"
   every       1h
 
-  on_run(run: core.Run) {
+  on_run proc(run: core.Run) {
     $ true
   }
 }
 
 never :: service(manual) {
-  on_run(run: core.Run) {
+  on_run proc(run: core.Run) {
     $ true
   }
 }
@@ -2973,7 +2973,7 @@ kanshi :: service(interval) {
   description "ウェブ — the wide one"
   every       1h
 
-  on_run(run: core.Run) {
+  on_run proc(run: core.Run) {
     outer()
     $ seq 1 6 && false
   }
@@ -2991,7 +2991,7 @@ backup :: service(interval) {
   icon  "★️"
   every 1h
 
-  on_run(run: core.Run) {
+  on_run proc(run: core.Run) {
     $ true
   }
 }

@@ -74,22 +74,22 @@ develop :: service(gitlab) {
   source_label "afkd::ready"
   every        1m~3m
 
-  on_claim(issue: gitlab.Issue) {
+  on_claim proc(issue: gitlab.Issue) {
     gitlab.assign_me(issue)
     gitlab.add_label(issue, "afkd::working")
   }
-  on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
+  on_done proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.remove_label(issue, "afkd::working")
     gitlab.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     gitlab.close(issue)
   }
-  on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.remove_label(issue, "afkd::working")
     gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitlab.Issue) { task() }
+  on_run proc(run: core.Run, issue: gitlab.Issue) { task() }
 }
 
 reviews :: service(gitlab.mr) {
@@ -99,15 +99,15 @@ reviews :: service(gitlab.mr) {
   author_me true
   every     2m~4m
 
-  on_claim(mr: gitlab.Merge_Request) { gitlab.mr_add_label(mr, "afkd::reviewing") }
-  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
+  on_claim proc(mr: gitlab.Merge_Request) { gitlab.mr_add_label(mr, "afkd::reviewing") }
+  on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     gitlab.mr_remove_label(mr, "afkd::reviewing")
     gitlab.mr_comment(mr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_remove_label(mr, "afkd::reviewing") }
+  on_fail proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_remove_label(mr, "afkd::reviewing") }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, mr: gitlab.Merge_Request) { task() }
+  on_run proc(run: core.Run, mr: gitlab.Merge_Request) { task() }
 }
 ```
 
@@ -189,11 +189,11 @@ widgets :: service(gitlab) {
   project "4242"
   token   "REPLACE_ME"
 
-  on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
+  on_done proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     gitlab.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
     gitlab.close(issue)
   }
-  on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     if outcome.error != nil {
       gitlab.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error.message}")
     }
@@ -201,7 +201,7 @@ widgets :: service(gitlab) {
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitlab.Issue) {
+  on_run proc(run: core.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -226,7 +226,7 @@ widgets :: service(gitlab) {
   every    4m~6m
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitlab.Issue) {
+  on_run proc(run: core.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -307,18 +307,18 @@ reviews :: service(gitlab.mr) {
   token     "REPLACE_ME"
   author_me true
 
-  on_claim(mr: gitlab.Merge_Request) {
+  on_claim proc(mr: gitlab.Merge_Request) {
     gitlab.mr_assign_me(mr)
     gitlab.mr_add_label(mr, "afkd::reviewing")
   }
-  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_remove_label(mr, "afkd::reviewing") }
-  on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
+  on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) { gitlab.mr_remove_label(mr, "afkd::reviewing") }
+  on_fail proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     gitlab.mr_remove_label(mr, "afkd::reviewing")
     gitlab.mr_unassign(mr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, mr: gitlab.Merge_Request) {
+  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -330,8 +330,8 @@ Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), ea
 the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
 run its outcome — by position, and a slot writes every one of them, in order, each with its
 type:
-`on_claim(issue: gitlab.Issue)` on `service(gitlab)`, and
-`on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome)` on `service(gitlab.mr)`.
+`on_claim proc(issue: gitlab.Issue)` on `service(gitlab)`, and
+`on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome)` on `service(gitlab.mr)`.
 Neither kind parks, so neither has `on_park`:
 
 | Slot       | Passed             | Runs                                                       |

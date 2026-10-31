@@ -182,15 +182,15 @@ widgets :: service(gitlab) {{
   every        1s
   max_attempts 1
 
-  on_claim(issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
-  on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
+  on_claim proc(issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
+  on_done proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
     gitlab.remove_label(issue, "afkd::claimed")
     gitlab.comment(issue, "done in #{{outcome.duration}} by #{{BOT}}: #{{issue.title}}")
     gitlab.close(issue)
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, issue: gitlab.Issue) {{
+  on_run proc(run: core.Run, issue: gitlab.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -402,12 +402,12 @@ reviews :: service(gitlab.mr) {{
   every        1s
   max_attempts 1
 
-  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{
+  on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{
     gitlab.mr_comment(mr, "round answered: #{{mr.title}}")
   }}
 
   work_dir "{work}"
-  on_run(run: core.Run, mr: gitlab.Merge_Request) {{
+  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {{
     $ echo title #{{mr.title}} >> {FIELDS}
     $ echo url #{{mr.url}} >> {FIELDS}
     $ echo number #{{mr.number}} >> {FIELDS}
@@ -516,10 +516,10 @@ widgets :: service(gitlab) {{
   every        1s
   max_attempts 2
 
-  on_claim(issue: gitlab.Issue) {{
+  on_claim proc(issue: gitlab.Issue) {{
     if gitlab.assign_me(issue) != nil {{ fail("assign_me") }}
   }}
-  on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
+  on_fail proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
     if gitlab.remove_label(issue, "afkd::ready") != nil {{ fail("remove_label afkd::ready") }}
     if gitlab.unassign(issue) != nil {{ fail("unassign") }}
     if gitlab.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
@@ -529,7 +529,7 @@ widgets :: service(gitlab) {{
   }}
 
   work_dir "{home}"
-  on_run(run: core.Run, issue: gitlab.Issue) {{
+  on_run proc(run: core.Run, issue: gitlab.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -678,22 +678,22 @@ issues :: service(gitlab) {
   max_attempts 2
   every        1m~3m
 
-  on_claim(issue: gitlab.Issue) {
+  on_claim proc(issue: gitlab.Issue) {
     _ = gitlab.assign_me(issue)
     _ = gitlab.add_label(issue, "afkd::working ⚙")
   }
-  on_done(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
+  on_done proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     _ = gitlab.remove_label(issue, "afkd::working ⚙")
     _ = gitlab.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     _ = gitlab.close(issue)
   }
-  on_fail(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
     _ = gitlab.remove_label(issue, "afkd::working ⚙")
     _ = gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitlab.Issue) {
+  on_run proc(run: core.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -704,21 +704,21 @@ reviews :: service(gitlab.mr) {
   author_me true
   every     2m
 
-  on_claim(mr: gitlab.Merge_Request) {
+  on_claim proc(mr: gitlab.Merge_Request) {
     _ = gitlab.mr_assign_me(mr)
     _ = gitlab.mr_add_label(mr, "afkd::reviewing 👀")
   }
-  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
+  on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     _ = gitlab.mr_remove_label(mr, "afkd::reviewing 👀")
     _ = gitlab.mr_comment(mr, "round answered by #{BOT} in #{outcome.duration}")
   }
-  on_fail(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
     _ = gitlab.mr_unassign(mr)
     _ = gitlab.mr_close(mr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, mr: gitlab.Merge_Request) {
+  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -797,10 +797,10 @@ reviews :: service(gitlab.mr) {{
   project "group/widgets"
   token   "REPLACE_ME"
 
-  on_done(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{ {call} }}
+  on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, mr: gitlab.Merge_Request) {{
+  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {{
     $ true
   }}
 }}

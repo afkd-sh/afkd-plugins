@@ -73,25 +73,25 @@ develop :: service(gitea) {
   token    GITEA_TOKEN
   every    1m~3m
 
-  on_claim(issue: gitea.Issue) {
+  on_claim proc(issue: gitea.Issue) {
     gitea.assign_me(issue)
     gitea.add_label(issue, "afkd/working")
   }
-  on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
+  on_done proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.remove_label(issue, "afkd/working")
     gitea.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     gitea.close(issue)
   }
-  on_park(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
+  on_park proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.comment(issue, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
+  on_fail proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
     gitea.remove_label(issue, "afkd/working")
     gitea.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitea.Issue) { task() }
+  on_run proc(run: core.Run, issue: gitea.Issue) { task() }
 }
 
 reviews :: service(gitea.pr) {
@@ -101,15 +101,15 @@ reviews :: service(gitea.pr) {
   author_me true
   every     2m~4m
 
-  on_claim(pr: gitea.Pull_Request) { gitea.pr_add_label(pr, "afkd/working") }
-  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
+  on_claim proc(pr: gitea.Pull_Request) { gitea.pr_add_label(pr, "afkd/working") }
+  on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
     gitea.pr_remove_label(pr, "afkd/working")
     gitea.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_remove_label(pr, "afkd/working") }
+  on_fail proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_remove_label(pr, "afkd/working") }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, pr: gitea.Pull_Request) { task() }
+  on_run proc(run: core.Run, pr: gitea.Pull_Request) { task() }
 }
 ```
 
@@ -196,12 +196,12 @@ widgets :: service(gitea) {
   org      "acme"
   token    "REPLACE_ME"
 
-  on_claim(issue: gitea.Issue) { gitea.assign_me(issue) }
-  on_done(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.close(issue) }
-  on_fail(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.unassign(issue) }
+  on_claim proc(issue: gitea.Issue) { gitea.assign_me(issue) }
+  on_done proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.close(issue) }
+  on_fail proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { gitea.unassign(issue) }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitea.Issue) {
+  on_run proc(run: core.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -245,12 +245,12 @@ requirement remains:
     repo     "acme/widgets"
     token    "REPLACE_ME"
 
-    on_park(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
+    on_park proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
       gitea.comment(issue, "parked after #{outcome.duration} — waiting on you")
     }
 
     work_dir "/srv/acme/widgets"
-    on_run(run: core.Run, issue: gitea.Issue) {
+    on_run proc(run: core.Run, issue: gitea.Issue) {
       fixer <- "fix the issue; run the gitea skill's ask action if unclear"
       if fs.is_file("#{run.scratch_dir}/park") { fail("parked: awaiting a human reply") }
       // reviewer / commit / PR steps below never run when the agent asked
@@ -295,7 +295,7 @@ groom :: service(gitea) {
   discuss_with [ "alice", "bob" ]
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitea.Issue) {
+  on_run proc(run: core.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -320,7 +320,7 @@ widgets :: service(gitea) {
   every    4m~6m
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, issue: gitea.Issue) {
+  on_run proc(run: core.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -403,11 +403,11 @@ reviews :: service(gitea.pr) {
   token     "REPLACE_ME"
   author_me true
 
-  on_claim(pr: gitea.Pull_Request) { gitea.pr_assign_me(pr) }
-  on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_unassign(pr) }
+  on_claim proc(pr: gitea.Pull_Request) { gitea.pr_assign_me(pr) }
+  on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) { gitea.pr_unassign(pr) }
 
   work_dir "/srv/acme/widgets"
-  on_run(run: core.Run, pr: gitea.Pull_Request) {
+  on_run proc(run: core.Run, pr: gitea.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -419,8 +419,8 @@ Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), ea
 the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
 run its outcome — by position, and a slot writes every one of them, in order, each with its
 type:
-`on_claim(issue: gitea.Issue)` on `service(gitea)`, and
-`on_done(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome)` on `service(gitea.pr)`.
+`on_claim proc(issue: gitea.Issue)` on `service(gitea)`, and
+`on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome)` on `service(gitea.pr)`.
 
 | Slot       | Passed               | `service(gitea)`                   | `service(gitea.pr)`             |
 |------------|----------------------|------------------------------------|---------------------------------|
