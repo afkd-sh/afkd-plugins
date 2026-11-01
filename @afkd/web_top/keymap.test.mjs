@@ -38,6 +38,30 @@ const KEYMAP_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "lang", "src", "keymap
 const KEYS_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "tui", "src", "keys.rs");
 const HELP_RS = NO_AFKD_SRC ? "" : afkdSource("crates", "tui", "src", "help.rs");
 
+/// The source text of the method whose signature starts `signature`, up to its closing brace at
+/// method indent: the bound that keeps one impl's `Self::` arms out of another's read.
+function fnBody(source, signature) {
+  const at = source.indexOf(signature);
+  assert.notEqual(at, -1, `keymap.rs still has ${signature}`);
+  return source.slice(at, source.indexOf("\n    }", at));
+}
+
+/// `Scope::dsl_name`'s arms, in order, as [variant, dotted name], whether afkd writes an arm
+/// `Scope::X` or `Self::X`.
+function dslNames(source) {
+  return [...fnBody(source, "fn dsl_name(").matchAll(/(?:Scope|Self)::(\w+) => "([\w.]+)",/g)].map(
+    ([, variant, name]) => [variant, name],
+  );
+}
+
+/// `NamedKey::token`'s arms, in order, as [variant, bare word], whether afkd writes an arm
+/// `NamedKey::X` or `Self::X`.
+function namedKeyTokens(source) {
+  return [...fnBody(source, "fn token(self)").matchAll(/(?:NamedKey|Self)::(\w+) => "([a-z]+)",/g)].map(
+    ([, variant, name]) => [variant, name],
+  );
+}
+
 // --- AC1: the transcription is the Rust table ---------------------------------------
 
 test("the 51 rows are DEFAULT_KEYS's, in order", { skip: NO_AFKD_SRC }, () => {
@@ -56,9 +80,7 @@ test("the 51 rows are DEFAULT_KEYS's, in order", { skip: NO_AFKD_SRC }, () => {
 
   // `Scope::OutputTree` → `output.tree`, read off `dsl_name` rather than transcribed, so a
   // scope renamed there fails here too.
-  const dsl = Object.fromEntries(
-    [...KEYMAP_RS.matchAll(/Scope::(\w+) => "([\w.]+)",/g)].map(([, variant, name]) => [variant, name]),
-  );
+  const dsl = Object.fromEntries(dslNames(KEYMAP_RS));
   assert.equal(Object.keys(dsl).length, 8, "dsl_name still spells eight scopes");
 
   assert.deepEqual(
@@ -70,7 +92,7 @@ test("the 51 rows are DEFAULT_KEYS's, in order", { skip: NO_AFKD_SRC }, () => {
 });
 
 test("the scopes are Scope's, in its own order", { skip: NO_AFKD_SRC }, () => {
-  const arms = [...KEYMAP_RS.matchAll(/Scope::(\w+) => "([\w.]+)",/g)].map(([, , name]) => name);
+  const arms = dslNames(KEYMAP_RS).map(([, name]) => name);
   assert.equal(arms.length, 8, "the dsl_name read found the eight arms");
   assert.deepEqual(SCOPES, arms, "SCOPES is dsl_name's list in its own order");
   // …and every row's scope is one of them, so a typo cannot mint a ninth.
@@ -102,11 +124,10 @@ test("the alternates are transcribed, not collapsed to the first", () => {
 // --- the glyph vocabulary ------------------------------------------------------------
 
 test("the glyphs are keys::glyph's", { skip: NO_AFKD_SRC }, () => {
-  // `named_glyph`'s arms, read out of the Rust and keyed by the token `NamedKey::to_token`
+  // `named_glyph`'s arms, read out of the Rust and keyed by the token `NamedKey::token`
   // spells — so both halves of the pair come from the file rather than from this test.
-  const token = Object.fromEntries(
-    [...KEYMAP_RS.matchAll(/NamedKey::(\w+) => "([a-z]+)",/g)].map(([, variant, name]) => [variant, name]),
-  );
+  const token = Object.fromEntries(namedKeyTokens(KEYMAP_RS));
+  assert.equal(Object.keys(token).length, 11, "NamedKey::token still spells eleven keys");
   const rust = [...KEYS_RS.matchAll(/NamedKey::(\w+) => "([^"]+)",/g)].map(([, variant, spelling]) => [
     token[variant],
     spelling,
@@ -215,9 +236,7 @@ test("the four lane keys are handled, carry no note and read afkd top's legend",
 test("the lane legend is help.rs's own", { skip: NO_AFKD_SRC }, () => {
   // `keys.hint(act::LIST_QUEUE_WIDEN, "Widen the service's queue lane")`: each `act::` constant
   // is joined to its dotted id through `keys.rs` and `keymap.rs`, as the drain's test joins its.
-  const dsl = Object.fromEntries(
-    [...KEYMAP_RS.matchAll(/Scope::(\w+) => "([\w.]+)",/g)].map(([, variant, name]) => [variant, name]),
-  );
+  const dsl = Object.fromEntries(dslNames(KEYMAP_RS));
   const legend = {};
   for (const [, name, line] of HELP_RS.matchAll(/keys\.hint\(act::(\w+), "([^"]*)"\)/g)) {
     const decl = KEYS_RS.match(new RegExp(`const ${name}: Action = \\(Scope::(\\w+), "([\\w_]+)"\\);`));
@@ -244,9 +263,7 @@ test("the drain refuses exactly the actions keys.rs refuses", { skip: NO_AFKD_SR
   const names = [...list.matchAll(/act::(\w+)/g)].map(([, name]) => name);
   assert.ok(names.length > 0, "the refusal read found no act:: constants in REFUSED_WHILE_QUITTING");
   // `pub(crate) const LIST_START: Action = (Scope::Overview, "service_start");`
-  const dsl = Object.fromEntries(
-    [...KEYMAP_RS.matchAll(/Scope::(\w+) => "([\w.]+)",/g)].map(([, variant, name]) => [variant, name]),
-  );
+  const dsl = Object.fromEntries(dslNames(KEYMAP_RS));
   const rust = names.map((name) => {
     const decl = KEYS_RS.match(new RegExp(`const ${name}: Action = \\(Scope::(\\w+), "([\\w_]+)"\\);`));
     assert.notEqual(decl, null, `keys.rs declares act::${name}`);
@@ -259,4 +276,136 @@ test("the drain refuses exactly the actions keys.rs refuses", { skip: NO_AFKD_SR
   );
   // …and every one of them is a real row, so a drain cannot refuse an action nothing binds.
   for (const id of REFUSED_WHILE_QUITTING) assert.ok(ACTIONS.includes(id), `${id} is a row`);
+});
+
+// --- the reads take either spelling of an arm ------------------------------------------
+
+/// `impl Scope` and `impl NamedKey` as afkd wrote them before clippy's `use_self` (`efab5017^`),
+/// trimmed to the methods the reads cover.
+const KEYMAP_BY_TYPE = `impl Scope {
+    /// The dotted DSL name of this scope, for diagnostics (\`output.tree\`, \`global\`).
+    fn dsl_name(self) -> &'static str {
+        match self {
+            Scope::Global => "global",
+            Scope::Overview => "overview",
+            Scope::Queues => "queues",
+            Scope::Output => "output",
+            Scope::OutputTree => "output.tree",
+            Scope::OutputLog => "output.log",
+            Scope::Info => "info",
+            Scope::Confirm => "confirm",
+        }
+    }
+
+    /// The dispatch contexts a binding in this scope is live in.
+    fn contexts(self) -> &'static [Ctx] {
+        match self {
+            Scope::Global => &[Ctx::Global],
+            Scope::Overview => &[Ctx::Overview],
+            Scope::Queues => &[Ctx::Queues],
+            Scope::Output => &[Ctx::OutputTree, Ctx::OutputLog],
+            Scope::OutputTree => &[Ctx::OutputTree],
+            Scope::OutputLog => &[Ctx::OutputLog],
+            Scope::Info => &[Ctx::Info],
+            Scope::Confirm => &[Ctx::Confirm],
+        }
+    }
+}
+
+impl NamedKey {
+    /// The bare DSL word for this key.
+    fn token(self) -> &'static str {
+        match self {
+            NamedKey::Up => "up",
+            NamedKey::Down => "down",
+            NamedKey::Left => "left",
+            NamedKey::Right => "right",
+            NamedKey::Enter => "enter",
+            NamedKey::Space => "space",
+            NamedKey::Esc => "esc",
+            NamedKey::Tab => "tab",
+            NamedKey::PageUp => "pageup",
+            NamedKey::PageDown => "pagedown",
+            NamedKey::Backspace => "backspace",
+        }
+    }
+}
+`;
+
+/// The same two impls as afkd writes them since `efab5017`, each arm `Self::X`.
+const KEYMAP_BY_SELF = `impl Scope {
+    /// The dotted DSL name of this scope, for diagnostics (\`output.tree\`, \`global\`).
+    fn dsl_name(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Overview => "overview",
+            Self::Queues => "queues",
+            Self::Output => "output",
+            Self::OutputTree => "output.tree",
+            Self::OutputLog => "output.log",
+            Self::Info => "info",
+            Self::Confirm => "confirm",
+        }
+    }
+
+    /// The dispatch contexts a binding in this scope is live in.
+    fn contexts(self) -> &'static [Ctx] {
+        match self {
+            Self::Global => &[Ctx::Global],
+            Self::Overview => &[Ctx::Overview],
+            Self::Queues => &[Ctx::Queues],
+            Self::Output => &[Ctx::OutputTree, Ctx::OutputLog],
+            Self::OutputTree => &[Ctx::OutputTree],
+            Self::OutputLog => &[Ctx::OutputLog],
+            Self::Info => &[Ctx::Info],
+            Self::Confirm => &[Ctx::Confirm],
+        }
+    }
+}
+
+impl NamedKey {
+    /// The bare DSL word for this key.
+    fn token(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Enter => "enter",
+            Self::Space => "space",
+            Self::Esc => "esc",
+            Self::Tab => "tab",
+            Self::PageUp => "pageup",
+            Self::PageDown => "pagedown",
+            Self::Backspace => "backspace",
+        }
+    }
+}
+`;
+
+test("the dsl_name and token reads take an arm spelled Scope:: or Self::", () => {
+  const scopes = [
+    ["Global", "global"],
+    ["Overview", "overview"],
+    ["Queues", "queues"],
+    ["Output", "output"],
+    ["OutputTree", "output.tree"],
+    ["OutputLog", "output.log"],
+    ["Info", "info"],
+    ["Confirm", "confirm"],
+  ];
+  for (const source of [KEYMAP_BY_TYPE, KEYMAP_BY_SELF]) {
+    // Both impls sit in one text, so this is also the bound: eight scopes, not the nineteen
+    // `Self::X => "…",` arms the whole text holds.
+    assert.deepEqual(dslNames(source), scopes);
+    assert.deepEqual(scopes.map(([, name]) => name), SCOPES, "…the list the live test holds SCOPES to");
+    const token = Object.fromEntries(namedKeyTokens(source));
+    assert.equal(Object.keys(token).length, 11);
+    assert.equal(token.PageDown, "pagedown");
+  }
+  // A real change still shows: a scope dropped reads seven, which the live count reds on.
+  const dropped = KEYMAP_BY_SELF.replace('            Self::Confirm => "confirm",\n', "");
+  assert.equal(dslNames(dropped).length, 7);
+  assert.equal(namedKeyTokens(KEYMAP_BY_SELF.replace('            Self::Tab => "tab",\n', "")).length, 10);
+  assert.throws(() => dslNames(KEYMAP_BY_SELF.replace("fn dsl_name(", "fn name(")), /keymap\.rs still has fn dsl_name\(/);
 });

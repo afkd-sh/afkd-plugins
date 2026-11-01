@@ -1084,48 +1084,64 @@ test("the drain leaves the lane keys live, from the one table the footer reads",
   }
 });
 
+/// The arms of `Notice::text` and `Refusal::text` the suites render, each capturing its template,
+/// whether afkd writes an arm with its enum's name or `Self::`.
+const NOTICE_ARMS = {
+  lanePaused: /(?:Notice|Self)::Lane \{ queue, capacity: 0 \} => format!\("([^"]*)"\)/g,
+  laneMoved: /(?:Notice|Self)::Lane \{ queue, capacity \} => \{\s*format!\("([^"]*)"\)/g,
+  notOnAQueue: /(?:Refusal|Self)::NotOnAQueue \{ service \} => format!\("([^"]*)"\)/g,
+  groupNotQueue: /(?:Refusal|Self)::GroupNotQueue => "([^"]*)"/g,
+  nothingSelected: /(?:Refusal|Self)::NothingSelected => "([^"]*)"/g,
+  daemonError: /(?:Notice|Self)::DaemonError\(message\) => format!\("([^"]*)"\)/g,
+  // rustfmt splits the struct pattern over lines, and clippy's `match_same_arms` may join the
+  // failed reload to `DaemonError`'s arm as an or-pattern, so both shapes are read. The join
+  // came after `use_self`, so its second pattern is only ever written `Self::`.
+  reloadFailed:
+    /(?:Notice|Self)::Reload \{\s*message,\s*failed: true,\s*\}(?:\s*\|\s*Self::DaemonError\(message\))? => format!\("([^"]*)"\)/g,
+};
+
+/// `Notice::text`'s applied reload, which flashes the daemon's message bare.
+const RELOAD_APPLIED = /(?:Notice|Self)::Reload \{\s*message,\s*failed: false,\s*\} => message\.clone\(\)/;
+
+/// `pattern`'s one capture in `text`. It fails unless the pattern matches exactly once, since a
+/// `Self::` arm no longer says by itself which impl it is in.
+function readArm(text, name, pattern) {
+  const hits = [...text.matchAll(pattern)];
+  assert.equal(hits.length, 1, `notice.rs matches ${name} once, not ${hits.length} times: ${pattern}`);
+  return hits[0][1];
+}
+
 test("the lane sentences are afkd top's own", { skip: NO_AFKD_SRC }, () => {
   // `notice.rs` composes every one of these; each is read off its source and rendered with the
   // same arguments, so a reworded line there is red here.
   const notice = afkdSource("crates", "tui", "src", "notice.rs");
-  const read = (pattern) => {
-    const hit = notice.match(pattern);
-    assert.notEqual(hit, null, `notice.rs no longer matches ${pattern}`);
-    return hit[1];
-  };
   const fill = (template, values) => template.replace(/\{(\w+)\}/g, (_, name) => String(values[name]));
-  assert.equal(read(/const REFUSED: &str = "([^"]*)";/), REFUSED);
-  const paused = read(/Notice::Lane \{ queue, capacity: 0 \} => format!\("([^"]*)"\)/);
-  const moved = read(/Notice::Lane \{ queue, capacity \} => \{\s*format!\("([^"]*)"\)/);
+  assert.equal(readArm(notice, "REFUSED", /const REFUSED: &str = "([^"]*)";/g), REFUSED);
+  const paused = readArm(notice, "lanePaused", NOTICE_ARMS.lanePaused);
+  const moved = readArm(notice, "laneMoved", NOTICE_ARMS.laneMoved);
   for (const capacity of [0, 1, 32]) {
     const want = fill(capacity === 0 ? paused : moved, { queue: "ops.媒体-gpu", capacity });
     assert.equal(laneNotice("ops.媒体-gpu", capacity), want);
   }
   assert.equal(
-    fill(read(/Refusal::NotOnAQueue \{ service \} => format!\("([^"]*)"\)/), { service: "ops.solo" }),
+    fill(readArm(notice, "notOnAQueue", NOTICE_ARMS.notOnAQueue), { service: "ops.solo" }),
     LANE_REFUSALS.notOnAQueue("ops.solo"),
   );
-  assert.equal(read(/Refusal::GroupNotQueue => "([^"]*)"/), LANE_REFUSALS.groupNotQueue());
-  assert.equal(read(/Refusal::NothingSelected => "([^"]*)"/), LANE_REFUSALS.nothingSelected());
+  assert.equal(readArm(notice, "groupNotQueue", NOTICE_ARMS.groupNotQueue), LANE_REFUSALS.groupNotQueue());
+  assert.equal(readArm(notice, "nothingSelected", NOTICE_ARMS.nothingSelected), LANE_REFUSALS.nothingSelected());
 });
 
 test("a daemon refusal wears afkd top's class glyph", { skip: NO_AFKD_SRC }, () => {
   // `Notice::text`'s `DaemonError` and `Reload` arms, read off `notice.rs` and filled with the
-  // frame's own message, are what `noteFrame` must flash; rustfmt splits the `Reload` arms over
-  // lines, so their patterns are whitespace-tolerant.
+  // frame's own message, are what `noteFrame` must flash.
   const source = (file) => afkdSource("crates", ...file.split("/"));
   const notice = source("tui/src/notice.rs");
-  const read = (text, pattern) => {
-    const hit = text.match(pattern);
-    assert.notEqual(hit, null, `afkd no longer matches ${pattern}`);
-    return hit[1];
-  };
-  const glyph = read(notice, /const REFUSED: &str = "([^"]*)";/);
+  const glyph = readArm(notice, "REFUSED", /const REFUSED: &str = "([^"]*)";/g);
   assert.equal(glyph, REFUSED);
   const fill = (template, message) => template.replace("{REFUSED}", glyph).replace("{message}", message);
-  const daemonError = read(notice, /Notice::DaemonError\(message\) => format!\("([^"]*)"\)/);
-  const reloadFailed = read(notice, /Notice::Reload \{\s*message,\s*failed: true,\s*\} => format!\("([^"]*)"\)/);
-  assert.match(notice, /Notice::Reload \{\s*message,\s*failed: false,\s*\} => message\.clone\(\)/);
+  const daemonError = readArm(notice, "daemonError", NOTICE_ARMS.daemonError);
+  const reloadFailed = readArm(notice, "reloadFailed", NOTICE_ARMS.reloadFailed);
+  assert.match(notice, RELOAD_APPLIED);
   // `top.rs` flashes `Meta::Error` as a `DaemonError`, and `model.rs` flashes a `ControlRefused`
   // as one too; the second is read here, the first is the only arm `Meta::Error` has.
   assert.match(
@@ -1146,6 +1162,140 @@ test("a daemon refusal wears afkd top's class glyph", { skip: NO_AFKD_SRC }, () 
   const reload = recordedMeta("reload.jsonl", "reloaded");
   assert.equal(flash({ ...reload, outcome: "failed" }), fill(reloadFailed, reload.message));
   assert.equal(flash(reload), reload.message, "an applied reload is `message.clone()`");
+});
+
+/// `Notice::text` and `Refusal::text` as afkd wrote them before clippy's `use_self`
+/// (`efab5017^`), trimmed to the two methods the reads cover.
+const NOTICE_BY_TYPE = `const REFUSED: &str = "✕ ";
+
+impl Notice {
+    /// Renders the line; the class glyph is prepended here and nowhere else.
+    pub fn text(&self) -> String {
+        match self {
+            Notice::Ack(ack) => ack.text(),
+            Notice::Refused(refusal) => format!("{REFUSED}{}", refusal.text()),
+            // \`0\` is a declared pause in the engine's lane, not a capacity, so it is named.
+            Notice::Lane { queue, capacity: 0 } => format!("Queue {queue} paused"),
+            Notice::Lane { queue, capacity } => {
+                format!("Queue {queue} · capacity set to {capacity}")
+            }
+            // The daemon owns this sentence, the same bytes \`afkd reload\` prints.
+            Notice::Reload {
+                message,
+                failed: true,
+            } => format!("{REFUSED}{message}"),
+            Notice::Reload {
+                message,
+                failed: false,
+            } => message.clone(),
+            Notice::DaemonError(message) => format!("{REFUSED}{message}"),
+        }
+    }
+}
+impl Refusal {
+    /// The refusal's clause, without the class glyph.
+    fn text(&self) -> String {
+        match self {
+            Refusal::CardState { service, badge } => format!("{service} is {}", state(*badge)),
+            Refusal::Poisoned { service } => format!("{service} was force-abandoned"),
+            Refusal::NothingInGroup { group, verb } => {
+                format!("Nothing in {group} to {}", verb.imperative().to_lowercase())
+            }
+            Refusal::LaneNotService { lane } => format!("{lane} is a queue, not a service"),
+            Refusal::NotOnAQueue { service } => format!("{service} is not on a queue"),
+            Refusal::GroupNotQueue => "A group is not a queue".to_owned(),
+            Refusal::NothingSelected => "Nothing is selected".to_owned(),
+            Refusal::Draining => "The daemon is shutting down".to_owned(),
+            Refusal::AlreadyInState { service, badge } => {
+                format!("{service} is already {}", state(*badge))
+            }
+            Refusal::NothingToDo { service } => format!("{service} has nothing to do"),
+        }
+    }
+}
+`;
+
+/// The same two methods as afkd writes them since `efab5017`: each arm `Self::X`, and the failed
+/// reload joined to `DaemonError`'s arm by clippy's `match_same_arms`.
+const NOTICE_BY_SELF = `const REFUSED: &str = "✕ ";
+
+impl Notice {
+    /// Renders the line; the class glyph is prepended here and nowhere else.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Ack(ack) => ack.text(),
+            Self::Refused(refusal) => format!("{REFUSED}{}", refusal.text()),
+            // \`0\` is a declared pause in the engine's lane, not a capacity, so it is named.
+            Self::Lane { queue, capacity: 0 } => format!("Queue {queue} paused"),
+            Self::Lane { queue, capacity } => {
+                format!("Queue {queue} · capacity set to {capacity}")
+            }
+            // The daemon owns this sentence, the same bytes \`afkd reload\` prints.
+            Self::Reload {
+                message,
+                failed: true,
+            }
+            | Self::DaemonError(message) => format!("{REFUSED}{message}"),
+            Self::Reload {
+                message,
+                failed: false,
+            } => message.clone(),
+        }
+    }
+}
+
+impl Refusal {
+    /// The refusal's clause, without the class glyph.
+    fn text(&self) -> String {
+        match self {
+            Self::CardState { service, badge } => format!("{service} is {}", state(*badge)),
+            Self::Poisoned { service } => format!("{service} was force-abandoned"),
+            Self::NothingInGroup { group, verb } => {
+                format!("Nothing in {group} to {}", verb.imperative().to_lowercase())
+            }
+            Self::LaneNotService { lane } => format!("{lane} is a queue, not a service"),
+            Self::NotOnAQueue { service } => format!("{service} is not on a queue"),
+            Self::GroupNotQueue => "A group is not a queue".to_owned(),
+            Self::NothingSelected => "Nothing is selected".to_owned(),
+            Self::Draining => "The daemon is shutting down".to_owned(),
+            Self::AlreadyInState { service, badge } => {
+                format!("{service} is already {}", state(*badge))
+            }
+            Self::NothingToDo { service } => format!("{service} has nothing to do"),
+        }
+    }
+}
+`;
+
+test("the notice reads take an arm spelled with its enum's name or Self::", () => {
+  const templates = {
+    lanePaused: "Queue {queue} paused",
+    laneMoved: "Queue {queue} · capacity set to {capacity}",
+    notOnAQueue: "{service} is not on a queue",
+    groupNotQueue: "A group is not a queue",
+    nothingSelected: "Nothing is selected",
+    daemonError: "{REFUSED}{message}",
+    reloadFailed: "{REFUSED}{message}",
+  };
+  for (const source of [NOTICE_BY_TYPE, NOTICE_BY_SELF]) {
+    const read = Object.fromEntries(
+      Object.entries(NOTICE_ARMS).map(([name, pattern]) => [name, readArm(source, name, pattern)]),
+    );
+    assert.deepEqual(read, templates, "every arm reads the template the live tests fill");
+    assert.match(source, RELOAD_APPLIED);
+  }
+  // A real change still shows: a reworded sentence reads as reworded, which the live equality
+  // against `laneNotice` reds on, and an arm gone or doubled is a count, not a silent pass.
+  const paused = (text) => readArm(text, "lanePaused", NOTICE_ARMS.lanePaused);
+  assert.equal(paused(NOTICE_BY_SELF.replace("paused", "halted")), "Queue {queue} halted");
+  const nothing = '            Self::NothingSelected => "Nothing is selected".to_owned(),\n';
+  const selected = (text) => readArm(text, "nothingSelected", NOTICE_ARMS.nothingSelected);
+  assert.throws(() => selected(NOTICE_BY_SELF.replace(nothing, "")), /once, not 0 times/);
+  assert.throws(() => selected(NOTICE_BY_SELF.replace(nothing, nothing + nothing)), /once, not 2 times/);
+  // The failed reload is read off its own arm or off the one clippy joined, and off no other.
+  const joinedElsewhere = NOTICE_BY_SELF.replace("| Self::DaemonError(message)", "| Self::Lane { queue, capacity: 1 }");
+  assert.throws(() => readArm(joinedElsewhere, "reloadFailed", NOTICE_ARMS.reloadFailed), /once, not 0 times/);
 });
 
 // --- the info page --------------------------------------------------------------------------

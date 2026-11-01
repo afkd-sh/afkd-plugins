@@ -2778,6 +2778,16 @@ test("the copy mark and the family record are family.rs's", { skip: NO_AFKD_SRC 
   assert.deepEqual(Object.keys(rowRecord(familyBoard().board, "selfdev.develop").family), fields);
 });
 
+/// `Badge::label`'s arms in `model`, as { variant: label }, whether afkd writes an arm
+/// `Badge::X` or `Self::X`.
+function badgeLabels(model) {
+  const at = model.indexOf("pub fn label(self) -> &'static str {");
+  assert.notEqual(at, -1, "model.rs still has Badge::label");
+  return Object.fromEntries(
+    [...model.slice(at, model.indexOf("\n    }", at)).matchAll(/(?:Badge|Self)::(\w+) => "([^"]+)"/g)].map(([, b, l]) => [b, l]),
+  );
+}
+
 test("the info breakdown is family.rs's wording", { skip: NO_AFKD_SRC }, () => {
   const rust = afkdSource("crates", "tui", "src", "family.rs");
   const at = rust.indexOf("fn copies_breakdown(");
@@ -2785,15 +2795,66 @@ test("the info breakdown is family.rs's wording", { skip: NO_AFKD_SRC }, () => {
   for (const literal of ['"1 copy"', '"{n} copies"', '": "', '", "']) {
     assert.ok(body.includes(literal), `copies_breakdown spells ${literal}`);
   }
-  const model = afkdSource("crates", "tui", "src", "model.rs");
-  const labelAt = model.indexOf("pub fn label(self) -> &'static str {");
-  const labels = Object.fromEntries(
-    [...model.slice(labelAt, model.indexOf("\n    }", labelAt)).matchAll(/Badge::(\w+) => "([^"]+)"/g)].map(([, b, l]) => [b, l]),
-  );
+  const labels = badgeLabels(afkdSource("crates", "tui", "src", "model.rs"));
+  assert.deepEqual(Object.keys(labels).sort(), [...URGENCY].sort(), "Badge::label spells every badge");
   assert.equal(copiesBreakdown({ copies: 3, states: [["Busy", 2], ["Idle", 1]] }), "3 copies: 2 busy, 1 idle");
   assert.equal(copiesBreakdown({ copies: 1, states: [["Crashed", 1]] }), "1 copy: 1 crashed");
   const every = copiesBreakdown({ copies: 8, states: URGENCY.map((b) => [b, 1]) });
   assert.equal(every, `8 copies: ${URGENCY.map((b) => `1 ${labels[b].toLowerCase()}`).join(", ")}`);
+});
+
+/// `impl Badge`'s `label` as afkd wrote it before clippy's `use_self` (`efab5017^`), trimmed to
+/// the one method the read covers.
+const BADGE_BY_TYPE = `impl Badge {
+    /// The label rendered in the \`state\` cell, Title Case like every status value. \`Queued\`,
+    /// not \`Waiting\`, because \`Idle\` already means waiting for the next run; \`Checking\`, not
+    /// \`Preparing\`, because most checks find nothing.
+    pub fn label(self) -> &'static str {
+        match self {
+            Badge::Starting => "Starting",
+            Badge::Idle => "Idle",
+            Badge::Queued => "Queued",
+            Badge::Checking => "Checking",
+            Badge::Busy => "Busy",
+            Badge::Stopping => "Stopping",
+            Badge::Stopped => "Stopped",
+            Badge::Crashed => "Crashed",
+        }
+    }
+}
+`;
+
+/// The same method as afkd writes it since `efab5017`, each arm `Self::X`.
+const BADGE_BY_SELF = `impl Badge {
+    /// The label rendered in the \`state\` cell, Title Case like every status value. \`Queued\`,
+    /// not \`Waiting\`, because \`Idle\` already means waiting for the next run; \`Checking\`, not
+    /// \`Preparing\`, because most checks find nothing.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Starting => "Starting",
+            Self::Idle => "Idle",
+            Self::Queued => "Queued",
+            Self::Checking => "Checking",
+            Self::Busy => "Busy",
+            Self::Stopping => "Stopping",
+            Self::Stopped => "Stopped",
+            Self::Crashed => "Crashed",
+        }
+    }
+}
+`;
+
+test("the Badge::label read takes an arm spelled Badge:: or Self::", () => {
+  for (const source of [BADGE_BY_TYPE, BADGE_BY_SELF]) {
+    const labels = badgeLabels(source);
+    assert.deepEqual(Object.keys(labels).sort(), [...URGENCY].sort(), "every badge the live guard asks for");
+    for (const badge of URGENCY) assert.equal(labels[badge], badge, `${badge} is labelled in Title case`);
+  }
+  // A real change still shows: a badge dropped fails the live guard, a relabelled one its wording.
+  const dropped = badgeLabels(BADGE_BY_SELF.replace('            Self::Crashed => "Crashed",\n', ""));
+  assert.notDeepEqual(Object.keys(dropped).sort(), [...URGENCY].sort());
+  assert.equal(badgeLabels(BADGE_BY_SELF.replace('=> "Queued"', '=> "Waiting"')).Queued, "Waiting");
 });
 
 // --- the phone's status list ------------------------------------------------------------
