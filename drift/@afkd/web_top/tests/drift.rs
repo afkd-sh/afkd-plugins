@@ -100,9 +100,11 @@ struct Tree<'a> {
 /// daemon's own `[name]`-prefixed log lines — and its `group` is a prefix of its own
 /// qualified name. A v2 name is ASCII, so the wide glyphs ride its description and the line
 /// it prints. `never` is the negative control nothing ever fires, so a command that must not
-/// reach the wire has a file on disk to be absent.
+/// reach the wire has a file on disk to be absent. The fired one keeps every run, because the
+/// backfill legs read its fire's corpus off `<state>/runs`, where the default `keep_runs on_fail`
+/// leaves nothing of a clean run.
 const SERVICES: Tree = Tree {
-    main: r#"import "core"; import "core:manual"
+    main: r#"import "core"; import "service:manual"
 
 import "ops"
 
@@ -114,10 +116,11 @@ never :: service(manual) {
 "#,
     packages: &[(
         "ops",
-        r#"import "core"; import "core:manual"
+        r#"import "core"; import "service:manual"
 
 kanshi :: service(manual) {
   description "ウェブ — the wide one"
+  keep_runs   always
 
   on_run proc(run: core.Run) {
     $ touch fired.txt
@@ -1029,7 +1032,7 @@ fn the_verbs_accept_the_shipped_manifest() {
 /// A v2 `daemon.afkd` with two services and **no line about the companion**: under a v2
 /// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
 const V2_MAIN: &str = "\
-     import \"core\"\nimport \"core:interval\"\nimport \"core:manual\"\n\n\
+     import \"core\"\nimport \"service:interval\"\nimport \"service:manual\"\n\n\
      tick :: service(interval) {\n  every 1h\n\n  on_run proc(run: core.Run) {\n    $ true\n  }\n}\n\n\
      hello :: service(manual) {\n  on_run proc(run: core.Run) {\n    $ echo ライン one\n  }\n}\n";
 
@@ -2945,7 +2948,7 @@ const DRIFT_SERVICES: Tree = Tree {
 };
 
 /// [`DRIFT_SERVICES`]' `daemon.afkd`: the two services in `main`.
-const DRIFT_MAIN: &str = r#"import "core"; import "core:interval"; import "core:manual"
+const DRIFT_MAIN: &str = r#"import "core"; import "service:interval"; import "service:manual"
 
 import "ops"
 
@@ -2967,7 +2970,7 @@ never :: service(manual) {
 "#;
 
 /// [`DRIFT_SERVICES`]' `ops` package.
-const DRIFT_OPS: &str = r#"import "core"; import "core:interval"
+const DRIFT_OPS: &str = r#"import "core"; import "service:interval"
 
 kanshi :: service(interval) {
   description "ウェブ — the wide one"
@@ -3210,6 +3213,18 @@ fn placeholder(token: &str, next: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// The column `liveness_cell` fills: the age since a service's last output, which reads `now`
+/// under a second and a duration from then on.
+const AGE_COLUMN: &str = "Last Activity";
+
+/// The placeholder `token` stands in for in `label`'s cell: a [`placeholder`], or `<t>` for the
+/// [`AGE_COLUMN`]'s `now`. The two captures are a moment apart, so one surface can read `now`
+/// where the other already reads `1s`, and that is one reading. An empty cell still differs from
+/// a filled one, because it has no token to swap.
+fn cell_placeholder(label: &str, token: &str, next: Option<&str>) -> Option<&'static str> {
+    placeholder(token, next).or_else(|| (label == AGE_COLUMN && token == "now").then_some("<t>"))
+}
+
 /// Every reading that moves between the two captures, replaced by a [`placeholder`]:
 /// elapseds, countdowns, the token tally and the cost.
 ///
@@ -3267,9 +3282,9 @@ const RIGHT_FLUSHED: [&str; 2] = ["Last Activity", "Next Run"];
 
 /// One column's cell as the comparison reads it: the slice **verbatim**, every whitespace
 /// run kept — the leading pad, the interior runs and the trailing pad — with only its
-/// readings swapped for their [`placeholder`]s. The covered half of a wide glyph is `""` and
-/// always follows its glyph, so any shift inside the span moves a pad, and comparing this
-/// string is comparing the cell column for column.
+/// readings swapped for their [`cell_placeholder`]s, the [`AGE_COLUMN`]'s `now` among them.
+/// The covered half of a wide glyph is `""` and always follows its glyph, so any shift inside
+/// the span moves a pad, and comparing this string is comparing the cell column for column.
 ///
 /// A cell that holds a reading gives up one pad: the one on its **free** side — the leading
 /// pad of a [`RIGHT_FLUSHED`] column, the trailing pad of a left-aligned one. That pad is as
@@ -3282,7 +3297,7 @@ fn column_cell(row: &[String], label: &str, (from, to): (usize, usize)) -> Strin
     for (at, token) in tokens.iter().enumerate() {
         let pad = rest.len() - rest.trim_start().len();
         cell.push_str(&rest[..pad]);
-        match placeholder(token, tokens.get(at + 1).copied()) {
+        match cell_placeholder(label, token, tokens.get(at + 1).copied()) {
             Some(reading) => {
                 read = true;
                 cell.push_str(reading);
@@ -3473,7 +3488,8 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
 }
 
 /// The overview with an activity peek open, compared cell for cell: the column header, then
-/// every list row — the peek's own lines among them, whole, since a peek line is laid across
+/// every list row — a service row column by column through [`column_cell`], as [`drift`]
+/// compares the overview's, and the peek's own lines whole, since a peek line is laid across
 /// every column — and the footer's hint set. Floored on a real peek line being on screen, so
 /// a peek that never opened cannot agree with one that never rendered.
 fn peek_drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
@@ -3493,6 +3509,7 @@ fn peek_drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
             "the column header differs:\n  afkd top: {top_header:?}\n  web_top:  {plugin_header:?}{both}"
         ));
     }
+    let spans = column_spans(&top_header, usize::from(DRIFT_COLS));
     let (top_rows, plugin_rows) = (top.service_rows(), plugin.service_rows());
     if top_rows.len() != plugin_rows.len() {
         return Err(format!(
@@ -3502,12 +3519,26 @@ fn peek_drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
         ));
     }
     let whole = (0, usize::from(DRIFT_COLS));
-    for (at, (mine, theirs)) in top_rows.iter().zip(&plugin_rows).enumerate() {
-        let (mine, theirs) = (cell_text(mine, whole), cell_text(theirs, whole));
-        if mine != theirs {
-            return Err(format!(
-                "row {at} under the header differs:\n  afkd top: {mine:?}\n  web_top:  {theirs:?}{both}"
-            ));
+    for (at, (top_row, plugin_row)) in top_rows.iter().zip(&plugin_rows).enumerate() {
+        let (mine, theirs) = (cell_text(top_row, whole), cell_text(plugin_row, whole));
+        if mine.contains('▏') || theirs.contains('▏') {
+            if mine != theirs {
+                return Err(format!(
+                    "row {at} under the header differs:\n  afkd top: {mine:?}\n  web_top:  {theirs:?}{both}"
+                ));
+            }
+            continue;
+        }
+        for (label, span) in &spans {
+            let (mine, theirs) = (
+                column_cell(top_row, label, *span),
+                column_cell(plugin_row, label, *span),
+            );
+            if mine != theirs {
+                return Err(format!(
+                    "row {at}'s `{label}` cell differs:\n  afkd top: {mine:?}\n  web_top:  {theirs:?}{both}"
+                ));
+            }
         }
     }
     if !top_rows
@@ -3525,6 +3556,93 @@ fn peek_drift(top: &Screen, plugin: &Screen) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// A [`Screen`] of `lines`, one grid cell per `char` and each row padded with blanks out to
+/// [`DRIFT_COLS`]: enough for ASCII and `▏`, which are both one cell wide.
+fn screen_of(lines: &[String]) -> Screen {
+    let grid = lines
+        .iter()
+        .map(|line| {
+            let mut row: Vec<String> = line.chars().map(String::from).collect();
+            row.resize(usize::from(DRIFT_COLS), " ".to_string());
+            row
+        })
+        .collect();
+    Screen { grid }
+}
+
+/// A peek view whose one service row reads `state` and `age`, under the column header and
+/// over a peek line that reads `peek`, the list's blank end and a two-hint footer. The age is
+/// flushed right in its column, as `layout::Column::align` lays it.
+fn peek_screen(state: &str, age: &str, peek: &str) -> Screen {
+    screen_of(&[
+        format!(
+            "{:<14}{:<9}{:<11}{:<15}{}",
+            "Service", "State", "Trigger", AGE_COLUMN, "Next Run"
+        ),
+        format!(
+            "{:<14}{state:<9}{:<11}{age:>13}  {}",
+            "ops.kanshi", "Manual", "<t>"
+        ),
+        format!("  ▏ {peek}"),
+        String::new(),
+        "q Quit  ? Help".to_string(),
+    ])
+}
+
+#[test]
+fn a_last_activity_cell_reading_now_is_an_age_and_an_empty_one_still_differs() {
+    let age = |screen: &Screen| {
+        let spans = column_spans(&screen.column_header().unwrap(), usize::from(DRIFT_COLS));
+        column_cell(&screen.grid[1], AGE_COLUMN, span_of(&spans, AGE_COLUMN))
+    };
+    let (one_second, now) = (
+        peek_screen("Idle", "1s", "line one"),
+        peek_screen("Idle", "now", "line one"),
+    );
+    assert_eq!(
+        peek_drift(&one_second, &now),
+        Ok(()),
+        "`now` and `1s` are one reading"
+    );
+    assert_eq!(
+        age(&one_second),
+        age(&now),
+        "the overview's compare reads them alike"
+    );
+
+    // A cell empty on one surface and filled on the other is a real divergence, either way round.
+    let empty = peek_screen("Idle", "", "line one");
+    for (top, plugin) in [(&one_second, &empty), (&empty, &now)] {
+        let drift = peek_drift(top, plugin).expect_err("an empty age against a filled one");
+        assert!(
+            drift.starts_with("row 0's `Last Activity` cell differs"),
+            "{drift}"
+        );
+        assert_ne!(
+            age(top),
+            age(plugin),
+            "the overview's compare tells them apart"
+        );
+    }
+
+    // `now` is a reading only in the age column: in another cell or on a peek line it is a word.
+    let drift = peek_drift(
+        &peek_screen("1s", "1s", "line one"),
+        &peek_screen("now", "1s", "line one"),
+    )
+    .expect_err("`now` in the State column");
+    assert!(drift.starts_with("row 0's `State` cell differs"), "{drift}");
+    let drift = peek_drift(
+        &peek_screen("Idle", "1s", "1s"),
+        &peek_screen("Idle", "1s", "now"),
+    )
+    .expect_err("`now` on a peek line");
+    assert!(
+        drift.starts_with("row 1 under the header differs"),
+        "{drift}"
+    );
 }
 
 /// Poll the terminal until its screen holds everything the comparison needs to mean
@@ -4929,7 +5047,7 @@ const INFO_SECTIONS: usize = 5;
 /// lane, so both surfaces draw a `Queues` section and the info view a `Queue` row.
 fn ledger_ops() -> String {
     const OPENER: &str = "backup :: service(interval) {\n";
-    const IMPORTS: &str = "import \"core\"; import \"core:interval\"\n\n";
+    const IMPORTS: &str = "import \"core\"; import \"service:interval\"\n\n";
     // A fixture edit that renamed the service would otherwise drop the lane in silence, and
     // the `Queues` section would then go uncompared for a reason neither surface is at.
     assert_eq!(

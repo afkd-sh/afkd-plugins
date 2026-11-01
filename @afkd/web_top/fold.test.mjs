@@ -1508,15 +1508,73 @@ test("a pool's mint and retire move only its count, never its row", () => {
   assert.deepEqual(rowRecord(at(spawned), "backup").family.states, [["Busy", 1], ["Starting", 1]]);
 });
 
+/// `Badge::urgency`'s arms in `model`, in source order, as [variant, rank], whether afkd writes
+/// an arm `Badge::X` or `Self::X`.
+function badgeUrgencies(model) {
+  const start = model.indexOf("pub fn urgency(self) -> u8 {");
+  assert.notEqual(start, -1, "Badge::urgency is where it was");
+  const body = model.slice(start, model.indexOf("\n    }", start));
+  return [...body.matchAll(/(?:Badge|Self)::(\w+) => (\d+)/g)].map(([, name, n]) => [name, Number(n)]);
+}
+
+/// The badges in `arms`, most urgent first.
+const byUrgency = (arms) => [...arms].sort((a, b) => a[1] - b[1]).map(([name]) => name);
+
 test("the family badge order is Badge::urgency's", { skip: NO_AFKD_SRC }, () => {
   // `crates/tui/src/model.rs`'s one home of the order, read out of the Rust: a badge added or
   // reordered there reds here.
-  const rust = afkdSource("crates", "tui", "src", "model.rs");
-  const start = rust.indexOf("pub fn urgency(self) -> u8 {");
-  assert.notEqual(start, -1, "Badge::urgency is where it was");
-  const body = rust.slice(start, rust.indexOf("\n    }", start));
-  const arms = [...body.matchAll(/Badge::(\w+) => (\d+)/g)].map(([, name, n]) => [name, Number(n)]);
+  const arms = badgeUrgencies(afkdSource("crates", "tui", "src", "model.rs"));
   assert.equal(arms.length, 8, "one arm per badge");
-  arms.sort((a, b) => a[1] - b[1]);
-  assert.deepEqual(URGENCY, arms.map(([name]) => name));
+  assert.deepEqual(URGENCY, byUrgency(arms));
+});
+
+/// `impl Badge`'s `urgency` as afkd wrote it before clippy's `use_self` (`efab5017^`), trimmed to
+/// the one method the read covers.
+const URGENCY_BY_TYPE = `impl Badge {
+    /// How urgent this state is on a multi-copy service, lower more urgent: a family row wears
+    /// its most urgent copy's badge, so a crash never hides behind a busy sibling.
+    pub fn urgency(self) -> u8 {
+        match self {
+            Badge::Crashed => 0,
+            Badge::Busy => 1,
+            Badge::Queued => 2,
+            Badge::Checking => 3,
+            Badge::Starting => 4,
+            Badge::Stopping => 5,
+            Badge::Idle => 6,
+            Badge::Stopped => 7,
+        }
+    }
+}
+`;
+
+/// The same method as afkd writes it since `efab5017`, each arm `Self::X`.
+const URGENCY_BY_SELF = `impl Badge {
+    /// How urgent this state is on a multi-copy service, lower more urgent: a family row wears
+    /// its most urgent copy's badge, so a crash never hides behind a busy sibling.
+    #[must_use]
+    pub fn urgency(self) -> u8 {
+        match self {
+            Self::Crashed => 0,
+            Self::Busy => 1,
+            Self::Queued => 2,
+            Self::Checking => 3,
+            Self::Starting => 4,
+            Self::Stopping => 5,
+            Self::Idle => 6,
+            Self::Stopped => 7,
+        }
+    }
+}
+`;
+
+test("the Badge::urgency read takes an arm spelled Badge:: or Self::", () => {
+  for (const source of [URGENCY_BY_TYPE, URGENCY_BY_SELF]) {
+    const arms = badgeUrgencies(source);
+    assert.equal(arms.length, 8, "one arm per badge");
+    assert.deepEqual(byUrgency(arms), URGENCY);
+  }
+  // A real change still shows: a badge dropped fails the count, a reranked one the order.
+  assert.equal(badgeUrgencies(URGENCY_BY_SELF.replace("            Self::Stopped => 7,\n", "")).length, 7);
+  assert.notDeepEqual(byUrgency(badgeUrgencies(URGENCY_BY_SELF.replace("Self::Crashed => 0", "Self::Crashed => 9"))), URGENCY);
 });
