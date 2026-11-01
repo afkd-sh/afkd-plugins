@@ -200,6 +200,9 @@ function seedService(entry, now) {
     queueCapacity: entry.queue_parallelism === undefined || entry.queue_parallelism === null
       ? null
       : toNumber(entry.queue_parallelism, 0),
+    // The lane a `with queue(…)` block of the running run waits on, `""` when none: a run
+    // whose block waits at attach reads `Queued (waiting on …)` (`top.rs::seed_from_snapshot`).
+    waitingOn: toText(entry.waiting_on),
     orphan: entry.orphan === true,
     stale: entry.stale === true,
     poisoned: entry.poisoned === true,
@@ -273,6 +276,7 @@ function completeFire(service, outcome, elapsedMs) {
     if (outcome === "ok") service.okRunTimeTotalMs += elapsedMs;
   }
   service.inFlightSince = null;
+  service.waitingOn = "";
 }
 
 // --- events ------------------------------------------------------------------------
@@ -377,6 +381,32 @@ function foldEventArm(board, frame, now, name) {
           enter(svc, "Busy", now);
           svc.inFlightSince = now;
           svc.breadcrumb = "";
+          svc.waitingOn = "";
+          return svc;
+        }),
+      );
+    case "run_queue_waiting":
+      return folded(
+        withService(board, name, (svc) => {
+          // Only a running run waits mid-run (`ServiceEvent::RunQueueWaiting`). `inFlightSince`
+          // and the service's own lane stay, so the run's clock runs on through the wait.
+          if (svc.inFlightSince !== null) {
+            svc.waitingOn = toText(frame.queue);
+            enter(svc, "Queued", now);
+          }
+          return svc;
+        }),
+      );
+    case "run_queue_entered":
+      return folded(
+        withService(board, name, (svc) => {
+          svc.waitingOn = "";
+          // Back to `Busy` dated from the run's start, as if it had never waited; a service a
+          // stop moved on stays where it is (`ServiceEvent::RunQueueEntered`).
+          if (svc.badge === "Queued" && svc.inFlightSince !== null) {
+            enter(svc, "Busy", now);
+            svc.stateEnteredAt = svc.inFlightSince;
+          }
           return svc;
         }),
       );
@@ -452,6 +482,7 @@ function foldEventArm(board, frame, now, name) {
           }
           enter(svc, "Crashed", now);
           svc.inFlightSince = null;
+          svc.waitingOn = "";
           // Set-only within the crash fold: a plain init-fault crash says nothing about a
           // leaked thread, so it must not clear a poison. Only the reclaim above lifts it.
           if (frame.poisoned === true) svc.poisoned = true;

@@ -1,0 +1,51 @@
+{"afkd":"welcome","proto":1,"daemon":"0.2.464","auth":"none"}
+{"type":"meta","meta":"snapshot","services":[{"name":"holder","state":"armed","trigger_label":"Manual","trigger_detail":"manual","trigger_fields":[],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"heavy","queue_priority":"normal","queue_parallelism":1,"orphan":false,"stale":false,"state_ms":551,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"blocker","state":"armed","trigger_label":"Manual","trigger_detail":"manual","trigger_fields":[],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"state_ms":551,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"runs_total":0,"run_failures_total":0,"run_time_total_ms":0,"ok_run_time_total_ms":0}],"uptime_ms":551,"lanes":[{"name":"gpu","capacity":1,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":0,"waiting":0}]}
+{"type":"meta","meta":"host_load","cpu_pct":20,"mem_used":9151201280,"mem_total":32964644864,"rx_bps":16486,"tx_bps":111501}
+{"type":"meta","meta":"lanes","lanes":[{"name":"gpu","capacity":1,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":0,"waiting":0}]}
+{"type":"event","event":"run_started","service":"holder"}
+{"type":"trace","service":"holder","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"for _ in $(seq 400); do [ -f release.marker ] && break; sleep 0.05; done","detail":""},"at":{"year":2026,"month":11,"day":1,"hour":1,"minute":40,"second":7,"millis":385}}}
+{"type":"log","service":"holder","stream":"stderr","line":"[holder]  [RUN] run_cmd: for _ in $(seq 400); do [ -f release.marker ] && break; sleep 0.05; done"}
+{"type":"meta","meta":"host_load","cpu_pct":19,"mem_used":9215770624,"mem_total":32964644864,"rx_bps":2805,"tx_bps":2831}
+{"type":"meta","meta":"lanes","lanes":[{"name":"gpu","capacity":1,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":1,"waiting":0}]}
+{"type":"event","event":"run_started","service":"blocker"}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":1,"kind":"cmd","label":"true","detail":""},"at":{"year":2026,"month":11,"day":1,"hour":1,"minute":40,"second":7,"millis":934}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [RUN] run_cmd: true"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [OK] run_cmd: true (exit 0, 0ms)"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":0,"out":{"out":"lines","n":0}}}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":2,"kind":"queue_wait","label":"heavy","detail":""},"at":{"year":2026,"month":11,"day":1,"hour":1,"minute":40,"second":7,"millis":935}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] wait heavy"}
+{"type":"event","event":"run_queue_waiting","service":"blocker","queue":"heavy"}
+{"type":"meta","meta":"host_load","cpu_pct":22,"mem_used":9391357952,"mem_total":32964644864,"rx_bps":3066,"tx_bps":3667}
+{"type":"meta","meta":"lanes","lanes":[{"name":"gpu","capacity":1,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":1,"waiting":1}]}
+{"type":"log","service":"holder","stream":"stderr","line":"[holder]  [OK] run_cmd: for _ in $(seq 400); do [ -f release.marker ] && break; sleep 0.05; done (exit 0, 2.10s)"}
+{"type":"trace","service":"holder","event":{"op":"closed","id":1,"status":"ok","elapsed_ms":2095,"out":{"out":"lines","n":0}}}
+{"type":"event","event":"run_ok","service":"holder","elapsed_ms":2096}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":2,"status":"ok","elapsed_ms":1545}}
+{"type":"event","event":"run_queue_entered","service":"blocker"}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":3,"kind":"queue","label":"heavy","detail":""},"at":{"year":2026,"month":11,"day":1,"hour":1,"minute":40,"second":9,"millis":481}}}
+{"type":"event","event":"step_entered","service":"blocker","breadcrumb":"queue heavy"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] enter heavy"}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":4,"parent":3,"kind":"cmd","label":"true","detail":""},"at":{"year":2026,"month":11,"day":1,"hour":1,"minute":40,"second":9,"millis":481}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [RUN] run_cmd: true"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [OK] run_cmd: true (exit 0, 0ms)"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":4,"status":"ok","elapsed_ms":0,"out":{"out":"lines","n":0}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] leave heavy"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":3,"status":"ok","elapsed_ms":0}}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":5,"kind":"queue","label":"gpu","detail":""},"at":{"year":2026,"month":11,"day":1,"hour":1,"minute":40,"second":9,"millis":482}}}
+{"type":"event","event":"step_entered","service":"blocker","breadcrumb":"queue gpu"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] enter gpu"}
+{"type":"trace","service":"blocker","event":{"op":"opened","node":{"id":6,"parent":5,"kind":"cmd","label":"true","detail":""},"at":{"year":2026,"month":11,"day":1,"hour":1,"minute":40,"second":9,"millis":482}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [RUN] run_cmd: true"}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [OK] run_cmd: true (exit 0, 3ms)"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":6,"status":"ok","elapsed_ms":3,"out":{"out":"lines","n":0}}}
+{"type":"log","service":"blocker","stream":"stderr","line":"[blocker] [queue] leave gpu"}
+{"type":"trace","service":"blocker","event":{"op":"closed","id":5,"status":"ok","elapsed_ms":3}}
+{"type":"event","event":"run_ok","service":"blocker","elapsed_ms":1551}
+{"type":"meta","meta":"host_load","cpu_pct":29,"mem_used":9529323520,"mem_total":32964644864,"rx_bps":4944,"tx_bps":21604}
+{"type":"meta","meta":"lanes","lanes":[{"name":"gpu","capacity":1,"held":0,"waiting":0},{"name":"heavy","capacity":1,"held":0,"waiting":0}]}
+{"type":"meta","meta":"host_load","cpu_pct":29,"mem_used":7854710784,"mem_total":32964644864,"rx_bps":4043,"tx_bps":2693}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"blocker"}
+{"type":"event","event":"service_stopping","service":"holder"}
+{"type":"event","event":"service_paused","service":"blocker","paused":true}
+{"type":"event","event":"service_paused","service":"holder","paused":true}

@@ -60,6 +60,9 @@ const GRAPHEMES = new Intl.Segmenter("en", { granularity: "grapheme" });
 /// there.
 const WIDE_RANGES = [
   [0x1100, 0x115f], // Hangul Jamo, initial consonants
+  // ⏳ (`NodeKind::QueueWait`), a Wide singleton in Miscellaneous Technical, which
+  // `unicode-width` measures two. Its neighbours `⏱︎` and `⚙︎` are Neutral and carry VS15.
+  [0x23f3, 0x23f3],
   [0x2e80, 0x303e], // CJK radicals, Kangxi, CJK symbols and punctuation
   [0x3041, 0x33ff], // kana, Hangul compatibility jamo, CJK compatibility
   [0x3400, 0x4dbf], // CJK unified ideographs extension A
@@ -1124,11 +1127,19 @@ function isWorking(badge) {
   return badge === "Starting" || badge === "Busy" || badge === "Stopping";
 }
 
+/// `CardModel::is_in_flight` — a run is live: running, parked mid-run on a `with queue(…)` lane
+/// (`Queued` with its run clock still set), or stopped mid-run and draining. A `Queued` service
+/// waiting to start its run carries no clock.
+function isInFlight(svc) {
+  return svc.inFlightSince !== null && (svc.badge === "Busy" || svc.badge === "Queued" || svc.badge === "Stopping");
+}
+
 /// `DashboardModel::visible_cards`' state axis — the busy lens (`b`): the cards running
-/// something of their own, plus the `Crashed` alarm, because a lens that can hide an alarm is
-/// a trap. It intersects the needle's name axis rather than replacing it.
+/// something of their own, a run waiting mid-run on a lane included, plus the `Crashed` alarm,
+/// because a lens that can hide an alarm is a trap. It intersects the needle's name axis rather
+/// than replacing it.
 function keptByLens(svc, busyOnly) {
-  return !busyOnly || isWorking(svc.badge) || svc.badge === "Crashed";
+  return !busyOnly || isWorking(svc.badge) || isInFlight(svc) || svc.badge === "Crashed";
 }
 
 /// `DashboardModel::visible_cards` — the cards that survive both axes, in config order: the one
@@ -2375,13 +2386,17 @@ function groupLabel(svc) {
 /// `infoview::state_phrase`, minus its two wall-clock arms: `Stopped`/`Crashed` read
 /// `<Word> for <elapsed>` like the transitional badges rather than `since <HH:MM>`, because no
 /// time-of-day anchor crosses this wire. The elapsed is the **same** anchor the list `State`
-/// cell reads for this badge (`stateText`), so the two surfaces cannot drift.
+/// cell reads for this badge (`stateText`), so the two surfaces cannot drift. A `Queued` row
+/// names the lane its run's block waits on before its own lane, in `state_phrase`'s arm order.
 function statePhrase(svc, now) {
   // A multi-copy family's page describes the service once: its state is the breakdown.
   if (svc.family != null) return copiesBreakdown(svc.family);
   const since = svc.badge === "Busy" && svc.inFlightSince !== null ? svc.inFlightSince : svc.stateEnteredAt;
   const elapsed = formatElapsed(Math.max(0, now - since));
   if (svc.badge === "Busy") return `Busy ${elapsed} (running)`;
+  if (svc.badge === "Queued" && svc.waitingOn) {
+    return `Queued for ${elapsed} (waiting on ${svc.waitingOn})`;
+  }
   // An empty parenthetical says less than none: a husk card the snapshot never seeded with
   // config metadata is `Queued` on a lane it cannot name.
   if (svc.badge === "Queued" && svc.queue !== "") {
@@ -2827,7 +2842,7 @@ const LOG_CONT_HANG = " ".repeat(LOG_CONT_INDENT);
 /// selectors included. Every glyph is *alignment-safe*: measured here it is exactly what
 /// `unicode-width` 0.2 gives it in the terminal, which is what lets the right-flushed rail
 /// land on one column at every depth. `the_rail_glyphs_measure_as_the_tui_measures_them` pins
-/// all seventeen, because `assertGrid` structurally cannot catch a mismeasured glyph: both
+/// all nineteen, because `assertGrid` structurally cannot catch a mismeasured glyph: both
 /// sides of its width check go through the one measurement.
 const KIND_GLYPH = {
   workflow: "🚀",
@@ -2836,6 +2851,8 @@ const KIND_GLYPH = {
   tool: "🔧",
   sandbox: "🔒",
   worktree: "🌿",
+  queue: "🚦",
+  queue_wait: "⏳",
   guard: "⊘︎",
   parallel: "∥︎",
   repeat: "🌀",

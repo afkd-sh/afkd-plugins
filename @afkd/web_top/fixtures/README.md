@@ -60,7 +60,7 @@ the lane can be filled and a third fire parks `queued`; a service that prints an
 adversarial line set; one that exits non-zero; one nested workflow
 (`in_parallel` → `times` → `if`); and one removed by the reload.
 
-## The twelve captures
+## The thirteen captures
 
 | File | What was driven |
 |---|---|
@@ -75,6 +75,7 @@ adversarial line set; one that exits non-zero; one nested workflow
 | `packages.jsonl` | A v2 board of two packages and `main`: `claude.brownout` alone in `claude`, the `selfdev.develop` family (`instances 2`) and `selfdev.discuss` in `selfdev`, and a bare `janitor`; one copy of the family run by name, so its row goes busy. The board a grouped view spells member leaves on. |
 | `lane.jsonl` | One lane's capacity moved over the wire: `ops.heavy` at its declared 2, holding a two-copy family and a single service, asked for 3, 0 (the pause), 40 (answered 32, the daemon's clamp) and an unknown lane (answered by `meta.error`), then put back to 2 by a reload of the unchanged config. |
 | `blocks.jsonl` | A `with queue(…)` block waiting on a lane: attached while `blocker`'s block waits on `heavy` behind `holder`'s run, so the snapshot's `lanes` table lists `gpu`, a lane no service names, and counts the block's wait on `heavy`; then the release, a `meta.lanes` that frees both lanes, and `gpu` widened to 2. |
+| `block-wait.jsonl` | A `with queue(…)` block's whole wait: attached **before** either run, so the live wire carries `blocker`'s `run_started`, its `queue_wait` node and its `run_queue_waiting` while `holder`'s run holds `heavy`, then holder's `run_ok`, the block's `run_queue_entered`, its `queue` nodes on `heavy` and `gpu`, and blocker's `run_ok`. |
 | `family.jsonl` | Multi-copy services: an `instances 3` service with two of its copies run by name, so their logs and trees interleave and their trace ids collide, beside a single service in the same package; and an `instances auto` pool whose run mints a copy (`meta.spawned`), which is then stopped by name and retired (`meta.dropped`). |
 
 `meta.host_load` rides along in all of them.
@@ -283,14 +284,36 @@ The session, in order:
    `meta.queue_parallelism` broadcast and then a `meta.lanes` with `gpu` at 2;
 5. the daemon takes its `SIGINT` with the recorder still attached.
 
+### The ninth session: a block that waits
+
+`block-wait.jsonl` was recorded on its own, the same way as the eighth, against `afkd 0.2.464`
+(release, master at `93d3b210`): a throwaway daemon started with `env -i` and an isolated `HOME`
+under `/tmp`, its working directory that `HOME`, and the same recorder, so the file opens on the
+daemon's `welcome`. Its config is the eighth's, verbatim. None of the earlier files was
+re-recorded, so no existing golden moved: `blocks.jsonl` attaches mid-wait, so it holds the
+snapshot's `waiting_on` and the admission but neither the wait's own event nor its node, and its
+tests and the drain golden fold it at fixed cuts.
+
+The session, in order:
+
+1. attach — the snapshot carries both services `armed` and both lanes free;
+2. 1s later, `run holder`, and 0.5s after that, `run blocker`: blocker's first `$ true` runs,
+   then its `with queue(heavy)` block opens a `queue_wait` node labelled `heavy` and the daemon
+   sends `run_queue_waiting` `{service: blocker, queue: heavy}`;
+3. 1.5s later, `touch release.marker`: holder's run ends (`run_ok`), the wait's node closes, the
+   daemon sends `run_queue_entered`, and the block's `queue` node on `heavy` runs, then the
+   `gpu` block's, then blocker's `run_ok`;
+4. the daemon takes its `SIGINT` with the recorder still attached.
+
 ## The lane table the earlier captures predate
 
 Every capture before the eighth was recorded before afkd sent a lane table, so their snapshots
 carry no `lanes` key, and folded as recorded they draw no `Queues` section, as an older daemon's
 board does. `testkit.mjs`'s `STATED_LANES` gives the snapshot of each capture whose config
 declares a lane the table afkd's registry held at that attach, and `readCapture` reads it into
-the snapshot frame. The recordings themselves are untouched: a stated table is a test's
-statement, not a frame the daemon wrote, and `readRecording` still reads each file as recorded.
+the snapshot frame. The eighth and the ninth carry the daemon's own table. The recordings
+themselves are untouched: a stated table is a test's statement, not a frame the daemon wrote,
+and `readRecording` still reads each file as recorded.
 
 ## What is *not* in here, and why nothing hand-writes it
 

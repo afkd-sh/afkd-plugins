@@ -88,7 +88,7 @@ export function readRecording(file) {
 ///
 /// A stated table is the attach's, and the capture's later runs do not move it, so a test that
 /// cuts a capture past a lane member's run edge folds the table of its own cut. `blocks.jsonl`
-/// carries the daemon's own table and is not listed.
+/// and `block-wait.jsonl` carry the daemon's own table and are not listed.
 export const STATED_LANES = Object.freeze({
   // Nothing running at the attach.
   "fire.jsonl": [{ name: "heavy", capacity: 2, held: 0, waiting: 0 }],

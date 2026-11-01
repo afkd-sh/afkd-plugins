@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.9.1 (companion)
+Installed @afkd/web_top 0.10.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -245,7 +245,7 @@ does. `input.mjs` is the browser half, and the only file here that touches an ev
 |---|---|
 | `j`/`k`, `↓`/`↑`, `g`, `G` | move the cursor; the body scrolls to keep it on screen |
 | `v` | flip the list between the flat boot view — every service its own row, named in full — and the grouped tree; the cursor rides its row across |
-| `b` | the busy lens: only the services running something of their own (`Starting`, `Busy`, `Stopping`) and any `Crashed` one; `b busy ●` says it is on |
+| `b` | the busy lens: only the services running something of their own (`Starting`, `Busy`, `Stopping`, and a run whose `with queue(…)` block waits on a lane) and any `Crashed` one; `b busy ●` says it is on |
 | `Enter`/`Space` | open or close the selected service's **activity peek** — its run's active branch under its row — or fold the group header under the cursor |
 | `h`/`←`, `l`/`→` | fold and unfold a group — from a member too, which moves the cursor onto its header; grouped view only. On a lane row in the `Queues` section they narrow and widen that lane instead |
 | `+` / `-` | widen or narrow the selected service's queue lane by one, from the capacity on screen; on a service with no lane, a group header or nothing they say why in the footer, as the terminal does |

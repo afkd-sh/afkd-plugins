@@ -535,7 +535,7 @@ test("an invented type, an invented event tag and an extra field all fold to a n
 });
 
 test("every fixture replays end to end without throwing, ring bound included", () => {
-  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail", "lane", "blocks"]) {
+  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail", "lane", "blocks", "block-wait"]) {
     const frames = readFixture(name);
     assert.ok(frames.length > 0, `${name} is not empty`);
     assert.doesNotThrow(() => replay(frames), `${name} folds clean`);
@@ -1035,7 +1035,8 @@ function isMeta(frame, meta) {
 
 test("the lanes table is the snapshot's own, a lane only a block reaches included", () => {
   // `blocks.jsonl` attached while `blocker`'s `with queue(heavy)` block waited behind `holder`'s
-  // run on `heavy`, and the daemon's table says so. No badge does: blocker is on no lane.
+  // run on `heavy`, and the daemon's table says so. Blocker is on no lane of its own: its badge
+  // reads `Queued` from the snapshot, and the lane it waits on comes from its `waiting_on`.
   const frames = readFixture("blocks");
   const at = frames.findIndex((f) => isMeta(f, "snapshot"));
   const snapshot = frames[at];
@@ -1187,6 +1188,118 @@ test("a meta.lanes frame serde would refuse is ignored and moves nothing", () =>
     assert.deepEqual(sansFrames(next), sansFrames(board), `${JSON.stringify(lanes)} moves nothing`);
     assert.equal(next.frames.ignored, board.frames.ignored + 1, `${JSON.stringify(lanes)} is ignored`);
   }
+});
+
+// --- a block's wait on a lane ----------------------------------------------------------
+
+/// The index of the first `event` frame of `event` for `service` in `frames`, at or after `from`.
+function eventAt(frames, event, service, from = 0) {
+  return frames.findIndex((f, i) => i >= from && f.type === "event" && f.event === event && f.service === service);
+}
+
+test("a block's wait moves its running service to Queued on its lane, and its admission back to Busy dated from the run's start", () => {
+  // `block-wait.jsonl` attached before either run: blocker's run starts, its `with queue(heavy)`
+  // block waits behind holder's run, and holder's end admits it.
+  const frames = readFixture("block-wait");
+  const started = eventAt(frames, "run_started", "blocker");
+  const waiting = eventAt(frames, "run_queue_waiting", "blocker");
+  const entered = eventAt(frames, "run_queue_entered", "blocker");
+  const done = eventAt(frames, "run_ok", "blocker");
+  const holderDone = eventAt(frames, "run_ok", "holder");
+  assert.ok(
+    started >= 0 && started < waiting && waiting < holderDone && holderDone < entered && entered < done,
+    "the capture runs blocker, waits it behind holder, then admits it",
+  );
+  const { boards, clock } = replay(frames);
+  const runStart = clock[started];
+  const lane = frames[waiting].queue;
+  assert.equal(lane, "heavy", "the wait names its lane");
+
+  const wait = boards[waiting].services.blocker;
+  assert.equal(wait.badge, "Queued");
+  assert.equal(wait.waitingOn, lane);
+  assert.equal(wait.queue, "", "the service's own lane is untouched");
+  assert.equal(wait.inFlightSince, runStart, "the run's clock runs on through the wait");
+  assert.equal(wait.stateEnteredAt, clock[waiting]);
+  assert.equal(boards[waiting].frames.folded, boards[waiting - 1].frames.folded + 1, "the wait is folded");
+  for (let i = waiting; i < entered; i += 1) {
+    assert.equal(boards[i].services.blocker.badge, "Queued", `frame ${i} keeps blocker waiting`);
+    if (i < holderDone) assert.equal(boards[i].services.holder.badge, "Busy", `frame ${i} keeps holder busy`);
+  }
+
+  const admitted = boards[entered].services.blocker;
+  assert.equal(admitted.badge, "Busy");
+  assert.equal(admitted.waitingOn, "");
+  assert.equal(admitted.inFlightSince, runStart);
+  assert.equal(admitted.stateEnteredAt, runStart, "Busy is dated from the run's start");
+  assert.equal(boards[entered].frames.folded, boards[entered - 1].frames.folded + 1, "the admission is folded");
+
+  assert.equal(boards[done].services.blocker.badge, "Idle");
+  assert.equal(boards[done].services.blocker.inFlightSince, null);
+});
+
+test("a wait with no run in flight moves nothing, and an admission leaves a service a stop moved on", () => {
+  const frames = readFixture("block-wait");
+  const snapshotAt = frames.findIndex((f) => isMeta(f, "snapshot"));
+  const waiting = eventAt(frames, "run_queue_waiting", "blocker");
+  const entered = eventAt(frames, "run_queue_entered", "blocker");
+  const stopping = frames.find((f) => f.type === "event" && f.event === "service_stopping" && f.service === "blocker");
+  const ok = frames[eventAt(frames, "run_ok", "blocker")];
+  assert.ok(stopping, "the drain stops blocker");
+
+  // At the snapshot both services are armed, with no run in flight.
+  const armed = replay(frames.slice(0, snapshotAt + 1)).board;
+  assert.equal(armed.services.blocker.inFlightSince, null);
+  const idle = fold(armed, copy(frames[waiting]), 5_000_000);
+  assert.equal(idle.services.blocker.badge, "Idle", "a service with no run does not wait");
+  assert.equal(idle.services.blocker.waitingOn, "");
+  assert.equal(idle.services.blocker.stateEnteredAt, armed.services.blocker.stateEnteredAt);
+  assert.equal(idle.frames.folded, armed.frames.folded + 1, "…and the frame is still folded");
+
+  // A stop while the block waits: the admission clears the wait and leaves the drain.
+  const { board: atWait, end } = replay(frames.slice(0, waiting + 1));
+  const drained = fold(atWait, copy(stopping), end);
+  assert.equal(drained.services.blocker.badge, "Stopping");
+  const after = fold(drained, copy(frames[entered]), end + 1000);
+  assert.equal(after.services.blocker.badge, "Stopping", "an admission never lifts a draining service");
+  assert.equal(after.services.blocker.waitingOn, "");
+  assert.equal(after.services.blocker.stateEnteredAt, drained.services.blocker.stateEnteredAt);
+
+  // A run that ends while its block waits clears the wait with the run.
+  const ended = fold(atWait, copy(ok), end).services.blocker;
+  assert.equal(ended.waitingOn, "");
+  assert.equal(ended.inFlightSince, null);
+  assert.equal(ended.badge, "Queued", "a completion settles only a Busy service");
+  // …and so do a new run and a crash.
+  const restarted = fold(atWait, copy(frames[eventAt(frames, "run_started", "blocker")]), end).services.blocker;
+  assert.deepEqual([restarted.badge, restarted.waitingOn], ["Busy", ""]);
+  const crash = copy(readFixture("noise").find((f) => f.type === "event" && f.event === "service_crashed"));
+  const crashed = fold(atWait, { ...crash, service: "blocker" }, end).services.blocker;
+  assert.deepEqual([crashed.badge, crashed.waitingOn, crashed.inFlightSince], ["Crashed", "", null]);
+});
+
+test("a snapshot's waiting_on seeds a running block's wait", () => {
+  // `blocks.jsonl` attached while blocker's block waited, so the wait arrives in the snapshot.
+  const frames = readFixture("blocks");
+  const snapshotAt = frames.findIndex((f) => isMeta(f, "snapshot"));
+  const entry = frames[snapshotAt].services.find((s) => s.name === "blocker");
+  assert.deepEqual([entry.state, entry.waiting_on], ["queued", "heavy"], "the snapshot carries the wait");
+  assert.ok(entry.busy_ms > 0, "…and the run's age");
+  const { boards, clock } = replay(frames);
+
+  const seeded = boards[snapshotAt].services.blocker;
+  assert.equal(seeded.badge, "Queued");
+  assert.equal(seeded.waitingOn, entry.waiting_on);
+  assert.equal(seeded.inFlightSince, clock[snapshotAt] - entry.busy_ms, "the run is back-dated to its start");
+  assert.equal(boards[snapshotAt].services.holder.waitingOn, "", "a service with no wait has none");
+
+  const entered = eventAt(frames, "run_queue_entered", "blocker");
+  const admitted = boards[entered].services.blocker;
+  assert.equal(admitted.badge, "Busy");
+  assert.equal(admitted.waitingOn, "");
+  assert.equal(admitted.stateEnteredAt, seeded.inFlightSince, "Busy is dated from the run's start");
+
+  assert.equal(boards[eventAt(frames, "run_ok", "blocker")].services.blocker.badge, "Idle");
 });
 
 test("an ungrouped service is in no group", () => {

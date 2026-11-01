@@ -210,8 +210,9 @@ test("the drain is its own screen", () => {
 
 test("the Queues section lists a lane only a block reaches, at the daemon's counts", () => {
   // `blocks.jsonl` attached while `blocker`'s `with queue(heavy)` block waited behind
-  // `holder`'s run: `gpu` is a lane no service names, and blocker is on no lane, so no badge
-  // says it waits. Both rows read the snapshot's own table.
+  // `holder`'s run: `gpu` is a lane no service names, and blocker is on no lane of its own, so
+  // its `Queued` badge names `heavy` from its `waiting_on`. Both rows read the snapshot's own
+  // table.
   const frames = readCapture("blocks.jsonl");
   const { board, at } = foldFrames(frames.slice(0, frames.findIndex((f) => f.type === "meta" && f.meta === "snapshot") + 1));
   const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.441" });
@@ -424,7 +425,7 @@ test("the glyph vocabulary measures as the tui measures it", () => {
   // Every glyph this file and the wire can put on a row, and the width `unicode-width` 0.2
   // gives it in the terminal. A future glyph outside the modelled classes fails here rather
   // than mismeasuring a row in silence.
-  for (const glyph of ["🔹", "🔸", "🔷", "🔶", "▪️", "🪦", "🕸️", "📦", "📜", "🧵", "🔒", "🧹"]) {
+  for (const glyph of ["🔹", "🔸", "🔷", "🔶", "▪️", "🪦", "🕸️", "📦", "📜", "🧵", "🔒", "🧹", "🚦", "⏳"]) {
     assert.equal(textWidth(glyph), 2, `${glyph} is two cells`);
   }
   for (const glyph of ["●", "▷", "◎", "▶", "■", "□", "✕", "◌", "⊟", "⊞", "▮", "▯", "∙", "╎", "│", "─", "↓", "↑", "·", "…", "▁", "█"]) {
@@ -2426,6 +2427,98 @@ test("both panes carry the scrollbar over their own total, viewport and top", ()
   }
 });
 
+// --- a block's wait on a lane ---------------------------------------------------------------
+
+/// `block-wait.jsonl` folded through the first frame `until` holds for.
+function blockWaitAt(until) {
+  const frames = readCapture("block-wait.jsonl");
+  const at = frames.findIndex(until);
+  assert.ok(at >= 0, "the capture holds the frame the cut names");
+  return { frame: frames[at], ...foldFrames(frames.slice(0, at + 1)) };
+}
+
+const isEvent = (event, service) => (f) => f.type === "event" && f.event === event && f.service === service;
+
+/// The flat list's line for `name` at `cols`×`rows`.
+function listLine(board, at, cols, rows, name, extra = {}) {
+  const screen = layoutOf(board, { cols, rows, now: at + 1000, version: "0.2.464", grouped: false, ...extra });
+  assertGrid(screen, cols, rows);
+  return screenText(screen).split("\n").find((l) => l.includes(` ${name} `)) ?? null;
+}
+
+test("a block's wait reads Queued on its row and names its lane on its page, then reads Busy again", () => {
+  const wait = blockWaitAt(isEvent("run_queue_waiting", "blocker"));
+  const lane = wait.frame.queue;
+  const svc = wait.board.services.blocker;
+  for (const [cols, rows] of [
+    [100, 30],
+    [60, 30],
+  ]) {
+    assert.match(listLine(wait.board, wait.at, cols, rows, "blocker") ?? "", /▷ Queued /u, `${cols}: the row reads Queued`);
+    const page = layout(wait.board, infoAt("blocker", cols, rows, wait.at));
+    assertGrid(page, cols, rows);
+    const elapsed = formatElapsed(wait.at + 1000 - svc.stateEnteredAt);
+    assert.equal(valueOf(page, "State"), `Queued for ${elapsed} (waiting on ${lane})`, `${cols}: the page names the lane`);
+  }
+
+  const entered = blockWaitAt(isEvent("run_queue_entered", "blocker"));
+  for (const [cols, rows] of [
+    [100, 30],
+    [60, 30],
+  ]) {
+    assert.match(listLine(entered.board, entered.at, cols, rows, "blocker") ?? "", /▶ Busy /u, `${cols}: the row reads Busy`);
+    const page = layout(entered.board, infoAt("blocker", cols, rows, entered.at));
+    assertGrid(page, cols, rows);
+    const state = valueOf(page, "State");
+    assert.ok(state.startsWith("Busy ") && state.endsWith("(running)"), `${cols}: ${state}`);
+  }
+
+  // A wait the snapshot carries reads the same suffix on its page.
+  const frames = readCapture("blocks.jsonl");
+  const seeded = foldFrames(frames.slice(0, frames.findIndex((f) => f.type === "meta" && f.meta === "snapshot") + 1));
+  const page = layout(seeded.board, infoAt("blocker", 100, 30, seeded.at));
+  assertGrid(page, 100, 30);
+  assert.match(valueOf(page, "State"), /^Queued for \S+ \(waiting on heavy\)$/u);
+});
+
+test("the run tree draws a block's wait and its queue nodes with afkd top's glyphs, on one rail", () => {
+  const opened = (board) =>
+    Object.values(board.services.blocker.tree.nodes).filter((n) => n.kind === "queue" || n.kind === "queue_wait");
+  const glyph = { queue: "🚦", queue_wait: "⏳" };
+  for (const [cut, count] of [
+    [isEvent("run_queue_waiting", "blocker"), 1],
+    [isEvent("run_ok", "blocker"), 3],
+  ]) {
+    const { board, at } = blockWaitAt(cut);
+    const nodes = opened(board);
+    assert.equal(nodes.length, count, "the capture opens the block's nodes");
+    const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.464", run: runState("blocker") });
+    assertGrid(rows, 100, 30);
+    const body = paneBody(rows);
+    for (const node of nodes) {
+      assert.ok(
+        body.some((l) => l.includes(`${glyph[node.kind]} ${node.label}`)),
+        `${node.kind} ${node.label} draws ${glyph[node.kind]}`,
+      );
+    }
+    const st = rows.slice(4, 4 + body.length).map((row) => boundaries(row)[row.length - 2]);
+    assert.equal(new Set(st).size, 1, `ST is on one column on every row, not ${[...new Set(st)].join("/")}`);
+  }
+});
+
+test("the busy lens keeps a run whose block waits on a lane", () => {
+  // `visible_cards` keeps a card with a run in flight, `Queued` mid-run included.
+  const wait = blockWaitAt(isEvent("run_queue_waiting", "blocker"));
+  assert.equal(wait.board.services.blocker.badge, "Queued");
+  for (const name of ["blocker", "holder"]) {
+    assert.ok(listLine(wait.board, wait.at, 100, 30, name, { busyOnly: true }), `${name} is kept`);
+  }
+  const armed = blockWaitAt((f) => f.type === "meta" && f.meta === "snapshot");
+  for (const name of ["blocker", "holder"]) {
+    assert.equal(listLine(armed.board, armed.at, 100, 30, name, { busyOnly: true }), null, `${name} is lensed away`);
+  }
+});
+
 test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, () => {
   // Every glyph `treeview::kind_glyph` and `status_glyph` put on a row, keyed by the Rust's own
   // arm names and pinned to the width `unicode-width` 0.2 gives it in the terminal.
@@ -2442,6 +2535,8 @@ test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, 
     Tool: ["🔧", 2],
     Sandbox: ["🔒", 2],
     Worktree: ["🌿", 2],
+    Queue: ["🚦", 2],
+    QueueWait: ["⏳", 2],
     Guard: ["⊘︎", 1],
     Parallel: ["∥︎", 1],
     Repeat: ["🌀", 2],
@@ -2462,7 +2557,7 @@ test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, 
     return [...body.matchAll(/NodeKind::(\w+) => "([^"]+)"/g)].map(([, arm, glyph]) => [arm, glyph]);
   };
   const kinds = armsOf(rust.indexOf("pub fn kind_glyph"));
-  assert.equal(kinds.length, Object.keys(kind).length, "treeview.rs still spells twelve kind glyphs");
+  assert.equal(kinds.length, Object.keys(kind).length, "treeview.rs still spells fourteen kind glyphs");
   for (const [arm, glyph] of kinds) {
     assert.equal(unescapeRust(glyph), kind[arm]?.[0], `${arm}'s glyph is the Rust's`);
   }
