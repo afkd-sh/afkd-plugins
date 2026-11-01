@@ -1,6 +1,8 @@
 //! The harness the drift gate drives afkd through. Every spawn runs the `afkd` first on
 //! `PATH` ([`bin_path`]) with `$HOME` pinned to a temp dir that holds a seeded `afkd.conf`,
-//! so nothing here builds afkd or reaches the operator's own daemon.
+//! and `$TMPDIR` pinned under it ([`temp_root`]), so nothing here builds afkd or reaches the
+//! operator's own daemon or its runs in flight, and a daemon and an `afkd top` beside it share
+//! one live run root.
 //!
 //! ## Two ways to run a daemon
 //!
@@ -74,6 +76,15 @@ pub(crate) fn state_dir(home: &Path) -> PathBuf {
 /// The run corpus root under a temp `$HOME` — `<state dir>/runs`.
 pub(crate) fn runs_root(home: &Path) -> PathBuf {
     state_dir(home).join("runs")
+}
+
+/// The `$TMPDIR` every spawn pins under a temp `$HOME` — `<home>/tmp`, created here, since
+/// afkd makes temp files under it. A run that keeps no dir of its own runs under its
+/// `afkd/runs/`, the live run root, until it ends.
+pub(crate) fn temp_root(home: &Path) -> PathBuf {
+    let temp = home.join("tmp");
+    std::fs::create_dir_all(&temp).expect("create the pinned $TMPDIR");
+    temp
 }
 
 /// The daemon's v2 entry file under a temp `$HOME` — `<config dir>/daemon.afkd`.
@@ -414,6 +425,7 @@ pub(crate) fn spawn_captured_sized(
     clear_layout_env(&mut cmd)
         .current_dir(dir)
         .env("HOME", dir)
+        .env("TMPDIR", temp_root(dir))
         .envs(extra_env.iter().copied())
         .args(args)
         .stdin(Stdio::from(slave))
@@ -477,6 +489,7 @@ pub(crate) fn run_subcommand_args_with_env(
     clear_layout_env(&mut cmd)
         .current_dir(dir)
         .env("HOME", dir)
+        .env("TMPDIR", temp_root(dir))
         .envs(extra_env.iter().copied())
         .args(args)
         .output()
@@ -506,6 +519,7 @@ pub(crate) fn spawn_headless_with_env(
     clear_layout_env(&mut cmd)
         .current_dir(dir)
         .env("HOME", dir)
+        .env("TMPDIR", temp_root(dir))
         .envs(extra_env.iter().copied())
         .args(args)
         .stdin(Stdio::null())

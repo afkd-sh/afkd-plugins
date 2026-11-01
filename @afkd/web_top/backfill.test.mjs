@@ -17,7 +17,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -58,13 +58,38 @@ const SKIP_PYTHON = python3Available() ? false : "python3 is not on PATH, and th
  * instant, in whatever order the checkout happened to write them. The run name is the run's
  * own start stamp (`yymmdd-hhmmss`), and this session recorded four runs in four distinct
  * seconds, so the name is the chronology the corpus was taken with, and git *does* carry it.
+ *
+ * `place(run)` says which of the relay's two roots get each run dir: `"kept"`, the
+ * `<root>/<segment>/` a `runs_dir` names; `"live"`, the `<temp>/afkd/runs/<segment>/` of a run
+ * in flight, `temp` being the `$TMPDIR` the relay is spawned with; and `"kept-log-only"`, a
+ * kept copy holding its `run.log` alone, as a failed run's is while it is copied over.
  */
-function corpus(name) {
+function corpus(name, place = () => ["kept"]) {
   const at = mkdtempSync(join(tmpdir(), "afkd-web_top-"));
   const root = join(at, name);
-  cpSync(join(HERE, "fixtures", name), root, { recursive: true });
-  for (const service of readdirSync(root)) {
-    for (const run of readdirSync(join(root, service))) {
+  const temp = join(at, "tmp");
+  const fixture = join(HERE, "fixtures", name);
+  mkdirSync(root);
+  mkdirSync(temp);
+  for (const service of readdirSync(fixture)) {
+    for (const run of readdirSync(join(fixture, service))) {
+      const from = join(fixture, service, run);
+      const copies = [];
+      for (const where of place(run)) {
+        if (where === "kept") {
+          copies.push(join(root, service, run));
+          cpSync(from, copies.at(-1), { recursive: true });
+        } else if (where === "live") {
+          copies.push(join(temp, "afkd", "runs", service, run));
+          cpSync(from, copies.at(-1), { recursive: true });
+        } else if (where === "kept-log-only") {
+          copies.push(join(root, service, run));
+          mkdirSync(copies.at(-1), { recursive: true });
+          cpSync(join(from, "run.log"), join(copies.at(-1), "run.log"));
+        } else {
+          throw new Error(`no root is called ${where}`);
+        }
+      }
       const [date, time] = run.split("-");
       const when =
         Date.UTC(
@@ -75,21 +100,27 @@ function corpus(name) {
           Number(time.slice(2, 4)),
           Number(time.slice(4, 6)),
         ) / 1000;
-      utimesSync(join(root, service, run), when, when);
+      for (const copy of copies) utimesSync(copy, when, when);
     }
   }
-  return { root, dispose: () => rmSync(at, { recursive: true, force: true }) };
+  return { root, temp, dispose: () => rmSync(at, { recursive: true, force: true }) };
 }
 
 /**
  * The burst `SERVICE` would be served out of the recorded corpus `name` — the relay's own
  * `--backfill` mode, spawned exactly as an operator would run it.
+ *
+ * It is always spawned with a `$TMPDIR` of the corpus's own, so the live root it reads holds
+ * what `place` put there and never a run this host has in flight. `kept: false` hands it a
+ * `<runs_dir>` that is not there.
  */
-function servedBurst(name, liveness) {
-  const { root, dispose } = corpus(name);
+function servedBurst(name, liveness, { place, kept = true } = {}) {
+  const { root, temp, dispose } = corpus(name, place);
   try {
-    const out = execFileSync("python3", [join(HERE, "web_top"), "--backfill", root, SERVICE, liveness], {
+    const runsDir = kept ? root : join(temp, "..", "absent");
+    const out = execFileSync("python3", [join(HERE, "web_top"), "--backfill", runsDir, SERVICE, liveness], {
       encoding: "utf8",
+      env: { ...process.env, TMPDIR: temp },
     });
     return out
       .split("\n")
@@ -304,6 +335,69 @@ test("the relay's name_segment is afkd's: the case fold alone", { skip: SKIP_PYT
     relayNameSegments(table.map(([name]) => name)),
     table.map(([, segment]) => segment),
   );
+});
+
+// --- the two roots, one burst ---------------------------------------------------------
+
+/**
+ * Asserts `burst` is the one-root burst of the mid-fire corpus, every run kept, and that it is
+ * worth comparing: a tree and a tail, so an empty burst cannot equal an empty one.
+ */
+function assertServedAsKept(burst, what) {
+  const kept = servedBurst("runs-midfire", "busy");
+  assert.ok(kept.some((f) => f.type === "backfill"), "the kept burst carries the tree");
+  assert.ok(kept.some((f) => f.type === "backfill_log"), "…and the log tail");
+  assert.deepEqual(burst, kept, what);
+}
+
+test("a run in flight on the temp root is served as the kept one would be", { skip: SKIP_PYTHON }, () => {
+  // The `keep_runs on_fail` shape mid-fire: the earlier runs are kept, and the newest is still
+  // running under the daemon's temp dir. Read off both roots, the burst is the one-root burst
+  // over the same recorded runs — the newest run's tree and its tail included.
+  const burst = servedBurst("runs-midfire", "busy", {
+    place: (run) => (run === NEWEST_RUN ? ["live"] : ["kept"]),
+  });
+  assertServedAsKept(burst, "the run in flight is read as if it were kept");
+});
+
+test("the temp root alone serves a service with no kept runs", { skip: SKIP_PYTHON }, () => {
+  // A service that has never failed under `keep_runs on_fail` has no kept dir at all: every
+  // run it is served is on the temp root, and the `runs_dir` holds nothing for it.
+  const burst = servedBurst("runs-midfire", "busy", { place: () => ["live"] });
+  assertServedAsKept(burst, "a service read off the temp root alone is served whole");
+});
+
+test("a run in both roots is read once, from the kept root", { skip: SKIP_PYTHON }, () => {
+  // A failed run is in both while it is copied from the temp root to the kept one. Read twice,
+  // its second copy would repeat its own ids and stop the window walk before the older runs.
+  const burst = servedBurst("runs-midfire", "busy", {
+    place: (run) => (run === NEWEST_RUN ? ["kept", "live"] : ["kept"]),
+  });
+  assertServedAsKept(burst, "a run in both roots is one run");
+});
+
+test("a kept copy with no trace yet yields to the live one", { skip: SKIP_PYTHON }, () => {
+  // Part way through that copy, the kept dir holds a `run.log` and no `trace.jsonl` yet. It is
+  // not a real run dir, so it claims no name, and the run is read whole off the temp root.
+  const burst = servedBurst("runs-midfire", "busy", {
+    place: (run) => (run === NEWEST_RUN ? ["kept-log-only", "live"] : ["kept"]),
+  });
+  assertServedAsKept(burst, "a half-copied kept run is read off the temp root");
+});
+
+test("a runs_dir that is not there is the tab's meta.error, then the temp root's run", { skip: SKIP_PYTHON }, () => {
+  // `--backfill` reads its `<runs_dir>` as a named one, so a path that is not there is the
+  // sentence a tab is flashed, and the live root is read all the same: a bad kept path has
+  // nothing to do with a run in flight. The mode exits 0, or `execFileSync` would throw.
+  const [error, ...burst] = servedBurst("runs-midfire", "busy", { place: () => ["live"], kept: false });
+  assert.equal(error.type, "meta", `the burst opens with a meta frame: ${JSON.stringify(error)}`);
+  assert.equal(error.meta, "error", "…an error");
+  assert.match(
+    error.message,
+    /^@afkd\/web_top: no run corpus to read at \/.+\/absent, so a run view opens with no kept history$/,
+    "…naming the path it cannot read",
+  );
+  assertServedAsKept(burst, "the temp root's runs follow the error, whole");
 });
 
 // --- AC1/AC4: a committed run replayed through the fold, rendered, diffed ------------

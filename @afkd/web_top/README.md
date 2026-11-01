@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.10.3 (companion)
+Installed @afkd/web_top 0.11.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -62,7 +62,7 @@ ignored. A changed file restarts the relay on the next reload, with the new sett
 |---|---|---|---|
 | `listen` | string | `"127.0.0.1:8771"` | the IPv4 address to serve on, as `"host[:port]"` — the shape afkd's own `bind { listen … }` takes. A bare host keeps port `8771`, and `:0` binds an ephemeral port and prints the one it got. Read the section above before you widen the host |
 | `max_clients` | int | `8` | how many subscribers may be attached at once; the next one is a `503` |
-| `runs_dir` | string | `<state dir>/runs` | where the daemon keeps its run corpus. Read off disk on every subscriber's attach and served ahead of that subscriber's live frames, so a run view opened after a fire is not empty — see *The disk backfill*. Set it when afkd's own top-level `runs_dir` moves the corpus off the default |
+| `runs_dir` | string | `<state dir>/runs` | where the daemon **keeps** its runs. Read off disk on every subscriber's attach and served ahead of that subscriber's live frames, so a run view opened after a fire is not empty — see *The disk backfill*. Set it when afkd's own top-level `runs_dir` moves the corpus off the default. A run in flight under `keep_runs on_fail` is read off the daemon's temp dir, not off this setting |
 | `log_lines` | int | `2000` | how many log lines the page keeps per service. The terminal dashboard's own `LOG_RING_CAPACITY`, so a browser and a terminal watching one daemon scroll back the same distance. Carried to the page on its `stream` event — the ring it bounds lives in the browser, not here |
 
 Under a v2 config every value arrives typed by the manifest — an int as a JSON number, with
@@ -93,7 +93,10 @@ $ web_top --backfill <runs_dir> <service> busy|idle
 ```
 
 It prints the burst as JSONL — one `backfill` / `backfill_log` frame per line — through the
-same producer the stream seam calls, reads no stdin and binds no port.
+same producer the stream seam calls, reads no stdin and binds no port. `<runs_dir>` is the kept
+root, and the runs in flight are read off `$TMPDIR/afkd/runs`, as the relay reads them. A
+`<runs_dir>` it cannot read is printed as the `meta.error` line a tab would be flashed, and the
+runs in flight follow it.
 
 Static files are served from this directory by an **allowlist of extensions** — `.html`,
 `.mjs`, `.css` — as a single path segment. A nested path, a `..`, this README, the manifest
@@ -415,20 +418,37 @@ and `host::served_backfill_lines` function for function, each one naming the Rus
 - the **log** is the `run.log` tail of that window's newest dir, sanitized on this side because
   `BackfillLog` carries the already-clean ring text.
 
+The corpus has **two roots**, as it does for `afkd top`, and each serves different runs:
+
+- `runs_dir`, `<state dir>/runs` unless the settings name another, is the **kept** root. It holds
+  every run of a `keep_runs always` service, and a failed or parked run of a `keep_runs on_fail`
+  one.
+- `$TMPDIR/afkd/runs` (`/tmp/afkd/runs` when `TMPDIR` is unset) is the **live** root. It holds
+  the run in flight of a service that keeps no dir of its own until it ends, which under the
+  default `keep_runs on_fail` is every service. A clean run is removed from there when it ends.
+  The `TMPDIR` is the daemon's own, since the relay runs with the daemon's environment, and no
+  setting moves it.
+
+Both are read for every service and merged as `afkd top` merges them, so a tab opened mid-run is
+served the run so far. A run in both, as a failed run is while it is copied from the live root to
+the kept one, is read once, from the kept root.
+
 Duplicates between the disk read and the live stream are expected and harmless: an identical
 same-id `opened` is a no-op in `fold.mjs`, and the ring's content-keyed seam drops a **busy**
 service's re-streamed tail once and then disarms.
 
-**When the runs base cannot be read** the relay serves no backfill. It never fails to start over
-it, and it never guesses a second path; the verdict is resolved **per attach**, not latched, so a
-base that appears later is served without a restart.
+**When `runs_dir` cannot be read** the relay serves nothing off it, and still serves the live root.
+It never fails to start over it, and the live root is the daemon's own second root, never a
+stand-in for a path it cannot read; the verdict is resolved **per attach**, not latched, so a base
+that appears later is served without a restart. The live root is never a fault: it is not there
+whenever nothing is in flight.
 
 Whether it *says* so depends on which kind of "cannot be read" it is:
 
 - the block **named** a `runs_dir` that is not there, or the base is there and this process may
   not read it — a mistake either way. The relay writes one sentence to stderr at start (which
-  reaches the daemon log under `companion @afkd/web_top: err`) and sends each subscriber a
-  `meta.error` naming the path it tried, which the page flashes;
+  reaches the daemon log under `companion @afkd/web_top: err`) and opens each subscriber's burst
+  with a `meta.error` naming the path it tried, which the page flashes;
 - nobody named it and the default `<state dir>/runs` is simply **not there yet** — the state of
   every install before its first fire. Silent, on both channels. `afkd top` reads the same disk
   and says nothing about it either, and a page that flashed at every tab until the first fire

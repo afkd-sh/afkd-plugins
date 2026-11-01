@@ -193,12 +193,22 @@ def setting_dir(settings, key, default):
 # discipline `fold.mjs` already holds for `model.rs`, because the two can drift and the
 # citation is the only thing that makes the drift findable.
 #
+# The corpus has two roots, `backfill.rs`'s `RunBases`. The **kept** root, `runs_dir`
+# (`<state dir>/runs` by default), holds every run of a `keep_runs always` service and a
+# failed or parked run of a `keep_runs on_fail` one. The **live** root, `<temp>/afkd/runs`,
+# holds the run in flight of a service that keeps no dir of its own until it ends; a clean run
+# is removed from there when it ends. Both are read for every service and merged per service,
+# so a run in flight backfills like a kept one, as it does in `afkd top`.
+#
 # All I/O here is best-effort, the Rust's own posture: a missing service dir yields nothing,
 # and a half-written or garbage trace records no fire and contributes nothing.
 
 # The two per-run files, as `afkd_system::service` reserves their names.
 TRACE_FILE = "trace.jsonl"
 RUN_LOG_FILE = "run.log"
+
+# The live root's path under the temp dir. `TEMP_RUNS_SUBDIR` (`crates/app/src/lib.rs`).
+TEMP_RUNS_SUBDIR = os.path.join("afkd", "runs")
 
 # The trailing bytes of a `run.log` the tail read spans, so a multi-MB transcript is never
 # read whole. `TAIL_CAP_BYTES` (`crates/app/src/logfile.rs`).
@@ -246,6 +256,26 @@ def name_segment(name):
     return name.lower()
 
 
+def live_runs_base():
+    """The live root, `<temp>/afkd/runs` — `ephemeral_runs_base(&std::env::temp_dir())`.
+
+    The temp dir is resolved as `std::env::temp_dir()` resolves it on unix: `$TMPDIR` as it
+    is set, empty included, else `/tmp`. The daemon starts this program with its own
+    environment, so this is the daemon's own live root, where its runs in flight are.
+    """
+    return os.path.join(os.environ.get("TMPDIR", "/tmp"), TEMP_RUNS_SUBDIR)
+
+
+def service_runs(bases, name):
+    """One service's `(kept, live)` dirs under the `(kept, live)` roots `bases` —
+    `RunBases::segment`.
+
+    A root that is `None` gives `None`, and a `None` dir is not read.
+    """
+    segment = name_segment(name)
+    return tuple(None if base is None else os.path.join(base, segment) for base in bases)
+
+
 def runs_readable(base):
     """Whether `base` is a directory this process may list and read.
 
@@ -276,14 +306,14 @@ def runs_fault(base, named):
       path written down that is not there, or one this process may not read.
 
     The one predicate both reports run through — the sentence written to stderr once at
-    start, and the `meta.error` a subscriber's burst is replaced by — so the two can never
+    start, and the `meta.error` a subscriber's burst opens with — so the two can never
     disagree about what counts as a fault.
     """
     if runs_readable(base):
         return None
     if not named and not os.path.exists(base):
         return None
-    return ("%s: no run corpus to read at %s, so a run view opens with no history"
+    return ("%s: no run corpus to read at %s, so a run view opens with no kept history"
             % (NAME, base))
 
 
@@ -299,30 +329,41 @@ def is_real_run_dir(path):
 
 
 def recent_run_dirs(service_runs):
-    """A service's real run sub-directories, oldest -> newest — `backfill.rs`'s.
+    """A service's real run sub-directories across its `(kept, live)` dirs, oldest -> newest
+    — `backfill.rs`'s.
 
     Keyed on mtime, tie-broken by name, and **not** on the run-name string: the run
     grammar's optional `-<ms>` conflict segment sits before the kind suffix, so within one
     second a conflict name sorts before the earlier natural one and lexical order is not
-    chronological there. Best-effort: an unreadable dir or entry yields fewer dirs.
+    chronological there. A run in both, which a failed run is while it is copied from the
+    live dir to the kept one, is read once, from the kept dir; a kept copy with no
+    `trace.jsonl` yet is not a real run dir, so the live one stands in for it. Best-effort: an
+    unreadable dir or entry yields fewer dirs.
     """
-    try:
-        names = os.listdir(service_runs)
-    except (OSError, ValueError):
-        # `ValueError` is the embedded-NUL case, the same one the static route checks for by
-        # hand: it is not an `OSError`, so without it a path carrying one would leave here as
-        # a traceback on the daemon's log instead of as an empty window.
-        return []
     dirs = []
-    for name in names:
-        path = os.path.join(service_runs, name)
-        if not is_real_run_dir(path):
+    seen = set()
+    for base in service_runs:
+        if base is None:
             continue
         try:
-            mtime = os.stat(path).st_mtime_ns
-        except OSError:
-            mtime = 0
-        dirs.append((mtime, name, path))
+            names = os.listdir(base)
+        except (OSError, ValueError):
+            # `ValueError` is the embedded-NUL case, the same one the static route checks for
+            # by hand: it is not an `OSError`, so without it a path carrying one would leave
+            # here as a traceback on the daemon's log instead of as an empty window.
+            continue
+        for name in names:
+            path = os.path.join(base, name)
+            # Claim the name only once the dir is real, so a kept copy still being written
+            # leaves it to the live one.
+            if not is_real_run_dir(path) or name in seen:
+                continue
+            seen.add(name)
+            try:
+                mtime = os.stat(path).st_mtime_ns
+            except OSError:
+                mtime = 0
+            dirs.append((mtime, name, path))
     dirs.sort()
     return [path for _, _, path in dirs]
 
@@ -369,10 +410,10 @@ def read_run_trace(path):
 
 
 def tree_backfill_window(service_runs):
-    """A service's run-tree window as `(dirs, events)` — `backfill.rs`'s
-    `tree_backfill_window`, whose three walk rules this mirrors whole.
+    """A service's run-tree window as `(dirs, events)`, off its `(kept, live)` dirs —
+    `backfill.rs`'s `tree_backfill_window`, whose three walk rules this mirrors whole.
 
-    Walking the trace-bearing dirs newest -> oldest:
+    Walking the trace-bearing dirs of both newest -> oldest:
 
     - a **fire-less** lifecycle dir takes no slot, does not end the walk and does not vote
       on the generation boundary, so right after a reload the window is still the previous
@@ -632,24 +673,21 @@ def sanitize_log_line(text):
     return "".join(out)
 
 
-def backfill_frames(base, targets, log_lines):
-    """The whole burst one subscriber is served, in order — the wire twin of
-    `host::served_backfill_lines`.
+def backfill_frames(bases, targets, log_lines):
+    """The run frames of one subscriber's burst, in order, off the `(kept, live)` roots
+    `bases` — the wire twin of `host::served_backfill_lines`.
 
-    Per service, its run-tree window replayed as `backfill` frames, then the `run.log` tail
-    of that window's **newest** dir as `backfill_log` frames. The log anchors on
-    `dirs[-1]` — the exact dir the tree burst ended on, not a second picker — which is what
-    makes the two structurally unable to disagree about which dir is real.
+    Per service, its run-tree window across both roots replayed as `backfill` frames, then
+    the `run.log` tail of that window's **newest** dir as `backfill_log` frames. The log
+    anchors on `dirs[-1]` — the exact dir the tree burst ended on, not a second picker —
+    which is what makes the two structurally unable to disagree about which dir is real.
 
     The tail is bounded by `log_lines`, the ring bound this subscriber was told on its
     `stream` event: serving more would be serving lines the page drops on arrival.
-
-    The single producer both callers use — the stream seam and `--backfill` — so the
-    inspection mode cannot drift from what a subscriber is actually served.
     """
     frames = []
     for name, busy in targets:
-        dirs, events = tree_backfill_window(os.path.join(base, name_segment(name)))
+        dirs, events = tree_backfill_window(service_runs(bases, name))
         for event in events:
             frames.append({"type": "backfill", "service": name, "event": event})
         if not dirs:
@@ -667,6 +705,29 @@ def backfill_frames(base, targets, log_lines):
                 "last": i == len(tail) - 1,
             })
     return frames
+
+
+def served_burst(runs_dir, runs_named, live_dir, targets, log_lines):
+    """The whole burst one subscriber is served, in order: a `meta.error` when `runs_dir` is a
+    fault, then the run frames off both roots.
+
+    `runs_dir` is stat'd **now** rather than at start (see [`runs_readable`]). One that is
+    missing or unreadable is not read, and when [`runs_fault`] calls it a fault, one composed
+    `meta.error` leads the burst, which the page flashes exactly as it flashes the daemon's
+    own (`session.mjs`'s `noteFrame`). The live root `live_dir` is read either way, since a
+    run in flight has nothing to do with a bad kept path. It is never a fault itself: it is
+    derived rather than configured, and it is absent whenever nothing is in flight.
+
+    The single producer both callers use — the stream seam and `--backfill` — so the
+    inspection mode cannot drift from what a subscriber is actually served.
+    """
+    frames = []
+    kept = runs_dir if runs_readable(runs_dir) else None
+    if kept is None:
+        fault = runs_fault(runs_dir, runs_named)
+        if fault is not None:
+            frames.append({"type": "meta", "meta": "error", "message": fault})
+    return frames + backfill_frames((kept, live_dir), targets, log_lines)
 
 
 def snapshot_targets(snapshot):
@@ -838,19 +899,22 @@ class Relay:
     There is nothing else — no folded board, no cached frame. The **page** folds, in
     `fold.mjs`; this process forwards.
 
-    `runs_dir` is the daemon's run corpus, read fresh on every subscriber's snapshot (the
-    burst in [`Handler.backfill`]) and cached in neither this object nor any other: a base
-    that appears after the daemon's first fire is served, and one that vanishes is reported.
+    `runs_dir` is the daemon's kept run corpus and `live_runs_dir` its live one, the runs in
+    flight. Both are read fresh on every subscriber's snapshot (the burst in
+    [`Handler.backfill`]) and cached in neither this object nor any other: a base that appears
+    after the daemon's first fire is served, and a `runs_dir` that vanishes is reported.
     `log_lines` is only carried — it is handed to the page on its `stream` event, because
     the ring it bounds lives in the browser, and it is the bound the served tail is cut to.
     """
 
-    def __init__(self, socket_path, runs_dir, runs_named, max_clients, log_lines):
+    def __init__(self, socket_path, runs_dir, runs_named, live_runs_dir, max_clients,
+                 log_lines):
         self.socket_path = socket_path
         self.runs_dir = runs_dir
         # Whether the settings **named** `runs_dir` rather than taking the default — which is
         # what [`runs_fault`] reads to tell a configuration mistake from a fresh install.
         self.runs_named = runs_named
+        self.live_runs_dir = live_runs_dir
         self.log_lines = log_lines
         self.attaches = Attaches(max_clients)
         self.stopping = threading.Event()
@@ -1056,22 +1120,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def backfill(self, snapshot):
         """This subscriber's run history, off disk, as `backfill` / `backfill_log` frames.
 
-        The runs base is stat'd **now** rather than at start (see [`runs_readable`]), and a
-        base that is missing or unreadable serves no backfill at all: one composed
-        `meta.error` goes out instead, which the page flashes exactly as it flashes the
-        daemon's own (`session.mjs`'s `noteFrame`). The sentence opens with this plugin's
-        name, since to the page it is indistinguishable from a refusal the daemon sent.
+        Both roots are read, the kept `runs_dir` and the live one (see [`served_burst`]). A
+        `runs_dir` that is missing or unreadable serves nothing off that root, and a fault
+        there is one composed `meta.error` ahead of whatever the live root serves. The
+        sentence opens with this plugin's name, since to the page it is indistinguishable from
+        a refusal the daemon sent.
 
-        It never fails the stream over it, and it never guesses a second path.
+        It never fails the stream over it. The live root is the daemon's own second root,
+        never a stand-in for a `runs_dir` it cannot read.
         """
         relay = self.server.relay
-        if not runs_readable(relay.runs_dir):
-            fault = runs_fault(relay.runs_dir, relay.runs_named)
-            if fault is not None:
-                self.wire({"type": "meta", "meta": "error", "message": fault})
-            return
-        for frame in backfill_frames(relay.runs_dir, snapshot_targets(snapshot),
-                                     relay.log_lines):
+        for frame in served_burst(relay.runs_dir, relay.runs_named, relay.live_runs_dir,
+                                  snapshot_targets(snapshot), relay.log_lines):
             self.wire(frame)
 
     def wire(self, frame):
@@ -1287,20 +1347,22 @@ def inspect(runs_dir, service, liveness):
     """`--backfill <runs_dir> <service> busy|idle`: the burst that service would be served.
 
     One JSON frame per line, on stdout — the operator-facing answer to "what history does a
-    tab opening now actually get?". It runs `backfill_frames` itself, the same producer the
+    tab opening now actually get?". It runs `served_burst` itself, the same producer the
     stream seam calls, so the dump cannot drift from what a subscriber is served; and it is
     what `backfill.test.mjs` replays, so the read is tested exactly as it ships rather than
     re-stated in javascript.
+
+    `runs_dir` is the kept root, read as a named one, so a path that is not there is the
+    `meta.error` line a tab would be flashed rather than a refusal of this mode. The live root
+    is read off this process's `$TMPDIR`, as the relay reads it off the daemon's.
 
     Reads no stdin and binds no port. The ring bound is the default: this mode has no
     subscriber to have been told another.
     """
     if liveness not in ("busy", "idle"):
         die("%s: --backfill takes `busy` or `idle`, not %r" % (NAME, liveness))
-    if not runs_readable(runs_dir):
-        die("%s: no run corpus to read at %s" % (NAME, runs_dir))
-    for frame in backfill_frames(runs_dir, [(service, liveness == "busy")],
-                                 DEFAULT_LOG_LINES):
+    for frame in served_burst(runs_dir, True, live_runs_base(),
+                              [(service, liveness == "busy")], DEFAULT_LOG_LINES):
         sys.stdout.write(json.dumps(frame) + "\n")
     sys.stdout.flush()
     return 0
@@ -1337,7 +1399,8 @@ def main():
     sys.stdout.write(json.dumps({"ok": True, "proto": PLUGIN_PROTO}) + "\n")
     sys.stdout.flush()
 
-    relay = Relay(socket_path, runs_dir, "runs_dir" in settings, max_clients, log_lines)
+    relay = Relay(socket_path, runs_dir, "runs_dir" in settings, live_runs_base(), max_clients,
+                  log_lines)
     try:
         httpd = Server((bind, port), Handler)
     except OSError as err:

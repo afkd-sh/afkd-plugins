@@ -1,5 +1,5 @@
 name = "@afkd/web_top"
-version = "0.10.3"
+version = "0.11.0"
 proto = 2
 shape = "companion"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -11,7 +11,8 @@ type = "string"
 default = "127.0.0.1:8771"
 
 # No default: the relay derives it from the socket afkd hands it, `<dir of socket>/runs`,
-# which a static default cannot say.
+# which a static default cannot say. It is the kept root; a run in flight is read off
+# `$TMPDIR/afkd/runs`, which no setting moves.
 [[config.setting]]
 name = "runs_dir"
 type = "string"

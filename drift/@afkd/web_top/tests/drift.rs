@@ -138,6 +138,40 @@ const WARN_ICON: &str = "🔸";
 /// The fired service's fully-qualified name, as the wire carries it.
 const BUSY: &str = "ops.kanshi";
 
+/// [`SERVICES`] with the fired service under the default `keep_runs on_fail`, so a run of it
+/// lives under the daemon's `$TMPDIR` while it runs and reaches `<state>/runs` only if it fails.
+///
+/// Its run holds itself in flight: the echo gives the tree a step and the log a line, the
+/// `until` waits for the leg to create [`HOLD_FILE`], and the `test` fails the run when the
+/// leg has created [`FAIL_FILE`]. Both files are read off the run's cwd, the daemon's `$HOME`.
+const ON_FAIL_SERVICES: Tree = Tree {
+    main: SERVICES.main,
+    packages: &[(
+        "ops",
+        r#"import "core"; import "service:manual"
+
+kanshi :: service(manual) {
+  description "ウェブ — the wide one"
+
+  on_run proc(run: core.Run) {
+    $ echo ライン one
+    $ until [ -e release ]; do sleep 0.05; done
+    $ test ! -e broken
+  }
+}
+"#,
+    )],
+};
+
+/// The file whose creation in `$HOME` lets an [`ON_FAIL_SERVICES`] run past its hold.
+const HOLD_FILE: &str = "release";
+
+/// The file whose presence in `$HOME` fails an [`ON_FAIL_SERVICES`] run at its last step.
+const FAIL_FILE: &str = "broken";
+
+/// The hold step's label, as the run's tree and its `run.log` name it.
+const HOLD_STEP: &str = "until [ -e release ]; do sleep 0.05; done";
+
 /// A home whose config directory holds `tree` and nothing else.
 fn v2_home_with(tree: &Tree) -> TempDir {
     let home = TempDir::new().expect("tempdir");
@@ -619,6 +653,9 @@ impl Stub {
             .arg(plugin_root().join("web_top"))
             .current_dir(plugin_root())
             .env("HOME", dir.path())
+            // Pin the live run root too, so the stub's relay never serves a run this host has
+            // in flight.
+            .env("TMPDIR", temp_root(dir.path()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(stderr));
@@ -2643,12 +2680,14 @@ fn an_unreadable_runs_dir_starts_anyway_says_so_once_and_flashes_every_tab() {
             message.contains(missing) && message.contains(NAME),
             "tab {tab}'s refusal names the path it tried, in this relay's own voice: {refusal:#}"
         );
-        // …and it is a refusal *instead of* a burst, not beside one.
+        // …and nothing follows it: nothing is served off a path that is not there, and
+        // nothing is in flight on the temp root.
         assert!(
             !frames
                 .iter()
                 .any(|f| f["type"] == "backfill" || f["type"] == "backfill_log"),
-            "tab {tab} was served nothing off a path that is not there: {frames:#?}"
+            "tab {tab} was served nothing off a path that is not there, with no run in \
+             flight: {frames:#?}"
         );
 
         // The flash the criterion names, read where a flash lives — off the **rendered
@@ -2743,6 +2782,213 @@ fn a_runs_dir_that_appears_after_the_daemon_started_is_served() {
     assert_eq!(
         replayed["service"], BUSY,
         "…for the service whose corpus was put there: {replayed:#}"
+    );
+}
+
+/// The real run dirs of [`BUSY`] under the runs root `base`: the sub-dirs of its segment that
+/// hold a `trace.jsonl`, or none when the segment is not there.
+fn run_dirs(base: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(base.join("ops.kanshi")) else {
+        return Vec::new();
+    };
+    entries
+        .map(|entry| entry.expect("a run dir entry").path())
+        .filter(|path| path.join("trace.jsonl").is_file())
+        .collect()
+}
+
+/// The frames a tab opened now is served, up to the `run.log` tail's last line, parsed.
+/// Panics when no tail closes, quoting what the stream did carry.
+fn late_burst(port: u16) -> Vec<serde_json::Value> {
+    let mut late = Sse::admitted(port);
+    late.handshake();
+    let mut raw = Vec::new();
+    let tailed = late.collect_frames(BUDGET, &mut raw, |f| {
+        f["type"] == "backfill_log" && f["last"] == true
+    });
+    assert!(
+        tailed,
+        "the late tab was served no run.log tail; the stream carried {raw:?}"
+    );
+    raw.iter()
+        .map(|line| serde_json::from_str(line).expect("a forwarded frame is JSON"))
+        .collect()
+}
+
+/// The labels of the nodes `frames` replays as `opened` backfill, each asserted to name
+/// [`BUSY`].
+fn backfilled_labels(frames: &[serde_json::Value]) -> Vec<&str> {
+    frames
+        .iter()
+        .filter(|f| f["type"] == "backfill" && f["event"]["op"] == "opened")
+        .map(|f| {
+            assert_eq!(
+                f["service"], BUSY,
+                "a replayed node names its service: {f:#}"
+            );
+            f["event"]["node"]["label"].as_str().unwrap_or_default()
+        })
+        .collect()
+}
+
+#[test]
+fn a_tab_opened_mid_run_is_served_the_run_in_flight_off_the_daemons_temp_dir() {
+    // Under the default `keep_runs on_fail` a run in flight lives under the daemon's
+    // `$TMPDIR/afkd/runs/`, and nothing of it is under `<state>/runs` until it fails. `afkd
+    // top` attached now shows its tree and its log so far, and so must a tab: this leg holds
+    // a run in flight, opens a second subscriber, and asserts its burst carries both.
+    if !python3_available() {
+        eprintln!("skipping: python3 is not on PATH, and the relay is python");
+        return;
+    }
+    let (_daemon, dir, port) = daemon_serving(&ON_FAIL_SERVICES, "listen \"127.0.0.1:0\"\n");
+
+    let mut driver = Sse::admitted(port);
+    let driver_id = driver.handshake();
+    driver.frame(BUDGET);
+    let (status, body) = post_command(
+        port,
+        &serde_json::json!({"stream": driver_id, "command": "run", "service": BUSY}),
+    );
+    assert_eq!(status, 200, "POST /command: {body}");
+    driver.frame_matching(BUDGET, |f| f["event"] == "run_started");
+
+    // Wait until the run holds: its `run.log` names the hold step, which opens only once the
+    // echo before it has closed, so the echo is on disk before the tab attaches.
+    let live = temp_root(dir.path()).join("afkd").join("runs");
+    let deadline = Instant::now() + BUDGET;
+    let held = loop {
+        let held = run_dirs(&live).into_iter().find(|run| {
+            std::fs::read_to_string(run.join("run.log")).is_ok_and(|log| log.contains(HOLD_STEP))
+        });
+        if held.is_some() || Instant::now() >= deadline {
+            break held;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let held = held.unwrap_or_else(|| {
+        panic!(
+            "no run held in flight under {}: {:?}",
+            live.display(),
+            run_dirs(&live)
+        )
+    });
+    assert_eq!(
+        run_dirs(&runs_root(dir.path())),
+        Vec::<PathBuf>::new(),
+        "nothing of the run is kept while it runs, so what the tab is served came off {}",
+        held.display()
+    );
+
+    let frames = late_burst(port);
+    assert_eq!(
+        frames[0]["meta"], "snapshot",
+        "the attach snapshot opens the stream: {:#}",
+        frames[0]
+    );
+    assert!(
+        frames
+            .iter()
+            .skip(1)
+            .all(|f| f["type"] != "meta" || f["meta"] != "error"),
+        "the burst is not a fault: {frames:#?}"
+    );
+    let labels = backfilled_labels(&frames);
+    assert!(
+        labels.contains(&"echo ライン one") && labels.contains(&HOLD_STEP),
+        "the burst replayed the run's tree so far, the step in flight included: {labels:?}"
+    );
+    let served: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|f| f["type"] == "backfill_log")
+        .collect();
+    assert!(
+        served
+            .iter()
+            .any(|f| f["line"].as_str().is_some_and(|l| l.contains("ライン one"))),
+        "the burst served the run's log so far: {served:#?}"
+    );
+    assert_eq!(
+        served.iter().filter(|f| f["last"] == true).count(),
+        1,
+        "exactly one served line closes the tail"
+    );
+    assert!(
+        served.iter().all(|f| f["busy"] == true),
+        "every served line says the service is busy, as the snapshot reads it: {served:#?}"
+    );
+
+    // Release the run, so the daemon drains a finished one.
+    std::fs::write(dir.path().join(HOLD_FILE), "").expect("release the run");
+    driver.frame_matching(BUDGET, |f| f["event"] == "run_ok");
+}
+
+#[test]
+fn a_failed_run_of_an_on_fail_service_is_served_off_the_state_dir() {
+    // The other half of `keep_runs on_fail`: a failed run is moved from the daemon's temp dir
+    // to `<state>/runs`, and a tab opened after it is served it from there.
+    if !python3_available() {
+        eprintln!("skipping: python3 is not on PATH, and the relay is python");
+        return;
+    }
+    let (_daemon, dir, port) = daemon_serving(&ON_FAIL_SERVICES, "listen \"127.0.0.1:0\"\n");
+    std::fs::write(dir.path().join(HOLD_FILE), "").expect("let the run past its hold");
+    std::fs::write(dir.path().join(FAIL_FILE), "").expect("fail the run");
+
+    let mut driver = Sse::admitted(port);
+    let driver_id = driver.handshake();
+    driver.frame(BUDGET);
+    let (status, body) = post_command(
+        port,
+        &serde_json::json!({"stream": driver_id, "command": "run", "service": BUSY}),
+    );
+    assert_eq!(status, 200, "POST /command: {body}");
+    driver.frame_matching(BUDGET, |f| f["event"] == "run_failed");
+
+    // Wait until the move is done: the run kept, and nothing left on the temp root.
+    let live = temp_root(dir.path()).join("afkd").join("runs");
+    let deadline = Instant::now() + BUDGET;
+    while !(run_dirs(&runs_root(dir.path())).len() == 1 && run_dirs(&live).is_empty())
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        run_dirs(&runs_root(dir.path())).len(),
+        1,
+        "the failed run is kept under {}",
+        runs_root(dir.path()).display()
+    );
+    assert_eq!(
+        run_dirs(&live),
+        Vec::<PathBuf>::new(),
+        "…and gone from the temp root"
+    );
+
+    let frames = late_burst(port);
+    assert_eq!(
+        frames[0]["meta"], "snapshot",
+        "the attach snapshot opens the stream: {:#}",
+        frames[0]
+    );
+    let labels = backfilled_labels(&frames);
+    assert!(
+        labels.contains(&"echo ライン one") && labels.contains(&"test ! -e broken"),
+        "the burst replayed the failed run's tree, its failing step included: {labels:?}"
+    );
+    let served: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|f| f["type"] == "backfill_log")
+        .collect();
+    assert!(
+        served
+            .iter()
+            .any(|f| f["line"].as_str().is_some_and(|l| l.contains("ライン one"))),
+        "the burst served the failed run's log: {served:#?}"
+    );
+    assert!(
+        served.iter().all(|f| f["busy"] == false),
+        "a finished run's tail is not a busy one: {served:#?}"
     );
 }
 
