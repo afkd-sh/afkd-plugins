@@ -1244,7 +1244,6 @@ test("a wait with no run in flight moves nothing, and an admission leaves a serv
   const waiting = eventAt(frames, "run_queue_waiting", "blocker");
   const entered = eventAt(frames, "run_queue_entered", "blocker");
   const stopping = frames.find((f) => f.type === "event" && f.event === "service_stopping" && f.service === "blocker");
-  const ok = frames[eventAt(frames, "run_ok", "blocker")];
   assert.ok(stopping, "the drain stops blocker");
 
   // At the snapshot both services are armed, with no run in flight.
@@ -1265,17 +1264,61 @@ test("a wait with no run in flight moves nothing, and an admission leaves a serv
   assert.equal(after.services.blocker.waitingOn, "");
   assert.equal(after.services.blocker.stateEnteredAt, drained.services.blocker.stateEnteredAt);
 
-  // A run that ends while its block waits clears the wait with the run.
-  const ended = fold(atWait, copy(ok), end).services.blocker;
-  assert.equal(ended.waitingOn, "");
-  assert.equal(ended.inFlightSince, null);
-  assert.equal(ended.badge, "Queued", "a completion settles only a Busy service");
-  // …and so do a new run and a crash.
+  // A new run and a crash clear the wait with the run.
   const restarted = fold(atWait, copy(frames[eventAt(frames, "run_started", "blocker")]), end).services.blocker;
   assert.deepEqual([restarted.badge, restarted.waitingOn], ["Busy", ""]);
   const crash = copy(readFixture("noise").find((f) => f.type === "event" && f.event === "service_crashed"));
   const crashed = fold(atWait, { ...crash, service: "blocker" }, end).services.blocker;
   assert.deepEqual([crashed.badge, crashed.waitingOn, crashed.inFlightSince], ["Crashed", "", null]);
+});
+
+test("a run that ends while its block waits settles to Idle, and a draining or runless one does not move", () => {
+  const frames = readFixture("block-wait");
+  const snapshotAt = frames.findIndex((f) => isMeta(f, "snapshot"));
+  const waiting = eventAt(frames, "run_queue_waiting", "blocker");
+  const ok = frames[eventAt(frames, "run_ok", "blocker")];
+  const stopping = frames.find((f) => f.type === "event" && f.event === "service_stopping" && f.service === "blocker");
+  const noiseFailed = readFixture("noise").find((f) => f.type === "event" && f.event === "run_failed");
+  assert.ok(noiseFailed, "the noise capture has a failed run");
+  const failed = { ...copy(noiseFailed), service: "blocker" };
+  const { board: atWait, end } = replay(frames.slice(0, waiting + 1));
+  const waited = atWait.services.blocker;
+  assert.deepEqual([waited.badge, waited.waitingOn], ["Queued", "heavy"], "blocker's block waits on heavy");
+  assert.notEqual(waited.inFlightSince, null, "…with its run in flight");
+
+  // The run ends while its block waits: the row settles to Idle, and the run counts in full.
+  const ended = fold(atWait, copy(ok), end).services.blocker;
+  assert.equal(ended.badge, "Idle", "a run that ends mid-wait settles to Idle");
+  assert.equal(ended.waitingOn, "");
+  assert.equal(ended.inFlightSince, null);
+  assert.equal(ended.stateEnteredAt, end);
+  assert.equal(ended.runs, waited.runs + 1);
+  assert.equal(ended.runTimeTotalMs, waited.runTimeTotalMs + ok.elapsed_ms, "the run's time counts mid-wait");
+
+  // …and so does a run that fails mid-wait.
+  const faulted = fold(atWait, copy(failed), end).services.blocker;
+  assert.equal(faulted.badge, "Idle", "a run that fails mid-wait settles to Idle");
+  assert.equal(faulted.waitingOn, "");
+  assert.equal(faulted.inFlightSince, null);
+  assert.equal(faulted.stateEnteredAt, end);
+  assert.equal(faulted.failures, waited.failures + 1);
+  assert.equal(faulted.lastError, failed.reason);
+
+  // A stop while the block waits keeps the service draining when its run ends.
+  const drained = fold(atWait, copy(stopping), end);
+  const drainedEnd = fold(drained, copy(ok), end + 1000).services.blocker;
+  assert.equal(drainedEnd.badge, "Stopping", "a run's end never lifts a draining service");
+  assert.equal(drainedEnd.stateEnteredAt, drained.services.blocker.stateEnteredAt);
+
+  // A service queued with no run in flight does not move on a completion.
+  const armed = replay(frames.slice(0, snapshotAt + 1)).board;
+  const queued = copy(armed);
+  Object.assign(queued.services.blocker, { badge: "Queued", stateEnteredAt: 5_000_000, inFlightSince: null });
+  for (const frame of [ok, failed]) {
+    const stray = fold(queued, copy(frame), 5_001_000).services.blocker;
+    assert.equal(stray.badge, "Queued", `a runless Queued service stays put on ${frame.event}`);
+    assert.equal(stray.stateEnteredAt, 5_000_000);
+  }
 });
 
 test("a snapshot's waiting_on seeds a running block's wait", () => {

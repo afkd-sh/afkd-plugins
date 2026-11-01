@@ -421,10 +421,12 @@ function foldEventArm(board, frame, now, name) {
       return folded(
         withService(board, name, (svc) => {
           svc.runs += 1;
+          const midWait = svc.badge === "Queued" && svc.inFlightSince !== null;
           completeFire(svc, "ok", toNumber(frame.elapsed_ms, 0));
-          // Settle back to `Idle` — but only from `Busy`. A control stop that already moved
-          // the service to `Stopping` mid-fire leaves it draining.
-          if (svc.badge === "Busy") enter(svc, "Idle", now);
+          // Settle back to `Idle` — but only from a running run, `Busy` or waiting mid-run on a
+          // lane. A control stop that already moved the service to `Stopping` mid-fire leaves
+          // it draining.
+          if (svc.badge === "Busy" || midWait) enter(svc, "Idle", now);
           return svc;
         }),
       );
@@ -438,8 +440,9 @@ function foldEventArm(board, frame, now, name) {
           svc.runs += 1;
           svc.failures += 1;
           svc.faultedSinceArm = true;
+          const midWait = svc.badge === "Queued" && svc.inFlightSince !== null;
           completeFire(svc, "failed", toNumber(frame.elapsed_ms, 0));
-          if (svc.badge === "Busy") enter(svc, "Idle", now);
+          if (svc.badge === "Busy" || midWait) enter(svc, "Idle", now);
           svc.breadcrumb = reason;
           svc.lastError = reason;
           return svc;
