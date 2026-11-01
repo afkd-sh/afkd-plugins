@@ -226,7 +226,9 @@ fn seed() -> Seeded {
 /// `release` — bounded, so a test that never does cannot wedge it — then writes every field
 /// of the issue's handle to [`FIELDS`], a line each, and the endpoint and credential its env
 /// carries, writes the description to [`DESCRIPTION`] and moves the issue to Done through
-/// the plugin's actions; `on_done` writes the title and comments on the finished issue.
+/// the plugin's actions; `on_done` writes the title and comments on the finished issue. It
+/// keeps every run, because [`drive_one_issue`] counts the finished run's dir, where the
+/// default `keep_runs on_fail` leaves nothing of a clean run.
 fn service(home: &Path, base_url: &str, keys: &str, claim: &str) -> String {
     format!(
         r#"import "core"
@@ -237,6 +239,7 @@ widgets :: service(linear) {{
   base_url  "{base_url}"
   {keys}
   pick_from "Todo"
+  keep_runs always
 
   on_claim proc(issue: linear.Issue) {{
     $ echo claimed #{{issue.state}} >> {CLAIMED}
@@ -297,16 +300,28 @@ fn validate(home: &Path) -> (Option<i32>, String) {
     )
 }
 
-/// The service's run dirs, by name.
-fn run_dirs(home: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(runs_root(home).join("widgets"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
+/// The service's run dirs, sorted by name: the kept ones under `<state>/runs`, then the ones in
+/// flight under the daemon's `$TMPDIR`. A run of the default `keep_runs on_fail` lives in the
+/// temp root until it ends, and only a failed or parked one reaches the kept root; a name in
+/// both, a run caught mid-move, is the kept one.
+fn run_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for root in [runs_root(home), live_runs_root(home)] {
+        for entry in std::fs::read_dir(root.join("widgets"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if !dirs
+                .iter()
+                .any(|dir| dir.file_name() == Some(&entry.file_name()))
+            {
+                dirs.push(entry.path());
+            }
+        }
+    }
+    dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    dirs
 }
 
 /// Everything a failed wait needs to say: the issue's state and thread as the fake holds
@@ -386,8 +401,11 @@ fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
     let brief = || {
         run_dirs(home)
             .into_iter()
-            .find(|name| name.ends_with(&run_suffix))
-            .map(|run| runs_root(home).join("widgets").join(run).join("task.md"))
+            .find(|dir| {
+                dir.file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(&run_suffix))
+            })
+            .map(|dir| dir.join("task.md"))
             .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, fake, issue, &daemon, "the issue's run starts", || {

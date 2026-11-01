@@ -1,6 +1,7 @@
 //! The harness the drift gate drives afkd through. Every spawn runs the `afkd` first on
-//! `PATH` ([`bin_path`]) with `$HOME` pinned to a temp dir, so nothing here builds afkd or
-//! reaches the operator's own daemon. It is the headless half of `@afkd/web_top`'s harness,
+//! `PATH` ([`bin_path`]) with `$HOME` pinned to a temp dir and `$TMPDIR` pinned under it
+//! ([`temp_root`]), so nothing here builds afkd or reaches the operator's own daemon, its runs
+//! in flight or another crate's. It is the headless half of `@afkd/web_top`'s harness,
 //! copied rather than shared: this gate paints no screen, so it carries none of the PTY.
 //!
 //! The Linear the plugin talks to is [`fake`], the stateful loopback fake the plugin's own
@@ -59,6 +60,22 @@ pub(crate) fn state_dir(home: &Path) -> PathBuf {
 /// The run corpus root under a temp `$HOME` — `<state dir>/runs`.
 pub(crate) fn runs_root(home: &Path) -> PathBuf {
     state_dir(home).join("runs")
+}
+
+/// The live run root under a temp `$HOME` — `<temp root>/afkd/runs`, where a run of the
+/// default `keep_runs on_fail` lives while it runs. A clean run is deleted from it and a
+/// failed or parked one is moved to [`runs_root`].
+pub(crate) fn live_runs_root(home: &Path) -> PathBuf {
+    temp_root(home).join("afkd").join("runs")
+}
+
+/// The `$TMPDIR` every spawn pins under a temp `$HOME` — `<home>/tmp`, created here, since
+/// afkd makes temp files under it. A run that keeps no dir of its own runs under its
+/// `afkd/runs/`, the live run root, until it ends.
+pub(crate) fn temp_root(home: &Path) -> PathBuf {
+    let temp = home.join("tmp");
+    std::fs::create_dir_all(&temp).expect("create the pinned $TMPDIR");
+    temp
 }
 
 /// The daemon's v2 entry file under a temp `$HOME` — `<config dir>/daemon.afkd`.
@@ -206,8 +223,8 @@ fn reap_within(child: &mut Child, budget: Duration) -> bool {
     }
 }
 
-/// One afkd subcommand, `args` whole (`install <path>`), run to completion with `$HOME`
-/// pinned to `dir` and every other anchor cleared.
+/// One afkd subcommand, `args` whole (`install <path>`), run to completion with `$HOME` and
+/// `$TMPDIR` pinned under `dir` and every other anchor cleared.
 pub(crate) fn run_subcommand_args(dir: &Path, args: &[&str]) -> Output {
     run_subcommand_env(dir, args, &[])
 }
@@ -219,6 +236,7 @@ pub(crate) fn run_subcommand_env(dir: &Path, args: &[&str], vars: &[(&str, &str)
     clear_layout_env(&mut cmd)
         .current_dir(dir)
         .env("HOME", dir)
+        .env("TMPDIR", temp_root(dir))
         .envs(vars.iter().copied())
         .args(args)
         .output()
@@ -275,14 +293,15 @@ impl StreamingDaemon {
     }
 }
 
-/// A bare, headless `afkd <args>` under the pinned `HOME`: stdin on `/dev/null`, stdout
-/// piped, stderr streamed into a [`StreamingDaemon`], and the child held in a [`Daemon`] so
-/// it dies with the test.
+/// A bare, headless `afkd <args>` under the pinned `$HOME` and `$TMPDIR`: stdin on
+/// `/dev/null`, stdout piped, stderr streamed into a [`StreamingDaemon`], and the child held in
+/// a [`Daemon`] so it dies with the test.
 pub(crate) fn spawn_headless_streaming(dir: &Path, args: &[&str]) -> StreamingDaemon {
     let mut cmd = Command::new(bin_path());
     clear_layout_env(&mut cmd)
         .current_dir(dir)
         .env("HOME", dir)
+        .env("TMPDIR", temp_root(dir))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

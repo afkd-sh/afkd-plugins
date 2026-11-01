@@ -230,16 +230,28 @@ fn validate(home: &Path) -> (Option<i32>, String) {
     )
 }
 
-/// `service`'s run dirs, by name.
-fn run_dirs(home: &Path, service: &str) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(runs_root(home).join(service))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
+/// `service`'s run dirs, sorted by name: the kept ones under `<state>/runs`, then the ones in
+/// flight under the daemon's `$TMPDIR`. A run of the default `keep_runs on_fail` lives in the
+/// temp root until it ends, and only a failed or parked one reaches the kept root; a name in
+/// both, a run caught mid-move, is the kept one.
+fn run_dirs(home: &Path, service: &str) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for root in [runs_root(home), live_runs_root(home)] {
+        for entry in std::fs::read_dir(root.join(service))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if !dirs
+                .iter()
+                .any(|dir| dir.file_name() == Some(&entry.file_name()))
+            {
+                dirs.push(entry.path());
+            }
+        }
+    }
+    dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    dirs
 }
 
 /// Everything a failed wait needs to say: the issue as the fake holds it, its thread, the
@@ -324,8 +336,11 @@ fn drive_one_issue(home: &Path) {
     let brief = || {
         run_dirs(home, "widgets")
             .into_iter()
-            .find(|name| name.ends_with(&run_suffix))
-            .map(|run| runs_root(home).join("widgets").join(run).join("task.md"))
+            .find(|dir| {
+                dir.file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(&run_suffix))
+            })
+            .map(|dir| dir.join("task.md"))
             .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, &fake, &daemon, "the issue's run starts", || {
