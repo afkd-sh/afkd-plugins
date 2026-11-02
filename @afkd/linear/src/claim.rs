@@ -27,7 +27,14 @@ pub(crate) const CLAIM_LIFETIME: Duration = Duration::from_secs(3600);
 
 /// The settle period waited after posting a claim before re-reading, so a rival's
 /// concurrently-posted marker is visible in the read the winner is computed from.
-pub(crate) const CLAIM_SETTLE: Duration = Duration::from_secs(1);
+///
+/// Three seconds, because one is not always enough. Measured against Linear on 2026-11-02,
+/// with two instances on two machines racing for one issue: 40 timed re-reads saw the
+/// rival's claim within 29 ms of its post returning, but one, sent 0.98 s after the rival's
+/// post had returned and slow itself (0.64 s), did not show it. Had the rival's claim been
+/// the earlier one, both would have won. Every plugin that claims through comments settles
+/// as long. The two seconds more are paid once a claim, and claims are minutes apart.
+pub(crate) const CLAIM_SETTLE: Duration = Duration::from_secs(3);
 
 /// One comment as the claim decision sees it: the identity ties are broken on, the two
 /// times the order and the age are measured with, and the text the marker predicate

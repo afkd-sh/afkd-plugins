@@ -437,10 +437,10 @@ few things. Each is deliberate, and none changes what a config means.
   thread with more new comments than fit in one reply delivers the newest, and names the
   ones left out.
 - **One poll scans for at most 20 seconds.** afkd gives a plugin 60 seconds to answer a
-  poll, and each claim attempt waits a second for a rival's marker to show, so a scan that
-  keeps losing races stops after 20 and leaves the rest of the issues or pull requests for
-  the next poll. And every call the plugin answers comes back within 45 seconds: a forge
-  too slow to answer in that time is treated as if it were down.
+  poll, and each claim attempt waits three seconds for a rival's marker to show, so a scan
+  that keeps losing races stops after seven and leaves the rest of the issues or pull
+  requests for the next poll. And every call the plugin answers comes back within 45
+  seconds: a forge too slow to answer in that time is treated as if it were down.
 - **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
   unit acme/widgets#7`, a review round's too, where the built-in's named the vendor and the
   kind in place of `plugin unit` — and a comment delivered mid-run calls the issue or pull

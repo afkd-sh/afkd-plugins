@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// How long one call may take. afkd's own deadline is 60 s; a claim here costs one
-/// second of settle and a handful of loopback round trips.
-const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one call may take. afkd's own deadline is 60 s; a claim here costs three
+/// seconds of settle, a lost race and the claim after it six, and a handful of loopback
+/// round trips.
+const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// afkd's line cap, newline included.
 pub const MAX_LINE: usize = 64 * 1024;

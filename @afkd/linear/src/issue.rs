@@ -2303,8 +2303,8 @@ mod tests {
         assert_eq!(f.texts("ENG-1"), ["[afkd-claim] owner=afkd-17"]);
         assert_eq!(
             f.clock.sleeps(),
-            [CLAIM_SETTLE],
-            "it settled before it re-read"
+            [Duration::from_secs(3)],
+            "it settled three seconds before it re-read"
         );
     }
 

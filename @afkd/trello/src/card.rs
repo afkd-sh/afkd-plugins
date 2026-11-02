@@ -6850,8 +6850,8 @@ mod tests {
         assert!(h.poll().is_none());
         assert_eq!(
             h.clock.sleeps().len(),
-            20,
-            "twenty settles fill the 20s budget, and the scan stops there"
+            7,
+            "seven settles fill the 20s budget, and the scan stops there"
         );
         assert_eq!(
             h.diag.errs(),
@@ -6866,13 +6866,13 @@ mod tests {
                 .iter()
                 .filter(|c| **c == "post comment")
                 .count(),
-            20,
-            "the twenty-first card is never posted to"
+            7,
+            "the eighth card is never posted to"
         );
     }
 
-    /// A scan that spends its budget on the first list never reads the next: twenty
-    /// rival-held cards fill it, and the claimable card in the second list waits.
+    /// A scan that spends its budget on the first list never reads the next: seven of the
+    /// twenty rival-held cards fill it, and the claimable card in the second list waits.
     #[test]
     fn a_scan_spent_on_one_list_reads_no_later_list() {
         let h = Harness::new(two_lists_cfg(), "me");
@@ -6886,7 +6886,7 @@ mod tests {
         h.board.set_clock(1000);
 
         assert!(h.poll().is_none());
-        assert_eq!(h.clock.sleeps().len(), 20);
+        assert_eq!(h.clock.sleeps().len(), 7);
         assert_eq!(
             h.board
                 .calls()

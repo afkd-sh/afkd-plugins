@@ -724,8 +724,8 @@ mod tests {
 
     /// A scan that runs past [`POLL_BUDGET`](crate::common::POLL_BUDGET) stops claiming
     /// and says so — the budget the issue kind keeps, shared. Every PR here carries a
-    /// human's feedback and loses its race to a live rival, and each attempt settles one
-    /// second, so the twenty-first is the first the budget turns away.
+    /// human's feedback and loses its race to a live rival, and each attempt settles three
+    /// seconds, so the eighth is the first the budget turns away.
     #[test]
     fn the_poll_budget_ends_a_pr_scan_and_says_so() {
         let h = Harness::new(cfg("acme/widgets"));
@@ -757,10 +757,10 @@ mod tests {
             .collect();
         assert_eq!(
             posted,
-            (1..=20).collect::<Vec<_>>(),
-            "twenty attempts, in order"
+            (1..=7).collect::<Vec<_>>(),
+            "seven attempts, in order"
         );
-        assert_eq!(h.clock.sleeps().len(), 20);
+        assert_eq!(h.clock.sleeps().len(), 7);
         assert_eq!(
             h.diag.lines(),
             ["gitea poll: the scan ran past its 20s budget; the rest of it waits for the next poll"]

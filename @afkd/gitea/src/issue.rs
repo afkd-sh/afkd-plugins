@@ -2245,7 +2245,7 @@ mod tests {
 
     /// A scan that runs past [`POLL_BUDGET`](crate::common::POLL_BUDGET) stops claiming and says so, well inside
     /// afkd's 60-second call deadline. Every candidate here loses its race to a live
-    /// rival, and each attempt settles one second, so the twenty-first candidate is the
+    /// rival, and each attempt settles three seconds, so the eighth candidate is the
     /// first the budget turns away — and nothing after it is posted to either.
     #[test]
     fn the_poll_budget_ends_the_scan_and_says_so() {
@@ -2276,10 +2276,10 @@ mod tests {
             .collect();
         assert_eq!(
             posted,
-            (1..=20).collect::<Vec<_>>(),
-            "twenty attempts, in order"
+            (1..=7).collect::<Vec<_>>(),
+            "seven attempts, in order"
         );
-        assert_eq!(h.clock.sleeps().len(), 20);
+        assert_eq!(h.clock.sleeps().len(), 7);
         let lines = h.diag.lines();
         assert_eq!(
             lines,

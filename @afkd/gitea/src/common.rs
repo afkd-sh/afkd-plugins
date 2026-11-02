@@ -68,14 +68,16 @@ pub(crate) const POLL_BUDGET: Duration = Duration::from_secs(20);
 
 /// The longest any one call afkd sends may take, request after request. afkd's reply
 /// deadline is 60 seconds and a missed reply ends the service; the 15 seconds between
-/// the two cover the claim's one-second settle, building the reply and the pipe. Every
+/// the two cover the claim's three-second settle, building the reply and the pipe. Every
 /// request of the call is clipped to what is left of it, and past it none is sent, so a
 /// forge too slow for it answers as a forge that is down.
 pub(crate) const CALL_BUDGET: Duration = Duration::from_secs(45);
 
 /// A scan with less than this left of the call's [`CALL_BUDGET`] posts no claim: a claim
 /// cut off after its marker comment lands leaves a live marker that [`claim_issue`] can no
-/// longer delete, keeping every service off the issue for the marker's lifetime.
+/// longer delete, keeping every service off the issue for the marker's lifetime. Ten
+/// seconds holds the claim's [`CLAIM_SETTLE`] and leaves seven for the post before it and
+/// the re-read and release after it.
 pub(crate) const CLAIM_RESERVE: Duration = Duration::from_secs(10);
 
 /// Lock `m`, recovering the data from a poisoned lock rather than panicking: a panic

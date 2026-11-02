@@ -432,10 +432,10 @@ few things. Each is deliberate, and none changes what a config means.
   same on a merge request's brief, and the skill reads the MR's notes there. A thread with
   more new notes than fit in one reply delivers the newest, and names the ones left out.
 - **One poll scans for at most 20 seconds.** afkd gives a plugin 60 seconds to answer a
-  poll, and each claim attempt waits a second for a rival's marker to show, so a scan that
-  keeps losing races stops after 20 and leaves the rest of the issues or merge requests
-  for the next poll. And every call the plugin answers comes back within 45 seconds: a
-  forge too slow to answer in that time is treated as if it were down.
+  poll, and each claim attempt waits three seconds for a rival's marker to show, so a scan
+  that keeps losing races stops after seven and leaves the rest of the issues or merge
+  requests for the next poll. And every call the plugin answers comes back within 45
+  seconds: a forge too slow to answer in that time is treated as if it were down.
 - **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
   unit group/widgets#7`, a review round's too, where the built-in's named the vendor and
   the kind in place of `plugin unit` — and a note delivered mid-run calls the issue or
