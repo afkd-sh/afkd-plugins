@@ -1,11 +1,11 @@
 # Recorded wire captures and run corpora
 
 Every `.jsonl` here is what a real afkd daemon wrote to its control socket, line for line,
-and the two `runs*/` trees are `cp -r` copies of a real daemon's `<state dir>/runs`. Nothing
-is hand-written: the suites derive their expectations from these files, so a re-capture
-cannot quietly make an assertion vacuous, and a frame shape this fold has never actually
-seen — or a run-dir layout the daemon has never actually written — cannot sneak into the
-suite as a guess.
+the three `runs*/` trees are `cp -r` copies of a real daemon's `<state dir>/runs`, and
+`blockwait-trace.txt` is what `afkd trace` printed for one of them. Nothing is hand-written:
+the suites derive their expectations from these files, so a re-capture cannot quietly make an
+assertion vacuous, and a frame shape this fold has never actually seen — or a run-dir layout
+the daemon has never actually written — cannot sneak into the suite as a guess.
 
 Three edits were made to them since, each following a rename in afkd that changed no shape.
 afkd 0.2.171 renamed four event tags, so `fire_started`, `fire_ok`, `fire_failed` and
@@ -80,14 +80,16 @@ adversarial line set; one that exits non-zero; one nested workflow
 
 `meta.host_load` rides along in all of them.
 
-## The two run corpora
+## The three run corpora
 
 | Tree | What it holds |
 |---|---|
 | `runs/` | `<state dir>/runs` copied once the fourth session's last fire had finished: four run dirs across two daemon generations, of which the window walk keeps three. |
 | `runs-midfire/` | The same tree copied **during** that fire, so its newest run dir is an in-progress one whose trace still has open nodes and whose `run.log` stops mid-output. |
+| `runs-blockwait/` | `<state dir>/runs` copied once the tenth session's run had finished: `blocker`'s one kept run, whose trace holds a `queue_wait` node on `heavy`, a `queue` node on each of `heavy` and `gpu`, and an `http` node for one `GET`. |
+| `blockwait-trace.txt` | `afkd trace`'s stdout for that run's `trace.jsonl`, from the same build: the rows the run view of the same run, served off disk, is held to. |
 
-Neither is read in place. Git carries no mtimes, and `recent_run_dirs` orders a service's run
+None is read in place. Git carries no mtimes, and `recent_run_dirs` orders a service's run
 dirs by mtime — so `backfill.test.mjs` copies the tree to a scratch dir and restores each run
 dir's mtime from the instant its own name encodes, which is the chronology git *does* carry.
 
@@ -304,6 +306,48 @@ The session, in order:
    daemon sends `run_queue_entered`, and the block's `queue` node on `heavy` runs, then the
    `gpu` block's, then blocker's `run_ok`;
 4. the daemon takes its `SIGINT` with the recorder still attached.
+
+### The tenth session: a block's wait and a request, kept on disk
+
+`runs-blockwait/` and `blockwait-trace.txt` were recorded on their own, against `afkd 0.2.489`
+(release, master at `efc2f23d`): a throwaway daemon started with `env -i` and an isolated `HOME`
+under `/tmp`, its working directory that `HOME`, and no recorder, since nothing here is a wire
+capture. None of the earlier files was re-recorded.
+
+Its config is the eighth's with three lines added: `import "core:http"`, `keep_runs always` in
+`blocker`, and a last step in `blocker` that `GET`s a 23-byte file off a
+`python3 -m http.server` bound to a free loopback port. `keep_runs always` is there because
+under the default `keep_runs on_fail` a run that ends `ok` is removed from the temp root with
+nothing kept, so there would be no run dir to copy; the request is there so the trace holds an
+`http` node and its `N B` OUT cell. `blocker`, verbatim:
+
+```afkd
+blocker :: service(manual) {
+  keep_runs always
+  on_run proc(run: core.Run) {
+    $ true
+    with queue(heavy) {
+      $ true
+    }
+    with queue(gpu) {
+      $ true
+    }
+    _ = http.get("http://127.0.0.1:52637/ok.txt")
+  }
+}
+```
+
+The session, in order:
+
+1. `afkd run holder`, and once `afkd status` shows it busy, `afkd run blocker`, whose
+   `with queue(heavy)` block waits behind holder's run (`service blocker: queued (heavy)` in the
+   daemon's log);
+2. 1.5s later, `touch release.marker`: holder's run ends, the block is admitted, then the `gpu`
+   block runs, then the request is answered `200` with the file's 23 bytes, and blocker's run
+   ends `ok`;
+3. the daemon takes its `SIGINT`;
+4. `cp -r <state dir>/runs/blocker runs-blockwait/`, then
+   `afkd trace runs-blockwait/blocker/<run>/trace.jsonl > blockwait-trace.txt`.
 
 ## The lane table the earlier captures predate
 

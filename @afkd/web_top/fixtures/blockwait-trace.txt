@@ -1,0 +1,7 @@
+⚙︎ true                                                                               0 ln    0.0s  ✓︎
+⏳ heavy                                                                                     1.5s  ✓︎
+⊟ 🚦 heavy                                                                                   0.0s  ✓︎
+└─ ⚙︎ true                                                                            0 ln    0.0s  ✓︎
+⊟ 🚦 gpu                                                                                     0.0s  ✓︎
+└─ ⚙︎ true                                                                            0 ln    0.0s  ✓︎
+🌐 GET 127.0.0.1:52637 200                                                           23 B    0.0s  ✓︎

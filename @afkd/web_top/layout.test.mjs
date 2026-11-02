@@ -22,10 +22,10 @@ import test from "node:test";
 
 import { fold, queues, rowCards, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, REFUSED_WHILE_QUITTING, SCOPES, all, glyphs, idOf, primary } from "./keymap.mjs";
-import { COL_WIDTH, COPIES_MARK, TREND_LADDER, bodyHeight as bodyHeightOf, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { COL_WIDTH, COPIES_MARK, KIND_GLYPH, TREND_LADDER, bodyHeight as bodyHeightOf, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
 import { URGENCY, copiesOf, rowRecord } from "./fold.mjs";
 import { newSession as bootSession, press } from "./session.mjs";
-import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, foldFrames, liveBoard, paneBody, readCapture, readRecording, screenText } from "./testkit.mjs";
+import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, foldFrames, liveBoard, nodeKindWireName, paneBody, readCapture, readRecording, screenText } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
 
@@ -2543,6 +2543,7 @@ test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, 
     Sleep: ["⏱︎", 1],
     Fs: ["✎︎", 1],
     Lifecycle: ["⚑︎", 1],
+    Http: ["🌐", 2],
   };
   const status = { Ok: ["✓︎", 1], Failed: ["✗︎", 1], Skipped: ["⊘︎", 1], Running: ["⋯︎", 1], recovered: ["↻︎", 1] };
   for (const [arm, [glyph, want]] of [...Object.entries(kind), ...Object.entries(status)]) {
@@ -2551,18 +2552,18 @@ test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, 
   // Read the two tables **out of the Rust** and hold this one to them, so a glyph changed or
   // added there reddens here rather than shipping a row that overruns behind a golden that pins
   // the overrun as correct.
-  const rust = afkdSource("crates", "tui", "src", "treeview.rs");
-  const armsOf = (from) => {
-    const body = rust.slice(rust.indexOf("{", from), rust.indexOf("\n}", from));
-    return [...body.matchAll(/NodeKind::(\w+) => "([^"]+)"/g)].map(([, arm, glyph]) => [arm, glyph]);
-  };
-  const kinds = armsOf(rust.indexOf("pub fn kind_glyph"));
-  assert.equal(kinds.length, Object.keys(kind).length, "treeview.rs still spells fourteen kind glyphs");
+  const kinds = kindGlyphArms();
+  assert.deepEqual(
+    Object.keys(kind).sort(),
+    kinds.map(([arm]) => arm).sort(),
+    "the width table names every arm kind_glyph draws",
+  );
   for (const [arm, glyph] of kinds) {
     assert.equal(unescapeRust(glyph), kind[arm]?.[0], `${arm}'s glyph is the Rust's`);
   }
   // The status arms pair several statuses onto one glyph (`Killed` folds into `✗`,
   // `Running`/`Unknown` both read `⋯`), so they are matched as a **set** of glyph literals.
+  const rust = afkdSource("crates", "tui", "src", "treeview.rs");
   const from = rust.indexOf("pub(crate) fn status_glyph");
   const statusBody = rust.slice(from, rust.indexOf("\n}", from));
   const spelled = new Set(
@@ -2574,6 +2575,34 @@ test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, 
     "the status glyphs are the Rust's, recovered marker included",
   );
 });
+
+test("KIND_GLYPH draws every kind treeview's kind_glyph draws, with its glyph", { skip: NO_AFKD_SRC }, () => {
+  // The table the page draws with, held to the Rust by name: a kind afkd adds is a red naming
+  // it here, where a kind missing from the table would draw the `cmd` gear on its row with
+  // nothing red. Keyed by wire name, so each `NodeKind` arm is spelled as `proto::NodeKind`'s
+  // `snake_case` rename spells it on the wire.
+  const kinds = kindGlyphArms();
+  assert.deepEqual(
+    Object.keys(KIND_GLYPH).sort(),
+    kinds.map(([arm]) => nodeKindWireName(arm)).sort(),
+    "KIND_GLYPH names every kind kind_glyph draws, and no other",
+  );
+  for (const [arm, glyph] of kinds) {
+    assert.equal(KIND_GLYPH[nodeKindWireName(arm)], unescapeRust(glyph), `${arm} draws the Rust's glyph`);
+  }
+});
+
+/// Every arm of `treeview::kind_glyph`, as `[arm, glyph]` with the glyph's Rust literal still
+/// escaped, in the order the match spells them.
+function kindGlyphArms() {
+  const rust = afkdSource("crates", "tui", "src", "treeview.rs");
+  const from = rust.indexOf("pub fn kind_glyph");
+  const body = rust.slice(rust.indexOf("{", from), rust.indexOf("\n}", from));
+  const arms = [...body.matchAll(/NodeKind::(\w+) => "([^"]+)"/g)].map(([, arm, glyph]) => [arm, glyph]);
+  // A regex that rots reads no arm, and an empty list must not pass for an empty table.
+  assert.ok(arms.length >= 14, `kind_glyph reads as only ${arms.length} arms: the arm regex no longer matches`);
+  return arms;
+}
 
 /// One Rust string literal's `\u{XXXX}` escapes resolved — the VS15 selector every width-1 rail
 /// glyph carries is spelled that way in `treeview.rs`, and it is the whole point of the

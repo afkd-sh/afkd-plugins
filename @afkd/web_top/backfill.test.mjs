@@ -12,6 +12,8 @@
 // one session, and `fixtures/backfill.jsonl` is that same session's live wire capture with
 // the recorder attached mid-fire. See `fixtures/README.md` for the daemon and the config.
 // So the overlap the seam tests is a real overlap — both inputs came out of one run.
+// `fixtures/runs-blockwait/` is a third copy, of a session whose one kept run waits on a lane
+// and makes one HTTP request, and `fixtures/blockwait-trace.txt` is `afkd trace`'s render of it.
 //
 // The python legs skip loudly without `python3`, the repo's own idiom.
 
@@ -23,9 +25,9 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { SEAM_GUARD_LINES, fold, sanitize, seed } from "./fold.mjs";
-import { bodyHeight, layout, runMetrics } from "./layout.mjs";
+import { KIND_GLYPH, bodyHeight, layout, runMetrics, textWidth } from "./layout.mjs";
 import { flashOf, needleOf, newSession, press, rowsOf, selectedIndex, typingOf } from "./session.mjs";
-import { BASE, STEP, assertGolden, assertGrid, paneBody, readCapture, screenText } from "./testkit.mjs";
+import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, nodeKindWireName, paneBody, readCapture, readRecording, screenText } from "./testkit.mjs";
 
 const HERE = import.meta.dirname;
 
@@ -107,18 +109,19 @@ function corpus(name, place = () => ["kept"]) {
 }
 
 /**
- * The burst `SERVICE` would be served out of the recorded corpus `name` — the relay's own
- * `--backfill` mode, spawned exactly as an operator would run it.
+ * The burst `service` would be served out of the recorded corpus `name` — the relay's own
+ * `--backfill` mode, spawned exactly as an operator would run it. `service` is `SERVICE`
+ * unless a corpus recorded for another one is read.
  *
  * It is always spawned with a `$TMPDIR` of the corpus's own, so the live root it reads holds
  * what `place` put there and never a run this host has in flight. `kept: false` hands it a
  * `<runs_dir>` that is not there.
  */
-function servedBurst(name, liveness, { place, kept = true } = {}) {
+function servedBurst(name, liveness, { place, kept = true, service = SERVICE } = {}) {
   const { root, temp, dispose } = corpus(name, place);
   try {
     const runsDir = kept ? root : join(temp, "..", "absent");
-    const out = execFileSync("python3", [join(HERE, "web_top"), "--backfill", runsDir, SERVICE, liveness], {
+    const out = execFileSync("python3", [join(HERE, "web_top"), "--backfill", runsDir, service, liveness], {
       encoding: "utf8",
       env: { ...process.env, TMPDIR: temp },
     });
@@ -297,22 +300,31 @@ test("the relay's sanitizer and the page's agree byte for byte", { skip: SKIP_PY
 /**
  * Loads the relay as a module and loads nothing else: its `main()` sits behind `__main__`, so
  * the import is inert. Loaded rather than spawned through its CLI, as the other legs are,
- * because `name_segment` has no CLI surface of its own.
+ * because `name_segment` and the relay's tables have no CLI surface of their own. The python
+ * expression `sys.argv[2]` is evaluated with the module bound to `relay` and the JSON in
+ * `sys.argv[3]` bound to `arg`, and its value is printed as JSON.
  */
-const SEGMENT_LOADER = `
+const RELAY_LOADER = `
 import importlib.machinery, importlib.util, json, sys
 loader = importlib.machinery.SourceFileLoader("web_top_relay", sys.argv[1])
 relay = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
 loader.exec_module(relay)
-print(json.dumps([relay.name_segment(n) for n in json.loads(sys.argv[2])], ensure_ascii=False))
+print(json.dumps(eval(sys.argv[2], {"relay": relay, "arg": json.loads(sys.argv[3])}), ensure_ascii=False))
 `;
+
+/** The python expression `expr` over the relay loaded as a module, with `arg` bound to it. */
+function relayEval(expr, arg = null) {
+  const out = execFileSync(
+    "python3",
+    ["-I", "-c", RELAY_LOADER, join(HERE, "web_top"), expr, JSON.stringify(arg)],
+    { encoding: "utf8" },
+  );
+  return JSON.parse(out);
+}
 
 /** The relay's `name_segment` over each of `names`, in order. */
 function relayNameSegments(names) {
-  const out = execFileSync("python3", ["-I", "-c", SEGMENT_LOADER, join(HERE, "web_top"), JSON.stringify(names)], {
-    encoding: "utf8",
-  });
-  return JSON.parse(out);
+  return relayEval("[relay.name_segment(n) for n in arg]", names);
 }
 
 test("the relay's name_segment is afkd's: the case fold alone", { skip: SKIP_PYTHON }, () => {
@@ -552,4 +564,146 @@ test("a busy service's served tail arms the seam on the whole tail", { skip: SKI
   // The burst never filters itself: arming happens after the pushes, so every served line is
   // in the ring even though each one is also in the guard.
   assert.equal(svc.log.lines.length, burst.length, "every served line reached the ring");
+});
+
+// --- every node kind afkd reads, read off disk ----------------------------------------
+
+/**
+ * `tracefile::kind_from_str` read out of the Rust: its `"wire" => NodeKind::Arm` pairs in the
+ * order the match spells them, and the arm its `_` fallback degrades an unknown kind to.
+ */
+function kindFromStr() {
+  const rust = afkdSource("crates", "app", "src", "tracefile.rs");
+  const from = rust.indexOf("fn kind_from_str");
+  const body = rust.slice(rust.indexOf("{", from), rust.indexOf("\n}", from));
+  const pairs = [...body.matchAll(/"(\w+)" => NodeKind::(\w+)/g)].map(([, wire, arm]) => [wire, arm]);
+  const fallback = body.match(/_ => NodeKind::(\w+)/)?.[1];
+  return { pairs, fallback };
+}
+
+test("the relay reads every node kind afkd's kind_from_str reads", { skip: NO_AFKD_SRC || SKIP_PYTHON }, () => {
+  // The relay maps a recorded `kind` through `NODE_KINDS` and degrades any other to
+  // `UNKNOWN_KIND`, as the Rust degrades it to `Cmd`. A kind the Rust reads and the relay does
+  // not would replay off disk as `cmd` and draw the gear, while the live wire, which passes the
+  // kind through, draws its own glyph: so the relay's list is held to the Rust's by name.
+  const { pairs, fallback } = kindFromStr();
+  // A regex that rots reads no pair, and an empty list must not pass for an empty tuple.
+  assert.ok(pairs.length >= 13, `kind_from_str reads as only ${pairs.length} pairs: the arm regex no longer matches`);
+  assert.ok(fallback !== undefined, "kind_from_str still degrades an unknown kind by a `_` arm");
+  // The fallback's wire name is derived, not read, so the rule that derives it is held to every
+  // pair the Rust does spell.
+  for (const [wire, arm] of pairs) {
+    assert.equal(nodeKindWireName(arm), wire, `${arm} is spelled \`${wire}\` on the wire, by the snake_case rule`);
+  }
+  const relay = relayEval("[sorted(relay.NODE_KINDS), relay.UNKNOWN_KIND]");
+  assert.deepEqual(
+    relay[0],
+    [...pairs.map(([wire]) => wire), nodeKindWireName(fallback)].sort(),
+    "the relay's NODE_KINDS are the kinds kind_from_str reads, its fallback's included",
+  );
+  assert.equal(relay[1], nodeKindWireName(fallback), "…and an unknown kind degrades to the Rust's fallback");
+});
+
+test("the relay and the page name the same node kinds", { skip: SKIP_PYTHON }, () => {
+  // web_top's two mirrors of afkd's node kinds, held to each other where no afkd checkout is
+  // named: a kind the relay serves off disk has a glyph on the page, and a kind the page draws
+  // is one the relay does not degrade.
+  const [kinds, unknown] = relayEval("[sorted(relay.NODE_KINDS), relay.UNKNOWN_KIND]");
+  assert.deepEqual(kinds, Object.keys(KIND_GLYPH).sort(), "NODE_KINDS and KIND_GLYPH name the same kinds");
+  assert.ok(kinds.includes(unknown), `the relay degrades an unknown kind to one it names (${unknown})`);
+});
+
+/** The width `afkd trace` renders a run tree at, `tracefile::TRACE_RENDER_WIDTH`. */
+const TRACE_WIDTH = 100;
+
+/**
+ * The service `runs-blockwait/` was recorded for: a `with queue(heavy)` block that waits behind
+ * another service's run, then a `with queue(gpu)` block, then one `core:http` request.
+ */
+const BLOCKER = "blocker";
+
+/** `row`'s text over its first `width` cells, a wide glyph's one cell counted as two. */
+function textOver(row, width) {
+  let text = "";
+  let used = 0;
+  for (const cell of row) {
+    if (used + cell.width > width) break;
+    text += cell.text;
+    used += cell.width;
+  }
+  return text;
+}
+
+/** The display column `glyph` starts at on `line`, as a terminal counts columns. */
+function glyphColumn(line, glyph) {
+  return textWidth(line.slice(0, line.indexOf(glyph)));
+}
+
+test("a recorded block's wait replays off disk as afkd trace draws it", { skip: SKIP_PYTHON }, () => {
+  // A block's wait and its admission are `queue_wait` and `queue` nodes, and a `core:http`
+  // request an `http` node. Served off disk to a tab that opened after the run, each must keep
+  // its own kind, so its row draws its own glyph at the column the terminal does, and the
+  // request's row its body's size in the OUT cell. `fixtures/blockwait-trace.txt` is `afkd trace`'s stdout for
+  // this very `trace.jsonl`, and the drift gate re-renders it with the afkd on `PATH`, so the
+  // terminal side of the comparison is the TUI's own tree, not a hand-written one.
+  const runs = readdirSync(join(HERE, "fixtures", "runs-blockwait", BLOCKER));
+  assert.equal(runs.length, 1, `the corpus holds one recorded run (${runs})`);
+  const recorded = readFileSync(join(HERE, "fixtures", "runs-blockwait", BLOCKER, runs[0], "trace.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line))
+    .filter((event) => event.ev === "opened")
+    .map((event) => event.kind);
+  for (const kind of ["queue_wait", "queue", "http"]) {
+    assert.ok(recorded.includes(kind), `the recorded trace opens a ${kind} node`);
+  }
+
+  const burst = servedBurst("runs-blockwait", "idle", { service: BLOCKER });
+  assert.deepEqual(
+    burst.filter((f) => f.type === "backfill" && f.event.op === "opened").map((f) => f.event.node.kind),
+    recorded,
+    "the relay serves every node with the kind the trace recorded",
+  );
+
+  // The snapshot of the session that recorded the same config, so the burst lands on a board
+  // that knows the service.
+  const snapshot = readRecording("block-wait.jsonl").find((f) => f.type === "meta" && f.meta === "snapshot");
+  const { board, at } = replay([snapshot, ...burst]);
+  const run = {
+    service: BLOCKER,
+    focus: "tree",
+    cursor: null,
+    overrides: new Map(),
+    expanded: new Set(),
+    tree: "follow",
+    log: "follow",
+    scoped: false,
+  };
+  // The run view's tree pane is `cols` less its one scrollbar cell, so it is as wide as
+  // `afkd trace`'s render one column wider.
+  const cols = TRACE_WIDTH + 1;
+  const rows = layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.487", run });
+  assertGrid(rows, cols, 30);
+
+  const want = readFileSync(join(HERE, "fixtures", "blockwait-trace.txt"), "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => line.trimEnd());
+  assert.equal(paneBody(rows).length, want.length, "the tree pane draws one row per row afkd trace prints");
+  const drawn = rows.slice(4, 4 + want.length).map((row) => textOver(row, TRACE_WIDTH).trimEnd());
+  for (const [kind, glyph] of [
+    ["queue_wait", "⏳"],
+    ["queue", "🚦"],
+    ["http", "🌐"],
+  ]) {
+    const line = want.findIndex((text) => text.includes(glyph));
+    assert.ok(line !== -1, `afkd trace draws the ${kind} node with ${glyph}`);
+    assert.ok(drawn[line].includes(glyph), `the run view draws the ${kind} node with ${glyph}: ${drawn[line]}`);
+    assert.equal(
+      glyphColumn(drawn[line], glyph),
+      glyphColumn(want[line], glyph),
+      `the ${kind} node's ${glyph} is at the column afkd trace puts it`,
+    );
+  }
+  assert.deepEqual(drawn, want, "every row is afkd trace's row: glyph, label and rail");
 });

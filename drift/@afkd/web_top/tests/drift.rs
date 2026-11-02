@@ -5173,6 +5173,44 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     );
 }
 
+#[test]
+fn the_recorded_block_trace_is_what_afkd_trace_prints() {
+    // `backfill.test.mjs` holds the run view of the recorded `runs-blockwait/` corpus, served
+    // off disk, to `fixtures/blockwait-trace.txt` row for row: the `queue_wait`, `queue` and
+    // `http` nodes' glyphs, their columns and the rail. That text is `afkd trace`'s stdout for the
+    // corpus's one `trace.jsonl`, so this leg renders it again with the afkd on `PATH`, and a
+    // glyph or a rail column afkd moves reddens here instead of leaving the node suite to
+    // compare against a stale terminal.
+    let blocker = plugin_root().join("fixtures/runs-blockwait/blocker");
+    let runs: Vec<PathBuf> = std::fs::read_dir(&blocker)
+        .expect("the recorded block-wait corpus")
+        .map(|entry| entry.expect("a run dir entry").path())
+        .collect();
+    assert_eq!(runs.len(), 1, "the corpus holds one recorded run: {runs:?}");
+    let trace = runs[0].join("trace.jsonl");
+
+    let dir = TempDir::new().expect("tempdir");
+    let out = run_subcommand_args(dir.path(), &["trace", &trace.display().to_string()]);
+    assert!(
+        out.status.success(),
+        "`afkd trace` renders the recorded trace: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let recorded = std::fs::read_to_string(plugin_root().join("fixtures/blockwait-trace.txt"))
+        .expect("the recorded afkd trace text");
+    let printed = String::from_utf8(out.stdout).expect("afkd trace prints UTF-8");
+    for glyph in ["⏳", "🚦", "🌐"] {
+        assert!(
+            recorded.contains(glyph),
+            "the recorded text draws a {glyph} row, so the comparison is about the block's nodes"
+        );
+    }
+    assert_eq!(
+        printed, recorded,
+        "`afkd trace` of the recorded trace is the text backfill.test.mjs holds the run view to"
+    );
+}
+
 // --- the divergence ledger: where web_top differs from afkd top on purpose -----------------
 
 /// One place `@afkd/web_top` differs from `afkd top` **on purpose**: the surface and field

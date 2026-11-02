@@ -1,0 +1,17 @@
+{"ev":"began"}
+{"ev":"opened","id":1,"parent":null,"kind":"cmd","label":"true","detail":"","at":"261102 23:11:49.695"}
+{"ev":"closed","id":1,"status":"ok","elapsed_ms":0,"out":{"lines":0},"cost":null,"turns":null,"tokens":null}
+{"ev":"opened","id":2,"parent":null,"kind":"queue_wait","label":"heavy","detail":"","at":"261102 23:11:49.696"}
+{"ev":"closed","id":2,"status":"ok","elapsed_ms":1536,"out":null,"cost":null,"turns":null,"tokens":null}
+{"ev":"opened","id":3,"parent":null,"kind":"queue","label":"heavy","detail":"","at":"261102 23:11:51.234"}
+{"ev":"opened","id":4,"parent":3,"kind":"cmd","label":"true","detail":"","at":"261102 23:11:51.234"}
+{"ev":"closed","id":4,"status":"ok","elapsed_ms":1,"out":{"lines":0},"cost":null,"turns":null,"tokens":null}
+{"ev":"closed","id":3,"status":"ok","elapsed_ms":1,"out":null,"cost":null,"turns":null,"tokens":null}
+{"ev":"opened","id":5,"parent":null,"kind":"queue","label":"gpu","detail":"","at":"261102 23:11:51.235"}
+{"ev":"opened","id":6,"parent":5,"kind":"cmd","label":"true","detail":"","at":"261102 23:11:51.235"}
+{"ev":"closed","id":6,"status":"ok","elapsed_ms":0,"out":{"lines":0},"cost":null,"turns":null,"tokens":null}
+{"ev":"closed","id":5,"status":"ok","elapsed_ms":0,"out":null,"cost":null,"turns":null,"tokens":null}
+{"ev":"opened","id":7,"parent":null,"kind":"http","label":"GET 127.0.0.1:52637","detail":"","at":"261102 23:11:51.236"}
+{"ev":"relabeled","id":7,"label":"GET 127.0.0.1:52637 200"}
+{"ev":"closed","id":7,"status":"ok","elapsed_ms":1,"out":{"bytes":23},"cost":null,"turns":null,"tokens":null}
+{"ev":"ended","outcome":"ok","elapsed_ms":1541}

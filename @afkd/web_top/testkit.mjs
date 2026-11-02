@@ -40,6 +40,7 @@ export const NO_AFKD_SRC = AFKD_SRC === "" ? "AFKD_SRC names no afkd checkout to
 /// moves in afkd is a test naming it rather than a module-load ENOENT in whichever suite read it.
 export const AFKD_SOURCES = Object.freeze([
   "crates/app/src/proto.rs",
+  "crates/app/src/tracefile.rs",
   "crates/lang/src/keymap.rs",
   "crates/tui/src/family.rs",
   "crates/tui/src/help.rs",
@@ -59,6 +60,13 @@ export function afkdSource(...parts) {
     throw new Error(`${path} is not in AFKD_SOURCES: list it there, so sources.test.mjs checks it is still in afkd`);
   }
   return readFileSync(join(AFKD_SRC, ...parts), "utf8");
+}
+
+/// A `NodeKind` arm's wire name, `QueueWait` → `queue_wait`: the `serde(rename_all =
+/// "snake_case")` rule `proto::NodeKind` is spelled on the wire by, and the key the relay's
+/// `NODE_KINDS` and the page's `KIND_GLYPH` read a node's kind by.
+export function nodeKindWireName(arm) {
+  return arm.replace(/(?<!^)([A-Z])/g, "_$1").toLowerCase();
 }
 
 // --- the fixtures ------------------------------------------------------------------

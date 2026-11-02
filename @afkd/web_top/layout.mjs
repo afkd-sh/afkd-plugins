@@ -2842,9 +2842,9 @@ const LOG_CONT_HANG = " ".repeat(LOG_CONT_INDENT);
 /// selectors included. Every glyph is *alignment-safe*: measured here it is exactly what
 /// `unicode-width` 0.2 gives it in the terminal, which is what lets the right-flushed rail
 /// land on one column at every depth. `the_rail_glyphs_measure_as_the_tui_measures_them` pins
-/// all nineteen, because `assertGrid` structurally cannot catch a mismeasured glyph: both
+/// every one, because `assertGrid` structurally cannot catch a mismeasured glyph: both
 /// sides of its width check go through the one measurement.
-const KIND_GLYPH = {
+export const KIND_GLYPH = {
   workflow: "🚀",
   agent: "🤖",
   cmd: "⚙︎",
@@ -2859,6 +2859,7 @@ const KIND_GLYPH = {
   sleep: "⏱︎",
   fs: "✎︎",
   lifecycle: "⚑︎",
+  http: "🌐",
 };
 /// The glyph for a kind the wire may grow past this table — the `cmd` gear rather than a `?`,
 /// since an unknown step is still a step and the rail must keep its column either way.
@@ -3154,8 +3155,9 @@ function railWidth(outCell, tookCell) {
 /// output yet and a skipped or unknown one never measured any, so both are blank. Otherwise
 /// the closed value by kind, and *"nothing happened" is a number*: a `workflow`/`agent` shows
 /// `$x.xx` (a real `0` is `$0.00`), a `cmd`/`tool` `N ln` / `N B` and `0 ln` when it ran
-/// silent, an `fs` edit its `+N −N` diff (a U+2212 minus). A kind with no OUT metric of its
-/// own is blank — never a misleading `0 ln`.
+/// silent, an `fs` edit its `+N −N` diff (a U+2212 minus), an `http` request its body's
+/// `N B` and blank when no answer came. A kind with no OUT metric of its own is blank — never
+/// a misleading `0 ln`.
 function outContent(row) {
   if (row.status === "running" || row.status === "skipped" || row.status === "unknown") return "";
   if (row.kind === "workflow" || row.kind === "agent") {
@@ -3170,6 +3172,10 @@ function outContent(row) {
   if (row.kind === "fs") {
     const out = row.out;
     return out !== null && out.out === "diff" ? `+${out.added} −${out.removed}` : "";
+  }
+  if (row.kind === "http") {
+    const out = row.out;
+    return out !== null && out.out === "bytes" ? `${out.n} B` : "";
   }
   return "";
 }
