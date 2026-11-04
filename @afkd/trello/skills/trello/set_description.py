@@ -2,12 +2,11 @@
 # set_description.py — replace the active Trello card's description (ADR-0046 §A).
 #
 # The write half of the card-description pair in the bundled `trello` skill (its
-# read half is read_description.py): it replaces the description of the card this
-# run works on, so a grooming agent can maintain its interpretation/plan inside the
-# card's `<!-- afkd -->` region. The splicing is the agent's job — read the current
-# desc, edit only its marker region, write the whole desc back — so this helper is
-# thin API mechanics: it sets exactly the text it is given. On a failure it exits
-# non-zero so the agent surfaces it rather than retrying blindly.
+# read half is read_description.py): it replaces the whole description of the card
+# this run works on with exactly the text it is given. Keeping the parts of the
+# description an agent did not mean to change is the agent's job — read the current
+# desc, change it, write the whole desc back — so this helper is thin API mechanics.
+# On a failure it exits non-zero so the agent surfaces it rather than retrying blindly.
 #
 # It reads the card id and board credentials FROM THE ENVIRONMENT — the env the
 # afkd trello trigger already merges into the worker child

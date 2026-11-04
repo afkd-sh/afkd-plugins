@@ -403,7 +403,7 @@ fn read_description_prints_it_verbatim_and_an_empty_one_as_an_empty_line() {
 fn set_description_replaces_it_from_a_file_and_takes_exactly_one_source() {
     let t = team();
     let file = t.scratch.path().join("desc.md");
-    let rewritten = format!("{BODY}\n<!-- afkd -->\nPlan: 修复 it ✅\n");
+    let rewritten = format!("{BODY}\n\nUpdate: 修复 it ✅\n");
     std::fs::write(&file, &rewritten).expect("write the description");
     let out = ok(&t.run(
         "set_description.py",

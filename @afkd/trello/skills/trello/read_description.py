@@ -3,11 +3,10 @@
 #
 # The read half of the card-description pair in the bundled `trello` skill (its
 # write half is set_description.py): it fetches the `desc` field of the card this
-# run works on and prints it verbatim, so a grooming agent can read the current
-# description, splice its own `<!-- afkd -->` region, and write the whole thing
-# back with set_description.py while preserving the human's original ask. On a
-# fetch or auth failure it exits non-zero so the agent surfaces the failure rather
-# than retrying blindly.
+# run works on and prints it verbatim, so an agent can read the current description,
+# change it, and write the whole of it back with set_description.py. On a fetch or
+# auth failure it exits non-zero so the agent surfaces the failure rather than
+# retrying blindly.
 #
 # It reads the card id and board credentials FROM THE ENVIRONMENT — the env the
 # afkd trello trigger already merges into the worker child

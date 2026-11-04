@@ -66,21 +66,19 @@ code itself would answer. Pass `--issue REF` to ask on a different issue (overri
 
 ## Read and update the issue description
 
-When you maintain your interpretation or plan inside the issue **description** — under an
-`<!-- afkd -->` marker, leaving the human's original ask untouched — read the current
-description, edit only your marker region, then write the **whole** description back.
-First read it:
+To change the issue **description**, read the current description, change it, then write
+the **whole** description back. First read it:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/linear/read_description.py"`
 
 It prints the issue's current description verbatim (an empty description prints an empty
-line and succeeds). Splice your `<!-- afkd -->` block into that text — preserving
-everything else — write the result into `$AFKD_SCRATCH_DIR`, then set it back:
+line and succeeds). Make your change in that text — keeping every part you did not mean
+to change as it is — write the result into `$AFKD_SCRATCH_DIR`, then set it back:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/linear/set_description.py" --desc-file "$AFKD_SCRATCH_DIR/desc.md"`
 
 `set_description.py` **replaces** the whole description, so always write back the full
-text you read (original ask plus your edited region), never just your region. Its flags:
+text you read with your change made in it, never just the part you changed. Its flags:
 
 - `--desc "text"` — the new description inline. Mutually exclusive with `--desc-file`.
 - `--desc-file PATH` — read the new description from a file (use this for a real,
@@ -89,7 +87,7 @@ text you read (original ask plus your edited region), never just your region. It
 
 **Blast radius:** the credential is workspace-wide — an API key acts as the user who made
 it, an app as itself — so an `--issue` override can rewrite the description of **any**
-issue it reaches, and `set_description.py` overwrites the whole field: read first, splice,
+issue it reaches, and `set_description.py` overwrites the whole field: read first, change,
 write back. The default (no flag) stays scoped to this run's issue.
 
 ## Retitle the issue

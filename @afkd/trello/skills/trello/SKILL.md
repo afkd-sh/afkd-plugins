@@ -64,21 +64,19 @@ things the code itself would answer. Pass `--card ID` to ask on a different card
 
 ## Read and update the card description
 
-When you maintain your interpretation or plan inside the card **description** —
-under an `<!-- afkd -->` marker, leaving the human's original ask untouched — read
-the current description, edit only your marker region, then write the **whole**
-description back. First read it:
+To change the card **description**, read the current description, change it, then
+write the **whole** description back. First read it:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/trello/read_description.py"`
 
 It prints the card's current `desc` verbatim (an empty description prints an empty
-line and succeeds). Splice your `<!-- afkd -->` block into that text — preserving
-everything else — write the result into `$AFKD_SCRATCH_DIR`, then set it back:
+line and succeeds). Make your change in that text — keeping every part you did not
+mean to change as it is — write the result into `$AFKD_SCRATCH_DIR`, then set it back:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/trello/set_description.py" --desc-file "$AFKD_SCRATCH_DIR/desc.md"`
 
 `set_description.py` **replaces** the whole description, so always write back the
-full text you read (original ask plus your edited region), never just your region.
+full text you read with your change made in it, never just the part you changed.
 Its flags:
 
 - `--desc "text"` — the new description inline. Mutually exclusive with `--desc-file`.
@@ -88,7 +86,7 @@ Its flags:
 
 **Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card`
 override can rewrite the description of **any** card the token reaches, and
-`set_description.py` overwrites the whole field — read first, splice, write back.
+`set_description.py` overwrites the whole field — read first, change, write back.
 The default (no flag) stays scoped to this run's card.
 
 ## Rename the card
