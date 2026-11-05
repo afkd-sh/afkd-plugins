@@ -345,7 +345,7 @@ fn the_actions_are_the_ones_the_code_answers() {
             .or_default()
             .insert(0, issue.clone());
     }
-    assert_eq!(params, want, "archive takes the issue alone");
+    assert_eq!(params, want, "archive and undelegate take the issue alone");
     assert_eq!(
         ACTION_HANDLE, HANDLE,
         "an action takes the issue a slot is passed"

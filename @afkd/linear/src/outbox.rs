@@ -68,6 +68,7 @@ impl Write {
                 IssueAction::AddLabel { name } => format!("adding the label \"{name}\""),
                 IssueAction::RemoveLabel { name } => format!("removing the label \"{name}\""),
                 IssueAction::Delegate { to } => format!("delegating it to \"{to}\""),
+                IssueAction::Undelegate => "undelegating it".to_string(),
                 IssueAction::CreateIssue(new) => format!("creating issue \"{}\"", new.title),
                 IssueAction::CreateSubIssue(new) => {
                     format!("creating sub-issue \"{}\"", new.title)
@@ -1001,6 +1002,7 @@ mod tests {
                 }),
                 "delegating it to \"vesper@oauthapp.example\"",
             ),
+            (act(IssueAction::Undelegate), "undelegating it"),
             (
                 act(IssueAction::CreateIssue(new("Cap it"))),
                 "creating issue \"Cap it\"",

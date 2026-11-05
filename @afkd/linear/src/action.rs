@@ -8,9 +8,10 @@
 //! text already interpolated. The issue is the handle the action takes first, never an
 //! implied current one.
 //!
-//! A write — a comment, a new title or description, a move, a label, a delegate, a new
-//! issue, an archive — goes the way the kind's own writes go: in order behind the issue's earlier
-//! ones, and retried by the [`Outbox`](crate::outbox::Outbox) when Linear cannot take it.
+//! A write — a comment, a new title or description, a move, a label, a delegate, a
+//! delegate taken off, a new issue, an archive — goes the way the kind's own writes go: in
+//! order behind the issue's earlier ones, and retried by the
+//! [`Outbox`](crate::outbox::Outbox) when Linear cannot take it.
 //! A read cannot hand a value back, since a plugin exposes none, so it writes what it read
 //! to the absolute path `to`: now or refused, never queued.
 //!
@@ -43,6 +44,7 @@ pub(crate) const ACTIONS: &[&str] = &[
     "add_label",
     "remove_label",
     "delegate",
+    "undelegate",
     "create_issue",
     "create_sub_issue",
     "archive",
@@ -80,6 +82,8 @@ pub(crate) enum IssueAction {
     RemoveLabel { name: String },
     /// Delegate the issue to the user `to` names: `me`, or a display name or email.
     Delegate { to: String },
+    /// Take the issue's delegate off; an issue with none is left as it is.
+    Undelegate,
     /// File an issue in the service's team.
     CreateIssue(NewIssue),
     /// File an issue under this one, in the service's team.
@@ -226,6 +230,7 @@ fn decode(action: &str, args: &Map<String, Value>) -> Result<Op, String> {
             name: string("label")?,
         },
         "delegate" => IssueAction::Delegate { to: string("to")? },
+        "undelegate" => IssueAction::Undelegate,
         "create_issue" => IssueAction::CreateIssue(new_issue()?),
         "create_sub_issue" => IssueAction::CreateSubIssue(new_issue()?),
         "archive" => IssueAction::Archive,
@@ -322,8 +327,9 @@ pub(crate) fn perform(
         IssueAction::AddLabel { name } => tracker.add_label(&team.id, &issue.id, name),
         IssueAction::RemoveLabel { name } => tracker.remove_label(&team.id, &issue.id, name),
         IssueAction::Delegate { to } => {
-            tracker.set_delegate(&issue.id, &tracker.resolve_user(&member_ref(to))?)
+            tracker.set_delegate(&issue.id, Some(&tracker.resolve_user(&member_ref(to))?))
         }
+        IssueAction::Undelegate => tracker.set_delegate(&issue.id, None),
         IssueAction::CreateIssue(new) => create(None, new),
         IssueAction::CreateSubIssue(new) => create(Some(&issue.id), new),
         IssueAction::Archive => tracker.archive_issue(&issue.id),
@@ -364,6 +370,7 @@ pub(crate) fn action_line(action: &IssueAction, team: &Team, issue: &Issue) -> S
         IssueAction::AddLabel { name } => format!("adding label \"{name}\" to {issue}"),
         IssueAction::RemoveLabel { name } => format!("removing label \"{name}\" from {issue}"),
         IssueAction::Delegate { to } => format!("delegating {issue} to \"{to}\""),
+        IssueAction::Undelegate => format!("undelegating {issue}"),
         IssueAction::CreateIssue(new) => format!(
             "creating issue \"{}\" in team {} from {issue}",
             new.title, team.key
@@ -533,6 +540,7 @@ mod tests {
             ("add_label", json!({"label": "needs review 👀"})),
             ("remove_label", json!({"label": "Redo"})),
             ("delegate", json!({"to": "me"})),
+            ("undelegate", json!({})),
             (
                 "create_issue",
                 json!({"title": "Cap it", "description": markdown, "state": "Backlog 📥"}),
@@ -581,6 +589,7 @@ mod tests {
                     name: "Redo".into()
                 }),
                 Op::Act(IssueAction::Delegate { to: "me".into() }),
+                Op::Act(IssueAction::Undelegate),
                 Op::Act(IssueAction::CreateIssue(NewIssue {
                     title: "Cap it".into(),
                     description: markdown.into(),
@@ -801,6 +810,7 @@ mod tests {
                 to: "vesper@oauthapp.example".into(),
             },
             IssueAction::Delegate { to: "me".into() },
+            IssueAction::Undelegate,
             IssueAction::CreateIssue(new(Some("In Progress"))),
             IssueAction::CreateSubIssue(new(None)),
             IssueAction::MoveSubIssue {
@@ -844,11 +854,15 @@ mod tests {
                 },
                 Action::SetDelegate {
                     issue: "ENG-1".into(),
-                    user: "u-vesper".into()
+                    user: Some("u-vesper".into())
                 },
                 Action::SetDelegate {
                     issue: "ENG-1".into(),
-                    user: SELF_ID.into()
+                    user: Some(SELF_ID.into())
+                },
+                Action::SetDelegate {
+                    issue: "ENG-1".into(),
+                    user: None
                 },
                 create(None, Some("In Progress")),
                 create(Some("ENG-1"), None),
@@ -860,6 +874,7 @@ mod tests {
             ]
         );
         assert!(t.archived("ENG-1"));
+        assert_eq!(t.issue("ENG-1").delegate, None, "the delegate is taken off");
 
         let before = t.actions().len();
         for (action, refusal) in [
@@ -893,6 +908,24 @@ mod tests {
             assert!(!e.transient(), "{e}");
         }
         assert_eq!(t.actions().len(), before, "a refused write sends nothing");
+    }
+
+    /// Taking the delegate off an issue that has none sends the same request and succeeds,
+    /// and the issue is still held by nobody.
+    #[test]
+    fn undelegate_leaves_an_issue_with_no_delegate_as_it_is() {
+        let t = tracker();
+        let issue = t.issue("ENG-2");
+        assert_eq!(issue.delegate, None);
+        perform(&t, &team(), &issue, &IssueAction::Undelegate).unwrap();
+        assert_eq!(
+            t.actions(),
+            [Action::SetDelegate {
+                issue: "ENG-2".into(),
+                user: None
+            }]
+        );
+        assert_eq!(t.issue("ENG-2").delegate, None);
     }
 
     /// A comment or a description with files puts each up before it is sent, an image
@@ -1083,6 +1116,10 @@ mod tests {
             (
                 IssueAction::CreateSubIssue(new("子任务")),
                 format!("[linear] creating sub-issue \"子任务\" under {named}"),
+            ),
+            (
+                IssueAction::Undelegate,
+                format!("[linear] undelegating {named}"),
             ),
             (IssueAction::Archive, format!("[linear] archiving {named}")),
             (

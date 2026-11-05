@@ -327,9 +327,9 @@ pub(crate) trait Tracker {
     /// Move issue `issue_id` to state `state_id`, wherever Linear places it there.
     fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError>;
 
-    /// Delegate issue `issue_id` to user `user_id`. Linear takes an agent here, an app's
-    /// user.
-    fn set_delegate(&self, issue_id: &str, user_id: &str) -> Result<(), LinearError>;
+    /// Delegate issue `issue_id` to user `user_id`, or take its delegate off for `None`.
+    /// Linear takes an agent here, an app's user.
+    fn set_delegate(&self, issue_id: &str, user_id: Option<&str>) -> Result<(), LinearError>;
 
     /// File a new issue in team `team_id` titled `title`, described `description` (none when
     /// empty), under the issue `parent_id` when there is one, in state `state_id` or else
@@ -435,7 +435,7 @@ impl<T: Tracker + ?Sized> Tracker for std::sync::Arc<T> {
     fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError> {
         (**self).set_state(issue_id, state_id)
     }
-    fn set_delegate(&self, issue_id: &str, user_id: &str) -> Result<(), LinearError> {
+    fn set_delegate(&self, issue_id: &str, user_id: Option<&str>) -> Result<(), LinearError> {
         (**self).set_delegate(issue_id, user_id)
     }
     fn create_issue(
@@ -508,8 +508,8 @@ mod mock {
         SetDescription { issue: String, text: String },
         /// An issue was moved to a state, placed where Linear places it.
         SetState { issue: String, state: String },
-        /// An issue was delegated to a user.
-        SetDelegate { issue: String, user: String },
+        /// An issue was delegated to a user, or had its delegate taken off (`None`).
+        SetDelegate { issue: String, user: Option<String> },
         /// An issue was filed.
         Create {
             team: String,
@@ -1053,14 +1053,19 @@ mod mock {
             Ok(())
         }
 
-        fn set_delegate(&self, issue_id: &str, user_id: &str) -> Result<(), LinearError> {
-            self.guard("delegate issue")?;
-            self.issue_mut(issue_id, "delegate issue", |s| {
-                s.issue.delegate = Some(user_id.to_string())
+        fn set_delegate(&self, issue_id: &str, user_id: Option<&str>) -> Result<(), LinearError> {
+            let stage = if user_id.is_some() {
+                "delegate issue"
+            } else {
+                "undelegate issue"
+            };
+            self.guard(stage)?;
+            self.issue_mut(issue_id, stage, |s| {
+                s.issue.delegate = user_id.map(str::to_string);
             })?;
             lock(&self.actions).push(Action::SetDelegate {
                 issue: issue_id.to_string(),
-                user: user_id.to_string(),
+                user: user_id.map(str::to_string),
             });
             Ok(())
         }

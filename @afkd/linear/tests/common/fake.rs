@@ -1867,11 +1867,17 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             if let Some(text) = input["description"].as_str() {
                 s.issues[at].description = (!text.is_empty()).then(|| text.to_string());
             }
-            if let Some(user) = input["delegateId"].as_str() {
-                if s.user(user).is_none() {
-                    return Err(Refusal::NotFound("User"));
+            // A `null` takes the delegate off; a key left out leaves it be.
+            match input.get("delegateId") {
+                Some(Value::Null) => s.issues[at].delegate = None,
+                Some(user) => {
+                    let user = user.as_str().unwrap_or_default();
+                    if s.user(user).is_none() {
+                        return Err(Refusal::NotFound("User"));
+                    }
+                    s.issues[at].delegate = Some(user.to_string());
                 }
-                s.issues[at].delegate = Some(user.to_string());
+                None => {}
             }
             Ok(json!({"issueUpdate": {"success": true}}))
         }

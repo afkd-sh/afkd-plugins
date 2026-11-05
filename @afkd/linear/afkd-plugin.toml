@@ -1,5 +1,5 @@
 name = "@afkd/linear"
-version = "0.5.4"
+version = "0.6.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -287,6 +287,15 @@ name = "delegate"
   [[action.param]]
   name = "to"
   type = "string"
+  required = true
+
+# The issue's delegate taken off; an issue with no delegate is left as it is.
+[[action]]
+name = "undelegate"
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
   required = true
 
 # A new issue in the service's team, titled `title` and described `description`.

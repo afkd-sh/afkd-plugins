@@ -235,6 +235,7 @@ first. A state or a label is named by its name, in the service's team:
 | `linear.add_label(issue, "<label>")`                         | put on the team's label of that name, else the workspace's, else one created for the team |
 | `linear.remove_label(issue, "<label>")`                      | take a label off; a name with no label, or a label the issue does not carry, is a no-op |
 | `linear.delegate(issue, "<to>")`                             | delegate the issue to `"me"`, the app, or to an app's user by display name or email |
+| `linear.undelegate(issue)`                                   | take the issue's delegate off; an issue with no delegate is left as it is |
 | `linear.create_issue(issue, "<title>", "<description>", state="<state>")` | file a new issue in the team, in the team's default state when `state` is left out |
 | `linear.create_sub_issue(issue, "<title>", "<description>", state="<state>")` | file a new sub-issue of the issue, as `create_issue` does |
 | `linear.archive(issue)`                                      | archive the issue                       |
@@ -478,7 +479,7 @@ being torn down, and agent, gate and plugin all name the same file.
   duplicate is never claimed, and its handle carries `blocked_by`.
 - **`require_member` reads the assignee and the delegate**, so an issue delegated to an
   app is the app's, and `"me"` is the app when it is one. It also takes `"none"`, an issue
-  nobody holds, and `delegate` hands an issue to an app.
+  nobody holds, and `delegate` hands an issue to an app, `undelegate` takes it back.
 - **No `min_age`.**
 - **Files are links, not attachments.** A file is a markdown link in the description or a
   comment, so `files=` on `comment` and `describe` puts one up and `fetch_files` reads every

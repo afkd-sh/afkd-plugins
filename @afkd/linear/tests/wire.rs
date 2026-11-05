@@ -1749,6 +1749,42 @@ fn delegate_to_an_unknown_user_is_refused_with_its_sentence() {
     end(plugin, &t.fake);
 }
 
+/// `undelegate` takes the app's delegate off an issue: the request sends `delegateId: null`
+/// and nothing else, and the issue is held by nobody. A second, on an issue with no
+/// delegate, succeeds and leaves it so.
+#[test]
+fn undelegate_takes_the_delegate_off_and_a_second_is_a_no_op() {
+    let t = team();
+    t.fake.delegate(&t.issue, &t.fake.app_user());
+    let mut plugin = Plugin::armed(app_settings(&t.fake));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(unit["thread"], t.issue);
+    assert_eq!(t.fake.delegate_of(&t.issue), Some(t.fake.app_user()));
+    for _ in 0..2 {
+        assert_eq!(
+            act(&mut plugin, &unit, "undelegate", json!({})),
+            json!({"ok": true})
+        );
+        assert_eq!(t.fake.delegate_of(&t.issue), None);
+        let update = t
+            .fake
+            .seen()
+            .into_iter()
+            .rfind(|s| s.operation == "IssueUpdate")
+            .expect("the undelegate request");
+        assert_eq!(
+            update.variables,
+            json!({"id": t.issue, "input": {"delegateId": null}})
+        );
+    }
+    let line = format!(
+        "[linear] undelegating issue {} \"{TITLE}\"\n",
+        unit["id"].as_str().unwrap()
+    );
+    let stderr = end(plugin, &t.fake);
+    assert_eq!(stderr.matches(&line).count(), 2, "{stderr}");
+}
+
 /// A label the team has is put on as it is; one it lacks is created for the team first.
 #[test]
 fn add_label_puts_a_label_on_creating_it_when_the_team_lacks_it() {

@@ -213,8 +213,8 @@ pub(crate) fn state_vars(issue_id: &str, state_id: &str) -> Value {
     json!({ "id": issue_id, "input": { "stateId": state_id } })
 }
 
-/// `IssueUpdate`: the issue delegated to the user.
-pub(crate) fn delegate_vars(issue_id: &str, user_id: &str) -> Value {
+/// `IssueUpdate`: the issue delegated to the user, or its delegate taken off for `None`.
+pub(crate) fn delegate_vars(issue_id: &str, user_id: Option<&str>) -> Value {
     json!({ "id": issue_id, "input": { "delegateId": user_id } })
 }
 
@@ -604,13 +604,14 @@ impl Tracker for LinearClient {
             .map(drop)
     }
 
-    fn set_delegate(&self, issue_id: &str, user_id: &str) -> Result<(), LinearError> {
-        self.post_graphql(
-            "delegate issue",
-            "IssueUpdate",
-            delegate_vars(issue_id, user_id),
-        )
-        .map(drop)
+    fn set_delegate(&self, issue_id: &str, user_id: Option<&str>) -> Result<(), LinearError> {
+        let stage = if user_id.is_some() {
+            "delegate issue"
+        } else {
+            "undelegate issue"
+        };
+        self.post_graphql(stage, "IssueUpdate", delegate_vars(issue_id, user_id))
+            .map(drop)
     }
 
     fn create_issue(
@@ -1181,8 +1182,9 @@ mod tests {
             ("IssueUpdate", state_vars(issue, state)),
             (
                 "IssueUpdate",
-                delegate_vars(issue, "8e7d6c5b-4a39-4281-b0c9-d8e7f6a5b4c3"),
+                delegate_vars(issue, Some("8e7d6c5b-4a39-4281-b0c9-d8e7f6a5b4c3")),
             ),
+            ("IssueUpdate", delegate_vars(issue, None)),
             (
                 "IssueCreate",
                 issue_create_vars(team, None, "Cap the backoff at 30s", "", None),
@@ -1288,8 +1290,12 @@ mod tests {
             json!({"id": "i", "input": {"stateId": "s"}})
         );
         assert_eq!(
-            delegate_vars("i", "u"),
+            delegate_vars("i", Some("u")),
             json!({"id": "i", "input": {"delegateId": "u"}})
+        );
+        assert_eq!(
+            delegate_vars("i", None),
+            json!({"id": "i", "input": {"delegateId": null}})
         );
     }
 

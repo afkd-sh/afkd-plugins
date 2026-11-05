@@ -705,6 +705,8 @@ widgets :: service(linear) {{
     if filed != nil {{ fail("linear.create_issue: #{{filed.message}}") }}
     bare := linear.create_issue(issue, "Look again 👀")
     if bare != nil {{ fail("linear.create_issue: #{{bare.message}}") }}
+    undelegated := linear.undelegate(issue)
+    if undelegated != nil {{ fail("linear.undelegate: #{{undelegated.message}}") }}
   }}
   on_park proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
     split := linear.create_sub_issue(issue, "Answer the question 🙋", "Asked on #{{issue.url}}")
