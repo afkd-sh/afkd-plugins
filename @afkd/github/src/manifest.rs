@@ -155,15 +155,15 @@ fn the_handles_are_the_two_kinds_items_with_their_fields() {
     let field = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
     let common = || {
         vec![
-            field("title", "string"),
-            field("url", "string"),
+            field("title", "str"),
+            field("url", "str"),
             field("number", "int"),
         ]
     };
     let mut issue = common();
-    issue.push(field("labels", "list[string]"));
+    issue.push(field("labels", "list[str]"));
     let mut pr = common();
-    pr.push(field("branch", "string"));
+    pr.push(field("branch", "str"));
     assert_eq!(
         named(&tables, "handle"),
         [
@@ -180,9 +180,9 @@ fn the_handles_are_the_two_kinds_items_with_their_fields() {
 /// Whether `value` has the JSON shape afkd reads a handle field of type `ty` from.
 fn shaped(value: &Value, ty: &str) -> bool {
     match ty {
-        "string" => value.is_string(),
+        "str" => value.is_string(),
         "int" => value.is_i64(),
-        "list[string]" => value
+        "list[str]" => value
             .as_array()
             .is_some_and(|items| items.iter().all(Value::is_string)),
         _ => false,
@@ -360,7 +360,7 @@ fn the_actions_are_the_ones_the_code_answers() {
     let required = |name: &str| {
         vec![table(&[
             ("name", &quoted(name)),
-            ("type", "\"string\""),
+            ("type", "\"str\""),
             ("required", "true"),
         ])]
     };

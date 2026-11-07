@@ -119,9 +119,9 @@ fn the_handle_is_the_card_with_its_fields() {
         [(
             table(&[("name", "\"Card\"")]),
             vec![
-                field("title", "string"),
-                field("url", "string"),
-                field("labels", "list[string]"),
+                field("title", "str"),
+                field("url", "str"),
+                field("labels", "list[str]"),
             ]
         )]
     );
@@ -130,9 +130,9 @@ fn the_handle_is_the_card_with_its_fields() {
 /// Whether `value` has the JSON shape afkd reads a handle field of type `ty` from.
 fn shaped(value: &Value, ty: &str) -> bool {
     match ty {
-        "string" => value.is_string(),
+        "str" => value.is_string(),
         "int" => value.is_i64(),
-        "list[string]" => value
+        "list[str]" => value
             .as_array()
             .is_some_and(|items| items.iter().all(Value::is_string)),
         _ => false,
@@ -269,13 +269,13 @@ fn the_actions_are_the_ones_the_code_answers() {
     let required = |name: &str| {
         vec![table(&[
             ("name", &quoted(name)),
-            ("type", "\"string\""),
+            ("type", "\"str\""),
             ("required", "true"),
         ])]
     };
     let member = table(&[
         ("name", "\"member\""),
-        ("type", "\"string\""),
+        ("type", "\"str\""),
         ("default", &quoted(ME)),
     ]);
     let card = table(&[

@@ -154,16 +154,16 @@ pub(crate) type Declared = (
 /// two cannot drift apart. afkd's own claim keys are not among them.
 #[cfg(test)]
 pub(crate) const SETTINGS: &[Declared] = &[
-    ("team", "string", &[("required", "true")]),
-    ("base_url", "string", &[]),
-    ("api_key", "string", &[]),
-    ("client_id", "string", &[]),
-    ("client_secret", "string", &[]),
-    ("pick_from", "list[string]", &[("required", "true")]),
-    ("require_member", "list[string]", &[]),
-    ("require_label", "string", &[]),
-    ("without_label", "list[string]", &[]),
-    ("discuss_with", "list[string]", &[]),
+    ("team", "str", &[("required", "true")]),
+    ("base_url", "str", &[]),
+    ("api_key", "str", &[]),
+    ("client_id", "str", &[]),
+    ("client_secret", "str", &[]),
+    ("pick_from", "list[str]", &[("required", "true")]),
+    ("require_member", "list[str]", &[]),
+    ("require_label", "str", &[]),
+    ("without_label", "list[str]", &[]),
+    ("discuss_with", "list[str]", &[]),
 ];
 
 /// Read the lowered `settings` into an [`IssueConfig`], or report the first setting it

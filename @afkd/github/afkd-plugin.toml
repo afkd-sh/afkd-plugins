@@ -1,5 +1,5 @@
 name = "@afkd/github"
-version = "0.8.1"
+version = "0.9.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -14,11 +14,11 @@ name = "Issue"
 
   [[handle.field]]
   name = "title"
-  type = "string"
+  type = "str"
 
   [[handle.field]]
   name = "url"
-  type = "string"
+  type = "str"
 
   [[handle.field]]
   name = "number"
@@ -26,18 +26,18 @@ name = "Issue"
 
   [[handle.field]]
   name = "labels"
-  type = "list[string]"
+  type = "list[str]"
 
 [[handle]]
 name = "Pull_Request"
 
   [[handle.field]]
   name = "title"
-  type = "string"
+  type = "str"
 
   [[handle.field]]
   name = "url"
-  type = "string"
+  type = "str"
 
   [[handle.field]]
   name = "number"
@@ -45,7 +45,7 @@ name = "Pull_Request"
 
   [[handle.field]]
   name = "branch"
-  type = "string"
+  type = "str"
 
 # The issue kind, `service(github)` in a config: a repository's issues, claimed one per run.
 [[kind]]
@@ -56,20 +56,20 @@ claims = true
 
   [[kind.setting]]
   name = "host"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "repo"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "token"
-  type = "string"
+  type = "str"
   required = true
 
   [[kind.setting]]
   name = "source_label"
-  type = "string"
+  type = "str"
 
   # These two afkd reads itself, as it declares them for every claiming kind.
   [[kind.setting]]
@@ -145,15 +145,15 @@ claims = true
 
   [[kind.setting]]
   name = "host"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "repo"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "token"
-  type = "string"
+  type = "str"
   required = true
 
   [[kind.setting]]
@@ -253,7 +253,7 @@ name = "add_label"
 
   [[action.param]]
   name = "label"
-  type = "string"
+  type = "str"
   required = true
 
 [[action]]
@@ -266,7 +266,7 @@ name = "remove_label"
 
   [[action.param]]
   name = "label"
-  type = "string"
+  type = "str"
   required = true
 
 [[action]]
@@ -287,7 +287,7 @@ name = "comment"
 
   [[action.param]]
   name = "text"
-  type = "string"
+  type = "str"
   required = true
 
 # The same six for a slot of the pr kind, each on the pull request it is passed first: a
@@ -318,7 +318,7 @@ name = "pr_add_label"
 
   [[action.param]]
   name = "label"
-  type = "string"
+  type = "str"
   required = true
 
 [[action]]
@@ -331,7 +331,7 @@ name = "pr_remove_label"
 
   [[action.param]]
   name = "label"
-  type = "string"
+  type = "str"
   required = true
 
 [[action]]
@@ -352,5 +352,5 @@ name = "pr_comment"
 
   [[action.param]]
   name = "text"
-  type = "string"
+  type = "str"
   required = true

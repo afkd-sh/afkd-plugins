@@ -143,10 +143,10 @@ run.
 
 | Key            | Type       | Notes                                              |
 |----------------|------------|----------------------------------------------------|
-| `host`         | `string`   | optional; empty/`github.com` → the cloud API, any other host → GitHub Enterprise `…/api/v3` |
-| `repo`         | `string`   | **required**: a single repository, `"owner/name"`  |
-| `token`        | `string`   | personal access token (`Authorization: Bearer`); required |
-| `source_label` | `string`   | optional; restrict to issues carrying this label   |
+| `host`         | `str`      | optional; empty/`github.com` → the cloud API, any other host → GitHub Enterprise `…/api/v3` |
+| `repo`         | `str`      | **required**: a single repository, `"owner/name"`  |
+| `token`        | `str`      | personal access token (`Authorization: Bearer`); required |
+| `source_label` | `str`      | optional; restrict to issues carrying this label   |
 | `max_attempts` | `int`      | retries per issue; default `1`                     |
 | `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
@@ -250,9 +250,9 @@ leaves feedback newer than the bot's last word, for an automated review loop.
 
 | Key            | Type       | Notes                                              |
 |----------------|------------|----------------------------------------------------|
-| `host`         | `string`   | as for `service(github)`                           |
-| `repo`         | `string`   | **required**: a single repository, `"owner/name"`  |
-| `token`        | `string`   | personal access token; required                    |
+| `host`         | `str`      | as for `service(github)`                           |
+| `repo`         | `str`      | **required**: a single repository, `"owner/name"`  |
+| `token`        | `str`      | personal access token; required                    |
 | `author_me`    | `bool`     | restrict to the bot's own PRs; default `false`     |
 | `max_attempts` | `int`      | retries per round; default `1`                     |
 | `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
@@ -352,13 +352,13 @@ Neither kind parks, so neither has `on_park`:
 
 | Field    | Type           | `github.Issue` | `github.Pull_Request` | What it is                    |
 |----------|----------------|:--------------:|:---------------------:|-------------------------------|
-| `id`     | `string`       | ✓              | ✓                     | the number, `"7"`             |
-| `key`    | `string`       | ✓              | ✓                     | afkd's claim key for it       |
-| `title`  | `string`       | ✓              | ✓                     | its title                     |
-| `url`    | `string`       | ✓              | ✓                     | its page on GitHub            |
+| `id`     | `str`          | ✓              | ✓                     | the number, `"7"`             |
+| `key`    | `str`          | ✓              | ✓                     | afkd's claim key for it       |
+| `title`  | `str`          | ✓              | ✓                     | its title                     |
+| `url`    | `str`          | ✓              | ✓                     | its page on GitHub            |
 | `number` | `int`          | ✓              | ✓                     | its number in the repository  |
-| `labels` | `list[string]` | ✓              |                       | the names of its labels       |
-| `branch` | `string`       |                | ✓                     | the pull request's head branch |
+| `labels` | `list[str]`    | ✓              |                       | the names of its labels       |
+| `branch` | `str`          |                | ✓                     | the pull request's head branch |
 
 A config passes an item around and compares it, but never builds one. The plugin sends every
 field with the claim, as the claiming poll read the item, and they hold for the whole run:

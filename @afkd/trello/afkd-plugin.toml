@@ -1,5 +1,5 @@
 name = "@afkd/trello"
-version = "0.10.2"
+version = "0.11.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -13,15 +13,15 @@ name = "Card"
 
   [[handle.field]]
   name = "title"
-  type = "string"
+  type = "str"
 
   [[handle.field]]
   name = "url"
-  type = "string"
+  type = "str"
 
   [[handle.field]]
   name = "labels"
-  type = "list[string]"
+  type = "list[str]"
 
 # The one kind, `service(trello)` in a config: a Trello board whose cards are claimed one
 # per run.
@@ -33,43 +33,43 @@ claims = true
 
   [[kind.setting]]
   name = "board"
-  type = "string"
+  type = "str"
   required = true
 
   [[kind.setting]]
   name = "base_url"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "api_key"
-  type = "string"
+  type = "str"
   required = true
 
   [[kind.setting]]
   name = "token"
-  type = "string"
+  type = "str"
   required = true
 
   [[kind.setting]]
   name = "pick_from"
-  type = "list[string]"
+  type = "list[str]"
   required = true
 
   [[kind.setting]]
   name = "require_member"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "require_label"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "without_label"
-  type = "list[string]"
+  type = "list[str]"
 
   [[kind.setting]]
   name = "discuss_with"
-  type = "list[string]"
+  type = "list[str]"
 
   # A threshold, so no range: it is not resampled per read.
   [[kind.setting]]
@@ -184,7 +184,7 @@ name = "move_to"
 
   [[action.param]]
   name = "list"
-  type = "string"
+  type = "str"
   required = true
 
   [[action.param]]
@@ -204,7 +204,7 @@ name = "add_label"
 
   [[action.param]]
   name = "label"
-  type = "string"
+  type = "str"
   required = true
 
 [[action]]
@@ -217,7 +217,7 @@ name = "remove_label"
 
   [[action.param]]
   name = "label"
-  type = "string"
+  type = "str"
   required = true
 
 [[action]]
@@ -231,7 +231,7 @@ name = "add_member"
   # A username, or "me": Trello's own alias for the member the credentials authenticate as.
   [[action.param]]
   name = "member"
-  type = "string"
+  type = "str"
   default = "me"
 
 [[action]]
@@ -245,7 +245,7 @@ name = "remove_member"
   # A username, or "me": Trello's own alias for the member the credentials authenticate as.
   [[action.param]]
   name = "member"
-  type = "string"
+  type = "str"
   default = "me"
 
 [[action]]
@@ -258,7 +258,7 @@ name = "comment"
 
   [[action.param]]
   name = "text"
-  type = "string"
+  type = "str"
   required = true
 
 # A file on the card: the one at `path`, absolute, read when the action is called and
@@ -273,12 +273,12 @@ name = "attach"
 
   [[action.param]]
   name = "path"
-  type = "string"
+  type = "str"
   required = true
 
   [[action.param]]
   name = "name"
-  type = "string"
+  type = "str"
   required = true
 
 # The newest file on the card named `name`, written to the absolute path `to`; nothing is
@@ -293,10 +293,10 @@ name = "fetch_attachment"
 
   [[action.param]]
   name = "name"
-  type = "string"
+  type = "str"
   required = true
 
   [[action.param]]
   name = "to"
-  type = "string"
+  type = "str"
   required = true

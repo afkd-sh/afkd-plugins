@@ -143,10 +143,10 @@ run.
 
 | Key            | Type       | Notes                                              |
 |----------------|------------|----------------------------------------------------|
-| `base_url`     | `string`   | optional; empty → `https://gitlab.com` (API under `/api/v4`) |
-| `project`      | `string`   | **required**: a numeric id or a path-with-namespace (`group/widgets`) |
-| `token`        | `string`   | personal/project access token (`PRIVATE-TOKEN`); required |
-| `source_label` | `string`   | optional; restrict to issues carrying this label   |
+| `base_url`     | `str`      | optional; empty → `https://gitlab.com` (API under `/api/v4`) |
+| `project`      | `str`      | **required**: a numeric id or a path-with-namespace (`group/widgets`) |
+| `token`        | `str`      | personal/project access token (`PRIVATE-TOKEN`); required |
+| `source_label` | `str`      | optional; restrict to issues carrying this label   |
 | `max_attempts` | `int`      | retries per issue; default `1`                     |
 | `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
@@ -248,9 +248,9 @@ leaves a note newer than the bot's last word, for an automated review loop.
 
 | Key            | Type       | Notes                                              |
 |----------------|------------|----------------------------------------------------|
-| `base_url`     | `string`   | as for `service(gitlab)`                           |
-| `project`      | `string`   | **required**: a numeric id or a path-with-namespace |
-| `token`        | `string`   | personal/project access token; required           |
+| `base_url`     | `str`      | as for `service(gitlab)`                           |
+| `project`      | `str`      | **required**: a numeric id or a path-with-namespace |
+| `token`        | `str`      | personal/project access token; required           |
 | `author_me`    | `bool`     | restrict to the bot's own MRs; default `false`     |
 | `max_attempts` | `int`      | retries per round; default `1`                     |
 | `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
@@ -348,13 +348,13 @@ Neither kind parks, so neither has `on_park`:
 
 | Field    | Type           | `gitlab.Issue` | `gitlab.Merge_Request` | What it is                  |
 |----------|----------------|:--------------:|:----------------------:|-----------------------------|
-| `id`     | `string`       | ✓              | ✓                      | the `iid`, `"7"`            |
-| `key`    | `string`       | ✓              | ✓                      | afkd's claim key for it     |
-| `title`  | `string`       | ✓              | ✓                      | its title                   |
-| `url`    | `string`       | ✓              | ✓                      | its page on GitLab          |
+| `id`     | `str`          | ✓              | ✓                      | the `iid`, `"7"`            |
+| `key`    | `str`          | ✓              | ✓                      | afkd's claim key for it     |
+| `title`  | `str`          | ✓              | ✓                      | its title                   |
+| `url`    | `str`          | ✓              | ✓                      | its page on GitLab          |
 | `number` | `int`          | ✓              | ✓                      | its `iid`, the number the project shows (`#7`, `!7`), not GitLab's global `id` |
-| `labels` | `list[string]` | ✓              |                        | the names of its labels     |
-| `branch` | `string`       |                | ✓                      | the merge request's source branch |
+| `labels` | `list[str]`    | ✓              |                        | the names of its labels     |
+| `branch` | `str`          |                | ✓                      | the merge request's source branch |
 
 A config passes an item around and compares it, but never builds one. The plugin sends every
 field with the claim, as the claiming poll read the item, and they hold for the whole run:

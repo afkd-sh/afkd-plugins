@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.11.1 (companion)
+Installed @afkd/web_top 0.12.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -60,9 +60,9 @@ ignored. A changed file restarts the relay on the next reload, with the new sett
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
-| `listen` | string | `"127.0.0.1:8771"` | the IPv4 address to serve on, as `"host[:port]"` — the shape afkd's own `bind { listen … }` takes. A bare host keeps port `8771`, and `:0` binds an ephemeral port and prints the one it got. Read the section above before you widen the host |
+| `listen` | str | `"127.0.0.1:8771"` | the IPv4 address to serve on, as `"host[:port]"` — the shape afkd's own `bind { listen … }` takes. A bare host keeps port `8771`, and `:0` binds an ephemeral port and prints the one it got. Read the section above before you widen the host |
 | `max_clients` | int | `8` | how many subscribers may be attached at once; the next one is a `503` |
-| `runs_dir` | string | `<state dir>/runs` | where the daemon **keeps** its runs. Read off disk on every subscriber's attach and served ahead of that subscriber's live frames, so a run view opened after a fire is not empty — see *The disk backfill*. Set it when afkd's own top-level `runs_dir` moves the corpus off the default. A run in flight under `keep_runs on_fail` is read off the daemon's temp dir, not off this setting |
+| `runs_dir` | str | `<state dir>/runs` | where the daemon **keeps** its runs. Read off disk on every subscriber's attach and served ahead of that subscriber's live frames, so a run view opened after a fire is not empty — see *The disk backfill*. Set it when afkd's own top-level `runs_dir` moves the corpus off the default. A run in flight under `keep_runs on_fail` is read off the daemon's temp dir, not off this setting |
 | `log_lines` | int | `2000` | how many log lines the page keeps per service. The terminal dashboard's own `LOG_RING_CAPACITY`, so a browser and a terminal watching one daemon scroll back the same distance. Carried to the page on its `stream` event — the ring it bounds lives in the browser, not here |
 
 Under a v2 config every value arrives typed by the manifest — an int as a JSON number, with

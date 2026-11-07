@@ -21,7 +21,7 @@ const HANDLE: &str = "issue";
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 
 /// One table of the manifest: its header (`""` for the top level) and its keys, each
-/// with its value as written (`"issue"`, `true`, `"list[string]"`).
+/// with its value as written (`"issue"`, `true`, `"list[str]"`).
 type Table = (String, BTreeMap<String, String>);
 
 /// A table and the tables written under it: a `[[kind.slot]]` and its `[[kind.slot.param]]`s.
@@ -121,13 +121,13 @@ fn the_handle_is_the_issue_with_its_fields() {
         [(
             table(&[("name", "\"Issue\"")]),
             vec![
-                field("title", "string"),
-                field("url", "string"),
-                field("labels", "list[string]"),
-                field("state", "string"),
-                field("parent", "string"),
-                field("sub_issues", "list[string]"),
-                field("blocked_by", "list[string]"),
+                field("title", "str"),
+                field("url", "str"),
+                field("labels", "list[str]"),
+                field("state", "str"),
+                field("parent", "str"),
+                field("sub_issues", "list[str]"),
+                field("blocked_by", "list[str]"),
             ]
         )]
     );
@@ -136,9 +136,9 @@ fn the_handle_is_the_issue_with_its_fields() {
 /// Whether `value` has the JSON shape afkd reads a handle field of type `ty` from.
 fn shaped(value: &Value, ty: &str) -> bool {
     match ty {
-        "string" => value.is_string(),
+        "str" => value.is_string(),
         "int" => value.is_i64(),
-        "list[string]" => value
+        "list[str]" => value
             .as_array()
             .is_some_and(|items| items.iter().all(Value::is_string)),
         _ => false,
@@ -290,7 +290,7 @@ fn the_actions_are_the_ones_the_code_answers() {
     let required = |name: &str| {
         table(&[
             ("name", &quoted(name)),
-            ("type", "\"string\""),
+            ("type", "\"str\""),
             ("required", "true"),
         ])
     };
@@ -298,12 +298,12 @@ fn the_actions_are_the_ones_the_code_answers() {
         required("title"),
         table(&[
             ("name", "\"description\""),
-            ("type", "\"string\""),
+            ("type", "\"str\""),
             ("default", "\"\""),
         ]),
         table(&[
             ("name", "\"state\""),
-            ("type", "\"string\""),
+            ("type", "\"str\""),
             ("named_only", "true"),
         ]),
     ];
@@ -316,7 +316,7 @@ fn the_actions_are_the_ones_the_code_answers() {
         required("text"),
         table(&[
             ("name", "\"files\""),
-            ("type", "\"list[string]\""),
+            ("type", "\"list[str]\""),
             ("named_only", "true"),
             ("default", "[]"),
         ]),

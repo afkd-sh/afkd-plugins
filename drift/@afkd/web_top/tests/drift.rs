@@ -1330,8 +1330,8 @@ fn the_manifest_is_proto_2_and_its_defaults_are_the_relays_own() {
     assert_eq!(
         shape,
         [
-            ("\"listen\"", "\"string\""),
-            ("\"runs_dir\"", "\"string\""),
+            ("\"listen\"", "\"str\""),
+            ("\"runs_dir\"", "\"str\""),
             ("\"max_clients\"", "\"int\""),
             ("\"log_lines\"", "\"int\""),
         ],

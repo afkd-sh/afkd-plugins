@@ -1,5 +1,5 @@
 name = "@afkd/linear"
-version = "0.6.0"
+version = "0.7.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -17,35 +17,35 @@ name = "Issue"
 
   [[handle.field]]
   name = "title"
-  type = "string"
+  type = "str"
 
   [[handle.field]]
   name = "url"
-  type = "string"
+  type = "str"
 
   [[handle.field]]
   name = "labels"
-  type = "list[string]"
+  type = "list[str]"
 
   # The name of the workflow state the issue sat in when it was claimed.
   [[handle.field]]
   name = "state"
-  type = "string"
+  type = "str"
 
   # The parent issue's identifier, or "" for an issue that is no sub-issue.
   [[handle.field]]
   name = "parent"
-  type = "string"
+  type = "str"
 
   # The sub-issues' identifiers, in Linear's order.
   [[handle.field]]
   name = "sub_issues"
-  type = "list[string]"
+  type = "list[str]"
 
   # The identifiers of every issue that blocks this one, done or not.
   [[handle.field]]
   name = "blocked_by"
-  type = "list[string]"
+  type = "list[str]"
 
 # The one kind, `service(linear)` in a config: a Linear team whose issues are claimed one per
 # run. afkd's own claim keys, `every` and `max_attempts`, are afkd's and not declared here.
@@ -58,50 +58,50 @@ claims = true
   # The team's key, the prefix of every identifier it holds (`ENG`).
   [[kind.setting]]
   name = "team"
-  type = "string"
+  type = "str"
   required = true
 
   [[kind.setting]]
   name = "base_url"
-  type = "string"
+  type = "str"
 
   # The credential: a Linear API key, or an OAuth app's `client_id` and `client_secret`, from
   # which the plugin fetches the app's own token. Exactly one of the two is written.
   [[kind.setting]]
   name = "api_key"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "client_id"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "client_secret"
-  type = "string"
+  type = "str"
 
   # The workflow states new issues are claimed from, by name, in the order they are scanned.
   [[kind.setting]]
   name = "pick_from"
-  type = "list[string]"
+  type = "list[str]"
   required = true
 
   # Who must hold an issue for it to be claimed, any one of them: `me`, a user by display
   # name or email as assignee or delegate, or `none` for an issue with neither.
   [[kind.setting]]
   name = "require_member"
-  type = "list[string]"
+  type = "list[str]"
 
   [[kind.setting]]
   name = "require_label"
-  type = "string"
+  type = "str"
 
   [[kind.setting]]
   name = "without_label"
-  type = "list[string]"
+  type = "list[str]"
 
   [[kind.setting]]
   name = "discuss_with"
-  type = "list[string]"
+  type = "list[str]"
 
   # The slots afkd runs, each passed the run and its issue, and after the run its outcome.
   [[kind.slot]]
@@ -185,14 +185,14 @@ name = "comment"
 
   [[action.param]]
   name = "text"
-  type = "string"
+  type = "str"
   required = true
 
   # Files to put on the issue, by absolute path, each read when the slot calls and embedded
   # after the text on a paragraph of its own: an image shown, any other file linked.
   [[action.param]]
   name = "files"
-  type = "list[string]"
+  type = "list[str]"
   named_only = true
   default = []
 
@@ -207,13 +207,13 @@ name = "describe"
 
   [[action.param]]
   name = "text"
-  type = "string"
+  type = "str"
   required = true
 
   # Files to put on the issue, embedded after the text as `comment`'s are.
   [[action.param]]
   name = "files"
-  type = "list[string]"
+  type = "list[str]"
   named_only = true
   default = []
 
@@ -228,7 +228,7 @@ name = "rename"
 
   [[action.param]]
   name = "title"
-  type = "string"
+  type = "str"
   required = true
 
 # The issue moved to the team's workflow state named `state`.
@@ -242,7 +242,7 @@ name = "move_to"
 
   [[action.param]]
   name = "state"
-  type = "string"
+  type = "str"
   required = true
 
 # The label named `label` put on the issue: the team's, else the workspace's, else one
@@ -257,7 +257,7 @@ name = "add_label"
 
   [[action.param]]
   name = "label"
-  type = "string"
+  type = "str"
   required = true
 
 # The label named `label` taken off the issue; a name with no label is a no-op.
@@ -271,7 +271,7 @@ name = "remove_label"
 
   [[action.param]]
   name = "label"
-  type = "string"
+  type = "str"
   required = true
 
 # The issue delegated to `to`: `me`, the app the service runs as, or an app's user by display
@@ -286,7 +286,7 @@ name = "delegate"
 
   [[action.param]]
   name = "to"
-  type = "string"
+  type = "str"
   required = true
 
 # The issue's delegate taken off; an issue with no delegate is left as it is.
@@ -309,18 +309,18 @@ name = "create_issue"
 
   [[action.param]]
   name = "title"
-  type = "string"
+  type = "str"
   required = true
 
   [[action.param]]
   name = "description"
-  type = "string"
+  type = "str"
   default = ""
 
   # The workflow state it starts in, by name; the team's default when left out.
   [[action.param]]
   name = "state"
-  type = "string"
+  type = "str"
   named_only = true
 
 # A new sub-issue of the issue, in the service's team, as `create_issue` files one.
@@ -334,18 +334,18 @@ name = "create_sub_issue"
 
   [[action.param]]
   name = "title"
-  type = "string"
+  type = "str"
   required = true
 
   [[action.param]]
   name = "description"
-  type = "string"
+  type = "str"
   default = ""
 
   # The workflow state it starts in, by name; the team's default when left out.
   [[action.param]]
   name = "state"
-  type = "string"
+  type = "str"
   named_only = true
 
 # The issue archived.
@@ -369,7 +369,7 @@ name = "list_comments"
 
   [[action.param]]
   name = "to"
-  type = "string"
+  type = "str"
   required = true
 
 # The issue's description as Linear holds it now, written to the absolute path `to`.
@@ -383,7 +383,7 @@ name = "read_description"
 
   [[action.param]]
   name = "to"
-  type = "string"
+  type = "str"
   required = true
 
 # The issue's sub-issues, a line each with its state as the brief lists them, written to
@@ -398,7 +398,7 @@ name = "list_sub_issues"
 
   [[action.param]]
   name = "to"
-  type = "string"
+  type = "str"
   required = true
 
 # The issue's sub-issue `sub_issue`, by identifier, moved to the team's workflow state
@@ -413,12 +413,12 @@ name = "move_sub_issue"
 
   [[action.param]]
   name = "sub_issue"
-  type = "string"
+  type = "str"
   required = true
 
   [[action.param]]
   name = "state"
-  type = "string"
+  type = "str"
   required = true
 
 # Every file Linear hosts that the issue embeds or links — its description's, then its
@@ -435,5 +435,5 @@ name = "fetch_files"
 
   [[action.param]]
   name = "to"
-  type = "string"
+  type = "str"
   required = true

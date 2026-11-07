@@ -150,15 +150,15 @@ pub(crate) type Declared = (
 /// every claiming kind; afkd's declaration is the one that applies.
 #[cfg(test)]
 pub(crate) const SETTINGS: &[Declared] = &[
-    ("board", "string", &[("required", "true")]),
-    ("base_url", "string", &[]),
-    ("api_key", "string", &[("required", "true")]),
-    ("token", "string", &[("required", "true")]),
-    ("pick_from", "list[string]", &[("required", "true")]),
-    ("require_member", "string", &[]),
-    ("require_label", "string", &[]),
-    ("without_label", "list[string]", &[]),
-    ("discuss_with", "list[string]", &[]),
+    ("board", "str", &[("required", "true")]),
+    ("base_url", "str", &[]),
+    ("api_key", "str", &[("required", "true")]),
+    ("token", "str", &[("required", "true")]),
+    ("pick_from", "list[str]", &[("required", "true")]),
+    ("require_member", "str", &[]),
+    ("require_label", "str", &[]),
+    ("without_label", "list[str]", &[]),
+    ("discuss_with", "list[str]", &[]),
     ("min_age", "duration", &[]),
     ("max_attempts", "int", &[("default", "1")]),
     (

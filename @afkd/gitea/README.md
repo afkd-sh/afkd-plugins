@@ -151,12 +151,12 @@ gate for those who want it; either signal suffices.
 
 | Key            | Type           | Notes                                              |
 |----------------|----------------|----------------------------------------------------|
-| `base_url`     | `string`       | the Gitea instance base URL                        |
-| `repo`         | `string`       | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
-| `org`          | `string`       | every repository of an org; **exactly one** of `repo`/`org` |
-| `token`        | `string`       | personal access token; required                    |
-| `source_label` | `string`       | optional label gate; alternative to assigning bot  |
-| `discuss_with` | `list[string]` | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
+| `base_url`     | `str`          | the Gitea instance base URL                        |
+| `repo`         | `str`          | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
+| `org`          | `str`          | every repository of an org; **exactly one** of `repo`/`org` |
+| `token`        | `str`          | personal access token; required                    |
+| `source_label` | `str`          | optional label gate; alternative to assigning bot  |
+| `discuss_with` | `list[str]`    | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
 | `max_attempts` | `int`          | retries per issue; default `1`                     |
 | `every`        | `duration`     | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
@@ -343,10 +343,10 @@ leaves feedback newer than the bot's last word, for an automated review loop.
 
 | Key            | Type       | Notes                                                  |
 |----------------|------------|--------------------------------------------------------|
-| `base_url`     | `string`   | the Gitea instance base URL                            |
-| `repo`         | `string`   | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
-| `org`          | `string`   | every repository of an org; **exactly one** of `repo`/`org` |
-| `token`        | `string`   | personal access token; required                        |
+| `base_url`     | `str`      | the Gitea instance base URL                            |
+| `repo`         | `str`      | a single repository, `"owner/name"`; **exactly one** of `repo`/`org` |
+| `org`          | `str`      | every repository of an org; **exactly one** of `repo`/`org` |
+| `token`        | `str`      | personal access token; required                        |
 | `author_me`    | `bool`     | restrict to the bot's own PRs; default `false`         |
 | `max_attempts` | `int`      | retries per round; default `1`                         |
 | `every`        | `duration` | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
@@ -437,13 +437,13 @@ type:
 
 | Field    | Type           | `gitea.Issue` | `gitea.Pull_Request` | What it is                     |
 |----------|----------------|:-------------:|:--------------------:|--------------------------------|
-| `id`     | `string`       | ✓             | ✓                    | the number, `"7"`              |
-| `key`    | `string`       | ✓             | ✓                    | afkd's claim key for it        |
-| `title`  | `string`       | ✓             | ✓                    | its title                      |
-| `url`    | `string`       | ✓             | ✓                    | its page on the forge          |
+| `id`     | `str`          | ✓             | ✓                    | the number, `"7"`              |
+| `key`    | `str`          | ✓             | ✓                    | afkd's claim key for it        |
+| `title`  | `str`          | ✓             | ✓                    | its title                      |
+| `url`    | `str`          | ✓             | ✓                    | its page on the forge          |
 | `number` | `int`          | ✓             | ✓                    | its number in the repository   |
-| `labels` | `list[string]` | ✓             |                      | the names of its labels        |
-| `branch` | `string`       |               | ✓                    | the PR's head branch           |
+| `labels` | `list[str]`    | ✓             |                      | the names of its labels        |
+| `branch` | `str`          |               | ✓                    | the PR's head branch           |
 
 A config passes an item around and compares it, but never builds one. The plugin sends every
 field with the claim, as the claiming poll read the item, and they hold for the whole run:

@@ -108,12 +108,12 @@ pub(crate) type Declared = (
 /// every claiming kind; afkd's declaration is the one that applies.
 #[cfg(test)]
 pub(crate) const ISSUE_SETTINGS: &[Declared] = &[
-    ("base_url", "string", &[]),
-    ("repo", "string", &[]),
-    ("org", "string", &[]),
-    ("token", "string", &[("required", "true")]),
-    ("source_label", "string", &[]),
-    ("discuss_with", "list[string]", &[]),
+    ("base_url", "str", &[]),
+    ("repo", "str", &[]),
+    ("org", "str", &[]),
+    ("token", "str", &[("required", "true")]),
+    ("source_label", "str", &[]),
+    ("discuss_with", "list[str]", &[]),
     ("max_attempts", "int", &[("default", "1")]),
     (
         "every",
@@ -126,10 +126,10 @@ pub(crate) const ISSUE_SETTINGS: &[Declared] = &[
 /// with `author_me` in place of `source_label` and `discuss_with`.
 #[cfg(test)]
 pub(crate) const PR_SETTINGS: &[Declared] = &[
-    ("base_url", "string", &[]),
-    ("repo", "string", &[]),
-    ("org", "string", &[]),
-    ("token", "string", &[("required", "true")]),
+    ("base_url", "str", &[]),
+    ("repo", "str", &[]),
+    ("org", "str", &[]),
+    ("token", "str", &[("required", "true")]),
     ("author_me", "bool", &[("default", "false")]),
     ("max_attempts", "int", &[("default", "1")]),
     (

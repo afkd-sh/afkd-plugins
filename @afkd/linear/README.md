@@ -147,16 +147,16 @@ run.
 
 | Key              | Type           | Notes                                  |
 |------------------|----------------|----------------------------------------|
-| `team`           | `string`       | the team's key, the prefix of every identifier it holds (`ENG`); required |
-| `api_key`        | `string`       | a Linear API key; exactly one of it or the app's two keys below |
-| `client_id`      | `string`       | an OAuth app's client id, with `client_secret` |
-| `client_secret`  | `string`       | the OAuth app's client secret          |
-| `base_url`       | `string`       | API root; defaults to `https://api.linear.app` (a test seam) |
-| `pick_from`      | `list[string]` | the workflow states new issues are drawn from, by name, in the order written; required |
-| `require_member` | `list[string]` | `"me"`, users by display name or email, or `"none"`: only claim issues assigned or delegated to one of them, `"none"` an issue nobody holds; default unset |
-| `require_label`  | `string`       | only claim issues carrying a label of this exact name; default unset |
-| `without_label`  | `list[string]` | never claim issues carrying any of these labels (deny wins over `require_label`); default unset |
-| `discuss_with`   | `list[string]` | `[ "anyone" ]` or users, `[ "chen@acme.example", "me" ]`: claim an issue on first sight or when an allowed author comments after afkd last did; default unset |
+| `team`           | `str`          | the team's key, the prefix of every identifier it holds (`ENG`); required |
+| `api_key`        | `str`          | a Linear API key; exactly one of it or the app's two keys below |
+| `client_id`      | `str`          | an OAuth app's client id, with `client_secret` |
+| `client_secret`  | `str`          | the OAuth app's client secret          |
+| `base_url`       | `str`          | API root; defaults to `https://api.linear.app` (a test seam) |
+| `pick_from`      | `list[str]`    | the workflow states new issues are drawn from, by name, in the order written; required |
+| `require_member` | `list[str]`    | `"me"`, users by display name or email, or `"none"`: only claim issues assigned or delegated to one of them, `"none"` an issue nobody holds; default unset |
+| `require_label`  | `str`          | only claim issues carrying a label of this exact name; default unset |
+| `without_label`  | `list[str]`    | never claim issues carrying any of these labels (deny wins over `require_label`); default unset |
+| `discuss_with`   | `list[str]`    | `[ "anyone" ]` or users, `[ "chen@acme.example", "me" ]`: claim an issue on first sight or when an allowed author comments after afkd last did; default unset |
 | `max_attempts`   | `int`          | retries per issue; default `1`         |
 | `every`          | `duration`     | how often the team is polled; default `30s`; a range `2m~3m` jitters |
 
@@ -180,15 +180,15 @@ each with its type:
 
 | Field        | Type           | What it is                                                |
 |--------------|----------------|-----------------------------------------------------------|
-| `id`         | `string`       | the issue's identifier, `ENG-123`                         |
-| `key`        | `string`       | afkd's claim key for the issue                            |
-| `title`      | `string`       | the issue's title                                         |
-| `url`        | `string`       | the issue's address on linear.app                         |
-| `labels`     | `list[string]` | the names of the labels on the issue                      |
-| `state`      | `string`       | the workflow state it sat in when it was claimed          |
-| `parent`     | `string`       | the parent issue's identifier, `""` for no sub-issue      |
-| `sub_issues` | `list[string]` | the sub-issues' identifiers, in Linear's order            |
-| `blocked_by` | `list[string]` | every issue that blocks this one, done or not             |
+| `id`         | `str`          | the issue's identifier, `ENG-123`                         |
+| `key`        | `str`          | afkd's claim key for the issue                            |
+| `title`      | `str`          | the issue's title                                         |
+| `url`        | `str`          | the issue's address on linear.app                         |
+| `labels`     | `list[str]`    | the names of the labels on the issue                      |
+| `state`      | `str`          | the workflow state it sat in when it was claimed          |
+| `parent`     | `str`          | the parent issue's identifier, `""` for no sub-issue      |
+| `sub_issues` | `list[str]`    | the sub-issues' identifiers, in Linear's order            |
+| `blocked_by` | `list[str]`    | every issue that blocks this one, done or not             |
 
 A config passes an issue around and compares it, but never builds one. The plugin sends
 every field with the claim, as the claiming poll read the issue, and they hold for the whole

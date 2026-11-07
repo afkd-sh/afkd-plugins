@@ -814,7 +814,7 @@ discuss :: queue { capacity 2 }
 /// §24's `selfdev/selfdev.afkd`, copied from `docs/lang-v2.md` at afkd master, up to the
 /// `develop` service's end. The `discuss` half after it is left out: it writes
 /// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
-/// `list[string]` and is written `[ "anyone" ]`.
+/// `list[str]` and is written `[ "anyone" ]`.
 const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afkd - Trello-driven pipeline: afkd develops itself.
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
 // on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
@@ -915,14 +915,14 @@ prep :: proc() {
 Verdict :: enum { blocked, approved, rejected }
 
 // A prompt file's text; a missing or unreadable one fails the run.
-prompt :: proc(name: string) -> string {
+prompt :: proc(name: str) -> str {
   text, err := fs.read_file("#{PROMPTS}/#{name}")
   if err != nil { fail("cannot read #{err.path}: #{err.message}") }
   return text
 }
 
 // Builds, then critiques, up to three times.
-gate :: proc(run: core.Run, phase: string, build: string, critique: string) -> Verdict {
+gate :: proc(run: core.Run, phase: str, build: str, critique: str) -> Verdict {
   for _ in 0..<3 {
     built := builder <- prompt(build)
     if built.error != nil { fail("builder: #{built.error.message}") }

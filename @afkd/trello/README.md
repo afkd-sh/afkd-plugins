@@ -125,15 +125,15 @@ starts, finishes, or fails. Its secrets stay with the plugin and the run.
 
 | Key              | Type           | Notes                                  |
 |------------------|----------------|----------------------------------------|
-| `board`          | `string`       | board address; required                |
-| `api_key`        | `string`       | Trello API key; required               |
-| `token`          | `string`       | Trello token; required                 |
-| `base_url`       | `string`       | API base; defaults to the public Trello API (a test/overseer seam) |
-| `pick_from`      | `list[string]` | the lists new cards are drawn from, in the order written; one name or several; required |
-| `require_member` | `string`       | `"me"` or a username: only claim cards this member is already on; default unset (the head card is claimed) |
-| `require_label`  | `string`       | only claim cards carrying the named label; default unset (no label filter) |
-| `without_label`  | `list[string]` | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
-| `discuss_with`   | `list[string]` | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
+| `board`          | `str`          | board address; required                |
+| `api_key`        | `str`          | Trello API key; required               |
+| `token`          | `str`          | Trello token; required                 |
+| `base_url`       | `str`          | API base; defaults to the public Trello API (a test/overseer seam) |
+| `pick_from`      | `list[str]`    | the lists new cards are drawn from, in the order written; one name or several; required |
+| `require_member` | `str`          | `"me"` or a username: only claim cards this member is already on; default unset (the head card is claimed) |
+| `require_label`  | `str`          | only claim cards carrying the named label; default unset (no label filter) |
+| `without_label`  | `list[str]`    | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
+| `discuss_with`   | `list[str]`    | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
 | `min_age`        | `duration`     | don't claim a card younger than this, measured from card creation; default `0` (no filter) |
 | `max_attempts`   | `int`          | retries per card; default `1`          |
 | `every`          | `duration`     | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
@@ -158,11 +158,11 @@ each with its type:
 
 | Field    | Type           | What it is                                         |
 |----------|----------------|----------------------------------------------------|
-| `id`     | `string`       | the card's short link, `Qb7eLy2w`                  |
-| `key`    | `string`       | afkd's claim key for the card                      |
-| `title`  | `string`       | the card's name                                    |
-| `url`    | `string`       | the card's address on trello.com                   |
-| `labels` | `list[string]` | the names of the labels on the card                |
+| `id`     | `str`          | the card's short link, `Qb7eLy2w`                  |
+| `key`    | `str`          | afkd's claim key for the card                      |
+| `title`  | `str`          | the card's name                                    |
+| `url`    | `str`          | the card's address on trello.com                   |
+| `labels` | `list[str]`    | the names of the labels on the card                |
 
 A config passes a card around and compares it, but never builds one. The plugin sends every
 field with the claim, as the claiming poll read the card, and they hold for the whole run:
