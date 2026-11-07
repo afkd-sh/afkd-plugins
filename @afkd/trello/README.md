@@ -129,11 +129,11 @@ starts, finishes, or fails. Its secrets stay with the plugin and the run.
 | `api_key`        | `str`          | Trello API key; required               |
 | `token`          | `str`          | Trello token; required                 |
 | `base_url`       | `str`          | API base; defaults to the public Trello API (a test/overseer seam) |
-| `pick_from`      | `list[str]`    | the lists new cards are drawn from, in the order written; one name or several; required |
+| `pick_from`      | `List[str]`    | the lists new cards are drawn from, in the order written; one name or several; required |
 | `require_member` | `str`          | `"me"` or a username: only claim cards this member is already on; default unset (the head card is claimed) |
 | `require_label`  | `str`          | only claim cards carrying the named label; default unset (no label filter) |
-| `without_label`  | `list[str]`    | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
-| `discuss_with`   | `list[str]`    | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
+| `without_label`  | `List[str]`    | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
+| `discuss_with`   | `List[str]`    | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
 | `min_age`        | `duration`     | don't claim a card younger than this, measured from card creation; default `0` (no filter) |
 | `max_attempts`   | `int`          | retries per card; default `1`          |
 | `every`          | `duration`     | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
@@ -162,7 +162,7 @@ each with its type:
 | `key`    | `str`          | afkd's claim key for the card                      |
 | `title`  | `str`          | the card's name                                    |
 | `url`    | `str`          | the card's address on trello.com                   |
-| `labels` | `list[str]`    | the names of the labels on the card                |
+| `labels` | `List[str]`    | the names of the labels on the card                |
 
 A config passes a card around and compares it, but never builds one. The plugin sends every
 field with the claim, as the claiming poll read the card, and they hold for the whole run:

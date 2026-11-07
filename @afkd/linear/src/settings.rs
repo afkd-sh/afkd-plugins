@@ -9,7 +9,7 @@
 //! `max_attempts`) are afkd's and are not read here, and the slots never arrive here at all.
 //!
 //! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a duration its
-//! largest whole unit, a range `lo..hi`), and a `list[…]` is always an array — of the one
+//! largest whole unit, a range `lo..hi`), and a `List[…]` is always an array — of the one
 //! item, or holding the array of several.
 
 use serde_json::{Map, Value};
@@ -159,11 +159,11 @@ pub(crate) const SETTINGS: &[Declared] = &[
     ("api_key", "str", &[]),
     ("client_id", "str", &[]),
     ("client_secret", "str", &[]),
-    ("pick_from", "list[str]", &[("required", "true")]),
-    ("require_member", "list[str]", &[]),
+    ("pick_from", "List[str]", &[("required", "true")]),
+    ("require_member", "List[str]", &[]),
     ("require_label", "str", &[]),
-    ("without_label", "list[str]", &[]),
-    ("discuss_with", "list[str]", &[]),
+    ("without_label", "List[str]", &[]),
+    ("discuss_with", "List[str]", &[]),
 ];
 
 /// Read the lowered `settings` into an [`IssueConfig`], or report the first setting it

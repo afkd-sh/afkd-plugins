@@ -152,11 +152,11 @@ run.
 | `client_id`      | `str`          | an OAuth app's client id, with `client_secret` |
 | `client_secret`  | `str`          | the OAuth app's client secret          |
 | `base_url`       | `str`          | API root; defaults to `https://api.linear.app` (a test seam) |
-| `pick_from`      | `list[str]`    | the workflow states new issues are drawn from, by name, in the order written; required |
-| `require_member` | `list[str]`    | `"me"`, users by display name or email, or `"none"`: only claim issues assigned or delegated to one of them, `"none"` an issue nobody holds; default unset |
+| `pick_from`      | `List[str]`    | the workflow states new issues are drawn from, by name, in the order written; required |
+| `require_member` | `List[str]`    | `"me"`, users by display name or email, or `"none"`: only claim issues assigned or delegated to one of them, `"none"` an issue nobody holds; default unset |
 | `require_label`  | `str`          | only claim issues carrying a label of this exact name; default unset |
-| `without_label`  | `list[str]`    | never claim issues carrying any of these labels (deny wins over `require_label`); default unset |
-| `discuss_with`   | `list[str]`    | `[ "anyone" ]` or users, `[ "chen@acme.example", "me" ]`: claim an issue on first sight or when an allowed author comments after afkd last did; default unset |
+| `without_label`  | `List[str]`    | never claim issues carrying any of these labels (deny wins over `require_label`); default unset |
+| `discuss_with`   | `List[str]`    | `[ "anyone" ]` or users, `[ "chen@acme.example", "me" ]`: claim an issue on first sight or when an allowed author comments after afkd last did; default unset |
 | `max_attempts`   | `int`          | retries per issue; default `1`         |
 | `every`          | `duration`     | how often the team is polled; default `30s`; a range `2m~3m` jitters |
 
@@ -184,11 +184,11 @@ each with its type:
 | `key`        | `str`          | afkd's claim key for the issue                            |
 | `title`      | `str`          | the issue's title                                         |
 | `url`        | `str`          | the issue's address on linear.app                         |
-| `labels`     | `list[str]`    | the names of the labels on the issue                      |
+| `labels`     | `List[str]`    | the names of the labels on the issue                      |
 | `state`      | `str`          | the workflow state it sat in when it was claimed          |
 | `parent`     | `str`          | the parent issue's identifier, `""` for no sub-issue      |
-| `sub_issues` | `list[str]`    | the sub-issues' identifiers, in Linear's order            |
-| `blocked_by` | `list[str]`    | every issue that blocks this one, done or not             |
+| `sub_issues` | `List[str]`    | the sub-issues' identifiers, in Linear's order            |
+| `blocked_by` | `List[str]`    | every issue that blocks this one, done or not             |
 
 A config passes an issue around and compares it, but never builds one. The plugin sends
 every field with the claim, as the claiming poll read the issue, and they hold for the whole

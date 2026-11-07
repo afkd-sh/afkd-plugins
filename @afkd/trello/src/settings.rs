@@ -10,7 +10,7 @@
 //! each action they call is one `call` ([`crate::lifecycle`]).
 //!
 //! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a duration
-//! its largest whole unit, a range `lo..hi`), and a `list[…]` is always an array — of the
+//! its largest whole unit, a range `lo..hi`), and a `List[…]` is always an array — of the
 //! one item, or holding the array of several.
 
 use std::time::Duration;
@@ -154,11 +154,11 @@ pub(crate) const SETTINGS: &[Declared] = &[
     ("base_url", "str", &[]),
     ("api_key", "str", &[("required", "true")]),
     ("token", "str", &[("required", "true")]),
-    ("pick_from", "list[str]", &[("required", "true")]),
+    ("pick_from", "List[str]", &[("required", "true")]),
     ("require_member", "str", &[]),
     ("require_label", "str", &[]),
-    ("without_label", "list[str]", &[]),
-    ("discuss_with", "list[str]", &[]),
+    ("without_label", "List[str]", &[]),
+    ("discuss_with", "List[str]", &[]),
     ("min_age", "duration", &[]),
     ("max_attempts", "int", &[("default", "1")]),
     (

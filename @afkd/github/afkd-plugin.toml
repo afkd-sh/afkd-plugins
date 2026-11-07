@@ -1,5 +1,5 @@
 name = "@afkd/github"
-version = "0.9.0"
+version = "0.10.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -26,7 +26,7 @@ name = "Issue"
 
   [[handle.field]]
   name = "labels"
-  type = "list[str]"
+  type = "List[str]"
 
 [[handle]]
 name = "Pull_Request"

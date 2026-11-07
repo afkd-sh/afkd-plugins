@@ -161,7 +161,7 @@ fn the_handles_are_the_two_kinds_items_with_their_fields() {
         ]
     };
     let mut issue = common();
-    issue.push(field("labels", "list[str]"));
+    issue.push(field("labels", "List[str]"));
     let mut pr = common();
     pr.push(field("branch", "str"));
     assert_eq!(
@@ -182,7 +182,7 @@ fn shaped(value: &Value, ty: &str) -> bool {
     match ty {
         "str" => value.is_string(),
         "int" => value.is_i64(),
-        "list[str]" => value
+        "List[str]" => value
             .as_array()
             .is_some_and(|items| items.iter().all(Value::is_string)),
         _ => false,

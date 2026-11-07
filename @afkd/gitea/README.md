@@ -156,7 +156,7 @@ gate for those who want it; either signal suffices.
 | `org`          | `str`          | every repository of an org; **exactly one** of `repo`/`org` |
 | `token`        | `str`          | personal access token; required                    |
 | `source_label` | `str`          | optional label gate; alternative to assigning bot  |
-| `discuss_with` | `list[str]`    | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
+| `discuss_with` | `List[str]`    | `[ "anyone" ]` or logins, `[ "alice", "bob" ]`: claim an issue on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
 | `max_attempts` | `int`          | retries per issue; default `1`                     |
 | `every`        | `duration`     | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
 
@@ -442,7 +442,7 @@ type:
 | `title`  | `str`          | ✓             | ✓                    | its title                      |
 | `url`    | `str`          | ✓             | ✓                    | its page on the forge          |
 | `number` | `int`          | ✓             | ✓                    | its number in the repository   |
-| `labels` | `list[str]`    | ✓             |                      | the names of its labels        |
+| `labels` | `List[str]`    | ✓             |                      | the names of its labels        |
 | `branch` | `str`          |               | ✓                    | the PR's head branch           |
 
 A config passes an item around and compares it, but never builds one. The plugin sends every

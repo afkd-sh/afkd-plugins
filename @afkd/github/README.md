@@ -357,7 +357,7 @@ Neither kind parks, so neither has `on_park`:
 | `title`  | `str`          | ✓              | ✓                     | its title                     |
 | `url`    | `str`          | ✓              | ✓                     | its page on GitHub            |
 | `number` | `int`          | ✓              | ✓                     | its number in the repository  |
-| `labels` | `list[str]`    | ✓              |                       | the names of its labels       |
+| `labels` | `List[str]`    | ✓              |                       | the names of its labels       |
 | `branch` | `str`          |                | ✓                     | the pull request's head branch |
 
 A config passes an item around and compares it, but never builds one. The plugin sends every
