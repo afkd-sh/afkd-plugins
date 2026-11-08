@@ -1,0 +1,16 @@
+{"afkd":"welcome","proto":1,"daemon":"0.2.551","auth":"none"}
+{"type":"meta","meta":"snapshot","services":[{"name":"fine","state":"armed","trigger_label":"Manual","trigger_detail":"manual","trigger_fields":[],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"last_activity_ms":1752,"state_ms":1752,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"faulted_since_arm":false,"runs_total":1,"run_failures_total":0,"run_time_total_ms":1,"ok_run_time_total_ms":1},{"name":"broken","state":"armed","trigger_label":"Manual","trigger_detail":"manual","trigger_fields":[],"confined":false,"busy_ms":0,"group":"","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"last_activity_ms":1702,"state_ms":1702,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"faulted_since_arm":true,"runs_total":1,"run_failures_total":1,"run_time_total_ms":0,"ok_run_time_total_ms":0},{"name":"ops.flaky","state":"armed","trigger_label":"Manual","trigger_detail":"manual","trigger_fields":[],"confined":false,"busy_ms":0,"group":"ops","icon":"🔹","description":"","queue":"","queue_priority":"","orphan":false,"stale":false,"last_activity_ms":1652,"state_ms":550,"is_poller":false,"tokens":0,"cost":0.0,"turns":0,"poisoned":false,"faulted_since_arm":false,"runs_total":1,"run_failures_total":1,"run_time_total_ms":1,"ok_run_time_total_ms":0}],"uptime_ms":2205,"lanes":[]}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":5347835904,"mem_total":32453234688,"rx_bps":647,"tx_bps":467}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":5357264896,"mem_total":32453234688,"rx_bps":29224,"tx_bps":6810}
+{"type":"event","event":"service_stopping","service":"broken"}
+{"type":"event","event":"service_paused","service":"broken","paused":true}
+{"type":"event","event":"service_paused","service":"broken","paused":false}
+{"type":"event","event":"service_armed","service":"broken"}
+{"type":"meta","meta":"host_load","cpu_pct":0,"mem_used":5358116864,"mem_total":32453234688,"rx_bps":58350,"tx_bps":17719}
+{"type":"meta","meta":"quitting"}
+{"type":"event","event":"service_stopping","service":"broken"}
+{"type":"event","event":"service_stopping","service":"fine"}
+{"type":"event","event":"service_stopping","service":"ops.flaky"}
+{"type":"event","event":"service_paused","service":"broken","paused":true}
+{"type":"event","event":"service_paused","service":"fine","paused":true}
+{"type":"event","event":"service_paused","service":"ops.flaky","paused":true}

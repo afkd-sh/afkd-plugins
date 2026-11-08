@@ -60,7 +60,7 @@ the lane can be filled and a third fire parks `queued`; a service that prints an
 adversarial line set; one that exits non-zero; one nested workflow
 (`in_parallel` → `times` → `if`); and one removed by the reload.
 
-## The thirteen captures
+## The fourteen captures
 
 | File | What was driven |
 |---|---|
@@ -77,6 +77,7 @@ adversarial line set; one that exits non-zero; one nested workflow
 | `blocks.jsonl` | A `with queue(…)` block waiting on a lane: attached while `blocker`'s block waits on `heavy` behind `holder`'s run, so the snapshot's `lanes` table lists `gpu`, a lane no service names, and counts the block's wait on `heavy`; then the release, a `meta.lanes` that frees both lanes, and `gpu` widened to 2. |
 | `block-wait.jsonl` | A `with queue(…)` block's whole wait: attached **before** either run, so the live wire carries `blocker`'s `run_started`, its `queue_wait` node and its `run_queue_waiting` while `holder`'s run holds `heavy`, then holder's `run_ok`, the block's `run_queue_entered`, its `queue` nodes on `heavy` and `gpu`, and blocker's `run_ok`. |
 | `family.jsonl` | Multi-copy services: an `instances 3` service with two of its copies run by name, so their logs and trees interleave and their trace ids collide, beside a single service in the same package; and an `instances auto` pool whose run mints a copy (`meta.spawned`), which is then stopped by name and retired (`meta.dropped`). |
+| `troubled.jsonl` | Attach after three manual runs: `broken` failed its run, `fine` passed one, and `ops.flaky` failed one and was stopped and started again, so the snapshot carries `faulted_since_arm` `true`, `false` and `false` over a failure count. Then `broken` stopped and started on the recorder's wire (`service_stopping` → `service_paused{true}` → `service_paused{false}` → `service_armed`), the re-arm that clears the mark. |
 
 `meta.host_load` rides along in all of them.
 
@@ -348,6 +349,56 @@ The session, in order:
 3. the daemon takes its `SIGINT`;
 4. `cp -r <state dir>/runs/blocker runs-blockwait/`, then
    `afkd trace runs-blockwait/blocker/<run>/trace.jsonl > blockwait-trace.txt`.
+
+### The eleventh session: a failed run before the attach
+
+`troubled.jsonl` was recorded on its own, against `afkd 0.2.551` (release, master at
+`3aabc520`, the first daemon to put `faulted_since_arm` on the snapshot): a throwaway daemon
+started with `env -i` and an isolated `HOME` under `/tmp`, so no `AFKD_HOME` / `XDG_*` reached
+it, and the same recorder, so the file opens on the daemon's `welcome`. None of the earlier
+files was re-recorded, so no existing golden moved.
+
+Its config, `daemon.afkd` and `ops/ops.afkd`, verbatim:
+
+```afkd
+import "afkd"
+import "service:manual"
+import "ops"
+
+fine :: service(manual) {
+  on_run proc(run: afkd.Run) {
+    $ true
+  }
+}
+
+broken :: service(manual) {
+  on_run proc(run: afkd.Run) {
+    $ echo "デプロイ失敗 — exit 1"; false
+  }
+}
+```
+
+```afkd
+import "afkd"
+import "service:manual"
+
+flaky :: service(manual) {
+  on_run proc(run: afkd.Run) {
+    $ echo "デプロイ失敗 — exit 1"; false
+  }
+}
+```
+
+The session, in order:
+
+1. `afkd run fine`, `afkd run broken` and `afkd run ops.flaky`, and once `afkd status` shows
+   all three idle, `afkd stop ops.flaky` and `afkd start ops.flaky`;
+2. attach — the snapshot carries `broken` with `faulted_since_arm` `true`, `fine` with `false`
+   and no failure, and `ops.flaky` with `false` over `run_failures_total` 1, the re-arm having
+   cleared its mark and kept its count;
+3. 1s later, `stop broken`, sent on the recorder's own wire, and once its
+   `service_paused{true}` arrives, `start broken`, answered by its `service_armed`;
+4. the daemon takes its `SIGINT` with the recorder still attached.
 
 ## The lane table the earlier captures predate
 

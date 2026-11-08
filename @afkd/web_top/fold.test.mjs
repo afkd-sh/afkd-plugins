@@ -535,7 +535,7 @@ test("an invented type, an invented event tag and an extra field all fold to a n
 });
 
 test("every fixture replays end to end without throwing, ring bound included", () => {
-  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail", "lane", "blocks", "block-wait"]) {
+  for (const name of ["snapshot", "fire", "trace-burst", "noise", "reload", "deep-fail", "loud-fail", "lane", "blocks", "block-wait", "troubled"]) {
     const frames = readFixture(name);
     assert.ok(frames.length > 0, `${name} is not empty`);
     assert.doesNotThrow(() => replay(frames), `${name} folds clean`);
@@ -1343,6 +1343,58 @@ test("a snapshot's waiting_on seeds a running block's wait", () => {
   assert.equal(admitted.stateEnteredAt, seeded.inFlightSince, "Busy is dated from the run's start");
 
   assert.equal(boards[eventAt(frames, "run_ok", "blocker")].services.blocker.badge, "Idle");
+});
+
+test("a snapshot seeds the troubled mark from faulted_since_arm, and an entry without the key reads clean", () => {
+  // `troubled.jsonl` attached after `broken` failed its run, `fine` passed one and `ops.flaky`
+  // failed one and was then re-armed, so the daemon's own fold wrote all three ways.
+  const snapshot = readFixture("troubled").find((f) => isMeta(f, "snapshot"));
+  const entryOf = (name) => snapshot.services.find((s) => s.name === name);
+  assert.deepEqual([entryOf("broken").faulted_since_arm, entryOf("broken").run_failures_total], [true, 1], "broken failed since it armed");
+  assert.deepEqual([entryOf("fine").faulted_since_arm, entryOf("fine").run_failures_total], [false, 0], "fine never failed");
+  assert.deepEqual([entryOf("ops.flaky").faulted_since_arm, entryOf("ops.flaky").run_failures_total], [false, 1], "ops.flaky failed, then re-armed");
+
+  const board = fold(seed(), snapshot, 1_000_000);
+  for (const entry of snapshot.services) {
+    assert.equal(board.services[entry.name].faultedSinceArm, entry.faulted_since_arm, entry.name);
+  }
+  assert.equal(board.services.broken.faultedSinceArm, true);
+  assert.equal(board.services.fine.faultedSinceArm, false);
+  // The flag is read, never inferred from the failure count.
+  assert.equal(board.services["ops.flaky"].faultedSinceArm, false);
+
+  // A hand edit: `broken`'s entry with the key taken out, as a daemon before the key sends it.
+  const keyless = copy(snapshot);
+  delete keyless.services.find((s) => s.name === "broken").faulted_since_arm;
+  assert.equal(fold(seed(), keyless, 1_000_000).services.broken.faultedSinceArm, false);
+
+  // …and a recorded one: `snapshot.jsonl`'s daemon predates the key, and even its crashed
+  // service seeds a clean latch, its trouble being the badge's.
+  const older = readFixture("snapshot").find((f) => isMeta(f, "snapshot"));
+  assert.ok(older.services.every((s) => !("faulted_since_arm" in s)), "the older snapshot carries no key");
+  assert.ok(older.services.some((s) => s.state === "crashed"), "…and a crashed service");
+  const seeded = fold(seed(), older, 1_000_000);
+  for (const entry of older.services) assert.equal(seeded.services[entry.name].faultedSinceArm, false, entry.name);
+});
+
+test("a re-arm clears a seeded fault and keeps the run count", () => {
+  // After the attach the recorder stopped and started `broken`, so the daemon's own
+  // `service_armed` closes the arm the snapshot said had failed.
+  const frames = readFixture("troubled");
+  const snapshotAt = frames.findIndex((f) => isMeta(f, "snapshot"));
+  const stopping = eventAt(frames, "service_stopping", "broken");
+  const paused = eventAt(frames, "service_paused", "broken", stopping);
+  const resumed = eventAt(frames, "service_paused", "broken", paused + 1);
+  const armed = eventAt(frames, "service_armed", "broken");
+  assert.ok(snapshotAt < stopping && stopping < paused && paused < resumed && resumed < armed, "the recording holds the stop and the start, in order");
+  assert.deepEqual([frames[paused].paused, frames[resumed].paused], [true, false]);
+  const entry = frames[snapshotAt].services.find((s) => s.name === "broken");
+
+  const { boards } = replay(frames.slice(0, armed + 1));
+  assert.equal(boards[armed - 1].services.broken.faultedSinceArm, true, "the stop and the start leave the seeded fault alone");
+  const rearmed = boards[armed].services.broken;
+  assert.equal(rearmed.faultedSinceArm, false, "the re-arm clears it");
+  assert.equal(rearmed.failures, entry.run_failures_total, "the cumulative count stays");
 });
 
 test("an ungrouped service is in no group", () => {

@@ -782,6 +782,34 @@ test("the row marks and the lane lead are one-cell text glyphs", () => {
   assert.equal(header.indexOf("Usage"), 2 + textWidth("heavy") + 3, "the `Queue` column is the lead, a space and the name");
 });
 
+test("a page attached after a failed run draws the troubled mark, and the re-arm clears it", () => {
+  // `troubled.jsonl` attached after `broken` failed its run and `ops.flaky` failed one and was
+  // re-armed, so the troubled mark comes from the daemon's snapshot alone: no live
+  // `run_failed` reaches the page before the recorder stops and starts `broken`.
+  const frames = readRecording("troubled.jsonl");
+  const firstBroken = (f) => f.type === "event" && f.service === "broken";
+  const attachedFrames = frames.slice(0, frames.findIndex(firstBroken));
+  assert.ok(!attachedFrames.some((f) => f.type === "event"), "the attached board folds no live event");
+  const version = frames.find((f) => f.afkd === "welcome").daemon;
+  const marksOf = ({ board, at }) => {
+    const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version, grouped: false, selected: 999 });
+    assertGrid(rows, 100, 30);
+    return (name) => {
+      const row = rowNamed(rows, name);
+      assert.equal(row[2].text, name, `${name}'s row opens on its mark, one space and its name`);
+      return [row[0].text, row[0].fg];
+    };
+  };
+
+  const attached = marksOf(foldCapture("troubled.jsonl", firstBroken));
+  assert.deepEqual(attached("broken"), [MARK_TEXT.troubled, "alarm"], "a run failed since broken armed");
+  assert.deepEqual(attached("fine"), [MARK_TEXT.parked, "mark"], "fine never failed");
+  assert.deepEqual(attached("ops.flaky"), [MARK_TEXT.parked, "mark"], "ops.flaky failed, then re-armed");
+
+  const live = marksOf(liveBoard("troubled.jsonl"));
+  assert.deepEqual(live("broken"), [MARK_TEXT.parked, "mark"], "the recorded re-arm clears it");
+});
+
 test("the marks and the lane lead are layout.rs's night glyphs", { skip: NO_AFKD_SRC }, () => {
   // `Mark::text`'s arms and `QUEUE_LANE_GLYPH_NIGHT`, read out of the Rust, so a respelling in
   // afkd reddens the page.

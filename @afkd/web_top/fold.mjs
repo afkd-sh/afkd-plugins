@@ -219,8 +219,10 @@ function seedService(entry, now) {
     breadcrumb: "",
     lastError: null,
     // The two per-arm latches the event fold needs (`CardModel`, `crates/tui/src/model.rs`).
+    // The fault one is the daemon's, so a page that attaches after a failed run wears the
+    // troubled mark; an older daemon sends no key, which reads clean.
     crashCounted: false,
-    faultedSinceArm: false,
+    faultedSinceArm: entry.faulted_since_arm === true,
     // The daemon's own run history and session usage, so a fresh attach reads real figures
     // rather than the zeros a client-session fold starts at. The live arms add on top.
     runs: toNumber(entry.runs_total, 0),
