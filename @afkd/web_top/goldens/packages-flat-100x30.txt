@@ -1,6 +1,6 @@
-afkd 0.2.382 · ● Running 8s · 4 up                                                     0 tok · $0.00
-CPU         ▁▁▁▁▁   0% · Mem         ▂▂▂▂▂ 6.1G/30G · Net ↓       ▄▂▂▂▂ 3.1k/s ↑       ▃▂▁▁▇  14k/s 
-                                                                                                    
+afkd 0.2.382 · ● Running 8s · 4 up · 0 down                                            0 tok · $0.00
+CPU        ▁▁▁▁▁    0% · Mem        ▂▂▂▂▂  6.1G/30G · Net ↓      ▄▂▂▂▂  3.1k/s ↑      ▃▂▁▁▇   14k/s 
+────────────────────────────────────────────────────────────────────────────────────────────────────
 Service                          State                 Trigger              Last Activity   Next Run
 🔋 claude.brownout               ● Idle                Every 1h                              59m 51s
 🧹 janitor                       ● Idle                Every 1h                              59m 51s
@@ -24,23 +24,20 @@ Service                          State                 Trigger              Last
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
+────────────────────────────────────────────────────────────────────────────────────────────────────
 s start    r restart    o output      g/G first/last  / find    Ctrl+R reload                       
 x stop     + widen      i info        v grouped                 ? help                              
 t run now  - narrow     Enter peek    b busy ○                  q quit                              
 
-── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
-nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+── fg · n text · b bright · m muted · f faint · a accent · p pre-run · c caution · x alarm · k ok · s secondary · r rule · u plugin · o mark · e free
+nnnnnnnnnnnnnfnknnnnnnnnnnnnfnkkkknfnffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnccccc
+mmmmnnnnnnnuuuuunnnnnnnnnmmmmnnnnnnnpppppnnnnnnnnnnnnnmmmmmnnnnnnkkkkknnnnnnnnmmnnnnnnkkkkknnnnnnnnn
+rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmnnnmmmmmmmm
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -57,15 +54,18 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bnlllllllllbnlllllllllllbnllllllllllllbbbnllllllllllllbnllllllllbbbbbbnllllllnnnnnnnnnnnnnnnnnnnnnnn
-bnlllllllllbnlllllllllllbnllllllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bnlllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
+bnmmmmmmmmmbnmmmmmmmmmmmbnmmmmmmmmmmmmbbbnmmmmmmmmmmmmbnmmmmmmmmbbbbbbnmmmmmmnnnnnnnnnnnnnnnnnnnnnnn
+bnmmmmmmmmmbnmmmmmmmmmmmbnmmmmmmmmmmmmbnmmmmmmmmmmmmmmmmmmmmmmmmbnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bnmmmmmmmmmbnmmmmmmmmmmmbbbbbnmmmmmmmmbnmmmmmmmmmmmmmmmmmmmmmmmmbnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · s selection band · D band, dim · B band, bold
 ....................................................................................................
-dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
+....hhhhhhhhhhhhh.....ddd....hhhhhhhhhhhhh.........ddd.....hhhhhhhhhhhh.........hhhhhhhhhhhh........
 ....................................................................................................
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb
+....................................................................................................
 ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss
 ....................................................................................................
 .................................bbbbbbbbb..........................................................

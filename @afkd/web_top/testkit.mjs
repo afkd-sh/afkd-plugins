@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { fold, seed } from "./fold.mjs";
-import { ROLES, textWidth } from "./layout.mjs";
+import { BANDS, ROLES, textWidth } from "./layout.mjs";
 
 /// `node <suite>.mjs --write-goldens` rewrites them; `node --test` never does.
 const WRITING = process.argv.includes("--write-goldens");
@@ -45,6 +45,7 @@ export const AFKD_SOURCES = Object.freeze([
   "crates/tui/src/family.rs",
   "crates/tui/src/help.rs",
   "crates/tui/src/keys.rs",
+  "crates/tui/src/layout.rs",
   "crates/tui/src/model.rs",
   "crates/tui/src/notice.rs",
   "crates/tui/src/palette.rs",
@@ -170,35 +171,41 @@ export function screenText(rows) {
 /// lines up under the text plane in any terminal, a wide glyph's two columns over its two
 /// letters.
 const ROLE_LETTER = {
-  ink: "n",
+  text: "n",
   bright: "b",
-  legend: "l",
-  recede: "r",
+  muted: "m",
+  faint: "f",
   accent: "a",
-  "accent-dim": "e",
+  "pre-run": "p",
   caution: "c",
   alarm: "x",
   ok: "k",
-  idle: "i",
-  muted: "m",
+  secondary: "s",
+  rule: "r",
+  plugin: "u",
+  mark: "o",
+  free: "e",
 };
 /// Every foreground role the layout can emit has a letter, so a new tone cannot slip into a
 /// golden as a `?` nobody reads — the same equality the stylesheet's scan holds, one file
-/// over. `selection` is the one background role and is spelled by the weight plane instead.
-/// It is checked here rather than inside a test because `--write-goldens` writes before any
-/// test the runner would have ordered after it, and a `?` must never reach a golden.
-const FG_ROLES = ROLES.filter((r) => r !== "selection");
-assert.deepEqual(Object.keys(ROLE_LETTER).sort(), [...FG_ROLES].sort(), "every foreground role has a plane letter");
-assert.equal(new Set(Object.values(ROLE_LETTER)).size, FG_ROLES.length, "…and no two roles share one");
+/// over. The backgrounds ([`BANDS`]) are spelled by the weight plane instead. It is checked
+/// here rather than inside a test because `--write-goldens` writes before any test the runner
+/// would have ordered after it, and a `?` must never reach a golden.
+assert.deepEqual(Object.keys(ROLE_LETTER).sort(), [...ROLES].sort(), "every foreground role has a plane letter");
+assert.equal(new Set(Object.values(ROLE_LETTER)).size, ROLES.length, "…and no two roles share one");
 
-const ROLE_RULE = "── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted";
-const WEIGHT_RULE = "── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold";
+const ROLE_RULE =
+  "── fg · n text · b bright · m muted · f faint · a accent · p pre-run · c caution · x alarm · k ok · s secondary · r rule · u plugin · o mark · e free";
+const WEIGHT_RULE =
+  "── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · s selection band · D band, dim · B band, bold";
 
 /// The weight-and-band letter for one cell. `dim` and `bold` are the terminal's two weight
-/// attributes and never co-occur here (`assertGrid` holds them to that), and the selection
-/// bar is the only background the page paints — so one letter spells all three: the weight
-/// in lower case off the band, in upper case on it.
+/// attributes and never co-occur here (`assertGrid` holds them to that), and the page paints
+/// two backgrounds — so one letter spells all of it: the weight in lower case off the
+/// selection bar, in upper case on it, and the host-load chip as a letter of its own. A chip
+/// cell is never bold or italic (`assertGrid` holds that too), and dim only behind a popup.
 function weightLetter(c) {
+  if (c.bg === "chip") return c.dim ? "H" : "h";
   const band = c.bg === "selection";
   // Italic only ever rides dim — the activity peek's `empty` placeholder — and never a band.
   if (c.italic) return "i";
@@ -256,7 +263,11 @@ export function assertGrid(rows, cols, height) {
       // background would go into a golden as a `?`, and a cell both dim and bold would lose
       // its weight silently.
       assert.ok(ROLE_LETTER[cell.fg] !== undefined, `row ${i}: ${JSON.stringify(cell.text)} wears the unknown role ${cell.fg}`);
-      assert.ok(cell.bg === null || cell.bg === "selection", `row ${i}: the only band is the selection bar, not ${cell.bg}`);
+      assert.ok(cell.bg === null || BANDS.includes(cell.bg), `row ${i}: ${cell.bg} is not a band the page paints`);
+      assert.ok(
+        cell.bg !== "chip" || !(cell.bold || cell.italic),
+        `row ${i}: ${JSON.stringify(cell.text)} on a chip carries a weight the plane cannot spell`,
+      );
       assert.ok(!(cell.dim && cell.bold), `row ${i}: ${JSON.stringify(cell.text)} is both dim and bold`);
       width += cell.width;
     }

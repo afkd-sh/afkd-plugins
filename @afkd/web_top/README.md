@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.12.0 (companion)
+Installed @afkd/web_top 0.13.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -197,10 +197,10 @@ Three properties, and the reason for each:
   trusting the browser's font metrics, and "nothing wraps into a broken row" is a property
   rather than a hope.
 - **Roles, never hexes.** A cell names a palette role; `dashboard.css` is the only file that
-  turns one into a colour. Those tones are `crates/tui/src/palette.rs`'s own truecolor arm,
-  copied — not imported, the site does not ship to the plugin — from
-  `web/src/styles/dashboard.css`'s ladder, and the suite reads the nine straight out of the
-  Rust and holds the stylesheet to them.
+  turns one into a colour. Those tones are `crates/tui/src/palette.rs`'s 24-bit arm, the night
+  look `afkd top` paints at 24-bit, plus the dark ground it assumes, and the
+  suite reads them straight out of the Rust and holds the stylesheet to exactly those, role by
+  role.
 - **DOM-free.** It names neither `document` nor `window`; `paint.mjs` does the DOM work and
   makes no layout decision. That split is what lets the whole dashboard be rendered to text
   and diffed against the committed golden screens under `goldens/`.
@@ -227,7 +227,7 @@ Its suites are `layout.test.mjs` — fixture-driven the same way and gated by th
 test` bridge — plus `keymap.test.mjs`, `session.test.mjs` and `input.test.mjs` beside it. A golden holds the screen as **three planes** — what it says, the palette role
 each cell says it in, and its weight-or-band, one letter per cell so the planes read under the
 text in any terminal. A cell's look is half its meaning here (the gated footer hints, the
-trend lanes' recession, the bold column header, the selection bar), and a text-only golden
+load chips, the muted column header, the selection bar), and a text-only golden
 would pass over a page painted flat. They are regenerated deliberately — `node
 @afkd/web_top/layout.test.mjs --write-goldens` — never by the test run.
 `paint.test.mjs` and `input.test.mjs` cover the two DOM-touching modules against a **stub**
@@ -501,8 +501,8 @@ say so, which is how the release workflow runs this directory's suites.
   *closed*. The two agree on every group the board booted with, which is all of them until a
   reload adds a new one: the terminal shows that one folded, and this page open.
 - **A popup dims the backdrop and nothing more.** ratatui unions `DIM` into a cell's modifier,
-  which over the bold column header would leave it bold *and* dim; a cell here carries one
-  weight, so a receded cell takes `dim` alone.
+  which over a bold badge would leave it bold *and* dim; a cell here carries one weight, so a
+  receded cell takes `dim` alone.
 - **No TCP, no password, on the daemon side.** It attaches to the local unix socket, where
   `auth` is `none`. The `challenge`/password leg of the handshake is not implemented.
 - **No reconnect.** A stream that ends is ended. The page says which way it went and waits

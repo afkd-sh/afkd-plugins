@@ -75,7 +75,7 @@ function board() {
 
 test("every run reaches the DOM carrying the cells it was measured at", () => {
   // The bug this guards: a browser does not lay a monospace grid out the way a terminal does.
-  // `ui-monospace` has no 🔹 and, on many hosts, no CJK, so those fall back to a face at some
+  // `ui-monospace` has no 📦 and, on many hosts, no CJK, so those fall back to a face at some
   // other advance — and a row painted as plain text drifts out of column at the first one.
   // The fix is that each run's box is sized from the count the layout measured, so the count
   // has to actually arrive: `--cells` on every span, summing per row to the grid's width.
@@ -179,7 +179,7 @@ test("a cell's whole look reaches its span, and a run splits on any of it", () =
   );
   // The other direction: one look across two cells really is one span, which is what keeps a
   // hundred-cell row at a handful of nodes.
-  paint(root, [[cell("ab", { fg: "ink" }), cell("cd", { fg: "ink" })]]);
+  paint(root, [[cell("ab", { fg: "text" }), cell("cd", { fg: "text" })]]);
   assert.equal(root.children[0].children.length, 1, "two cells of one look coalesce");
   assert.equal(root.children[0].children[0].textContent, "abcd");
 });
@@ -191,7 +191,7 @@ test("a glyph outside ASCII is boxed alone, so a wider face cannot clip the text
   // owns a box of its measured width, so its overhang is the only thing that can clip, and
   // the ASCII after it still coalesces into one run starting on its own column.
   const root = element("div");
-  paint(root, [[cell("▷ Queued 1h 18m", { fg: "info" }), cell("🔹 archivist", { fg: "ink" }), cell("├─ ", { fg: "recede" })]]);
+  paint(root, [[cell("▷ Queued 1h 18m", { fg: "pre-run" }), cell("🔹 archivist", { fg: "text" }), cell("├─ ", { fg: "faint" })]]);
   const spans = root.children[0].children;
   assert.deepEqual(
     spans.map((s) => [s.textContent, s.style.props["--cells"]]),
@@ -234,10 +234,10 @@ test("a glyph from a fallback face is centred on its cells, and shrunk only as f
     return drawn[text];
   };
   const row = [
-    cell("▷ Queued", { fg: "accent-dim" }),
-    cell("▯", { fg: "recede" }),
-    cell("● Idle", { fg: "idle", bold: true }),
-    cell("🔹├　", { fg: "ink" }),
+    cell("▷ Queued", { fg: "pre-run" }),
+    cell("▯", { fg: "faint" }),
+    cell("● Idle", { fg: "secondary", bold: true }),
+    cell("🔹├　", { fg: "text" }),
   ];
   paint(root, [row], measure);
   const spans = root.children[0].children;
@@ -258,17 +258,17 @@ test("a glyph from a fallback face is centred on its cells, and shrunk only as f
   assert.deepEqual(
     asked,
     [
-      ["▷", "fg-accent-dim glyph"],
-      ["▯", "fg-recede glyph"],
-      ["●", "fg-idle glyph bold"],
-      ["🔹", "fg-ink glyph"],
-      ["├", "fg-ink glyph"],
-      ["　", "fg-ink glyph"],
+      ["▷", "fg-pre-run glyph"],
+      ["▯", "fg-faint glyph"],
+      ["●", "fg-secondary glyph bold"],
+      ["🔹", "fg-text glyph"],
+      ["├", "fg-text glyph"],
+      ["　", "fg-text glyph"],
     ],
     "only a glyph is measured, and in the look it is painted in, since the weight moves the ink",
   );
   // A span the next frame hands an ASCII run gives its old placement back rather than keeping it.
-  paint(root, [[cell("Queued ok", { fg: "accent-dim" })]], measure);
+  paint(root, [[cell("Queued ok", { fg: "pre-run" })]], measure);
   const reused = root.children[0].children[0].style.props;
   assert.deepEqual([reused["--fit"], reused["--shift"]], ["1", "0"], "a reused span drops the glyph's placement");
   // With nothing measured — the stub DOM, a probe not laid out yet — everything is drawn as is.

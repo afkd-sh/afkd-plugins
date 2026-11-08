@@ -104,25 +104,25 @@ struct Tree<'a> {
 /// backfill legs read its fire's corpus off `<state>/runs`, where the default `keep_runs on_fail`
 /// leaves nothing of a clean run.
 const SERVICES: Tree = Tree {
-    main: r#"import "core"; import "service:manual"
+    main: r#"import "afkd"; import "service:manual"
 
 import "ops"
 
 never :: service(manual) {
-  on_run proc(run: core.Run) {
+  on_run proc(run: afkd.Run) {
     $ touch never.txt
   }
 }
 "#,
     packages: &[(
         "ops",
-        r#"import "core"; import "service:manual"
+        r#"import "afkd"; import "service:manual"
 
 kanshi :: service(manual) {
   description "ウェブ — the wide one"
   keep_runs   always
 
-  on_run proc(run: core.Run) {
+  on_run proc(run: afkd.Run) {
     $ touch fired.txt
     $ echo ライン one
   }
@@ -131,9 +131,10 @@ kanshi :: service(manual) {
     )],
 };
 
-/// `layout::WARN_ICON` — the icon a service wears once a fire of its since the last arm has
-/// failed, which is how a leg waits for a surface to have folded that failure.
-const WARN_ICON: &str = "🔸";
+/// `palette.rs`'s `Hue::Alarm` at 24-bit — the hue a service's mark turns once a fire of its
+/// since the last arm has failed, which is how a leg waits for the terminal to have folded that
+/// failure.
+const ALARM: vt100::Color = vt100::Color::Rgb(0xf7, 0x76, 0x8e);
 
 /// The fired service's fully-qualified name, as the wire carries it.
 const BUSY: &str = "ops.kanshi";
@@ -148,12 +149,12 @@ const ON_FAIL_SERVICES: Tree = Tree {
     main: SERVICES.main,
     packages: &[(
         "ops",
-        r#"import "core"; import "service:manual"
+        r#"import "afkd"; import "service:manual"
 
 kanshi :: service(manual) {
   description "ウェブ — the wide one"
 
-  on_run proc(run: core.Run) {
+  on_run proc(run: afkd.Run) {
     $ echo ライン one
     $ until [ -e release ]; do sleep 0.05; done
     $ test ! -e broken
@@ -1069,9 +1070,9 @@ fn the_verbs_accept_the_shipped_manifest() {
 /// A v2 `daemon.afkd` with two services and **no line about the companion**: under a v2
 /// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
 const V2_MAIN: &str = "\
-     import \"core\"\nimport \"service:interval\"\nimport \"service:manual\"\n\n\
-     tick :: service(interval) {\n  every 1h\n\n  on_run proc(run: core.Run) {\n    $ true\n  }\n}\n\n\
-     hello :: service(manual) {\n  on_run proc(run: core.Run) {\n    $ echo ライン one\n  }\n}\n";
+     import \"afkd\"\nimport \"service:interval\"\nimport \"service:manual\"\n\n\
+     tick :: service(interval) {\n  every 1h\n\n  on_run proc(run: afkd.Run) {\n    $ true\n  }\n}\n\n\
+     hello :: service(manual) {\n  on_run proc(run: afkd.Run) {\n    $ echo ライン one\n  }\n}\n";
 
 /// A home whose config directory holds [`V2_MAIN`] and nothing else.
 fn v2_home() -> TempDir {
@@ -3161,11 +3162,18 @@ fn the_plugins_own_suites_run_under_node() {
 const DRIFT_COLS: u16 = 100;
 const DRIFT_ROWS: u16 = 30;
 
+/// The terminal every `afkd top` leg runs: `COLORTERM=truecolor`, so afkd top paints the 24-bit
+/// night look web_top pictures (`palette::detect`), whatever the launching shell advertises;
+/// and `NO_COLOR` empty, which afkd reads as unset, so an ambient one cannot flatten it.
+const TOP_TERM_ENV: [(&str, &str); 2] = [("COLORTERM", "truecolor"), ("NO_COLOR", "")];
+
 /// The board the drift leg diffs, chosen for what the comparison has to carry rather than
 /// for what a daemon does:
 ///
 /// - `janitor` — a custom `icon` and a cadence, so the `Service` cell opens with a glyph
-///   each surface has to measure for itself and the `Trigger`/`Next Run` cells are full;
+///   each surface has to measure for itself and the `Trigger`/`Next Run` cells are full. The
+///   icon is a VS16 sequence on a base with an emoji presentation sequence ([`VS16_ICON`]), two
+///   cells by the selector alone, so a surface that ignores it pads the row apart;
 /// - `ops.kanshi` — packaged, with a wide-glyph description, so the grouped arm spells its
 ///   leaf under the `ops` header and the flat arm its whole name — each surface strips the
 ///   package for itself, and a name either side mis-spells pushes its own row's later cells
@@ -3194,35 +3202,35 @@ const DRIFT_SERVICES: Tree = Tree {
 };
 
 /// [`DRIFT_SERVICES`]' `daemon.afkd`: the two services in `main`.
-const DRIFT_MAIN: &str = r#"import "core"; import "service:interval"; import "service:manual"
+const DRIFT_MAIN: &str = r#"import "afkd"; import "service:interval"; import "service:manual"
 
 import "ops"
 
 janitor :: service(interval) {
-  icon        "🧹"
+  icon        "❄️"
   description "sweeps the floor"
   every       1h
 
-  on_run proc(run: core.Run) {
+  on_run proc(run: afkd.Run) {
     $ true
   }
 }
 
 never :: service(manual) {
-  on_run proc(run: core.Run) {
+  on_run proc(run: afkd.Run) {
     $ true
   }
 }
 "#;
 
 /// [`DRIFT_SERVICES`]' `ops` package.
-const DRIFT_OPS: &str = r#"import "core"; import "service:interval"
+const DRIFT_OPS: &str = r#"import "afkd"; import "service:interval"
 
 kanshi :: service(interval) {
   description "ウェブ — the wide one"
   every       1h
 
-  on_run proc(run: core.Run) {
+  on_run proc(run: afkd.Run) {
     outer()
     $ seq 1 6 && false
   }
@@ -3240,7 +3248,7 @@ backup :: service(interval) {
   icon  "★️"
   every 1h
 
-  on_run proc(run: core.Run) {
+  on_run proc(run: afkd.Run) {
     $ true
   }
 }
@@ -3261,7 +3269,7 @@ const FOOTER_HINT_FLOOR: usize = 12;
 /// One reconstructed screen as **columns**: `grid[row][col]` is that cell's contents, and a
 /// wide glyph's covered cell is the empty string beside it.
 ///
-/// Columns rather than characters because a char-index slice cannot survive `🧹` or `★️`:
+/// Columns rather than characters because a char-index slice cannot survive `❄️` or `★️`:
 /// the terminal's grid and the plugin's own `textWidth` both put a wide glyph in one cell
 /// and leave the next empty, and this is the one shape in which the two are comparable.
 struct Screen {
@@ -3291,15 +3299,31 @@ impl Screen {
         self.column_header_row().map(|at| segments(&self.grid[at]))
     }
 
-    /// The service rows: everything between the column header and the first blank row under
-    /// it. A blank row is the list's own end on both surfaces — the terminal pads the body
-    /// out to the footer, and so does `layout()`.
+    /// Whether row `at` is a `─` rule: it has ink, and all of it is `─`. The night look draws
+    /// one under the host-load strip and one above the footer, where a 16-colour terminal
+    /// leaves the first row blank and draws nothing, so the readers below stop at a rule as
+    /// they stop at a blank row.
+    fn is_rule(&self, at: usize) -> bool {
+        let text = self.row_text(at);
+        let ink = text.trim();
+        !ink.is_empty() && ink.chars().all(|c| c == '─')
+    }
+
+    /// Whether row `at` ends a run of rows: a blank row or a [rule](Self::is_rule).
+    fn ends_run(&self, at: usize) -> bool {
+        self.row_text(at).trim().is_empty() || self.is_rule(at)
+    }
+
+    /// The service rows: everything between the column header and the first blank row or
+    /// rule under it. A blank row is the list's own end on both surfaces — the terminal pads
+    /// the body out to the footer, and so does `layout()` — and a body that fills to the
+    /// footer ends on the rule above it.
     fn service_rows(&self) -> Vec<&[String]> {
         let Some(header) = self.column_header_row() else {
             return Vec::new();
         };
         (header + 1..self.grid.len())
-            .take_while(|&at| !self.row_text(at).trim().is_empty())
+            .take_while(|&at| !self.ends_run(at))
             .map(|at| self.grid[at].as_slice())
             .collect()
     }
@@ -3318,14 +3342,15 @@ impl Screen {
         hints
     }
 
-    /// The first row of the footer: the start of the maximal trailing run of non-blank rows.
+    /// The first row of the footer: the start of the maximal trailing run of non-blank rows,
+    /// which stops at the rule above the footer where the screen draws one.
     /// Factored out of [`footer_hints`](Self::footer_hints) rather than open-coded twice, so
     /// the run view's body reader and the hint reader cannot disagree about where the body
     /// stops — a pane that overflowed its viewport would otherwise be swallowed by one and
     /// kept by the other.
     fn footer_start(&self) -> usize {
         let mut at = self.grid.len();
-        while at > 0 && !self.row_text(at - 1).trim().is_empty() {
+        while at > 0 && !self.ends_run(at - 1) {
             at -= 1;
         }
         at
@@ -3705,10 +3730,18 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
     }
     if !top_rows
         .iter()
-        .any(|row| cell_text(row, span_of(&spans, "Service")).contains(STOPPED_ICON))
+        .any(|row| cell_text(row, span_of(&spans, "Service")).contains(VS16_ICON))
     {
         return Err(format!(
-            "no {STOPPED_ICON} switched-off icon was on screen, so a VS16 glyph's padding was never compared{both}"
+            "no {VS16_ICON} icon was on screen, so a VS16 glyph's padding was never compared{both}"
+        ));
+    }
+    if !top_rows
+        .iter()
+        .any(|row| cell_text(row, span_of(&spans, "Service")).contains(STOPPED_MARK))
+    {
+        return Err(format!(
+            "no {STOPPED_MARK} stopped mark was on screen, so a switched-off service's row was never compared{both}"
         ));
     }
     if !top_rows
@@ -3930,15 +3963,27 @@ fn board_settled(screen: &Screen, arm: Arm) -> bool {
         && !screen.row_text(1).trim().is_empty()
 }
 
-/// Poll the terminal until `ready` holds for its screen and hand that screen back, or give
-/// up at [`BUDGET`] with the screen printed and `what` it was waiting for named.
+/// The terminal's screen, read row by row, and whether it is **steady**: the same grid as
+/// `previous`, the read before it, which this read then replaces. [`CapturedTui::row_grid`] locks the parser one row at a
+/// time, so a single read can straddle a repaint and hold rows of two frames; two reads that
+/// agree hold one. A 24-bit frame spends several times the bytes of a 16-colour one, which
+/// widens that window.
+fn read_screen(tui: &CapturedTui, previous: &mut Option<Vec<Vec<String>>>) -> (Screen, bool) {
+    let grid: Vec<Vec<String>> = (0..DRIFT_ROWS).map(|row| tui.row_grid(row)).collect();
+    let steady = previous.as_ref() == Some(&grid);
+    *previous = Some(grid.clone());
+    (Screen { grid }, steady)
+}
+
+/// Poll the terminal until `ready` holds for a steady screen ([`read_screen`]) and hand that
+/// screen back, or give up at [`BUDGET`] with the screen printed and `what` it was waiting for
+/// named.
 fn settled(tui: &CapturedTui, what: &str, ready: impl Fn(&Screen) -> bool) -> Screen {
     let deadline = Instant::now() + BUDGET;
+    let mut previous = None;
     loop {
-        let screen = Screen {
-            grid: (0..DRIFT_ROWS).map(|row| tui.row_grid(row)).collect(),
-        };
-        if ready(&screen) {
+        let (screen, steady) = read_screen(tui, &mut previous);
+        if steady && ready(&screen) {
             return screen;
         }
         assert!(
@@ -4025,9 +4070,18 @@ fn drive_plugin(
     Screen { grid }
 }
 
-/// `layout::STOPPED_ICON`, the switched-off service's icon — mirrored because the constant is
-/// `pub(crate)`, and held to the source by its membership in [`VARIATION_GLYPHS`].
+/// `layout::STOPPED_ICON`, the switched-off service's icon below 24-bit — mirrored because the
+/// constant is `pub(crate)`, and held to the source by its membership in [`VARIATION_GLYPHS`].
 const STOPPED_ICON: &str = "\u{25AA}\u{FE0F}";
+
+/// `layout::Mark::text`'s stopped mark, the one-cell `▫` a switched-off service opens on at
+/// 24-bit, the depth every leg's terminal runs at ([`TOP_TERM_ENV`]).
+const STOPPED_MARK: &str = "\u{25AB}";
+
+/// `janitor`'s `icon` in [`DRIFT_SERVICES`]: a VS16 sequence on a base that **has** an emoji
+/// presentation sequence, so `unicode-width` gives it two cells for the selector alone. Held to
+/// the fixture by [`drift`]'s floor on it.
+const VS16_ICON: &str = "\u{2744}\u{FE0F}";
 
 /// `ops.backup`'s `icon` in [`DRIFT_SERVICES`]: an operator icon on a base with **no** emoji
 /// presentation sequence, so `unicode-width` ignores the selector and it measures one cell
@@ -4051,7 +4105,7 @@ const VARIATION_GLYPHS: [&str; 15] = [
     "\u{270E}\u{FE0E}",
     "\u{2713}\u{FE0E}",
     "\u{2717}\u{FE0E}",
-    "\u{2744}\u{FE0F}",
+    VS16_ICON,
     "\u{1F578}\u{FE0F}",
 ];
 
@@ -4479,7 +4533,7 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         "the stop never settled on the stream; it carried {frames:?}"
     );
 
-    let tui = spawn_captured_sized(dir.path(), &["top"], &[], DRIFT_COLS, DRIFT_ROWS);
+    let tui = spawn_captured_sized(dir.path(), &["top"], &TOP_TERM_ENV, DRIFT_COLS, DRIFT_ROWS);
     // `afkd top` boots **flat**, and so does the plugin: that arm is caught first, verified
     // rather than assumed, then `v` brings the terminal onto the grouped tree — verified too,
     // because the daemon holds the view state across attaches and a blind press would be a
@@ -4581,9 +4635,9 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         "the failure names the column whose edge moved: {fault}"
     );
 
-    // The third arm: `▪️` measured one cell narrower in a copy has to redden the leg — B6D5ahX2
+    // The third arm: `❄️` measured one cell narrower in a copy has to redden the leg — B6D5ahX2
     // in reverse. The icon's covered column is the `Service` cell's own padding, which a
-    // collapsed comparison let through (both cells read `▪️ never`).
+    // collapsed comparison let through (both cells read `❄️ janitor`).
     const VS16_RULE: &str = "if (startsEmojiPresentation(cluster, base)) return 2;";
     assert_eq!(
         before.matches(VS16_RULE).count(),
@@ -4936,18 +4990,18 @@ fn run_drift(
     Ok(())
 }
 
-/// Poll the terminal until it is on `pane`'s run view with something to compare — the pane's
-/// own title, a body under it, a header row with ink on it and the whole footer — and hand
-/// that screen back. [`settled_terminal`]'s twin: read through the very readers [`run_drift`]
+/// Poll the terminal until a steady screen ([`read_screen`]) is on `pane`'s run view with
+/// something to compare — the pane's own title, a body under it, a header row with ink on it
+/// and the whole footer — and hand that screen back. [`settled_terminal`]'s twin: read through the very readers [`run_drift`]
 /// compares with, so a half-painted frame fails **here**, with the terminal's own screen to
 /// look at, rather than downstream as a row the plugin is missing.
 fn settled_run(tui: &CapturedTui, pane: RunPane) -> Screen {
     let deadline = Instant::now() + BUDGET;
+    let mut previous = None;
     loop {
-        let screen = Screen {
-            grid: (0..DRIFT_ROWS).map(|row| tui.row_grid(row)).collect(),
-        };
-        if screen.pane_title() == pane.title()
+        let (screen, steady) = read_screen(tui, &mut previous);
+        if steady
+            && screen.pane_title() == pane.title()
             && !screen.pane_body().is_empty()
             && screen.first_ink(RUN_HEADER_ROW).is_some()
             && screen.footer_hints().len() >= RUN_FOOTER_HINT_FLOOR
@@ -5036,7 +5090,7 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     // read the same live frames, on the flat board both boot on — and the attach is waited
     // for as a painted board, because a fire posted before the terminal attached would reach
     // it only as a snapshot, with no failure in it.
-    let tui = spawn_captured_sized(dir.path(), &["top"], &[], DRIFT_COLS, DRIFT_ROWS);
+    let tui = spawn_captured_sized(dir.path(), &["top"], &TOP_TERM_ENV, DRIFT_COLS, DRIFT_ROWS);
     tui.send(b"g");
     settled(&tui, "the attached board", |screen| {
         board_settled(screen, Arm::Flat)
@@ -5053,18 +5107,22 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
         "the fire never failed on the stream; it carried {frames:?}"
     );
     // The terminal is its own client, so its board folds the failure on its own clock: waited
-    // for as the fired row's warning icon, or the capture below could beat it and compare a
-    // board that has not failed yet against the plugin's that has.
+    // for as the fired row's mark turning the alarm hue, or the capture below could beat it and
+    // compare a board that has not failed yet against the plugin's that has.
     //
     // …and past the fired row's first countdown second: a capture in the very second the fire
     // ended reads a whole `1h` on one clock and `59m 59s` on the other, two shapes of one
     // instant that no normalisation can call the same.
     let terminal = settled(&tui, "the failed fire on the board", |screen| {
         board_settled(screen, Arm::Flat)
-            && screen.render().contains(WARN_ICON)
-            && (0..usize::from(DRIFT_ROWS)).any(|at| {
-                let row = screen.row_text(at);
-                row.contains(BUSY) && row.contains("59m")
+            && (0..DRIFT_ROWS).any(|at| {
+                let row = screen.row_text(usize::from(at));
+                row.contains(BUSY)
+                    && row.contains("59m")
+                    && screen.grid[usize::from(at)]
+                        .iter()
+                        .position(|cell| cell == "◇" || cell == "◆")
+                        .is_some_and(|col| tui.fg(at, col) == ALARM)
             })
     });
     // The fire's own trailing frames, plus the daemon's once-a-second host reading: the
@@ -5331,7 +5389,7 @@ const INFO_SECTIONS: usize = 5;
 /// lane, so both surfaces draw a `Queues` section and the info view a `Queue` row.
 fn ledger_ops() -> String {
     const OPENER: &str = "backup :: service(interval) {\n";
-    const IMPORTS: &str = "import \"core\"; import \"service:interval\"\n\n";
+    const IMPORTS: &str = "import \"afkd\"; import \"service:interval\"\n\n";
     // A fixture edit that renamed the service would otherwise drop the lane in silence, and
     // the `Queues` section would then go uncompared for a reason neither surface is at.
     assert_eq!(
@@ -5362,13 +5420,14 @@ impl Screen {
         })
     }
 
-    /// The lane rows: everything between the `Queues` header and the first blank row under it.
+    /// The lane rows: everything between the `Queues` header and the first blank row or rule
+    /// under it.
     fn queue_rows(&self) -> Vec<&[String]> {
         let Some(header) = self.queue_header_row() else {
             return Vec::new();
         };
         (header + 1..self.grid.len())
-            .take_while(|&at| !self.row_text(at).trim().is_empty())
+            .take_while(|&at| !self.ends_run(at))
             .map(|at| self.grid[at].as_slice())
             .collect()
     }
@@ -5916,7 +5975,7 @@ fn web_tops_divergences_from_afkd_top_are_exactly_the_ledgers() {
     // `afkd top` boots **flat** on a fresh home, which is the one screen of the three only it
     // can paint — so it is caught first, before any `v`. A daemon that ever booted grouped
     // fails this wait with the grouped screen printed rather than comparing the wrong arm.
-    let tui = spawn_captured_sized(dir.path(), &["top"], &[], DRIFT_COLS, DRIFT_ROWS);
+    let tui = spawn_captured_sized(dir.path(), &["top"], &TOP_TERM_ENV, DRIFT_COLS, DRIFT_ROWS);
     let flat = settled(&tui, "the flat arm", |screen| {
         screen.column_header().is_some()
             && screen.service_rows().len() >= FLAT_ROW_FLOOR
@@ -6084,7 +6143,7 @@ fn a_lane_row_l_moves_the_lane_on_afkd_top_and_web_top_alike() {
     );
 
     // `afkd top` boots flat, so `G` lands both surfaces on the last selectable row: the lane.
-    let tui = spawn_captured_sized(dir.path(), &["top"], &[], DRIFT_COLS, DRIFT_ROWS);
+    let tui = spawn_captured_sized(dir.path(), &["top"], &TOP_TERM_ENV, DRIFT_COLS, DRIFT_ROWS);
     let before = settled(&tui, "a board with the lane at its declared 2", |screen| {
         screen.lane_capacity(LANE_NAME).as_deref() == Some("2")
             && screen.footer_hints().len() >= FOOTER_HINT_FLOOR
@@ -6210,7 +6269,11 @@ fn a_refused_command_flashes_the_daemons_error_alike_on_afkd_top_and_web_top() {
     let tui = spawn_captured_sized(
         dir.path(),
         &["top"],
-        &[("XDG_STATE_HOME", state_home)],
+        &[
+            TOP_TERM_ENV[0],
+            TOP_TERM_ENV[1],
+            ("XDG_STATE_HOME", state_home),
+        ],
         DRIFT_COLS,
         DRIFT_ROWS,
     );

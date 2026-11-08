@@ -10,7 +10,7 @@
 // That last part is not a flourish. A browser does not lay a monospace grid out the way a
 // terminal does: the emoji and CJK a board is full of fall back to whatever face has them, at
 // whatever advance that face uses, and a row painted as plain text drifts out of column at the
-// first 🔹. So each run is given a box `<cells>` probed cells wide and clips — the layout
+// first 📦. So each run is given a box `<cells>` probed cells wide and clips — the layout
 // already decided that a cluster is two cells, and the box is sized to *that* rather than to
 // what the font happened to do. Driving the real page is what turned that from a design note
 // into a bug: at 1200×700 the `State` column landed on eight different pixel columns, one per

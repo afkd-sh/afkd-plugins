@@ -22,7 +22,7 @@ import test from "node:test";
 
 import { fold, queues, rowCards, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, REFUSED_WHILE_QUITTING, SCOPES, all, glyphs, idOf, primary } from "./keymap.mjs";
-import { COL_WIDTH, COPIES_MARK, KIND_GLYPH, TREND_LADDER, bodyHeight as bodyHeightOf, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { BANDS, COL_WIDTH, COPIES_MARK, KIND_GLYPH, MARK_TEXT, QUEUE_LANE_GLYPH, cell, TREND_LADDER, bodyHeight as bodyHeightOf, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, ROLES, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
 import { URGENCY, copiesOf, rowRecord } from "./fold.mjs";
 import { newSession as bootSession, press } from "./session.mjs";
 import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, foldFrames, liveBoard, nodeKindWireName, paneBody, readCapture, readRecording, screenText } from "./testkit.mjs";
@@ -96,11 +96,11 @@ test("a peek opens the run's active branch beneath its service, the rail on the 
   assertGrid(rows, 100, 30);
   assertGolden("peek-100x30.txt", rows);
   const lines = screenText(rows).split("\n");
-  const at_ = lines.findIndex((l) => l.startsWith("🔹 deep "));
+  const at_ = lines.findIndex((l) => l.startsWith("◇ deep "));
   const peek = [];
-  for (let i = at_ + 1; lines[i].startsWith(" ▏ "); i += 1) peek.push(lines[i]);
+  for (let i = at_ + 1; lines[i].startsWith("▏ "); i += 1) peek.push(lines[i]);
   assert.ok(peek.length > 0 && peek.length <= 5 + 3, "the branch is its path plus at most five leaves");
-  assert.match(peek[0], /^ ▏ 🚀 /u, "the path opens on the workflow root, under the name");
+  assert.match(peek[0], /^▏ 🚀 /u, "the path opens on the workflow root, under the name");
   peek.forEach((line, i) => {
     if (i > 0) assert.ok(line.indexOf("︎") > 0, "every line after the root is nested");
     assert.match(line, /[✓✗⋯⊘↻]︎$/u, "the ST glyph ends the line, on the list's own right edge");
@@ -110,7 +110,7 @@ test("a peek opens the run's active branch beneath its service, the rail on the 
   assert.ok(visible.filter((r) => r.kind === "peek").length === peek.length, "one row per peek line");
   // Grouped, the same block hangs under the service's icon at the guide columns a child would.
   const grouped = screenText(layoutOf(board, { ...options, grouped: true, selected: 0 })).split("\n");
-  assert.ok(grouped.some((l) => l.startsWith("   ▏ 🚀 ")), "a root row's peek descends from under its icon");
+  assert.ok(grouped.some((l) => l.startsWith("  ▏ 🚀 ")), "a root row's peek descends from under its mark");
 });
 
 test("an open peek with nothing to show reads empty, receded and slanted", () => {
@@ -118,11 +118,11 @@ test("an open peek with nothing to show reads empty, receded and slanted", () =>
   const { board, at } = liveBoard();
   const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", grouped: false, peeked: new Set(["spare"]) });
   assertGrid(rows, 100, 30);
-  const at_ = screenText(rows).split("\n").findIndex((l) => l.startsWith("🔹 spare "));
+  const at_ = screenText(rows).split("\n").findIndex((l) => l.startsWith("◇ spare "));
   const row = rows[at_ + 1];
-  assert.equal(screenText([row]).trimEnd(), " ▏ empty", "the placeholder sits under the name");
+  assert.equal(screenText([row]).trimEnd(), "▏ empty", "the placeholder sits under the name");
   const word = row.find((c) => c.text.includes("empty"));
-  assert.deepEqual([word.fg, word.dim, word.italic], ["muted", true, true], "receded, dim and italic");
+  assert.deepEqual([word.fg, word.dim, word.italic], ["faint", true, true], "receded, dim and italic");
 });
 
 test("the peek floor keeps an open peek on screen under its service", () => {
@@ -176,7 +176,7 @@ test("renders the whole overview at 100x30", () => {
   }
   // The lane by its name alone, as the terminal's section reads it: its `high` priority is
   // the info view's `Queue` row's to print, not this row's.
-  assert.match(lines[queueHeader + 1], /^🧵 heavy +▮▮ ╎ ∙ +2 +2 +1/, "the `heavy` lane, held and waited on");
+  assert.match(lines[queueHeader + 1], /^≡ heavy +▮▮ ╎ ∙ +2 +2 +1/, "the `heavy` lane, held and waited on");
   // The footer, with a real hint on it.
   assert.ok(lines.slice(-3).some((l) => l.includes("? help")), "the footer legend");
 });
@@ -218,7 +218,7 @@ test("the Queues section lists a lane only a block reaches, at the daemon's coun
   const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.441" });
   assertGrid(rows, 100, 30);
   const lines = screenText(rows).split("\n");
-  const laneLine = (lane) => lines.find((line) => line.startsWith("🧵 ") && line.slice(3).split(/\s+/)[0] === lane);
+  const laneLine = (lane) => lines.find((line) => line.startsWith("≡ ") && line.slice(2).split(/\s+/)[0] === lane);
   assert.match(laneLine("gpu") ?? "", /\s1\s+0\s+0\s*$/, "gpu is listed, free, though no service names it");
   assert.match(laneLine("heavy") ?? "", /\s1\s+1\s+1\s*$/, "heavy counts holder's hold and the block's wait");
 });
@@ -281,9 +281,9 @@ test("a board left alone recedes what has gone quiet", () => {
   // over one board rather than as a tone written down.
   const ages = (rows) =>
     rows.flatMap((row) => row.filter((c) => /^\d+[smhd]( \d+[smhd])?$/.test(c.text)).map((c) => [c.text, c.fg]));
-  assert.ok(ages(fresh).some(([, fg]) => fg !== "recede"), "the fresh screen keeps its ages at full weight");
+  assert.ok(ages(fresh).some(([, fg]) => fg !== "faint"), "the fresh screen keeps its ages at full weight");
   assert.ok(
-    ages(aged).filter(([text]) => text.startsWith("20m")).every(([, fg]) => fg === "recede"),
+    ages(aged).filter(([text]) => text.startsWith("20m")).every(([, fg]) => fg === "faint"),
     "…and every age past the fresh window recedes",
   );
   assert.equal(screenText(aged).split("\n")[1].trim(), "", "the load strip ages out of its own window with them");
@@ -428,7 +428,7 @@ test("the glyph vocabulary measures as the tui measures it", () => {
   for (const glyph of ["🔹", "🔸", "🔷", "🔶", "▪️", "🪦", "🕸️", "📦", "📜", "🧵", "🔒", "🧹", "🚦", "⏳"]) {
     assert.equal(textWidth(glyph), 2, `${glyph} is two cells`);
   }
-  for (const glyph of ["●", "▷", "◎", "▶", "■", "□", "✕", "◌", "⊟", "⊞", "▮", "▯", "∙", "╎", "│", "─", "↓", "↑", "·", "…", "▁", "█"]) {
+  for (const glyph of ["◇", "◆", "▫", "≡", "●", "▷", "◎", "▶", "■", "□", "✕", "◌", "⊟", "⊞", "▮", "▯", "∙", "╎", "│", "─", "↓", "↑", "·", "…", "▁", "█"]) {
     assert.equal(textWidth(glyph), 1, `${glyph} is one cell`);
   }
   assert.equal(textWidth("監視"), 4, "CJK is two cells a glyph");
@@ -528,7 +528,7 @@ test("every right-flushed run ends where its header ends", () => {
 
     const queueHeader = rows.findIndex((row) => headerSpan(row, "Waiting") !== null);
     const lane = rows[queueHeader + 1];
-    assert.ok(lane.map((c) => c.text).join("").startsWith("🧵 heavy"), "the `heavy` lane sits under its header");
+    assert.ok(lane.map((c) => c.text).join("").startsWith("≡ heavy"), "the `heavy` lane sits under its header");
     for (const label of ["Capacity", "Held", "Waiting"]) {
       const span = headerSpan(rows[queueHeader], label);
       assert.equal(firstInk(lane, ...span), span[0], `the lane's ${label} starts on its label at ${cols}`);
@@ -538,44 +538,319 @@ test("every right-flushed run ends where its header ends", () => {
 
 // --- AC4: the palette ---------------------------------------------------------------
 
+/// The page's own tones: the dark ground `palette.rs`'s 24-bit arm assumes and never spells.
+const PAGE_TONES = ["#0d1117"];
+
+/// A `palette.rs` role's name as the stylesheet's variable spells it: `PreRun` → `pre-run`.
+function roleVariable(name) {
+  return `--term-${name.replace(/(?<!^)([A-Z])/g, "-$1").toLowerCase()}`;
+}
+
+/// Every way the stylesheet `css` departs from `palette.rs`'s 24-bit arm `rust`, one sentence
+/// each, or none. The relation, not a count: the hexes the stylesheet spends (comments
+/// stripped) are exactly the arm's tones plus [`PAGE_TONES`], and each `Hue::`/`Night::` arm's
+/// variable holds that arm's own hex, so a respelling on either side reddens and a new role in
+/// the Rust asks for its variable here.
+function paletteMismatches(rust, css) {
+  const problems = [];
+  const hex = (hi, lo) => `#${hi}${lo}`.toLowerCase();
+  const spelling = /Color::from_u32\(0x00([0-9a-fA-F]{2})_([0-9a-fA-F]{4})\)/g;
+  const tones = [...new Set([...rust.matchAll(spelling)].map(([, hi, lo]) => hex(hi, lo)))];
+  if (tones.length === 0) problems.push("palette.rs spells no 24-bit tone");
+  // Comments first: the stylesheet's own prose may name a hex it does not spend.
+  const sheet = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const found = new Set([...sheet.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map(([h]) => h.toLowerCase()));
+  const want = new Set([...tones, ...PAGE_TONES]);
+  for (const h of found) if (!want.has(h)) problems.push(`dashboard.css spends ${h}, which palette.rs does not spell`);
+  for (const h of want) if (!found.has(h)) problems.push(`dashboard.css never spends ${h}`);
+  const arm = /\b(Hue|Night)::(\w+) => Color::from_u32\(0x00([0-9a-fA-F]{2})_([0-9a-fA-F]{4})\)/g;
+  for (const [, family, name, hi, lo] of rust.matchAll(arm)) {
+    const variable = roleVariable(name);
+    const spelled = sheet.match(new RegExp(`${variable}:\\s*(#[0-9a-fA-F]{3,8})\\s*;`))?.[1].toLowerCase();
+    if (spelled !== hex(hi, lo)) problems.push(`${variable} is ${spelled ?? "unset"}, where ${family}::${name} is ${hex(hi, lo)}`);
+  }
+  return problems;
+}
+
+/// `board` with service `name`'s record overlaid by `fields` — a wire fact no capture carries.
+function restyled(board, name, fields) {
+  return { ...board, services: { ...board.services, [name]: { ...board.services[name], ...fields } } };
+}
+
 test("the stylesheet spends only the product's palette", { skip: NO_AFKD_SRC }, () => {
-  const raw = readFileSync(join(HERE, "dashboard.css"), "utf8");
-  // Comments first: the file's own header names the two near-twins it dropped on the way
-  // across from the site (`#8c949d`, `#fcfcfc`), and a scan that counted those as colours on
-  // screen would fail on the very sentence that explains why they are not.
-  const css = raw.replace(/\/\*[\s\S]*?\*\//g, "");
-  // The nine the terminal paints, read **out of the Rust** rather than transcribed — the same
-  // relation `web/scripts/check-dist.mjs` holds for the site's window, so a rename in
-  // `palette.rs` reddens here.
+  const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
+  // The arm is read **out of the Rust** rather than transcribed — the same relation
+  // `web/scripts/check-dist.mjs` holds for the site's window, so a respelling in `palette.rs`
+  // reddens here.
   const rust = afkdSource("crates", "tui", "src", "palette.rs");
-  const product = [...rust.matchAll(/Color::from_u32\(0x00([0-9a-f]{2})_([0-9a-f]{4})\)/g)].map(
-    ([, hi, lo]) => `#${hi}${lo}`,
-  );
-  assert.equal(product.length, 9, "palette.rs's truecolor arm still spells nine hues");
-  // …plus the screen they sit on and the three recession tones this page adds for the text
-  // that is not a status.
-  const own = ["#0d1117", "#c9d1d9", "#a0a6ae", "#777f8b"];
-  const found = [...new Set([...css.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map(([hex]) => hex.toLowerCase()))].sort();
-  assert.deepEqual(found, [...new Set([...product, ...own])].sort(), "the stylesheet's hexes are exactly the product's plus this page's four");
+  assert.deepEqual(paletteMismatches(rust, css), [], "dashboard.css spells palette.rs's 24-bit arm and the ground");
 
   // Every role the layout can emit is spelled, and nothing else is: a role the stylesheet
   // forgot would paint as unstyled text, and one it spells for nobody is dead weight.
-  const roles = [...css.matchAll(/^\.fg-([a-z-]+) \{/gm)].map(([, role]) => role).sort();
+  const sheet = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = (axis) => [...sheet.matchAll(new RegExp(`^\\.${axis}-([a-z-]+) \\{`, "gm"))].map(([, role]) => role).sort();
   // Swept over **both** boards: the live one never reaches a `Starting`/`Stopping` badge, so a
-  // sweep of it alone would leave `caution` looking like a rule nobody emits.
-  const emitted = new Set();
-  for (const { board, at } of [liveBoard(), drainedBoard()]) {
+  // sweep of it alone would leave `caution` looking like a rule nobody emits; its lane is full,
+  // so a capture whose lane is idle draws the free cells. No capture runs a plugin trigger, so
+  // the live board gains one.
+  const live = liveBoard();
+  const plugin = { ...live, board: restyled(live.board, "archivist", { triggerLabel: "@afkd/linear.issue" }) };
+  const fg = new Set();
+  const bg = new Set();
+  for (const { board, at } of [live, drainedBoard(), liveBoard("fire.jsonl"), plugin]) {
     for (const cols of [100, 80, 60, 40]) {
       for (const row of layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123" })) {
-        for (const cell of row) emitted.add(cell.fg);
+        for (const cell of row) {
+          fg.add(cell.fg);
+          if (cell.bg !== null) bg.add(cell.bg);
+        }
       }
     }
   }
-  for (const role of emitted) assert.ok(roles.includes(role), `dashboard.css spells the ${role} role`);
   // …and equality the other way too, so a rule that stops being reachable is caught as much as
-  // one that was never written. `selection` is a background, so it is checked as its own rule.
-  assert.deepEqual([...emitted].sort(), roles, "every role the stylesheet spells is one the layout emits");
-  assert.match(css, /^\.bg-selection \{/m, "the selection bar has its band");
+  // one that was never written.
+  assert.deepEqual([...fg].sort(), rules("fg"), "the stylesheet spells exactly the foregrounds the layout emits");
+  assert.deepEqual(rules("fg"), [...ROLES].sort(), "…which are the layout's own roles");
+  assert.deepEqual([...bg].sort(), rules("bg"), "the stylesheet spells exactly the bands the layout emits");
+  assert.deepEqual(rules("bg"), [...BANDS].sort(), "…which are the layout's own bands");
+});
+
+test("a respelled 24-bit tone reddens the palette relation", { skip: NO_AFKD_SRC }, () => {
+  // The relation bites on **every** spelling, not one: each distinct tone of the real arm is
+  // respelled in turn, to a hex the stylesheet does not hold, and each respelling alone must
+  // leave a mismatch.
+  const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
+  const rust = afkdSource("crates", "tui", "src", "palette.rs");
+  const spellings = [...new Set([...rust.matchAll(/Color::from_u32\(0x00[0-9a-fA-F]{2}_[0-9a-fA-F]{4}\)/g)].map(([m]) => m))];
+  assert.ok(spellings.length > 0, "palette.rs spells its 24-bit arm with Color::from_u32");
+  for (const spelling of spellings) {
+    const respelled = rust.replace(spelling, "Color::from_u32(0x0012_3456)");
+    assert.notEqual(respelled, rust);
+    assert.notDeepEqual(paletteMismatches(respelled, css), [], `respelling ${spelling} reddens the relation`);
+  }
+  assert.ok(!css.includes("#123456"), "the respelling is a hex the stylesheet does not hold");
+});
+
+// --- the night look: which role paints which cell ----------------------------------------
+
+/// The cell of `row` whose text is exactly `text`, failing with the row when there is none.
+function cellNamed(row, text) {
+  const found = row.find((c) => c.text === text);
+  assert.ok(found !== undefined, `no ${JSON.stringify(text)} cell in ${JSON.stringify(row.map((c) => c.text))}`);
+  return found;
+}
+
+/// The list row whose text holds `name` as a whole cell.
+function rowNamed(rows, name) {
+  const row = rows.find((r) => r.some((c) => c.text === name));
+  assert.ok(row !== undefined, `no row names ${name}`);
+  return row;
+}
+
+/// The look of `c` as the planes spell it: its role, and whether it is bold or dim.
+function lookOf(c) {
+  return { fg: c.fg, bold: c.bold, dim: c.dim };
+}
+
+test("the night board paints each role where afkd top does", () => {
+  // `docs/tui-style.md` §5, cell by cell, over the live board plus the facts no capture
+  // carries: a plugin trigger, a default-icon service stopped with a fresh age, an age gone
+  // stale and a countdown that is soon.
+  const live = liveBoard();
+  const { at } = live;
+  let board = restyled(live.board, "archivist", { triggerLabel: "@afkd/linear.issue" });
+  board = restyled(board, "spare", { badge: "Stopped", lastActivityAt: at - 2000 });
+  board = restyled(board, "deep", { lastActivityAt: at - 20 * 60 * 1000 });
+  board = restyled(board, "noisy", { nextFireAt: at + 5 * 60 * 1000 });
+  const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 999 };
+  const rows = layout(board, options);
+  assertGrid(rows, 100, 30);
+  const plain = (fg) => ({ fg, bold: false, dim: false });
+
+  // The header: every `·` faint, the up count green, the down count bold red, the cost amber.
+  const header = rows[0];
+  for (const c of header.filter((c) => c.text.includes("·"))) assert.deepEqual(lookOf(c), plain("faint"), "a header `·` is faint");
+  assert.ok(header.filter((c) => c.text === "·").length >= 3, "the prefix, the left and the right separators");
+  assert.deepEqual(lookOf(cellNamed(header, "7 up")), plain("ok"));
+  assert.deepEqual(lookOf(cellNamed(header, "3 down")), { fg: "alarm", bold: true, dim: false });
+  assert.deepEqual(lookOf(cellNamed(header, "$0.04")), plain("caution"));
+
+  // The two column headers, the list's and the `Queues` section's: muted, not bold.
+  for (const label of ["Service", "State", "Trigger", "Queue", "Usage", "Capacity", "Held", "Waiting"]) {
+    const c = rows.flat().find((c) => c.text.trim() === label);
+    assert.ok(c !== undefined, `the ${label} header is drawn`);
+    assert.deepEqual(lookOf(c), plain("muted"), `the ${label} header is muted and not bold`);
+  }
+
+  // The badges: Idle's dot green and its word secondary, the pre-run tier and Stopped without
+  // their `DIM`.
+  const idle = rowNamed(rows, "flaky");
+  assert.deepEqual(lookOf(cellNamed(idle, "●")), plain("ok"));
+  assert.deepEqual(lookOf(cellNamed(idle, " Idle")), plain("secondary"));
+  assert.deepEqual(lookOf(rowNamed(rows, "nightly").find((c) => c.text.startsWith("▷ Queued"))), plain("pre-run"));
+  assert.deepEqual(lookOf(cellNamed(rowNamed(rows, "spare"), "□ Stopped")), plain("faint"));
+
+  // The triggers: a plugin's scope faint and its name in the plugin blue, every other one
+  // secondary, a stopped row's in its faint.
+  const archivist = rowNamed(rows, "archivist");
+  assert.deepEqual(lookOf(cellNamed(archivist, "@afkd/")), plain("faint"));
+  assert.deepEqual(lookOf(cellNamed(archivist, "linear.issue")), plain("plugin"));
+  assert.deepEqual(lookOf(cellNamed(idle, "Every 1h")), plain("secondary"));
+  assert.deepEqual(lookOf(cellNamed(rowNamed(rows, "spare"), "Every 1h")), plain("faint"));
+  // The split is made on the **elided** label, so a cut one hues what it shows.
+  const cut = [];
+  for (let cols = 100; cols >= 40; cols -= 1) {
+    const row = rowNamed(layout(board, { ...options, cols }), "archivist");
+    const scope = row.findIndex((c) => c.text === "@afkd/");
+    if (scope !== -1 && row[scope + 1].text.endsWith("…")) cut.push([cols, row[scope + 1]]);
+  }
+  assert.ok(cut.length > 0, "some width elides the plugin trigger");
+  for (const [cols, name] of cut) assert.deepEqual(lookOf(name), plain("plugin"), `the cut name at ${cols} is still the plugin's`);
+
+  // The times: fresh or soon muted, stale or far faint, and a stopped row's in its faint.
+  const times = (name) => rowNamed(rows, name).filter((c) => /^\d+[smh]( \d+[smh])?$/.test(c.text.trim()) && c.text.trim() === c.text);
+  assert.deepEqual(times("flaky").map(lookOf), [plain("faint")], "a far Next Run is faint");
+  assert.deepEqual(times("noisy").map(lookOf), [plain("muted")], "a soon Next Run is muted");
+  assert.deepEqual(times("sleeper").map(lookOf), [plain("muted")], "a fresh Last Activity is muted");
+  assert.deepEqual(times("deep").map(lookOf).at(0), plain("faint"), "a stale Last Activity is faint");
+  assert.deepEqual(times("spare").map(lookOf), [plain("faint")], "a stopped row's fresh age keeps its faint");
+  const group = rows.find((r) => r.some((c) => c.text.includes("📦")));
+  assert.deepEqual(lookOf(group.find((c) => /^\d+s$/.test(c.text))), plain("muted"), "a group header's fresh age is muted");
+
+  // The marks: each in its own role, a custom icon in its row's tint.
+  const mark = (name) => {
+    const row = rowNamed(rows, name);
+    return row[row.findIndex((c) => c.text === name) - 2];
+  };
+  assert.equal(mark("nightly").fg, "mark", "a parked, clean mark");
+  assert.equal(mark("sleeper").fg, "accent", "an executing mark");
+  assert.equal(mark("broken").fg, "alarm", "a troubled mark");
+  assert.equal(mark("spare").fg, "faint", "a stopped mark");
+  assert.deepEqual([mark("janitor").text, mark("janitor").fg], ["🧹", "faint"], "a custom icon takes its stopped row's tint");
+  assert.equal(cellNamed(rowNamed(rows, "spare"), "spare").fg, "faint", "the stopped row recedes");
+
+  // The rules: under the strip, and directly above the footer.
+  const rule = [cell("─".repeat(100), { fg: "rule" })];
+  assert.deepEqual(rows[2], rule, "the title band ends on a rule");
+  const footerAt = rows.findIndex((r, i) => i > 4 && /quit/.test(screenText([r])));
+  assert.deepEqual(rows[footerAt - 1], rule, "a rule sits directly above the footer");
+});
+
+test("the row marks and the lane lead are one-cell text glyphs", () => {
+  // `layout::Mark::text` and `QUEUE_LANE_GLYPH_NIGHT`: the 24-bit board draws a default-icon
+  // service's mark and a lane's lead as one text cell each, so a name starts two cells in. The
+  // board carries every mark: `flaky` parked and clean, `sleeper` executing, `noisy` parked
+  // with a fault since it armed, `vacuum` executing with one, `spare` stopped, and `janitor`'s
+  // own icon, which is drawn verbatim.
+  const live = liveBoard();
+  const { at } = live;
+  let board = restyled(live.board, "noisy", { faultedSinceArm: true });
+  board = restyled(board, "ops.vacuum", { faultedSinceArm: true });
+  board = restyled(board, "spare", { badge: "Stopped" });
+  const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", grouped: false, selected: 999 });
+  assertGrid(rows, 100, 30);
+  // The column a row's `name` cell starts on, counted in cells.
+  const nameColumn = (row, name) => row.slice(0, row.findIndex((c) => c.text === name)).reduce((w, c) => w + c.width, 0);
+  const opening = (name) => {
+    const row = rowNamed(rows, name);
+    assert.equal(nameColumn(row, name), 2, `${name}'s row opens on its mark and one space`);
+    assert.equal(row[1].text, " ", `one space between ${name}'s mark and its name`);
+    return row[0];
+  };
+  for (const [name, glyph, fg] of [
+    ["flaky", "◇", "mark"],
+    ["ops.sleeper", "◆", "accent"],
+    ["noisy", "◇", "alarm"],
+    ["ops.vacuum", "◆", "alarm"],
+    ["spare", "▫", "faint"],
+  ]) {
+    const mark = opening(name);
+    assert.deepEqual([mark.text, mark.fg], [glyph, fg], `${name}'s mark`);
+    assert.equal(mark.width, 1, `${name}'s mark is one cell`);
+    assert.equal(textWidth(mark.text), 1, `${glyph} measures one cell`);
+  }
+  const janitor = rowNamed(rows, "janitor");
+  assert.equal(janitor[0].text, "🧹", "a custom icon is drawn verbatim");
+  assert.equal(nameColumn(janitor, "janitor"), 3, "…at its own two cells");
+
+  // The lane: `≡`, one space, the name at column 2, and the `Queue` column fits exactly that
+  // prefix and the name, so `Usage` starts one gutter after it.
+  const lines = screenText(rows).split("\n");
+  const lane = rows[lines.findIndex((l) => l.startsWith("≡ heavy"))];
+  assert.deepEqual([lane[0].text, lane[0].width, lane[1].text, lane[2].text], ["≡", 1, " ", "heavy"], "the lane row's lead");
+  const header = lines.find((l) => l.startsWith("Queue "));
+  assert.equal(header.indexOf("Usage"), 2 + textWidth("heavy") + 3, "the `Queue` column is the lead, a space and the name");
+});
+
+test("the marks and the lane lead are layout.rs's night glyphs", { skip: NO_AFKD_SRC }, () => {
+  // `Mark::text`'s arms and `QUEUE_LANE_GLYPH_NIGHT`, read out of the Rust, so a respelling in
+  // afkd reddens the page.
+  const rust = afkdSource("crates", "tui", "src", "layout.rs");
+  const body = rust.match(/fn text\(self\) -> &'static str \{\s*match self \{([\s\S]*?)\n\s*\}\s*\}/);
+  assert.ok(body !== null, "Mark::text's match in layout.rs");
+  const arms = {};
+  for (const [, variants, glyph] of body[1].matchAll(/((?:Self::\w+\s*\|\s*)*Self::\w+)\s*=>\s*"([^"]+)"/g)) {
+    for (const [, variant] of variants.matchAll(/Self::(\w+)/g)) arms[variant[0].toLowerCase() + variant.slice(1)] = glyph;
+  }
+  assert.deepEqual(arms, MARK_TEXT);
+  const lead = rust.match(/const QUEUE_LANE_GLYPH_NIGHT: char = '([^']+)';/);
+  assert.ok(lead !== null, "QUEUE_LANE_GLYPH_NIGHT in layout.rs");
+  assert.equal(lead[1], QUEUE_LANE_GLYPH);
+});
+
+test("the night header spells a faint 0 down", () => {
+  // `HeaderView::zero_down`: at 24-bit an all-alive board still reads `· 0 down`, the zero
+  // faint and not bold, and the last shed step folds it into `N/N up` as before.
+  const live = liveBoard();
+  const { at } = live;
+  let board = restyled(live.board, "janitor", { badge: "Idle" });
+  board = restyled(board, "ops.broken", { badge: "Idle" });
+  const header = (cols) => layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123", selected: 999 })[0];
+  const wide = header(100);
+  assert.match(screenText([wide]), /· 10 up · 0 down /, "the tally spells the zero");
+  assert.deepEqual(lookOf(cellNamed(wide, "0 down")), { fg: "faint", bold: false, dim: false });
+  assert.deepEqual(lookOf(cellNamed(wide, "10 up")), { fg: "ok", bold: false, dim: false });
+  assert.match(screenText([header(40)]), /· 10\/10 up *$/, "the collapsed tally carries no down run");
+});
+
+test("the night Queues hue a lane's runs and counts", () => {
+  // `shell::queue_lane_spans` at 24-bit, over a lane in use and one standing idle.
+  const laneOf = ({ board, at }) => {
+    const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 999 });
+    assertGrid(rows, 100, 30);
+    return rows.find((r) => r.some((c) => c.text === "heavy"));
+  };
+  const busy = laneOf(liveBoard());
+  assert.equal(cellNamed(busy, "≡").fg, "faint", "the lead is faint");
+  assert.equal(cellNamed(busy, "heavy").fg, "text", "the name is in the ground");
+  assert.deepEqual(lookOf(cellNamed(busy, "▮▮")), { fg: "accent", bold: true, dim: false }, "the held run is Busy's");
+  assert.equal(cellNamed(busy, " ╎ ").fg, "faint", "the fence is faint");
+  assert.deepEqual(lookOf(cellNamed(busy, "∙")), { fg: "pre-run", bold: false, dim: false }, "the pips are Queued's");
+  const counts = busy.filter((c) => /^\d+$/.test(c.text)).map((c) => [c.text, c.fg]);
+  assert.deepEqual(counts, [["2", "text"], ["2", "accent"], ["1", "pre-run"]], "Capacity in the ground, Held and Waiting hued above 0");
+  const idle = laneOf(liveBoard("fire.jsonl"));
+  assert.equal(cellNamed(idle, "▯▯").fg, "free", "the free run takes its own dark tone");
+  const zero = idle.filter((c) => /^\d+$/.test(c.text)).map((c) => [c.text, c.fg]);
+  assert.deepEqual(zero, [["2", "text"], ["0", "text"], ["0", "text"]], "a zero count stays in the ground");
+});
+
+test("the footer rule costs exactly one body row", () => {
+  // `shell::render_list`: the footer is capped against the height less the rule, and the body
+  // takes what is left — so the scroll math `bodyHeight` feeds the session is the frame's own.
+  const { board, at } = liveBoard();
+  for (const [cols, rows] of [[100, 30], [40, 30], [40, 10], [40, 8]]) {
+    const options = { cols, rows, now: at + 1000, version: "0.2.123" };
+    const frame = layout(board, options);
+    assertGrid(frame, cols, rows);
+    const text = screenText(frame).split("\n");
+    const rule = "─".repeat(cols);
+    assert.equal(text[2], rule, `${cols}x${rows}: the title band ends on a rule`);
+    const footerRule = text.lastIndexOf(rule);
+    assert.ok(footerRule > 3, `${cols}x${rows}: a rule sits below the body`);
+    assert.ok(text.slice(footerRule + 1).every((l) => l.trim() !== ""), `${cols}x${rows}: the footer follows the rule directly`);
+    assert.equal(bodyHeight(board, options), footerRule - 4, `${cols}x${rows}: bodyHeight is the body the frame drew`);
+    assert.ok(footerRule - 4 >= 1, `${cols}x${rows}: the capped footer leaves the body its floor`);
+  }
 });
 
 // --- AC6: the layout is DOM-free ----------------------------------------------------
@@ -664,11 +939,11 @@ test("the footer advertises no unpressable key", () => {
 test("a gated hint is dim and a live one is not", () => {
   const { board, at } = liveBoard();
   const rows = layout(board, { cols: 120, rows: 30, now: at + 1000, version: "0.2.123" });
-  // The `legend`-toned label cell of a footer hint, with the `bright` key glyph that precedes
+  // The `muted`-toned label cell of a footer hint, with the `bright` key glyph that precedes
   // it — the two cells `hintRowCells` mints from one hint, which must agree on the bit.
   const hint = (label) => {
     for (const row of rows) {
-      const at = row.findIndex((c) => c.fg === "legend" && c.text === label);
+      const at = row.findIndex((c) => c.fg === "muted" && c.text === label);
       if (at === -1) continue;
       const key = row.slice(0, at).reverse().find((c) => c.fg === "bright");
       return { label: row[at], key };
@@ -711,27 +986,64 @@ test("the selection bar sits over the cursor's row and follows it", () => {
   // Out of range is a real arm, not a fault: no band at all, and the screen still composes.
   const none = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 999 });
   assertGrid(none, 100, 30);
-  assert.ok(none.every((row) => row.every((c) => c.bg === null)), "a cursor off the list bands nothing");
+  assert.ok(none.every((row) => row.every((c) => c.bg !== "selection")), "a cursor off the list bands nothing");
 });
 
-test("the load strip lights its newest reading and recedes the history", () => {
-  const { board, at } = liveBoard();
-  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
-  const strip = rows[1];
-  const isLane = (c) => c.text !== "" && [...c.text].every((ch) => TREND_LADDER.includes(ch));
-  const lit = strip.map((c, i) => [c, i]).filter(([c]) => isLane(c) && !c.dim);
-  assert.equal(lit.length, 4, "four lanes — cpu, mem, net down, net up — each with one lit cell");
-  for (const [c, i] of lit) {
-    assert.equal(c.width, 1, "the lit cell is the newest reading alone");
-    assert.ok(strip[i - 1].dim, "…and everything older than it recedes");
+/// `layout::TREND_MIN_CELLS` — the narrowest a trend lane is drawn.
+const TREND_MIN_CELLS = 6;
+
+/// The strip's chips, read off its cells: each maximal run of `chip`-banded cells is one lane.
+function chipsOf(strip) {
+  const chips = [];
+  let run = null;
+  for (const c of strip) {
+    if (c.bg !== "chip") {
+      run = null;
+      continue;
+    }
+    if (run === null) chips.push((run = []));
+    run.push(c);
   }
-  // The other half of the recession: the labels and connectors are dim, the values are not.
-  const label = strip.find((c) => c.text === "CPU ");
-  assert.ok(label !== undefined && label.dim, "the lane's label recedes");
-  // The column header is the page's one bold band — the labels, nothing else on the row.
-  const header = rows[3];
-  for (const c of header) {
-    assert.equal(c.bold, c.text.trim() !== "", `${JSON.stringify(c.text)} is bold exactly when it is a label`);
+  return chips;
+}
+
+test("the load strip draws each lane on a chip in its own hue", () => {
+  const { board, at } = liveBoard();
+  const stripAt = (cols) => {
+    const rows = layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123" });
+    assertGrid(rows, cols, 30);
+    return rows[1];
+  };
+  const strip = stripAt(100);
+  const chips = chipsOf(strip);
+  assert.equal(chips.length, 4, "four lanes — cpu, mem, net down, net up — each on a chip of its own");
+  // `shell::load_span_style`: cpu the plugin blue, mem the pre-run purple, both net lanes green.
+  chips.forEach((chip, i) => {
+    const role = ["plugin", "pre-run", "ok", "ok"][i];
+    assert.deepEqual([chip[0].text, chip.at(-1).text], [" ", " "], `lane ${i}: a square cap at each end`);
+    const bars = chip.slice(1, -1).filter((c) => c.text.trim() !== "");
+    assert.ok(bars.length > 0, `lane ${i} draws its history`);
+    for (const c of bars) {
+      assert.equal(c.fg, role, `lane ${i}'s bars are ${role}`);
+      assert.ok([...c.text].every((ch) => TREND_LADDER.includes(ch)), `lane ${i} draws on the ladder`);
+    }
+  });
+  // At full weight, all of it: the hue is the lane's stated colour and the value beside it
+  // marks "now", so only the ` · ` separators stay dim.
+  for (const c of strip) assert.equal(c.dim, c.text === " · ", `${JSON.stringify(c.text)} is dim exactly when it is a separator`);
+  for (const label of ["CPU ", "Mem ", "Net ↓", " ↑"]) {
+    assert.equal(strip.find((c) => c.text === label)?.fg, "muted", `${JSON.stringify(label)} is muted`);
+  }
+
+  // The caps are counted into the rung's budget, two cells a lane: the rung sheds exactly eight
+  // columns wider than the bare lanes alone would, and the shed rungs below it draw no chip.
+  const text = strip.filter((c) => c.bg !== "chip" && c.text.trim() !== "").reduce((w, c) => w + c.width, 0);
+  const bare = text + 4 * TREND_MIN_CELLS;
+  assert.equal(chipsOf(stripAt(bare + 8)).length, 4, "the lanes fit at their floor beside the text and the caps");
+  for (const cols of [bare, bare + 7]) {
+    const shed = stripAt(cols);
+    assert.ok(screenText([shed]).startsWith("CPU "), `the strip sheds a rung at ${cols}, not the row`);
+    assert.ok(shed.every((c) => c.bg !== "chip"), `a shed rung at ${cols} draws no chip`);
   }
 });
 
@@ -845,7 +1157,7 @@ test("the cursor on a queue lane", () => {
   assertGrid(rows, 100, 30);
   assertGolden("cursor-lane-100x30.txt", rows);
   const banded = rows.findIndex((row) => row.some((c) => c.bg === "selection"));
-  assert.ok(screenText(rows).split("\n")[banded].includes("🧵 heavy"), "the band is on the lane");
+  assert.ok(screenText(rows).split("\n")[banded].includes("≡ heavy"), "the band is on the lane");
   // A lane row's footer is the `queues` scope's two cells and no operator verb: a lane is not a
   // card, and `h`/`l` there are the lane's own capacity keys.
   const footer = footerOf(rows, 3).join("\n");
@@ -872,7 +1184,7 @@ test("the body scrolls to keep the cursor on screen", () => {
   // `G`: the last row is on screen, the first is not.
   const last = listRows.length - 1;
   const bottom = shown(last, scrollOffset(0, last, listRows.length, heightAt(last)));
-  assert.ok(bottom.some((l) => l.includes("🧵 heavy")), "the last row is visible after G");
+  assert.ok(bottom.some((l) => l.includes("≡ heavy")), "the last row is visible after G");
   assert.ok(!bottom.some((l) => l.includes("janitor")), "…and the first has scrolled off");
   // `g`: straight back to the top.
   const top = shown(0, scrollOffset(scrollOffset(0, last, listRows.length, heightAt(last)), 0, listRows.length, heightAt(0)));
@@ -896,7 +1208,7 @@ test("the body scrolls to keep the cursor on screen", () => {
   // layout takes the number it is handed, and the number can be stale by a resize.)
   const stale = layout(board, { cols: 100, rows: 12, now: at + 1000, version: "0.2.123", selected: 0, offset: 999 });
   assertGrid(stale, 100, 12);
-  assert.ok(screenText(stale).includes("🧵 heavy"), "the last screenful, not an empty body");
+  assert.ok(screenText(stale).includes("≡ heavy"), "the last screenful, not an empty body");
   assert.equal(scrollOffset(999, 0, listRows.length, heightAt(0)), 0, "…and a real scroll would have come back");
 });
 
@@ -1156,11 +1468,13 @@ test("a popup recedes the frame behind it and changes nothing else", () => {
   const withPopup = layout(board, { ...options, confirm: { verb: "abandon", targets: ["janitor"], skipped: 0 } });
   assertGrid(withPopup, 100, 30);
   // The rows above and below the box are the backdrop whole, so they are the clean comparison.
-  const boxed = withPopup.map((row) => row.some((c) => c.fg === "recede" && c.text.startsWith("│")));
+  const boxed = withPopup.map((row) => row.some((c) => c.fg === "faint" && c.text.startsWith("│")));
   let compared = 0;
+  let bold = 0;
   withPopup.forEach((row, i) => {
     if (boxed[i] || row.some((c) => c.text.includes("┌") || c.text.includes("└"))) return;
     compared += 1;
+    bold += plain[i].filter((c) => c.bold).length;
     assert.deepEqual(
       row.map((c) => ({ ...c, dim: null, bold: null })),
       plain[i].map((c) => ({ ...c, dim: null, bold: null })),
@@ -1170,9 +1484,9 @@ test("a popup recedes the frame behind it and changes nothing else", () => {
     for (const c of row) assert.equal(c.bold, false, `row ${i}: a receded cell is dim, never dim and bold`);
   });
   assert.ok(compared >= 4, `the differential really compared some rows (${compared})`);
-  // The column header is the page's one bold band, and it is one of the rows above the box —
-  // so "a bold cell recedes to dim alone" is exercised rather than assumed.
-  assert.ok(plain[3].some((c) => c.bold), "the column header is bold on a bare frame");
+  // The busy and crashed badges are bold, and some sit in the rows around the box — so "a bold
+  // cell recedes to dim alone" is exercised rather than assumed.
+  assert.ok(bold > 0, "some compared backdrop cell is bold on a bare frame");
 });
 
 test("every popup owns exactly one gutter row and two gutter columns at each end", () => {
@@ -1194,7 +1508,7 @@ test("every popup owns exactly one gutter row and two gutter columns at each end
     const confirm = { verb: "run", targets: [name], skipped: 0 };
     const rows = layout(moved, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", confirm });
     assertGrid(rows, 100, 30);
-    const corner = (glyph) => rows.findIndex((row) => row.some((c) => c.fg === "recede" && c.text === glyph));
+    const corner = (glyph) => rows.findIndex((row) => row.some((c) => c.fg === "faint" && c.text === glyph));
     const top = corner("┌");
     const bottom = corner("└");
     assert.ok(top !== -1 && bottom > top, `${name}: the box has both borders`);
@@ -1204,7 +1518,7 @@ test("every popup owns exactly one gutter row and two gutter columns at each end
       let atCell = 0;
       const edges = [];
       for (const c of row) {
-        if (c.fg === "recede" && c.text === "│") edges.push(atCell);
+        if (c.fg === "faint" && c.text === "│") edges.push(atCell);
         atCell += c.width;
       }
       assert.equal(edges.length, 2, `${name}: a body row has exactly two vertical borders`);
@@ -1255,7 +1569,7 @@ function overlayReading(rows) {
       else if (
         c.fg === "bright" &&
         row[i + 1]?.text === " " &&
-        row[i + 2]?.fg === "legend" &&
+        row[i + 2]?.fg === "muted" &&
         wanted.has(row[i + 2].text)
       ) {
         found.push({ col, r, text: `${c.text.trim()} ${row[i + 2].text}` });
@@ -1276,7 +1590,7 @@ function overlayRows(rows) {
   const out = [];
   for (const row of rows) {
     for (let i = 0; i + 2 < row.length; i += 1) {
-      if (row[i].fg !== "bright" || row[i + 1].text !== " " || row[i + 2].fg !== "legend") continue;
+      if (row[i].fg !== "bright" || row[i + 1].text !== " " || row[i + 2].fg !== "muted") continue;
       if (!wanted.has(row[i + 2].text)) continue;
       out.push({ keys: row[i].text.trim(), label: row[i + 2].text });
     }
@@ -1479,7 +1793,7 @@ test("i opens a service's page with all five sections", () => {
     "all five section headers, once each",
   );
   // The list is **gone**: its column header and its rows do not bleed through behind the page.
-  for (const label of ["Last Activity", "Next Run", "⊟ 📦 ops", "🧵 heavy"]) {
+  for (const label of ["Last Activity", "Next Run", "⊟ 📦 ops", "≡ heavy"]) {
     assert.ok(!screenText(rows).includes(label), `the list's ${label} is not on the info page`);
   }
   // The footer is `infoview::footer`'s three hints, and `back` teaches **both** keys the
@@ -2668,7 +2982,7 @@ test("a package's members show their leaf under its header, and nothing in a nam
       assert.notEqual(at, -1, `${names[i]} is one cell: ${JSON.stringify(row.slice(0, 4))}`);
       assert.equal(row[at].fg, row[at - 1].fg, `${names[i]} wears its icon's tint`);
       for (const c of row.slice(at, at + 2)) {
-        assert.notEqual(c.fg, "recede", `nothing in ${names[i]} recedes: ${JSON.stringify(c)}`);
+        assert.notEqual(c.fg, "faint", `nothing in ${names[i]} recedes: ${JSON.stringify(c)}`);
         assert.ok(!c.dim, `nothing in ${names[i]} is dim: ${JSON.stringify(c)}`);
       }
     });
@@ -2914,7 +3228,7 @@ test("a phone lists every service flat under the title bar and the column header
     assert.notEqual(line[0], " ", `${line.trim()} starts at column 0`);
     assert.equal(line.split(/\s+/)[1], cards[i].name, "one row per service, its whole name, in config order");
   });
-  for (const chrome of [/^CPU /u, /^Queue /u, /🧵/u, /\? help/u]) {
+  for (const chrome of [/^CPU /u, /^Queue /u, /^≡ /u, /\? help/u]) {
     assert.ok(!lines.some((l) => chrome.test(l)), `no ${chrome}: no load strip, Queues section or footer`);
   }
   assert.ok(rows.flat().every((c) => c.bg === null), "no row wears the selection band");
@@ -2953,7 +3267,7 @@ test("a phone's connection notice is a line of its own below the services", () =
     assert.deepEqual(rows.slice(0, -1), bare, "every service row is still there, untouched");
     const last = rows.at(-1);
     assert.deepEqual(last, noticeRow(notice, 46).filter((c) => c.width > 0), "the notice row the desktop overwrites with");
-    assert.equal(last[0].fg, "legend");
+    assert.equal(last[0].fg, "muted");
     assert.ok(notice.startsWith(last[0].text.replace(/…$/u, "")), "the notice, truncated to the width at most");
   }
   assert.deepEqual(layoutOf(board, statusAt(at, { notice: "" })), bare, "no notice, no line");

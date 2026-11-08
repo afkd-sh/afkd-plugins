@@ -255,7 +255,7 @@ function alignWidth(text, width, align) {
 export function cell(text, options = {}) {
   return {
     text,
-    fg: options.fg ?? "ink",
+    fg: options.fg ?? "text",
     bg: options.bg ?? null,
     dim: options.dim === true,
     bold: options.bold === true,
@@ -310,23 +310,30 @@ function selectRow(cells) {
 
 // --- the palette's roles -----------------------------------------------------------
 
-/// Every role a cell may name. The stylesheet spells each one and nothing else, so the
-/// palette scan is an equality rather than a containment: a role that stops being emitted is
-/// as much a drift as a hex that appears from nowhere.
+/// Every foreground role a cell may name: `palette.rs`'s 24-bit arm, `Hue` and `Night` alike,
+/// kebab-cased. The stylesheet spells each one and nothing else, so the palette scan is an
+/// equality rather than a containment: a role that stops being emitted is as much a drift as a
+/// hex that appears from nowhere.
 export const ROLES = [
   "accent",
-  "accent-dim",
   "alarm",
   "bright",
   "caution",
-  "idle",
-  "ink",
-  "legend",
+  "faint",
+  "free",
+  "mark",
   "muted",
   "ok",
-  "recede",
-  "selection",
+  "plugin",
+  "pre-run",
+  "rule",
+  "secondary",
+  "text",
 ];
+
+/// Every background role a cell may name, held to the stylesheet's `.bg-*` rules the same way:
+/// the chip a host-load lane sits on, and the selected row's bar.
+export const BANDS = ["chip", "selection"];
 
 // --- the state vocabulary ----------------------------------------------------------
 //
@@ -345,17 +352,18 @@ const BADGE_GLYPH = {
   Crashed: "✕",
 };
 
-/// `shell::badge_style`'s role, and the bold/dim baseline it applies under it: `crashed` and
-/// `busy` bold, `stopped`/`queued`/`checking` dim. The hue carries the tier at truecolor, so
-/// the `dim` bit here is the terminal's own attribute carried forward, not a second colour.
+/// `shell::badge_style`'s role at 24-bit, and the weight it keeps there: `crashed` and `busy`
+/// bold, and nothing dim. The night look drops the `DIM` the 16-colour arm lays under
+/// `stopped`/`queued`/`checking`, because the hue alone carries the tier: a dimmed purple or
+/// faint is not the colour the arm names.
 const BADGE_STYLE = {
   Starting: { fg: "caution" },
-  Idle: { fg: "idle" },
-  Queued: { fg: "accent-dim", dim: true },
-  Checking: { fg: "accent-dim", dim: true },
+  Idle: { fg: "secondary" },
+  Queued: { fg: "pre-run" },
+  Checking: { fg: "pre-run" },
   Busy: { fg: "accent", bold: true },
   Stopping: { fg: "caution" },
-  Stopped: { fg: "muted", dim: true },
+  Stopped: { fg: "faint" },
   Crashed: { fg: "alarm", bold: true },
 };
 
@@ -380,7 +388,7 @@ function isAlive(badge) {
 }
 
 /// `CardModel::is_executing` — a command of the service's **own** is in flight, which is
-/// what grows the row's diamond. Restated from `model.rs`, not from the badge alone.
+/// what fills the row's diamond. Restated from `model.rs`, not from the badge alone.
 function isExecuting(svc) {
   return svc.badge === "Starting" || svc.badge === "Stopping" || svc.inFlightSince !== null;
 }
@@ -446,60 +454,120 @@ function rightPad(text, width) {
 /// `layout::HEADER_MIN_GAP` — the clusters collide, and the next rung is taken, when the pad
 /// would fall below one space.
 const HEADER_MIN_GAP = 1;
+/// `layout::HEADER_SEP` — the house separator between two header segments.
+const HEADER_SEP = " · ";
 
-/// The left cluster's rest after the accent dot — ` <state> <elapsed> · <health>` — with
-/// `collapsed` folding the tally into `<alive>/<total> up` (the last shed step).
-/// `header_left_rest`.
-function headerLeftRest(view, collapsed) {
-  if (view.draining !== null) {
-    const suffix = view.draining > 0 ? ` (${view.draining} busy)` : "";
-    return ` ${view.stateWord} ${view.elapsed}${suffix}`;
-  }
-  const { alive, total } = view;
-  const down = total - alive;
-  let health;
-  if (collapsed) health = `${alive}/${total} up`;
-  else if (down > 0) health = `${alive} up · ${down} down`;
-  else health = `${alive} up`;
-  return ` ${view.stateWord} ${view.elapsed} · ${health}`;
+/// `layout::HeaderRun` — a header cluster's text, built run by run: `sep` appends
+/// [`HEADER_SEP`] and records its `·`, and `push` returns the range it wrote, so the runs the
+/// night look hues are recorded as the string is built rather than searched for in it.
+function headerRun() {
+  const run = { text: "", seps: [] };
+  run.sep = () => {
+    const dot = run.text.length + 1;
+    run.text += HEADER_SEP;
+    run.seps.push([dot, dot + 1]);
+  };
+  run.push = (part) => {
+    const at = run.text.length;
+    run.text += part;
+    return [at, run.text.length];
+  };
+  return run;
 }
 
-/// The right telemetry cluster at shed `level`: `<tok> tok · $<cost>`. The ladder drops `tok`
-/// at 1 and `cost` at 3; level 2 is the **target** segment's rung, which this page never
-/// carries (it reaches its daemon through the relay's own socket, never a named endpoint), so
-/// the rung is walked and spends nothing. `header_right`.
+/// The left cluster's rest after the accent dot — ` <state> <elapsed> · <health>` — with
+/// `collapsed` folding the tally into `<alive>/<total> up` (the last shed step). The night look
+/// spells `· M down` at 0 too (`HeaderView::zero_down`), where the faint zero says nothing is
+/// down. Returns the text, its `·` ranges, the `up` run's range (empty while quitting) and the
+/// `down` run's range with whether its count is above 0, or `null` when it is not drawn.
+/// `header_left_rest`.
+function headerLeftRest(view, collapsed) {
+  const run = headerRun();
+  run.push(` ${view.stateWord} ${view.elapsed}`);
+  if (view.draining !== null) {
+    if (view.draining > 0) run.push(` (${view.draining} busy)`);
+    return { text: run.text, seps: run.seps, up: [run.text.length, run.text.length], down: null };
+  }
+  const { alive, total } = view;
+  run.sep();
+  if (collapsed) {
+    const up = run.push(`${alive}/${total} up`);
+    return { text: run.text, seps: run.seps, up, down: null };
+  }
+  const up = run.push(`${alive} up`);
+  const down = total - alive;
+  run.sep();
+  const range = run.push(`${down} down`);
+  return { text: run.text, seps: run.seps, up, down: { range, aboveZero: down > 0 } };
+}
+
+/// The right telemetry cluster at shed `level`: `<tok> tok · $<cost>`, its `·` ranges and the
+/// cost's range (`null` once shed). The ladder drops `tok` at 1 and `cost` at 3; level 2 is the
+/// **target** segment's rung, which this page never carries (it reaches its daemon through the
+/// relay's own socket, never a named endpoint), so the rung is walked and spends nothing.
+/// `header_right`.
 function headerRight(view, level) {
-  const segs = [];
-  if (level < 1) segs.push(`${view.tokens} tok`);
-  if (level < 3) segs.push(`$${view.cost.toFixed(2)}`);
-  return segs.join(" · ");
+  const run = headerRun();
+  let cost = null;
+  if (level < 1) run.push(`${view.tokens} tok`);
+  if (level < 3) {
+    if (run.text !== "") run.sep();
+    cost = run.push(`$${view.cost.toFixed(2)}`);
+  }
+  return { text: run.text, seps: run.seps, cost };
+}
+
+/// `shell::styled_partition` — `text` cut into cells at `runs`, ascending and disjoint
+/// `[[start, end], style]` pairs: each run in its own style and every gap between them in
+/// `rest`. An empty run cuts nothing.
+function partition(text, runs, rest = {}) {
+  const out = [];
+  let at = 0;
+  for (const [[start, end], style] of runs) {
+    if (start === end) continue;
+    if (start > at) out.push(cell(text.slice(at, start), rest));
+    out.push(cell(text.slice(start, end), style));
+    at = end;
+  }
+  if (at < text.length) out.push(cell(text.slice(at), rest));
+  return out;
 }
 
 /// Plan the title bar at `cols`, walking the shed ladder to the first rung that fits (or the
 /// last, then clipping — "identity last"). Returns the cells left-to-right.
 function planHeader(view, cols) {
-  const prefix = view.version === "" ? "afkd · " : `afkd ${view.version} · `;
-  const fixedLeft = textWidth(prefix) + textWidth(view.dot);
+  const prefix = headerRun();
+  prefix.push(view.version === "" ? "afkd" : `afkd ${view.version}`);
+  prefix.sep();
+  const fixedLeft = textWidth(prefix.text) + textWidth(view.dot);
   for (let level = 0; level <= 4; level += 1) {
-    const leftRest = headerLeftRest(view, level >= 4);
+    const left = headerLeftRest(view, level >= 4);
     const right = headerRight(view, level);
-    const leftW = fixedLeft + textWidth(leftRest);
-    const rightW = textWidth(right);
+    const leftW = fixedLeft + textWidth(left.text);
+    const rightW = textWidth(right.text);
     if (level === 4 || leftW + HEADER_MIN_GAP + rightW <= cols) {
       const pad = Math.max(0, cols - leftW - rightW);
+      const faint = { fg: "faint" };
+      const seps = (run) => run.seps.map((sep) => [sep, faint]);
       // The dot is the run state's own accent — `shell::header_accent_style`: green while
       // running, and while quitting it **is** the `Stopping` badge's caution, sourced from
       // the badge table rather than copied so the header's drain look cannot drift from the
-      // list badge's. The rest stays calm while running and reads as one coloured run while
-      // draining (`header_rest_style`).
-      const accent = view.draining !== null ? BADGE_STYLE.Stopping.fg : "ok";
-      const restFg = view.draining !== null ? accent : "ink";
+      // list badge's. While draining the rest reads as one coloured run
+      // (`header_rest_style`); while running `shell::title_spans` hues its runs instead: every
+      // `·` faint, the up count green, the down count bold red above 0 and faint at 0.
+      const draining = view.draining !== null;
+      const accent = draining ? BADGE_STYLE.Stopping.fg : "ok";
+      const leftRuns = [...seps(left), [left.up, { fg: "ok" }]];
+      if (left.down !== null) leftRuns.push([left.down.range, left.down.aboveZero ? { fg: "alarm", bold: true } : faint]);
+      const rightRuns = seps(right);
+      if (right.cost !== null) rightRuns.push([right.cost, { fg: "caution" }]);
+      const byStart = (a, b) => a[0][0] - b[0][0];
       return [
-        cell(prefix),
+        ...partition(prefix.text, seps(prefix)),
         cell(view.dot, { fg: accent }),
-        cell(leftRest, { fg: restFg }),
+        ...(draining ? [cell(left.text, { fg: accent })] : partition(left.text, leftRuns.sort(byStart))),
         blank(pad),
-        cell(right),
+        ...partition(right.text, rightRuns.sort(byStart)),
       ];
     }
   }
@@ -609,28 +677,37 @@ function trendTail(readings, cells) {
   return readings.slice(Math.max(0, readings.length - cells));
 }
 
-/// `layout::trend_spans` — one lane, `cells` wide: a blank head where the history is shorter
-/// than the lane, the older cells dim, and the newest cell alone and lit. The lane is *not*
-/// sized to the history it has, so a fresh page draws one lit cell and blanks and fills in at
-/// one cell a second rather than reflowing the whole row for that long.
-function trendSpans(levels, cells) {
+/// `layout::CHIP_SQUARE_CAP` — a chip's end: one blank cell on the chip. The TUI draws round
+/// Powerline caps where the terminal draws them itself; the page's cell face has no such glyph
+/// and cannot ask the visitor's, so it draws the square end every other terminal gets.
+const CHIP_SQUARE_CAP = " ";
+
+/// The cells one lane's two caps take, counted into the trend rung's budget as
+/// `LoadChips::cap_cells` counts them.
+const CHIP_CAP_CELLS = 2 * textWidth(CHIP_SQUARE_CAP);
+
+/// `layout::trend_spans` through `shell::load_span_style` at 24-bit — one lane, `cells` wide, on
+/// its chip: a square cap, a blank head where the history is shorter than the lane, the bars in
+/// the lane's own `role`, then the closing cap. Every cell sits on the chip at full weight,
+/// since the hue is the lane's stated colour and the value beside it already marks "now". The
+/// lane is *not* sized to the history it has, so a fresh page draws one bar and blanks and
+/// fills in at one cell a second rather than reflowing the whole row for that long.
+function trendSpans(levels, cells, role) {
   const drawn = levels.slice(Math.max(0, levels.length - cells));
-  const out = [];
-  if (drawn.length < cells) out.push(blank(cells - drawn.length, { dim: true }));
+  const chip = { bg: "chip" };
+  const out = [cell(CHIP_SQUARE_CAP, chip)];
+  if (drawn.length < cells) out.push(blank(cells - drawn.length, chip));
   if (drawn.length > 0) {
-    const older = drawn.slice(0, -1);
-    if (older.length > 0) {
-      out.push(cell(older.map((l) => TREND_LADDER[Math.min(l, 7)]).join(""), { dim: true }));
-    }
-    out.push(cell(TREND_LADDER[Math.min(drawn[drawn.length - 1], 7)]));
+    out.push(cell(drawn.map((l) => TREND_LADDER[Math.min(l, 7)]).join(""), { fg: role, bg: "chip" }));
   }
+  out.push(cell(CHIP_SQUARE_CAP, chip));
   return out;
 }
 
 /// `layout::trend_row` — the four-lane rung, or `null` when `cols` cannot hold four lanes at
-/// their floor beside the **measured** text. The budget splits four ways with the odd cells
-/// going to cpu then mem and the last one, when there is one, going undrawn, which is what
-/// keeps every lane monotone in the pane width.
+/// their floor beside the **measured** text and the lanes' caps. The budget splits four ways
+/// with the odd cells going to cpu then mem and the last one, when there is one, going
+/// undrawn, which is what keeps every lane monotone in the pane width.
 function trendRow(readings, load, cols) {
   const cpuValue = ` ${rightPad(String(Math.trunc(load.cpuPct)), 3)}%`;
   const memValue = ` ${rightPad(formatBytes(load.memUsed), 4)}/${formatBytes(load.memTotal)}`;
@@ -647,7 +724,7 @@ function trendRow(readings, load, cols) {
     rxValue,
     " ↑",
     txValue,
-  ].reduce((sum, t) => sum + textWidth(t), 0);
+  ].reduce((sum, t) => sum + textWidth(t), 0) + 4 * CHIP_CAP_CELLS;
   const budget = cols - text;
   if (budget < 0 || budget < 4 * TREND_MIN_CELLS) return null;
   const share = Math.floor(budget / 4);
@@ -658,40 +735,43 @@ function trendRow(readings, load, cols) {
   const scale = netScale(readings, net);
   const levels = (cells, of) => trendTail(readings, cells).map(of);
   const rates = (cells, of) => trendTail(readings, cells).map((l) => rateLevel(of(l), scale));
+  // `shell::load_span_style` at 24-bit: the labels muted, the values in the ground, the
+  // separators dim, and each lane in its own hue — cpu the plugin blue, mem the pre-run purple,
+  // both net lanes the ok green.
   return [
-    cell(LOAD_CPU_LABEL, { dim: true }),
-    ...trendSpans(levels(cpu, (l) => pctLevel(l.cpuPct)), cpu),
+    cell(LOAD_CPU_LABEL, { fg: "muted" }),
+    ...trendSpans(levels(cpu, (l) => pctLevel(l.cpuPct)), cpu, "plugin"),
     cell(cpuValue),
     cell(" · ", { dim: true }),
-    cell(LOAD_MEM_LABEL, { dim: true }),
-    ...trendSpans(levels(mem, (l) => pctLevel(memPct(l))), mem),
+    cell(LOAD_MEM_LABEL, { fg: "muted" }),
+    ...trendSpans(levels(mem, (l) => pctLevel(memPct(l))), mem, "pre-run"),
     cell(memValue),
     cell(" · ", { dim: true }),
-    cell(LOAD_NET_LABEL, { dim: true }),
-    ...trendSpans(rates(net, (l) => l.rxBps), net),
+    cell(LOAD_NET_LABEL, { fg: "muted" }),
+    ...trendSpans(rates(net, (l) => l.rxBps), net, "ok"),
     cell(rxValue),
-    cell(" ↑", { dim: true }),
-    ...trendSpans(rates(net, (l) => l.txBps), net),
+    cell(" ↑", { fg: "muted" }),
+    ...trendSpans(rates(net, (l) => l.txBps), net, "ok"),
     cell(txValue),
   ];
 }
 
 /// `layout::shed_row` — a shed rung (1..=3): the same segments with no lanes at all, rung 2
-/// dropping net and rung 3 mem too. With no lane to light, the **values** take normal weight
-/// and the labels and connectors stay dim.
+/// dropping net and rung 3 mem too. With no lane there is no chip: the labels are muted, the
+/// values take the ground and the connectors stay dim, as on the trend rung.
 function shedRow(load, rung) {
-  const segments = [[cell(LOAD_CPU_LABEL, { dim: true }), cell(`${rightPad(String(Math.trunc(load.cpuPct)), 3)}%`)]];
+  const segments = [[cell(LOAD_CPU_LABEL, { fg: "muted" }), cell(`${rightPad(String(Math.trunc(load.cpuPct)), 3)}%`)]];
   if (rung < 3) {
     segments.push([
-      cell(LOAD_MEM_LABEL, { dim: true }),
+      cell(LOAD_MEM_LABEL, { fg: "muted" }),
       cell(`${formatBytes(load.memUsed)}/${formatBytes(load.memTotal)}`),
     ]);
   }
   if (rung < 2) {
     segments.push([
-      cell(LOAD_NET_LABEL, { dim: true }),
+      cell(LOAD_NET_LABEL, { fg: "muted" }),
       cell(`${formatBytes(load.rxBps)}/s`),
-      cell(" ↑", { dim: true }),
+      cell(" ↑", { fg: "muted" }),
       cell(`${formatBytes(load.txBps)}/s`),
     ]);
   }
@@ -880,13 +960,9 @@ const TREE_TOP_LEVEL_INDENT = "  ";
 const TREE_CHEVRON_EXPANDED = "⊟";
 const TREE_CHEVRON_COLLAPSED = "⊞";
 
-/// `layout::DEFAULT_ICON` and its three twins — the 2×2 over (trouble, executing), plus the
-/// stopped refinement of the clean-and-parked cell.
+/// `layout::DEFAULT_ICON` — the icon a service without one of its own carries on the wire. It
+/// is never drawn: [`cardMark`] reads it as "draw the mark".
 const DEFAULT_ICON = "🔹";
-const WARN_ICON = "🔸";
-const EXEC_ICON = "🔷";
-const EXEC_WARN_ICON = "🔶";
-const STOPPED_ICON = "▪️";
 /// `layout::ORPHAN_MARKER` / `STALE_MARKER` — the tombstone and the cobweb (ADR-0028).
 const ORPHAN_MARKER = "🪦";
 const STALE_MARKER = "🕸️";
@@ -964,8 +1040,9 @@ function peekGuide(row) {
 
 /// `treeview::peek_row_line` through `shell::peek_row_spans` — one real peek line across the
 /// whole list width: the guide at full weight, then everything from the `▏` bar through the
-/// label, its pad and the OUT/TOOK cells receded as one run, and the ST glyph in its own style
-/// on the fixed rightmost column.
+/// label, its pad and the OUT/TOOK cells receded as one faint run — the hue alone, without the
+/// `DIM` the night look drops — and the ST glyph in its own style on the fixed rightmost
+/// column.
 function peekLineCells(row, cols, now) {
   const node = row.line.node;
   const guide = peekGuide(row);
@@ -980,20 +1057,21 @@ function peekLineCells(row, cols, now) {
   const pad = Math.max(0, cols - gutterW - textWidth(label) - railW);
   const rail = [outCell, tookCell].filter((c) => c !== "").map((c) => `${c}${" ".repeat(RAIL_GAP)}`);
   const cells = [];
-  if (guide !== "") cells.push(cell(guide, { fg: "ink" }));
-  cells.push(cell(`${bar}${label}${" ".repeat(pad)}${rail.join("")}`, { fg: "muted", dim: true }));
+  if (guide !== "") cells.push(cell(guide, { fg: "text" }));
+  cells.push(cell(`${bar}${label}${" ".repeat(pad)}${rail.join("")}`, { fg: "faint" }));
   cells.push(cell(statusGlyph(node.status, false), statusStyle(node.status, false, false)));
   return cells;
 }
 
 /// The `empty` placeholder's cells, drawn inside the `Service` column (no rail): the guide at
-/// full weight, then the bar and the word receded and slanted.
+/// full weight, then the bar and the word receded and slanted. It keeps its `dim` under the
+/// italic, since a golden's weight plane spells italic only over dim.
 function peekEmptyCells(row, cols) {
   const guide = peekGuide(row);
   const avail = Math.max(0, cols - textWidth(guide) - textWidth(TREE_BODY_BAR));
   const cells = [];
-  if (guide !== "") cells.push(cell(guide, { fg: "ink" }));
-  cells.push(cell(`${TREE_BODY_BAR}${truncateWidth(PEEK_EMPTY, avail)}`, { fg: "muted", dim: true, italic: true }));
+  if (guide !== "") cells.push(cell(guide, { fg: "text" }));
+  cells.push(cell(`${TREE_BODY_BAR}${truncateWidth(PEEK_EMPTY, avail)}`, { fg: "faint", dim: true, italic: true }));
   return cells;
 }
 
@@ -1019,17 +1097,46 @@ const ACTIVITY_FRESH_WINDOW = 5 * 60 * 1000;
 /// must be for its countdown to keep full weight.
 const NEXT_SOON_WINDOW = 10 * 60 * 1000;
 
-/// `layout::card_icon` — the 2×2 over *trouble* (`faultedSinceArm || Crashed`) and
-/// *executing*, with the stopped glyph as a guard on the clean-and-parked cell so the
-/// precedence is structural: trouble outranks stopped, and executing outranks both. A custom
-/// icon is returned verbatim; a card wearing the default flips.
-function cardIcon(svc) {
-  if (svc.icon !== "" && svc.icon !== DEFAULT_ICON) return svc.icon;
+/// `layout::Mark::text` — the one-cell text glyph the 24-bit board draws for each mark
+/// [`cardMark`] names: a hollow diamond parked, a filled one while it executes, a small square
+/// while it is stopped. Trouble is the alarm hue [`MARK_ROLE`] paints, never a glyph of its own.
+export const MARK_TEXT = {
+  parked: "◇",
+  executing: "◆",
+  troubled: "◇",
+  executingTroubled: "◆",
+  stopped: "▫",
+};
+
+/// `shell::mark_style` at 24-bit — the role each mark is painted in: the parked blue, the
+/// accent while it executes, the alarm while it is troubled, faint while it is stopped. The
+/// mark keeps it on a stopped row too, so a stopped service that failed still shows its alarm.
+const MARK_ROLE = {
+  parked: "mark",
+  executing: "accent",
+  troubled: "alarm",
+  executingTroubled: "alarm",
+  stopped: "faint",
+};
+
+/// `layout::card_mark` — a default-icon service's mark, the 2×2 over *trouble*
+/// (`faultedSinceArm || Crashed`) and *executing*, with `stopped` as a guard on the
+/// clean-and-parked cell so the precedence is structural: trouble outranks stopped, and
+/// executing outranks both. `null` for a custom icon, which takes no mark.
+function cardMark(svc) {
+  if (svc.icon !== "" && svc.icon !== DEFAULT_ICON) return null;
   const trouble = svc.faultedSinceArm || svc.badge === "Crashed";
   const executing = isExecuting(svc);
-  if (trouble) return executing ? EXEC_WARN_ICON : WARN_ICON;
-  if (executing) return EXEC_ICON;
-  return svc.badge === "Stopped" ? STOPPED_ICON : DEFAULT_ICON;
+  if (trouble) return executing ? "executingTroubled" : "troubled";
+  if (executing) return "executing";
+  return svc.badge === "Stopped" ? "stopped" : "parked";
+}
+
+/// `layout::card_icon` — the glyph a service row opens on: its mark's, or a custom icon
+/// verbatim.
+function cardIcon(svc) {
+  const mark = cardMark(svc);
+  return mark === null ? svc.icon : MARK_TEXT[mark];
 }
 
 /// `layout::reconcile_marker` — orphan wins the tie (the two are mutually exclusive), and an
@@ -1083,18 +1190,50 @@ function nextCell(svc, now) {
   return { text: formatElapsed(countdown), far: countdown > NEXT_SOON_WINDOW };
 }
 
-/// The `Service` cell's cells: the tree connector at full weight
+/// The `Service` cell's cells: the tree connector in the ground, at full weight
 /// (`shell::service_prefix_spans` — a stopped member's tint must not fade the group's guide),
-/// then the icon, the markers and the name. Nothing inside the name is styled apart, so a
-/// qualified name — its `.` included — is one cell in the row's tint.
-function identityCells(prefix, body, name, tint, count = "") {
+/// then the icon in its own `icon.fg`, the markers and the name. Nothing inside the name is
+/// styled apart, so a qualified name — its `.` included — is one cell in the row's tint.
+function identityCells(prefix, icon, body, name, tint, count = "") {
   const cells = [];
-  if (prefix !== "") cells.push(cell(prefix, { fg: "recede" }));
+  if (prefix !== "") cells.push(cell(prefix, { fg: "text" }));
+  if (icon !== null) cells.push(cell(icon.text, { fg: icon.fg }));
   if (body !== "") cells.push(cell(body, { fg: tint }));
   if (name !== "") cells.push(cell(name, { fg: tint }));
   // A multi-copy family's live copy count follows its name in the name's own tint.
   if (count !== "") cells.push(cell(count, { fg: tint }));
   return cells;
+}
+
+/// `shell::badge_cell` at 24-bit — the `State` cell in its badge's style, except `● Idle`,
+/// whose dot takes the health green while its word stays secondary, so a live service reads
+/// alive at a glance.
+function badgeCells(svc, now) {
+  const text = stateText(svc, now);
+  const style = BADGE_STYLE[svc.badge] ?? BADGE_STYLE.Idle;
+  if (style !== BADGE_STYLE.Idle) return [cell(text, style)];
+  const dot = BADGE_GLYPH.Idle.length;
+  return [cell(text.slice(0, dot), { fg: "ok" }), cell(text.slice(dot), style)];
+}
+
+/// `shell::time_cell_style` at 24-bit, off the selection bar — the look of a `Last Activity`
+/// or `Next` cell showing `text`: faint when `recede` (a stale age, a far countdown), else
+/// muted, one step above it — except on a receding (stopped) row, whose faint it keeps. A
+/// blank cell is in the ground.
+function timeCellStyle(text, recede, rowRecedes) {
+  if (recede || (rowRecedes && text !== "")) return { fg: "faint" };
+  return text === "" ? {} : { fg: "muted" };
+}
+
+/// `shell::trigger_line` at 24-bit — a `Trigger` cell's cells. A plugin trigger
+/// (`@afkd/linear.issue`) splits into its faint `@scope/` and its name in the plugin tone, and
+/// every other trigger is secondary. The split is made on the **elided** text, so a cut label
+/// hues what it shows. A receding (stopped) row's trigger keeps the row's faint.
+function triggerCells(text, recedes) {
+  if (recedes) return [cell(text, { fg: "faint" })];
+  const slash = text.startsWith("@") ? text.indexOf("/") : -1;
+  if (slash === -1) return [cell(text, { fg: "secondary" })];
+  return [cell(text.slice(0, slash + 1), { fg: "faint" }), cell(text.slice(slash + 1), { fg: "plugin" })];
 }
 
 /// The `State` cell's text — `"{glyph} {label}"`, with the elapsed appended when the badge
@@ -1287,7 +1426,7 @@ export function rowKey(row) {
   return null;
 }
 
-/// The identity parts of one list row — the tree prefix, the icon-and-markers body and the
+/// The identity parts of one list row — the tree prefix, the icon, the markers body and the
 /// displayed name — composed the way `layout::service_row` composes its cell, so the string
 /// the `Service` column is measured against is exactly the one that renders.
 function identityOf(row) {
@@ -1297,24 +1436,29 @@ function identityOf(row) {
     // the `State` cell's own badge.
     return {
       prefix: row.prefix,
+      icon: null,
       body: `${row.collapsed ? TREE_CHEVRON_COLLAPSED : TREE_CHEVRON_EXPANDED} ${groupIcon(row.path)} `,
       name: row.path,
-      tint: "ink",
+      tint: "text",
     };
   }
   const svc = row.svc;
+  // `shell::row_line_style`: a **stopped** row recedes whole-line so a shelf of switched-off
+  // services sinks below the live ones; under the cursor it lifts back to full weight.
+  const tint = svc.badge === "Stopped" ? "faint" : "text";
+  // A default icon is a mark in its own role; a custom one is drawn as given in the row's tint.
+  const mark = cardMark(svc);
   return {
     // The prefix the caller resolved, honoured as given — `buildRows`' walk spends the
     // top-level lead-in and the pinned header spends nothing, and only the caller can tell
     // those two apart (`layout.rs`: "in the flat overview the list row for a top-level
     // service is *byte-identical* to the pinned header row").
     prefix: row.prefix,
-    body: `${cardIcon(svc)} ${reconcileMarker(svc)}`,
+    icon: { text: cardIcon(svc), fg: mark === null ? tint : MARK_ROLE[mark] },
+    body: ` ${reconcileMarker(svc)}`,
     name: displayedName(svc, row.depth),
     count: svc.family == null ? "" : `${COPIES_MARK}${svc.family.copies}`,
-    // `shell::row_line_style`: a **stopped** row recedes whole-line so a shelf of switched-off
-    // services sinks below the live ones; under the cursor it lifts back to full weight.
-    tint: svc.badge === "Stopped" ? "muted" : "ink",
+    tint,
   };
 }
 
@@ -1327,8 +1471,8 @@ function identityText(row) {
   // counts its whole width; a real peek line overpaints the row and counts nothing.
   if (row.kind === "peek") return row.line === null ? `${peekGuide(row)}${TREE_BODY_BAR}${PEEK_EMPTY}` : "";
   if (row.kind !== "service" && row.kind !== "group") return "";
-  const { prefix, body, name, count = "" } = identityOf(row);
-  return `${prefix}${body}${name}${count}`;
+  const { prefix, icon, body, name, count = "" } = identityOf(row);
+  return `${prefix}${icon?.text ?? ""}${body}${name}${count}`;
 }
 
 // --- the `Queues` section ----------------------------------------------------------
@@ -1337,10 +1481,10 @@ function identityText(row) {
 // does **not** ride the list's grid: a lane is not a service, so its five columns are laid
 // from column 0 on their own ladder, with the same `COLUMN_SPACING` gutter between them.
 
-/// `layout::QUEUE_LANE_GLYPH` and its one space — the *icon, one space, name* shape every
-/// identity cell above it spends.
-const QUEUE_LANE_GLYPH = "🧵";
-const QUEUE_LANE_PREFIX_W = 3;
+/// `layout::QUEUE_LANE_GLYPH_NIGHT` and its one space (`queue_prefix_w`) — the *lead, one
+/// space, name* shape every identity cell above it spends.
+export const QUEUE_LANE_GLYPH = "≡";
+const QUEUE_LANE_PREFIX_W = textWidth(QUEUE_LANE_GLYPH) + 1;
 /// `layout::QUEUE_SLOT_HELD` / `_FREE` / `_WAITING` — a held slot, a free one, and a
 /// lane-mate standing outside the door, deliberately a round dot a size class below the bars.
 const QUEUE_SLOT_HELD = "▮";
@@ -1418,9 +1562,11 @@ function queueBarCells(capacity, held, budget) {
 }
 
 /// One lane row's five cells at the section's elastic widths — `layout::queue_lane_line`,
-/// hued as `shell::queue_lane_spans` hues it: the bar's held cells take the `Busy` badge's
-/// accent, its free cells and the door recede, and the pips take `Queued`'s own tier, because
-/// a fire outside the door is exactly a queued one. The identity is the lane's name alone, as
+/// hued as `shell::queue_lane_spans` hues it at 24-bit: the lead and the door faint, the bar's
+/// held cells in the `Busy` badge's accent, its free cells in their own dark tone, and the pips
+/// in `Queued`'s own tier, because a fire outside the door is exactly a queued one. Each run's
+/// ` +N` rides its run's style, and a `Held` or `Waiting` count above 0 takes its run's hue
+/// while a zero stays in the ground. The identity is the lane's name alone, as
 /// the terminal's is; its priority is the info view's `Queue` row's to print.
 function queueLaneCells(cols, lane) {
   const identity = truncateWidth(lane.lane, Math.max(0, cols.name - QUEUE_LANE_PREFIX_W));
@@ -1429,12 +1575,13 @@ function queueLaneCells(cols, lane) {
   const filled = Math.min(lane.held, cells);
   const field = [];
   if (filled > 0) field.push(cell(QUEUE_SLOT_HELD.repeat(filled), BADGE_STYLE.Busy));
-  if (cells - filled > 0) field.push(cell(QUEUE_SLOT_FREE.repeat(cells - filled), { fg: "recede" }));
+  if (cells - filled > 0) field.push(cell(QUEUE_SLOT_FREE.repeat(cells - filled), { fg: "free" }));
   let barW = cells;
   if (barHidden !== null) {
+    // `layout::UsageRanges` closes the bar's mark into the free run.
     const mark = queueOverflowMark(barHidden);
     barW += mark.length;
-    field.push(cell(mark, { fg: "recede" }));
+    field.push(cell(mark, { fg: "free" }));
   }
   // The bar's share of the field is a **reservation**, computed without reading `waiting`, so
   // a fire queueing or being admitted can never move a slot cell. The pips then take the true
@@ -1446,18 +1593,19 @@ function queueLaneCells(cols, lane) {
       : Math.max(0, cols.usage - (barW + QUEUE_FENCE_W));
   const [dots, pipHidden] = queueRun(lane.waiting, pipBudget);
   if (dots > 0 || pipHidden !== null) {
-    field.push(cell(door, { fg: "recede" }));
+    field.push(cell(door, { fg: "faint" }));
     let pips = QUEUE_SLOT_WAITING.repeat(dots);
     if (pipHidden !== null) pips += queueOverflowMark(pipHidden);
     field.push(cell(pips, BADGE_STYLE.Queued));
   }
   const number = lane.capacity === null ? "?" : String(lane.capacity);
+  const count = (n, fg) => cell(String(n), n > 0 ? { fg } : {});
   return [
-    [cell(`${QUEUE_LANE_GLYPH} `), ...identityCells("", "", identity, "ink")],
+    [cell(QUEUE_LANE_GLYPH, { fg: "faint" }), cell(" "), ...identityCells("", null, "", identity, "text")],
     field,
     [cell(number)],
-    [cell(String(lane.held))],
-    [cell(String(lane.waiting))],
+    [count(lane.held, "accent")],
+    [count(lane.waiting, "pre-run")],
   ];
 }
 
@@ -1764,7 +1912,7 @@ function footerRows(hints, cols, rows) {
 }
 
 /// One footer row's cells: the key glyph whitened **structurally** (it is the `keys` field,
-/// never a bracket-scanned run), its label in the calm legend tone, and a gated cell's `dim`
+/// never a bracket-scanned run), its label in the calm muted tone, and a gated cell's `dim`
 /// bit carried onto both.
 function hintRowCells(row) {
   const out = [];
@@ -1773,13 +1921,13 @@ function hintRowCells(row) {
     if (hint.kind === "key") {
       out.push(cell(hint.keys, { fg: "bright", dim: !hint.live }));
       out.push(blank(1));
-      out.push(cell(hint.label, { fg: "legend", dim: !hint.live }));
+      out.push(cell(hint.label, { fg: "muted", dim: !hint.live }));
     } else if (hint.kind === "note") {
       out.push(cell(hint.glyph, { fg: "alarm" }));
       out.push(blank(1));
-      out.push(cell(hint.label, { fg: "legend" }));
+      out.push(cell(hint.label, { fg: "muted" }));
     } else if (hint.kind === "bare") {
-      out.push(cell(hint.text, { fg: "legend" }));
+      out.push(cell(hint.text, { fg: "muted" }));
     }
   });
   return out;
@@ -1969,6 +2117,15 @@ function planFooter(board, rows, selected, filter, quitting, typing, flash, info
 
 /// `shell::LIST_TITLE_ROWS` plus the column header — the four rows pinned above the body.
 const LIST_CHROME_ROWS = 4;
+/// `shell::render_list`'s rule rows — the `─` rule between the body and the footer. Its row
+/// comes off the height the footer is capped against, so the body keeps its floor.
+const FOOTER_RULE_ROWS = 1;
+
+/// `shell::rule_line` — a `─` rule `cols` cells wide in the rule tone: the list's title band
+/// ends on one and a second sits above the footer.
+function ruleRow(cols) {
+  return [cell("─".repeat(cols), { fg: "rule" })];
+}
 
 /**
  * How many body rows a `cols × rows` viewport leaves for `board` — the chrome above plus the
@@ -1997,9 +2154,9 @@ export function bodyHeight(board, options) {
       options.busyOnly === true,
     ),
     cols,
-    rows,
+    rows - FOOTER_RULE_ROWS,
   );
-  return Math.max(0, rows - LIST_CHROME_ROWS - footer.length);
+  return Math.max(0, rows - LIST_CHROME_ROWS - FOOTER_RULE_ROWS - footer.length);
 }
 
 /**
@@ -2073,7 +2230,7 @@ function sliceCells(cells, start, end) {
 }
 
 /// `BACKDROP_RECEDE` — the whole frame behind a popup dims. ratatui *unions* `DIM` into the
-/// modifier, which over a bold column header would leave a cell both bold and dim; this page's
+/// modifier, which over a bold badge would leave a cell both bold and dim; this page's
 /// golden planes spell one weight per cell and `assertGrid` refuses that pair, so a receded
 /// cell takes `dim` alone (D6).
 function recede(cells) {
@@ -2099,27 +2256,27 @@ function renderPopup(frame, popup, cols, rows) {
   // The title rides the top border as ` Title `, bright, the weight `render_popup` gives it.
   const titleText = clipWidth(` ${popup.title} `, Math.max(0, inner));
   const titleRow = [
-    cell(POPUP_BORDER.tl, { fg: "recede" }),
+    cell(POPUP_BORDER.tl, { fg: "faint" }),
     cell(titleText, { fg: "bright" }),
-    cell(POPUP_BORDER.h.repeat(Math.max(0, inner - textWidth(titleText))), { fg: "recede" }),
-    cell(POPUP_BORDER.tr, { fg: "recede" }),
+    cell(POPUP_BORDER.h.repeat(Math.max(0, inner - textWidth(titleText))), { fg: "faint" }),
+    cell(POPUP_BORDER.tr, { fg: "faint" }),
   ];
   const bottomRow = [
-    cell(POPUP_BORDER.bl, { fg: "recede" }),
-    cell(POPUP_BORDER.h.repeat(Math.max(0, inner)), { fg: "recede" }),
-    cell(POPUP_BORDER.br, { fg: "recede" }),
+    cell(POPUP_BORDER.bl, { fg: "faint" }),
+    cell(POPUP_BORDER.h.repeat(Math.max(0, inner)), { fg: "faint" }),
+    cell(POPUP_BORDER.br, { fg: "faint" }),
   ];
   /// One framed body row: border, gutter, the line clipped to the content width, gutter, border.
   const bodyRow = (line) => {
     const budget = Math.max(0, inner - 2 * POPUP_PAD_X);
     const kept = sliceCells(line, 0, budget);
     return [
-      cell(POPUP_BORDER.v, { fg: "recede" }),
+      cell(POPUP_BORDER.v, { fg: "faint" }),
       blank(POPUP_PAD_X),
       ...kept,
       blank(budget - rowWidth(kept)),
       blank(POPUP_PAD_X),
-      cell(POPUP_BORDER.v, { fg: "recede" }),
+      cell(POPUP_BORDER.v, { fg: "faint" }),
     ];
   };
   // A box the viewport clamps keeps both borders and its gutter rows and clips the body
@@ -2146,15 +2303,15 @@ function renderPopup(frame, popup, cols, rows) {
   });
 }
 
-/// A popup body line of plain prose, in the calm legend tone the dialogs paint.
+/// A popup body line of plain prose, in the calm muted tone the dialogs paint.
 function dialogLine(text) {
-  return text === "" ? [] : [cell(text, { fg: "legend" })];
+  return text === "" ? [] : [cell(text, { fg: "muted" })];
 }
 
 /// `shell::dialog_item_line` — one listed item, indented inside the gutter. The name is plain
 /// by construction: a name may never dress as a key.
 function dialogItem(text) {
-  return [cell(`${DIALOG_ITEM_INDENT}${text}`, { fg: "ink" })];
+  return [cell(`${DIALOG_ITEM_INDENT}${text}`, { fg: "text" })];
 }
 
 /// `shell::confirm_hints` rendered as one line — `y <verb>  n cancel`, both glyphs from the
@@ -2581,13 +2738,13 @@ function wrapValue(text, budget) {
 /// The `State` row's badge glyph rides in its own styled cell ahead of the value and eats two
 /// cells of the budget, exactly as `section_body_lines` spends them.
 function infoFieldLines(row, labelW, width) {
-  const style = row.badge === null ? { fg: "ink" } : (BADGE_STYLE[row.badge] ?? BADGE_STYLE.Idle);
+  const style = row.badge === null ? { fg: "text" } : (BADGE_STYLE[row.badge] ?? BADGE_STYLE.Idle);
   const glyphW = row.badge === null ? 0 : 2;
   const lead = labelW + INFO_LABEL_GUTTER;
   const budget = width - lead - glyphW;
   return wrapValue(row.value, budget).map((text, i) => {
     if (i > 0) return [blank(lead + glyphW), cell(text, style)];
-    const cells = [cell(padWidth(row.label, labelW) + " ".repeat(INFO_LABEL_GUTTER), { fg: "legend", dim: true })];
+    const cells = [cell(padWidth(row.label, labelW) + " ".repeat(INFO_LABEL_GUTTER), { fg: "muted", dim: true })];
     if (row.badge !== null) cells.push(cell(`${BADGE_GLYPH[row.badge] ?? BADGE_GLYPH.Idle} `, style));
     cells.push(cell(text, style));
     return cells;
@@ -2602,10 +2759,10 @@ function infoPairLine(row, pairLabelW, pairFirstW) {
   const used = pairLabelW + 1 + textWidth(a.value);
   const gap = Math.max(0, pairFirstW - used) + INFO_LABEL_GUTTER;
   return [
-    cell(`${padWidth(a.label, pairLabelW)} `, { fg: "legend", dim: true }),
+    cell(`${padWidth(a.label, pairLabelW)} `, { fg: "muted", dim: true }),
     cell(a.value),
     blank(gap),
-    cell(`${padWidth(b.label, pairLabelW)} `, { fg: "legend", dim: true }),
+    cell(`${padWidth(b.label, pairLabelW)} `, { fg: "muted", dim: true }),
     cell(b.value),
   ];
 }
@@ -2887,9 +3044,9 @@ const STATUS_ROLE = {
   ok: "ok",
   failed: "alarm",
   killed: "alarm",
-  skipped: "muted",
-  running: "muted",
-  unknown: "muted",
+  skipped: "faint",
+  running: "faint",
+  unknown: "faint",
 };
 
 /// `treeview::severity` — the rollup ladder `failed > killed > unknown > running > skipped >
@@ -3268,7 +3425,7 @@ function scrollbarOf(total, viewport, top) {
 function scrollbarCell(bar, row) {
   if (bar === null) return blank(SCROLLBAR_W);
   const on = row >= bar.thumbStart && row < bar.thumbStart + bar.thumbLen;
-  return cell(on ? SCROLLBAR_THUMB : SCROLLBAR_TRACK, { fg: "recede", dim: true });
+  return cell(on ? SCROLLBAR_THUMB : SCROLLBAR_TRACK, { fg: "faint", dim: true });
 }
 
 /// `logview::scoped_entries` — the ring entries the log pane renders, oldest → newest: the
@@ -3420,9 +3577,9 @@ function treeRowCells(row, paneW, now) {
   const budget = Math.max(1, paneW - gutterW - railW - RAIL_GAP);
   const label = truncateWidth(row.headline, budget);
   const pad = Math.max(0, paneW - gutterW - textWidth(label) - railW);
-  const weight = row.selected ? { fg: "bright", bold: true } : { fg: "ink" };
-  const railStyle = row.selected ? { fg: "bright", bold: true } : { fg: "recede", dim: true };
-  const cells = [cell(gutter, { fg: "recede", dim: true }), cell(label, weight), blank(pad, weight)];
+  const weight = row.selected ? { fg: "bright", bold: true } : { fg: "text" };
+  const railStyle = row.selected ? { fg: "bright", bold: true } : { fg: "faint", dim: true };
+  const cells = [cell(gutter, { fg: "faint", dim: true }), cell(label, weight), blank(pad, weight)];
   const rail = [];
   if (outCell !== "") rail.push(cell(outCell, railStyle));
   if (tookCell !== "") rail.push(cell(tookCell, railStyle));
@@ -3444,7 +3601,7 @@ function statusGlyph(status, recovered) {
 /// that. It and a failure are loud (bold); everything else sits dim, until the cursor bolds
 /// it with the rest of its band.
 function statusStyle(status, recovered, selected) {
-  const fg = recovered ? "caution" : (STATUS_ROLE[status] ?? "muted");
+  const fg = recovered ? "caution" : (STATUS_ROLE[status] ?? "faint");
   const loud = recovered || status === "failed" || status === "killed";
   return loud || selected ? { fg, bold: true } : { fg, dim: true };
 }
@@ -3456,7 +3613,7 @@ function treeBodyCells(body, paneW) {
   const gutter = bodyGutter(body.guides);
   const budget = Math.max(1, paneW - textWidth(gutter));
   const text = body.text === null ? moreText(body.more) : truncateWidth(body.text, budget);
-  return [cell(gutter, { fg: "recede", dim: true }), cell(text, { fg: "recede", dim: true })];
+  return [cell(gutter, { fg: "faint", dim: true }), cell(text, { fg: "faint", dim: true })];
 }
 
 /**
@@ -3684,8 +3841,8 @@ function runFrame(plan) {
  * per screen row — exactly `rows` of them, each summing to exactly `cols`.
  *
  * The bands, top to bottom, are `shell::render_list`'s: a pinned title band (the title bar,
- * the host-load strip and the spacer above the columns — `shell::LIST_TITLE_ROWS`), the
- * column header, the flexed body, and the footer pinned at the bottom. The body is the one
+ * the host-load strip and the `─` rule above the columns — `shell::LIST_TITLE_ROWS`), the
+ * column header, the flexed body, and a second rule and the footer pinned at the bottom. The body is the one
  * sequence `list_view` renders — the service and group rows, then the `Queues` section's
  * blank spacer, header and lanes — so the row the cursor indexes is the row that paints.
  *
@@ -3770,11 +3927,12 @@ export function layout(board, options) {
   const footer = footerRows(
     planFooter(board, listRows, selected, filter, quitting, typing, flash, false, grouped, busyOnly),
     cols,
-    rows,
+    rows - FOOTER_RULE_ROWS,
   );
-  // The title band and the column header are pinned above, the footer below; the body flexes
-  // into whatever is left, and takes nothing when the viewport cannot hold the chrome.
-  const height = Math.max(0, rows - LIST_CHROME_ROWS - footer.length);
+  // The title band and the column header are pinned above, the rule and the footer below; the
+  // body flexes into whatever is left, and takes nothing when the viewport cannot hold the
+  // chrome.
+  const height = Math.max(0, rows - LIST_CHROME_ROWS - FOOTER_RULE_ROWS - footer.length);
   // Clamped here as well as in `scrollOffset`, because a caller that never scrolled still
   // hands in the `0` default and a stale offset from a taller viewport must not blank the body.
   const clamped = Math.min(Math.max(0, Math.trunc(options.offset ?? 0)), Math.max(0, listRows.length - height));
@@ -3787,7 +3945,7 @@ export function layout(board, options) {
   screen.push(fitRow(planHeader(headerView(board, now, version), cols), cols));
   const strip = planLoadStrip(board, now, cols);
   screen.push(fitRow(strip ?? [], cols));
-  screen.push(fitRow([], cols));
+  screen.push(fitRow(ruleRow(cols), cols));
   screen.push(fitRow(columnHeaderCells(visible, widths), cols));
   for (let i = 0; i < height; i += 1) {
     const at = offset + i;
@@ -3799,6 +3957,7 @@ export function layout(board, options) {
     const cells = fitRow(bodyRowCells(row, visible, widths, laneCols, rollups, now, cols), cols);
     screen.push(at === selected ? selectRow(cells) : cells);
   }
+  screen.push(fitRow(ruleRow(cols), cols));
   for (const row of footer) screen.push(fitRow(hintRowCells(row), cols));
   const frame = screen.slice(0, rows);
 
@@ -3822,13 +3981,13 @@ function withOverlays(frame, board, options, cols, rows) {
   return frame;
 }
 
-/// The connection's own state as one row of `cols` cells, in the legend tone. Measured in cells
+/// The connection's own state as one row of `cols` cells, in the muted tone. Measured in cells
 /// like every other row on the page: a daemon's refusal is its own sentence and can carry
 /// anything, and a `slice` by UTF-16 unit would let one wide grapheme overrun the grid.
 export function noticeRow(text, cols) {
   const fitted = truncateWidth(text, cols);
   const pad = " ".repeat(Math.max(0, cols - textWidth(fitted)));
-  return [cell(fitted, { fg: "legend" }), cell(pad)];
+  return [cell(fitted, { fg: "muted" }), cell(pad)];
 }
 
 /// The phone's status list: the title bar, a spacer, the column header and every service flat,
@@ -3856,17 +4015,18 @@ function statusFrame(board, options) {
   return screen;
 }
 
-/// The column header row — the visible labels in their own columns, painted bold, the same
-/// weight `render_list` gives it, each flushed to its column's edge as the body cells are.
+/// `shell::column_header_style` at 24-bit — the column headers' look, the list's and the
+/// `Queues` section's: muted and **not** bold, so the rows under them carry the eye.
+const COLUMN_HEADER_STYLE = { fg: "muted" };
+
+/// The column header row — the visible labels in their own columns, in
+/// [`COLUMN_HEADER_STYLE`], each flushed to its column's edge as the body cells are.
 function columnHeaderCells(visible, widths) {
   const out = [];
   visible.forEach((column, i) => {
     if (i > 0) out.push(blank(COLUMN_SPACING));
     const width = widths[column.key];
-    out.push(cell(alignWidth(clipWidth(column.label, width), width, column.align), {
-      fg: "bright",
-      bold: true,
-    }));
+    out.push(cell(alignWidth(clipWidth(column.label, width), width, column.align), COLUMN_HEADER_STYLE));
   });
   return out;
 }
@@ -3881,7 +4041,7 @@ function bodyRowCells(row, visible, widths, laneCols, rollups, now, cols) {
   if (row.kind === "queuesHeader") {
     return queueCompose(
       laneCols,
-      QUEUE_COLUMNS.map((label) => [cell(label, { fg: "bright", bold: true })]),
+      QUEUE_COLUMNS.map((label) => [cell(label, COLUMN_HEADER_STYLE)]),
     );
   }
   if (row.kind === "queue") return queueCompose(laneCols, queueLaneCells(laneCols, row.lane));
@@ -3891,7 +4051,7 @@ function bodyRowCells(row, visible, widths, laneCols, rollups, now, cols) {
     service:
       identity === null
         ? peekEmptyCells(row, cols)
-        : identityCells(identity.prefix, identity.body, identity.name, identity.tint, identity.count),
+        : identityCells(identity.prefix, identity.icon, identity.body, identity.name, identity.tint, identity.count),
     state: [],
     trigger: [],
     liveness: [],
@@ -3901,13 +4061,13 @@ function bodyRowCells(row, visible, widths, laneCols, rollups, now, cols) {
     // Every other cell of the placeholder row is empty: a peek carries no state or timing.
   } else if (row.kind === "service") {
     const svc = row.svc;
-    const style = BADGE_STYLE[svc.badge] ?? BADGE_STYLE.Idle;
-    parts.state = [cell(stateText(svc, now), style)];
-    parts.trigger = [cell(truncateWidth(svc.triggerLabel, widths.trigger ?? 0), { fg: identity.tint })];
+    parts.state = badgeCells(svc, now);
+    const recedes = svc.badge === "Stopped";
+    parts.trigger = triggerCells(truncateWidth(svc.triggerLabel, widths.trigger ?? 0), recedes);
     const liveness = livenessCell(svc.lastActivityAt, now);
-    parts.liveness = [cell(liveness.text, { fg: liveness.stale ? "recede" : identity.tint })];
+    parts.liveness = [cell(liveness.text, timeCellStyle(liveness.text, liveness.stale, recedes))];
     const next = nextCell(svc, now);
-    parts.next = [cell(next.text, { fg: next.far ? "recede" : identity.tint })];
+    parts.next = [cell(next.text, timeCellStyle(next.text, next.far, recedes))];
   } else {
     // A group header carries **no** state badge in the resting case (ADR-0066): health is
     // surfaced, ordinary running/stopped state is not. The one exception is a crashed member,
@@ -3922,7 +4082,7 @@ function bodyRowCells(row, visible, widths, laneCols, rollups, now, cols) {
     // service row folds its own anchor through, so the header inherits the identical
     // freshness threshold with no parallel logic.
     const liveness = livenessCell(rollup?.latestActivityAt ?? null, now);
-    parts.liveness = [cell(liveness.text, { fg: liveness.stale ? "recede" : "ink" })];
+    parts.liveness = [cell(liveness.text, timeCellStyle(liveness.text, liveness.stale, false))];
   }
 
   const out = [];

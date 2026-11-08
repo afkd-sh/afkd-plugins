@@ -380,6 +380,16 @@ impl CapturedTui {
         grid
     }
 
+    /// The foreground colour of the cell at `row`, column `col`: the hue a test reads where a
+    /// glyph alone does not tell two states apart. [`vt100::Color::Default`] off the screen.
+    pub(crate) fn fg(&self, row: u16, col: usize) -> vt100::Color {
+        let parser = self.parser.lock().expect("parser mutex");
+        u16::try_from(col)
+            .ok()
+            .and_then(|col| parser.screen().cell(row, col).map(vt100::Cell::fgcolor))
+            .unwrap_or_default()
+    }
+
     /// Bounded-deadline poll: return `true` as soon as the **rendered** screen satisfies
     /// `pred`, or `false` when `budget` elapses. The reader thread keeps the screen
     /// current independently, so the decision to proceed is driven by *what has

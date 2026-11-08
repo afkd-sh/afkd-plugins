@@ -1,71 +1,71 @@
 afkd 0.2.123 · ● Running 4s · 9 up · 1 down                                            0 tok · $0.00
-CPU            ▁▁   1% · Mem            ▁▁ 1.4G/31G · Net ↓          ▂▂ 3.0k/s ↑          ▂▂ 2.2k/s 
-                                                                                                    
+CPU           ▁▁    1% · Mem           ▁▁  1.4G/31G · Net ↓         ▂▂  3.0k/s ↑         ▂▂  2.2k/s 
+────────────────────────────────────────────────────────────────────────────────────────────────────
 Service                          State                 Trigger              Last Activity   Next Run
 🧹 janitor                       ● Idle                Every 1h                              59m 55s
-🔹 ops.nightly                   ● Idle                Every 1h                              59m 55s
-🔹 ops.sleeper                   ● Idle                Every 1h                              59m 55s
-🔸 ops.broken                    ✕ Crashed             Every 1h                                     
-🔹 ops.vacuum                    ● Idle                Every 1h                              59m 55s
-🔹 archivist                     ● Idle                Every 1h                              59m 55s
-🔹 noisy                         ● Idle                Every 1h                              59m 55s
-🔹 flaky                         ● Idle                Every 1h                              59m 55s
-🔹 deep                          ● Idle                Every 1h                        1s    59m 58s
- ▏ 🚀 deep_pass                                                                              0.0s  ✓︎
- ▏   ⊘︎ true                                                                                  0.0s  ✓︎
- ▏     ⚙︎ echo guarded                                                                1 ln    0.0s  ✓︎
-🔹 spare                         ● Idle                Every 1h                              59m 55s
+◇ ops.nightly                    ● Idle                Every 1h                              59m 55s
+◇ ops.sleeper                    ● Idle                Every 1h                              59m 55s
+◇ ops.broken                     ✕ Crashed             Every 1h                                     
+◇ ops.vacuum                     ● Idle                Every 1h                              59m 55s
+◇ archivist                      ● Idle                Every 1h                              59m 55s
+◇ noisy                          ● Idle                Every 1h                              59m 55s
+◇ flaky                          ● Idle                Every 1h                              59m 55s
+◇ deep                           ● Idle                Every 1h                        1s    59m 58s
+▏ 🚀 deep_pass                                                                               0.0s  ✓︎
+▏   ⊘︎ true                                                                                   0.0s  ✓︎
+▏     ⚙︎ echo guarded                                                                 1 ln    0.0s  ✓︎
+◇ spare                          ● Idle                Every 1h                              59m 55s
                                                                                                     
-Queue      Usage                                                           Capacity   Held   Waiting
-🧵 heavy   ▯▯                                                              2          0      0      
-                                                                                                    
-                                                                                                    
+Queue     Usage                                                            Capacity   Held   Waiting
+≡ heavy   ▯▯                                                               2          0      0      
                                                                                                     
                                                                                                     
                                                                                                     
                                                                                                     
                                                                                                     
+                                                                                                    
+────────────────────────────────────────────────────────────────────────────────────────────────────
 s start    r restart    o output      g/G first/last  / find    Ctrl+R reload                       
 x stop     + widen      i info        v grouped                 ? help                              
 t run now  - narrow     Enter peek    b busy ○                  q quit                              
 
-── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
-nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+── fg · n text · b bright · m muted · f faint · a accent · p pre-run · c caution · x alarm · k ok · s secondary · r rule · u plugin · o mark · e free
+nnnnnnnnnnnnnfnknnnnnnnnnnnnfnkkkknfnxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnccccc
+mmmmnnnnnnnnnnuunnnnnnnnnmmmmnnnnnnnnnnppnnnnnnnnnnnnnmmmmmnnnnnnnnnkknnnnnnnnmmnnnnnnnnnkknnnnnnnnn
+rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmnnnmmmmmmmm
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+onnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+onnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+xnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+onnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+onnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+onnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+onnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+onnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnfffffff
+fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffk
+fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffk
+fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffk
+onnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmk
-nmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmk
-nmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmk
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnniiiiiinnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnrrrrrrr
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+mmmmmnnnnnmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmnnnmmmmnnnmmmmmmm
+fnnnnnnnnneennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bnlllllllllbnlllllllllllbnllllllllllllbbbnllllllllllllbnllllllllbbbbbbnllllllnnnnnnnnnnnnnnnnnnnnnnn
-bnlllllllllbnlllllllllllbnllllllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bnlllllllllbnlllllllllllbbbbbnllllllllbnllllllllllllllllllllllllbnllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
+bnmmmmmmmmmbnmmmmmmmmmmmbnmmmmmmmmmmmmbbbnmmmmmmmmmmmmbnmmmmmmmmbbbbbbnmmmmmmnnnnnnnnnnnnnnnnnnnnnnn
+bnmmmmmmmmmbnmmmmmmmmmmmbnmmmmmmmmmmmmbnmmmmmmmmmmmmmmmmmmmmmmmmbnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bnmmmmmmmmmbnmmmmmmmmmmmbbbbbnmmmmmmmmbnmmmmmmmmmmmmmmmmmmmmmmmmbnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · s selection band · D band, dim · B band, bold
+.....................................bbbbbb.........................................................
+....hhhhhhhhhhhhh.....ddd....hhhhhhhhhhhhh.........ddd.....hhhhhhhhhhhh.........hhhhhhhhhhhh........
 ....................................................................................................
-dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
 ....................................................................................................
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................
@@ -75,12 +75,12 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbb...bbbb
 ....................................................................................................
 ....................................................................................................
 ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss
-.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+...................................................................................................d
+...................................................................................................d
+...................................................................................................d
 ....................................................................................................
 ....................................................................................................
-bbbbb......bbbbb...........................................................bbbbbbbb...bbbb...bbbbbbb
+....................................................................................................
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................

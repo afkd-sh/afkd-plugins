@@ -1,17 +1,15 @@
 afkd 0.2.123 · ● Running 12s · 8 up · 2 down                                        1.6k tok · $0.04
-CPU           ▁▁▁   1% · Mem           ▁▁▁ 1.5G/31G · Net ↓         ▆▁▁  717/s ↑         ▂▁▁  959/s 
-                                                                                                    
+CPU          ▁▁▁    1% · Mem          ▁▁▁  1.5G/31G · Net ↓        ▆▁▁   717/s ↑        ▂▁▁   959/s 
+────────────────────────────────────────────────────────────────────────────────────────────────────
 Service                          State                 Trigger              Last Activity   Next Run
 ⊟ 📦 ops                         ✕ Crashed                                             4s           
-├─ 🔹 nightly                    ▷ Queued 2s           Every 1h                        9s           
-├─ 🔷 sleeper                    ▶ Busy 4s             Every 1h                        4s           
-├─ 🔸 broken                     ✕ Crashed             Every 1h                                     
-└─ 🔷 vacuum                     ▶ Busy 5s             Every 1h                        5s           
+├─ ◇ nightly                     ▷ Queued 2s           Every 1h                        9s           
+├─ ◆ sleeper                     ▶ Busy 4s             Every 1h                        4s           
+├─ ◇ broken                      ✕ Crashed             Every 1h                                     
+└─ ◆ vacuum                      ▶ Busy 5s             Every 1h                        5s           
                                                                                                     
-Queue      Usage                                                           Capacity   Held   Waiting
-🧵 heavy   ▮▮ ╎ ∙                                                          2          2      1      
-                                                                                                    
-                                                                                                    
+Queue     Usage                                                            Capacity   Held   Waiting
+≡ heavy   ▮▮ ╎ ∙                                                           2          2      1      
                                                                                                     
                                                                                                     
                                                                                                     
@@ -25,26 +23,25 @@ Queue      Usage                                                           Capac
                                                                                                     
                                                                                                     
                                                                                                     
+                                                                                                    
+────────────────────────────────────────────────────────────────────────────────────────────────────
 /ops (esc)                                                                                          
 s start  t run now  + widen     Enter/h collapse  v flat          b busy ○    Ctrl+R reload  q quit 
 x stop   r restart  - narrow    H/L fold all      g/G first/last  / find      ? help                
 
-── fg · n ink · b bright · l legend · r recede · a accent · e accent-dim · c caution · x alarm · k ok · i idle · m muted
-nnnnnnnnnnnnnnnknnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+── fg · n text · b bright · m muted · f faint · a accent · p pre-run · c caution · x alarm · k ok · s secondary · r rule · u plugin · o mark · e free
+nnnnnnnnnnnnnfnknnnnnnnnnnnnnfnkkkknfnxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnccccc
+mmmmnnnnnnnnnuuunnnnnnnnnmmmmnnnnnnnnnpppnnnnnnnnnnnnnmmmmmnnnnnnnnkkknnnnnnnnmmnnnnnnnnkkknnnnnnnnn
+rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmnnnmmmmmmmm
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
+nnnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnpppppppppppnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
+nnnannnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
+nnnxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnannnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbbbbbbnnnbbbbbbbbbbbbbnnnbbbbbbbb
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnneeeeeeeeeeennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-rrrnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bbbbbnnnnnnbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbbbnnnbbbbnnnbbbbbbb
-nnnnnnnnnnnaarrrennnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+mmmmmnnnnnmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmnnnmmmmnnnmmmmmmm
+fnnnnnnnnnaafffpnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnannnnnnpnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -57,23 +54,26 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-llllllllllnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bnlllllllbnlllllllllbnllllllllllbbbbbbbnllllllllllbnllllllllllllllbnllllllllllbbbbbbnllllllllbnlllln
-bnlllllllbnlllllllllbnllllllllllbbbnllllllllllllllbbbnllllllllllllbnllllllllllbnllllnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
+mmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+bnmmmmmmmbnmmmmmmmmmbnmmmmmmmmmmbbbbbbbnmmmmmmmmmmbnmmmmmmmmmmmmmmbnmmmmmmmmmmbbbbbbnmmmmmmmmbnmmmmn
+bnmmmmmmmbnmmmmmmmmmbnmmmmmmmmmmbbbnmmmmmmmmmmmmmmbbbnmmmmmmmmmmmmbnmmmmmmmmmmbnmmmmnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · i dim italic · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · s selection band · D band, dim · B band, bold
+......................................bbbbbb........................................................
+....hhhhhhhhhhhhh.....ddd....hhhhhhhhhhhhh.........ddd.....hhhhhhhhhhhh.........hhhhhhhhhhhh........
 ....................................................................................................
-dddddddddddddddd......ddddddddddddddddddd..........ddddddddddddddddddd........ddddddddddddd.........
 ....................................................................................................
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbb...bbbbbbbb
 sssssssssssssssssssssssssssssssssBBBBBBBBBssssssssssssssssssssssssssssssssssssssssssssssssssssssssss
-.................................ddddddddddd........................................................
+....................................................................................................
 .................................bbbbbbbbb..........................................................
 .................................bbbbbbbbb..........................................................
 .................................bbbbbbbbb..........................................................
 ....................................................................................................
-bbbbb......bbbbb...........................................................bbbbbbbb...bbbb...bbbbbbb
-...........bb...d...................................................................................
+....................................................................................................
+..........bb........................................................................................
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................

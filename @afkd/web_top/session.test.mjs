@@ -406,7 +406,7 @@ function footerTextAt(board, at, selected) {
     // A hint is a bright key cell, a space, then a legend label cell — the two `hintRowCells`
     // mints from one hint, which must agree on the dim bit.
     for (let i = 0; i + 2 < row.length; i += 1) {
-      if (row[i].fg !== "bright" || row[i + 1].text !== " " || row[i + 2].fg !== "legend") continue;
+      if (row[i].fg !== "bright" || row[i + 1].text !== " " || row[i + 2].fg !== "muted") continue;
       if (row[i].text.trim() === "") continue;
       out.push({ keys: row[i].text, label: row[i + 2].text, live: !row[i + 2].dim });
     }
