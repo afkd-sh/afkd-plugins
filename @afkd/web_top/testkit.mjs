@@ -46,6 +46,7 @@ export const AFKD_SOURCES = Object.freeze([
   "crates/tui/src/help.rs",
   "crates/tui/src/keys.rs",
   "crates/tui/src/layout.rs",
+  "crates/tui/src/legend.rs",
   "crates/tui/src/model.rs",
   "crates/tui/src/notice.rs",
   "crates/tui/src/palette.rs",
@@ -197,15 +198,17 @@ assert.equal(new Set(Object.values(ROLE_LETTER)).size, ROLES.length, "…and no 
 const ROLE_RULE =
   "── fg · n text · b bright · m muted · f faint · a accent · p pre-run · c caution · x alarm · k ok · s secondary · r rule · u plugin · o mark · e free";
 const WEIGHT_RULE =
-  "── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · s selection band · D band, dim · B band, bold";
+  "── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · r rule band · R rule band, dim · g rule band, bold · s selection band · D band, dim · B band, bold";
 
 /// The weight-and-band letter for one cell. `dim` and `bold` are the terminal's two weight
 /// attributes and never co-occur here (`assertGrid` holds them to that), and the page paints
-/// two backgrounds — so one letter spells all of it: the weight in lower case off the
-/// selection bar, in upper case on it, and the host-load chip as a letter of its own. A chip
-/// cell is never bold or italic (`assertGrid` holds that too), and dim only behind a popup.
+/// three backgrounds — so one letter spells all of it: the weight in lower case off the
+/// selection bar, in upper case on it, and the host-load chip and the footer's key badge band
+/// as letters of their own. A chip cell is never bold or italic, a badge cell never italic
+/// (`assertGrid` holds both), and either is dim only behind a popup.
 function weightLetter(c) {
   if (c.bg === "chip") return c.dim ? "H" : "h";
+  if (c.bg === "rule") return c.dim ? "R" : c.bold ? "g" : "r";
   const band = c.bg === "selection";
   // Italic only ever rides dim — the activity peek's `empty` placeholder — and never a band.
   if (c.italic) return "i";
@@ -267,6 +270,10 @@ export function assertGrid(rows, cols, height) {
       assert.ok(
         cell.bg !== "chip" || !(cell.bold || cell.italic),
         `row ${i}: ${JSON.stringify(cell.text)} on a chip carries a weight the plane cannot spell`,
+      );
+      assert.ok(
+        cell.bg !== "rule" || !cell.italic,
+        `row ${i}: ${JSON.stringify(cell.text)} on a key badge carries a weight the plane cannot spell`,
       );
       assert.ok(!(cell.dim && cell.bold), `row ${i}: ${JSON.stringify(cell.text)} is both dim and bold`);
       width += cell.width;

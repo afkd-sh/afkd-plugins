@@ -32,8 +32,8 @@
   --term-selection: #232a45;
 
   /* The `Night` roles, which only the 24-bit arm paints: the text every unhued cell wears, the
-     muted labels, the rules, a plugin trigger's name, the parked mark, a lane's free cells and
-     the chip each host-load lane sits on. */
+     muted labels, the rules and the footer's key badges, a plugin trigger's name, the parked
+     mark, a lane's free cells and the chip each host-load lane sits on. */
   --term-text: #c0caf5;
   --term-muted: #737aa2;
   --term-rule: #292e42;
@@ -205,6 +205,7 @@ html.status #screen {
 .fg-free { color: var(--term-free); }
 
 .bg-chip { background: var(--term-chip); }
+.bg-rule { background: var(--term-rule); }
 .bg-selection { background: var(--term-selection); }
 
 .bold { font-weight: 700; }

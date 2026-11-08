@@ -24,10 +24,10 @@ Queue     Usage                                                            Capac
                                                                                                     
                                                                                                     
                                                                                                     
+                                                                                                    
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 /ops (esc)                                                                                          
-s start  t run now  + widen     Enter/h collapse  v flat          b busy ○    Ctrl+R reload  q quit 
-x stop   r restart  - narrow    H/L fold all      g/G first/last  / find      ? help                
+ t  run now    o  output    Enter  collapse    x  stop    ?  help                                   
 
 ── fg · n text · b bright · m muted · f faint · a accent · p pre-run · c caution · x alarm · k ok · s secondary · r rule · u plugin · o mark · e free
 nnnnnnnnnnnnnfnknnnnnnnnnnnnnfnkkkknfnxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnccccc
@@ -56,12 +56,12 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
 mmmmmmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bnmmmmmmmbnmmmmmmmmmbnmmmmmmmmmmbbbbbbbnmmmmmmmmmmbnmmmmmmmmmmmmmmbnmmmmmmmmmmbbbbbbnmmmmmmmmbnmmmmn
-bnmmmmmmmbnmmmmmmmmmbnmmmmmmmmmmbbbnmmmmmmmmmmmmmmbbbnmmmmmmmmmmmmbnmmmmmmmmmmbnmmmmnnnnnnnnnnnnnnnn
+nfnnmmmmmmmnnnnfnnmmmmmmnnnnnnnnnnnmmmmmmmmnnnnnnnmmmmnnnnnnnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · r rule band · R rule band, dim · g rule band, bold · s selection band · D band, dim · B band, bold
 ......................................bbbbbb........................................................
 ....hhhhhhhhhhhhh.....ddd....hhhhhhhhhhhhh.........ddd.....hhhhhhhhhhhh.........hhhhhhhhhhhh........
 ....................................................................................................
@@ -90,5 +90,5 @@ sssssssssssssssssssssssssssssssssBBBBBBBBBssssssssssssssssssssssssssssssssssssss
 ....................................................................................................
 ....................................................................................................
 ....................................................................................................
-.........d.ddddddd..d.ddddd.........................................................................
-....................d.dddddd........................................................................
+....................................................................................................
+rrr...........rrr..........rgggggr............rgr........rgr........................................

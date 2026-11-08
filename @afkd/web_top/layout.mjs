@@ -332,8 +332,9 @@ export const ROLES = [
 ];
 
 /// Every background role a cell may name, held to the stylesheet's `.bg-*` rules the same way:
-/// the chip a host-load lane sits on, and the selected row's bar.
-export const BANDS = ["chip", "selection"];
+/// the chip a host-load lane sits on, the rule tone the footer's key badges sit on, and the
+/// selected row's bar.
+export const BANDS = ["chip", "rule", "selection"];
 
 // --- the state vocabulary ----------------------------------------------------------
 //
@@ -366,11 +367,6 @@ const BADGE_STYLE = {
   Stopped: { fg: "faint" },
   Crashed: { fg: "alarm", bold: true },
 };
-
-/// `Badge::can_start` — only a terminal (stopped/crashed) service starts.
-function canStart(badge) {
-  return badge === "Stopped" || badge === "Crashed";
-}
 
 /// `Badge::can_stop` — only a live one stops.
 function canStop(badge) {
@@ -1625,20 +1621,21 @@ function queueCompose(cols, groupsOfCells) {
 
 // --- the footer legend -------------------------------------------------------------
 //
-// `crates/tui/src/legend.rs` (the hint model, the wrap and the column grid),
-// `crates/tui/src/layout.rs`'s `footer` (which cells each selection composes) and
-// `crates/tui/src/keys.rs` (where every advertised glyph comes from).
+// `crates/tui/src/layout.rs`'s `footer` (the five keys the list composes for each selection),
+// `crates/tui/src/legend.rs` (the hint model, `fit_badges`, the wrap and the run view's column
+// grid), `crates/tui/src/shell.rs`'s `list_footer_lines` and `badge_line` (the list's keys
+// painted as badges) and `crates/tui/src/keys.rs` (where every advertised glyph comes from).
 //
 // The chords themselves live in `keymap.mjs` — the whole 51-row transcription of afkd's
 // `DEFAULT_KEYS`, pinned against the Rust by its own suite — because the input side reads the
 // same table. What this file spends it on is the rule the card names: an action with no chord
 // renders no hint at all, because a footer must never advertise an unpressable key.
 
-/// `legend::HELP_LABEL` — matched by the hide rung to find the one key it keeps, so the match
-/// cannot drift from what the builders emit.
+/// `legend::HELP_LABEL` — matched by the hide rung and by [`fitBadges`] to find the one key
+/// each keeps, so the match cannot drift from what the builders emit.
 const HELP_LABEL = "help";
-/// `model::POISON_RECOVERY` — the note a force-abandoned card's footer carries instead of two
-/// unexplained dim cells.
+/// `model::POISON_RECOVERY` — the info page's `Recovery` row for a force-abandoned card: why
+/// its `s` and `r` are refused, and what lifts the gate.
 const POISON_RECOVERY = "force-abandoned; its thread has not finished yet";
 
 /// The `Keys` display view (`keys::Keys`): the chord table plus this frame's drain bit.
@@ -1707,7 +1704,7 @@ function keysOf(quitting) {
   };
 }
 
-/// A non-key legend row aligned in the key column — the poison ✕ note.
+/// A non-key legend row aligned in the key column — a `?` overlay sigil.
 function note(glyph, label) {
   return { kind: "note", glyph, label };
 }
@@ -1745,28 +1742,12 @@ const GRID_ROWS = 3;
 /// `legend::CATEGORY_GUTTER` — wide enough to read as a break without a rule or a label.
 const CATEGORY_GUTTER = 4;
 
-/// `legend::decompose` — split a categorised footer into the parts that are never grid cells
-/// (the trailing affordance, which becomes the header row with its ` · ` shed, and the notes)
-/// and the cells that are. `null` for a footer carrying no seam.
-function decompose(hints) {
-  if (!hints.some((h) => h.kind === "break")) return null;
-  const notes = hints.filter((h) => h.kind === "note");
-  const cells = hints.filter((h) => h.kind !== "note");
-  let header = null;
-  const last = cells[cells.length - 1];
-  if (last !== undefined && last.kind === "bare") {
-    header = last.text.startsWith(" · ") ? last.text.slice(3) : last.text;
-    cells.pop();
-  }
-  return { header, notes, cells };
-}
-
 /// `legend::categories_of` — the cells split on their seams; a category with no cells at all
 /// is simply a column that is not there.
-function categoriesOf(cells) {
+function categoriesOf(hints) {
   const out = [];
   let current = [];
-  for (const hint of cells) {
+  for (const hint of hints) {
     if (hint.kind === "break") {
       if (current.length > 0) out.push(current);
       current = [];
@@ -1815,53 +1796,24 @@ function gridShape(categories, rows) {
 /// fewest rows whose measured block fits `cols`, so within a width band nothing moves at all.
 /// `null` when the footer carries no seam, has no cells, or overflows even the tallest rung.
 function gridRows(hints, cols) {
-  const parts = decompose(hints);
-  if (parts === null) return null;
-  const categories = categoriesOf(parts.cells);
+  if (!hints.some((h) => h.kind === "break")) return null;
+  const categories = categoriesOf(hints);
   if (categories.length === 0) return null;
   const natural = Math.min(categories.reduce((n, c) => Math.max(n, c.length), 0), GRID_ROWS);
   for (let rows = 1; rows <= natural; rows += 1) {
     const shape = gridShape(categories, rows);
-    if (shape.total <= cols) {
-      const out = parts.header === null ? [] : [[bare(parts.header)]];
-      out.push(...shape.rows);
-      out.push(...parts.notes.map((n) => [n]));
-      return out;
-    }
+    if (shape.total <= cols) return shape.rows;
   }
   return null;
 }
 
-/// `legend::shed_dim` — the rung between the full grid and the hide: a terminal too narrow
-/// for the whole block sheds the cells that **cannot be pressed** before it hides the ones
-/// that can.
-function shedDim(hints) {
-  return hints.filter((h) => !(h.kind === "key" && !h.live));
-}
-
-/// `legend::hidden_rows` — the hotkeys hidden: the header row, the notes, then the help cell
-/// alone, so the way *into* the hotkeys is never lost.
+/// `legend::hidden_rows` — the hotkeys hidden: the help cell alone, so the way *into* the
+/// hotkeys is never lost. No rows when help is unbound, and `null` for a footer carrying no
+/// seam.
 function hiddenRows(hints) {
-  const parts = decompose(hints);
-  if (parts === null) return null;
-  const out = parts.header === null ? [] : [[bare(parts.header)]];
-  out.push(...parts.notes.map((n) => [n]));
-  const help = parts.cells.find((h) => h.kind === "key" && h.label === HELP_LABEL);
-  if (help !== undefined) out.push([help]);
-  return out;
-}
-
-/// `shell::shed_hidden` — the hide shed to `cap` rows. The paint order is header · notes ·
-/// help, but the ranking under a squeeze is different: the notes go first (bottom-up), then
-/// the help row. The way in to the hotkeys outranks the explanation of why a key is missing.
-function shedHidden(rows, cap) {
-  const out = rows.slice();
-  while (out.length > cap) {
-    const noteAt = out.map((r) => r[0]?.kind === "note").lastIndexOf(true);
-    if (noteAt !== -1) out.splice(noteAt, 1);
-    else out.pop();
-  }
-  return out;
+  if (!hints.some((h) => h.kind === "break")) return null;
+  const help = hints.find((h) => h.kind === "key" && h.label === HELP_LABEL);
+  return help === undefined ? [] : [[help]];
 }
 
 /// `legend::wrap_hints` — the flat fallback for a footer carrying no seam: rows of at most
@@ -1897,17 +1849,22 @@ function wrapHints(hints, cols) {
   return rows.length === 0 ? [flat] : rows;
 }
 
-/// `shell::footer_rows` — the ladder the footer takes, and the single source of its geometry:
-/// the grid wherever a rung fits, else the grid of the **shed** footer, else the hide, else
-/// the flat wrap — each capped so the body keeps its floor under the pinned title band.
+/// `shell::footer_cap` — the most rows a footer takes on a `rows`-row viewport: what the title
+/// band (`TITLE_ROWS`, 2) and the body's `FOOTER_BODY_FLOOR` (3) leave, and always one.
+function footerCap(rows) {
+  return Math.max(1, rows - 2 - 3);
+}
+
+/// `shell::footer_rows` — the ladder a categorised footer takes, and the single source of its
+/// geometry: the grid wherever a rung fits the cap, else the hide, else the flat wrap cut to
+/// the cap, so the body keeps its floor under the pinned title band.
 function footerRows(hints, cols, rows) {
-  const cap = Math.max(1, rows - 2 - 3);
+  const cap = footerCap(rows);
   const grid = gridRows(hints, cols);
   if (grid !== null && grid.length <= cap) return grid;
-  const shed = gridRows(shedDim(hints), cols);
-  if (shed !== null && shed.length <= cap) return shed;
+  // The hide is one row at most, so it always fits the cap.
   const hidden = hiddenRows(hints);
-  if (hidden !== null) return shedHidden(hidden, cap);
+  if (hidden !== null) return hidden;
   return wrapHints(hints, cols).slice(0, cap);
 }
 
@@ -1933,184 +1890,145 @@ function hintRowCells(row) {
   return out;
 }
 
-/// `layout::control_hints` / `stop_cell` — the `s`/`x` pair. Both are always emitted and the
-/// gate picks their *weight*, so the footer's shape is a constant of the arm rather than of
-/// the badge; only an **unbound** action renders nothing at all. The `x` cell is a single cell
-/// for a single gesture: its label flips to `force-stop` exactly when pressing `x` would open
-/// the force-confirm modal.
-function controlHints(keys, startable, stopping, stoppable) {
+/// `legend::BADGE_GAP` — the spaces between two key badges.
+const BADGE_GAP = 3;
+
+/// `legend::badge_width` at the page's blank ends — a key's `hintWidth` plus the
+/// [`CHIP_SQUARE_CAP`] either side of it, the ends `BadgeEnds::Blank` measures.
+function badgeWidth(hint) {
+  return hint.kind === "key" ? hintWidth(hint) + 2 * textWidth(CHIP_SQUARE_CAP) : hintWidth(hint);
+}
+
+/// `legend::fit_badges` — the badges that fit `cols`: while the row is wider and holds more
+/// than one, the rightmost key that is not the help key goes, so `? help` is dropped last of
+/// all and the way into every key stays on screen. A lone badge too wide for `cols` is kept for
+/// the row fit to clip.
+function fitBadges(keys, cols) {
+  const rowW = (kept) => kept.reduce((w, h) => w + badgeWidth(h), 0) + BADGE_GAP * Math.max(0, kept.length - 1);
+  const isHelp = (h) => h.kind === "key" && h.label === HELP_LABEL;
+  const kept = keys.slice();
+  while (kept.length > 1 && rowW(kept) > cols) {
+    const last = kept.findLastIndex((h) => !isHelp(h));
+    if (last === -1) break;
+    kept.splice(last, 1);
+  }
+  return kept;
+}
+
+/// `shell::badge_line` at 24-bit — one row of key badges, [`BADGE_GAP`] apart: each key on the
+/// rule band between its blank ends, a space, then its label in the muted tone. A live key is
+/// bold text; one the selection cannot take is faint and not bold, so its badge keeps its
+/// shape and only its weight says "not now". No cell is dimmed: the faint hue is the gate.
+function badgeRowCells(row) {
+  const band = { bg: "rule" };
   const out = [];
-  const start = keys.hintGated("overview.service_start", "start", startable);
-  if (start !== null) out.push(start);
-  const stop = stopping
-    ? keys.hintGated("overview.service_stop", "force-stop", true)
-    : keys.hintGated("overview.service_stop", "stop", stoppable);
-  if (stop !== null) out.push(stop);
+  row.forEach((hint, i) => {
+    if (i > 0) out.push(blank(BADGE_GAP));
+    if (hint.kind !== "key") {
+      out.push(...hintRowCells([hint]));
+      return;
+    }
+    const key = hint.live ? { fg: "text", bold: true, ...band } : { fg: "faint", ...band };
+    out.push(cell(CHIP_SQUARE_CAP, band));
+    out.push(cell(hint.keys, key));
+    out.push(cell(CHIP_SQUARE_CAP, band));
+    out.push(blank(1));
+    out.push(cell(hint.label, { fg: "muted" }));
+  });
   return out;
 }
 
-/// `layout::group_control_hints` — the group-level reading of the same gating: the same four
-/// cells in the same `s x t r` order, each live when **at least one member** can take it. The
-/// lane pair is the exception that does not fan out — a header is not a card — so it is
-/// always dim here, emitted rather than dropped because the footer's shape must not track the
-/// selection.
-function groupControlHints(keys, members) {
-  const out = [];
-  const some = (f) => members.some(f);
-  const push = (hint) => {
-    if (hint !== null) out.push(hint);
-  };
-  push(keys.hintGated("overview.service_start", "start", some((m) => canStart(m.badge) && !m.poisoned)));
-  push(
-    some((m) => m.badge === "Stopping")
-      ? keys.hintGated("overview.service_stop", "force-stop", true)
-      : keys.hintGated("overview.service_stop", "stop", some((m) => canStop(m.badge))),
-  );
-  push(keys.hintGated("overview.service_run", "run now", some((m) => canRun(m.badge))));
-  push(
-    keys.hintGated(
-      "overview.service_restart",
-      "restart",
-      some((m) => !m.poisoned && m.badge !== "Stopping"),
-    ),
-  );
-  push(keys.hintGated("overview.queue_widen", "widen", false));
-  push(keys.hintGated("overview.queue_narrow", "narrow", false));
-  return out;
+/// `shell::list_footer_lines` — the list footer's cell rows, the one source of its height for
+/// drawing and [`bodyHeight`]. Prose wraps as every footer does ([`footerRows`]). The keys fit
+/// `cols` on one row of badges ([`fitBadges`]), under the lens affordance in the footer's prose
+/// tone while a lens is on. Both are capped to keep the body's floor, so at one row the
+/// affordance outranks the badges: it names the key that undoes a lens, and `?` is not lost
+/// behind it.
+function listFooterLines(footer, cols, rows) {
+  if (footer.kind === "prose") return footerRows(footer.hints, cols, rows).map(hintRowCells);
+  const lines = footer.affordance === null ? [] : [hintRowCells([bare(footer.affordance)])];
+  lines.push(badgeRowCells(fitBadges(footer.keys, cols)));
+  return lines.slice(0, footerCap(rows));
 }
 
-/// `layout::footer` — the selection-aware legend, resolved highest-precedence-first: the
-/// filter prompt while typing (this page has no typing state yet, so a set `filter` is always
-/// the confirmed `Active` form), then the contextual hints for the selected row and nothing
-/// else. It names neither the selection nor its state — the row's own cells carry both, a
-/// line or two above under the selection bar.
-///
-/// The seams (`BREAK`) cut the same way the terminal cuts them — act on this · inspect it ·
-/// move around · the daemon — so the grid runs each category down its own column.
-function planFooter(board, rows, selected, filter, quitting, typing, flash, info, grouped, busyOnly) {
-  const keys = keysOf(quitting);
-  // Precedence 1 — while typing, the prompt owns the footer. Its leading glyph is the
-  // `filter` key itself, so a prose-embedded key still tracks the table.
-  if (typing !== null) {
-    return [bare(`${keys.primary("overview.filter") ?? ""} filter: ${typing}_`)];
-  }
-  // Precedence 2 — a live flash replaces the contextual footer. Placed **before** the
-  // contextual build so expiry reverts to the byte-for-byte same line.
-  if (flash !== null) return [bare(flash)];
-  // Precedence 3 — the info page owns its key surface while it is open, so it owns the line
-  // that teaches it: `infoview::footer`'s three hints and nothing else. It sits *below* the
-  // flash for the same reason the list's contextual footer does — a daemon refusal must not be
-  // buried by a legend — and above the list's arms because there is no selection to describe.
-  if (info === true) {
-    return [
-      keys.hintAll("info.back", "back"),
-      keys.hint("global.help", HELP_LABEL),
-      keys.hint("global.quit", "quit"),
-    ].filter((hint) => hint !== null);
-  }
-  const push = (into, hint) => {
-    if (hint !== null) into.push(hint);
+/// `layout::lens_affordance` — the lenses hiding rows, each as its state then the key that
+/// clears it, lowercased and in parentheses: `/dép (esc)` for a confirmed filter, `busy only
+/// (b)` for the busy lens, joined by ` · `. `null` while neither is on. An unbound clear key
+/// drops its parenthetical rather than printing an empty `()`.
+function lensAffordance(keys, filter, busyOnly) {
+  const clearedBy = (action) => {
+    const key = keys.primary(action);
+    return key === null ? "" : ` (${key.toLowerCase()})`;
   };
-  // The `Active` filter's compact clear affordance, so a confirmed filter never makes the
-  // contextual footer unreachable. Both glyphs are keymap-sourced like every other key; an
-  // unbound clear drops its whole parenthetical rather than printing an empty `()`.
-  let affordance = null;
+  const lenses = [];
   if (filter !== "") {
-    const slash = keys.primary("overview.filter") ?? "";
-    const clear = keys.primary("overview.filter_clear");
-    affordance = bare(` · ${slash}${filter}${clear === null ? "" : ` (${clear.toLowerCase()})`}`);
+    lenses.push(`${keys.primary("overview.filter") ?? ""}${filter}${clearedBy("overview.filter_clear")}`);
   }
-  // The busy lens's state rides its own key cell — the `f follow ●/○` convention: the glyph
-  // sits in the *label* so only the key whitens.
-  const busy = keys.hint("overview.filter_busy", busyOnly ? "busy ●" : "busy ○");
-  // The label names the view the key would switch *to*, so it reads as a destination.
-  const view = keys.hint("overview.view", grouped ? "flat" : "grouped");
-  const globals = [];
-  push(globals, keys.hint("global.reload", "reload"));
-  push(globals, keys.hint("global.help", HELP_LABEL));
-  push(globals, keys.hint("global.quit", "quit"));
+  if (busyOnly) lenses.push(`busy only${clearedBy("overview.filter_busy")}`);
+  return lenses.length === 0 ? null : lenses.join(" · ");
+}
 
-  const row = rows[selected];
-  const hints = [];
-  if (row !== undefined && row.kind === "service") {
-    const svc = row.svc;
-    // The copies the row's keys reach — one record, or every live copy of a family — each key
-    // live when **any** of them can take it, which for one record is its own gate exactly.
-    const copies = copiesOf(board, svc);
-    const some = (f) => copies.some(f);
-    hints.push(
-      ...controlHints(
-        keys,
-        some((c) => canStart(c.badge) && !c.poisoned),
-        some((c) => c.badge === "Stopping"),
-        some((c) => canStop(c.badge)),
-      ),
-    );
-    // A poisoned `Crashed` card has neither a live `s` nor a live `r`; rather than leave the
-    // operator guessing at two muted slots, an inert note states why and what lifts the gate.
-    if (svc.poisoned) hints.push(note("✕", POISON_RECOVERY));
-    push(hints, keys.hintGated("overview.service_run", "run now", some((c) => canRun(c.badge))));
-    push(
-      hints,
-      keys.hintGated("overview.service_restart", "restart", some((c) => !c.poisoned && c.badge !== "Stopping")),
-    );
-    // `+`/`-` move the selected service's **lane**, so they are gated on the selection naming
-    // one rather than on its badge: a lane-less service renders both dim.
-    const onALane = svc.queue !== "";
-    push(hints, keys.hintGated("overview.queue_widen", "widen", onALane));
-    push(hints, keys.hintGated("overview.queue_narrow", "narrow", onALane));
-    hints.push(BREAK);
-    push(hints, keys.hint("overview.show_output", "output"));
-    push(hints, keys.hint("overview.show_info", "info"));
-    push(hints, keys.hint("overview.service_peek", "peek"));
-    hints.push(BREAK);
-    push(hints, keys.hintPair("overview.first", "overview.last", "first/last"));
-    push(hints, view);
-    push(hints, busy);
-    push(hints, keys.hint("overview.filter", "find"));
-  } else if (row !== undefined && row.kind === "group") {
-    const members = board.order
-      .map((name) => board.services[name])
-      .filter((svc) => svc !== undefined && svc.group === row.path);
-    hints.push(...groupControlHints(keys, members));
-    hints.push(BREAK);
-    // The collapse hint names both `Enter` and the directional key, and the verb it names is
-    // the one the key would *do* next — `expand` over a folded header, `collapse` over an
-    // open one, the `Tab tree`/`Tab log` destination convention.
-    push(
-      hints,
-      row.collapsed
-        ? keys.hintPair("overview.service_peek", "overview.group_expand", "expand")
-        : keys.hintPair("overview.service_peek", "overview.group_collapse", "collapse"),
-    );
-    push(hints, keys.hintPair("overview.group_collapse_all", "overview.group_expand_all", "fold all"));
-    // A header only exists in grouped view, so this arm's view hint always names `flat`.
-    push(hints, keys.hint("overview.view", "flat"));
-    push(hints, keys.hintPair("overview.first", "overview.last", "first/last"));
-    push(hints, busy);
-    push(hints, keys.hint("overview.filter", "find"));
-  } else if (row !== undefined && row.kind === "queue") {
-    push(hints, keys.hint("queues.narrow", "narrow"));
-    push(hints, keys.hint("queues.widen", "widen"));
-    hints.push(BREAK);
-    push(hints, keys.hintPair("overview.first", "overview.last", "first/last"));
-    // A lane row exists in both views, so the label is state-keyed like the service arm's.
-    push(hints, view);
-    push(hints, busy);
-    push(hints, keys.hint("overview.filter", "find"));
-  } else {
-    // No selection: start/stop/restart need one, so the actions category is absent.
-    push(hints, keys.hint("overview.show_output", "output"));
-    push(hints, keys.hint("overview.show_info", "info"));
-    hints.push(BREAK);
-    push(hints, keys.hintPair("overview.first", "overview.last", "first/last"));
-    push(hints, busy);
-    push(hints, keys.hint("overview.filter", "find"));
+/// `layout::footer` — the selection-aware footer, highest precedence first: the filter prompt
+/// while typing (a set `filter` with no `typing` is the confirmed `Active` form), then a live
+/// flash, then the five contextual keys, `t run now`, `o output`, `Enter peek`, `x stop` and
+/// `? help`, which name neither the selection nor its state, since the row carries both. Every
+/// key is always printed, faint rather than omitted when the selection cannot take it, so the
+/// footer does not change shape as the cursor moves; only an **unbound** action drops its key.
+/// Every other key is in the `?` overlay. Quitting owns no branch: the header reports the
+/// drain, and none of the five is a key the drain refuses.
+///
+/// Returns `{kind: "prose", hints}` or `{kind: "badges", keys, affordance}`, `legend::ListFooter`'s
+/// two shapes, which [`listFooterLines`] lays out.
+function planFooter(board, rows, selected, filter, quitting, typing, flash, busyOnly) {
+  const keys = keysOf(quitting);
+  // While typing, the prompt owns the footer; its glyph is the `filter` key itself.
+  if (typing !== null) {
+    return { kind: "prose", hints: [bare(`${keys.primary("overview.filter") ?? ""} filter: ${typing}_`)] };
   }
-  hints.push(BREAK);
-  hints.push(...globals);
-  if (affordance !== null) hints.push(affordance);
-  return hints;
+  // Before the contextual build, so expiry reverts to the very same footer.
+  if (flash !== null) return { kind: "prose", hints: [bare(flash)] };
+  // `DashboardModel::selected_targets` — the copies the row's keys reach: one record's, or
+  // those of every member of a group the lenses leave visible, each key live when any of them
+  // can take it. A lane row is not a card, so every operator key is inert on it.
+  const row = rows[selected];
+  let targets = [];
+  if (row !== undefined && row.kind === "service") targets = copiesOf(board, row.svc);
+  else if (row !== undefined && row.kind === "group") {
+    targets = visibleCards(board, { filter, busyOnly })
+      .filter((svc) => svc.group === row.path)
+      .flatMap((svc) => copiesOf(board, svc));
+  }
+  const some = (f) => targets.some(f);
+  // `Enter` peeks at a service and toggles a group, so its verb flips there, as `x`'s does.
+  let peek;
+  if (row !== undefined && row.kind === "group") {
+    peek = keys.hint("overview.service_peek", row.collapsed ? "expand" : "collapse");
+  } else if (row !== undefined && row.kind === "service") peek = keys.hint("overview.service_peek", "peek");
+  else peek = keys.hintGated("overview.service_peek", "peek", false);
+  // `x` reads `force-stop` when a target is `Stopping`, since the press then can only force.
+  const stop = some((c) => c.badge === "Stopping")
+    ? keys.hintGated("overview.service_stop", "force-stop", true)
+    : keys.hintGated("overview.service_stop", "stop", some((c) => canStop(c.badge)));
+  const hints = [
+    keys.hintGated("overview.service_run", "run now", some((c) => canRun(c.badge))),
+    // The run view opens on a service row only.
+    keys.hintGated("overview.show_output", "output", row !== undefined && row.kind === "service"),
+    peek,
+    stop,
+    keys.hint("global.help", HELP_LABEL),
+  ].filter((hint) => hint !== null);
+  return { kind: "badges", keys: hints, affordance: lensAffordance(keys, filter, busyOnly) };
+}
+
+/// `infoview::footer` — the info page owns its key surface while it is open, so it owns the
+/// line that teaches it: a live flash, else its three hints and nothing else. The flash sits
+/// above the hints for the same reason the list's does: a daemon refusal must not be buried by
+/// a legend.
+function planInfoFooter(keys, flash) {
+  if (flash !== null) return [bare(flash)];
+  return [keys.hintAll("info.back", "back"), keys.hint("global.help", HELP_LABEL), keys.hint("global.quit", "quit")].filter(
+    (hint) => hint !== null,
+  );
 }
 
 // --- the body's height and its scroll ------------------------------------------------
@@ -2140,7 +2058,7 @@ export function bodyHeight(board, options) {
   const cols = Math.max(1, Math.trunc(options.cols));
   const rows = Math.max(1, Math.trunc(options.rows));
   const listRows = visibleRows(board, options);
-  const footer = footerRows(
+  const footer = listFooterLines(
     planFooter(
       board,
       listRows,
@@ -2149,8 +2067,6 @@ export function bodyHeight(board, options) {
       board.quittingSince !== null,
       options.typing ?? null,
       options.flash ?? null,
-      (options.info ?? null) !== null,
-      options.grouped === true,
       options.busyOnly === true,
     ),
     cols,
@@ -2885,11 +2801,7 @@ function infoPlan(board, options) {
   if (view === null) return null;
   const cols = Math.max(1, Math.trunc(options.cols));
   const rows = Math.max(1, Math.trunc(options.rows));
-  const footer = footerRows(
-    planFooter(board, [], -1, "", board.quittingSince !== null, null, options.flash ?? null, true),
-    cols,
-    rows,
-  );
+  const footer = footerRows(planInfoFooter(keysOf(board.quittingSince !== null), options.flash ?? null), cols, rows);
   const band = infoBandRows(view.about, cols);
   const body = infoBody(view.sections, cols);
   const height = Math.max(0, rows - INFO_TITLE_ROWS - band.length - footer.length);
@@ -3924,8 +3836,8 @@ export function layout(board, options) {
     if (row.kind === "group") rollups[row.path] = groupRollup(members, row.path);
   }
 
-  const footer = footerRows(
-    planFooter(board, listRows, selected, filter, quitting, typing, flash, false, grouped, busyOnly),
+  const footer = listFooterLines(
+    planFooter(board, listRows, selected, filter, quitting, typing, flash, busyOnly),
     cols,
     rows - FOOTER_RULE_ROWS,
   );
@@ -3958,7 +3870,7 @@ export function layout(board, options) {
     screen.push(at === selected ? selectRow(cells) : cells);
   }
   screen.push(fitRow(ruleRow(cols), cols));
-  for (const row of footer) screen.push(fitRow(hintRowCells(row), cols));
+  for (const line of footer) screen.push(fitRow(line, cols));
   const frame = screen.slice(0, rows);
 
   // The overlays, highest precedence first — `shell::render_overlays`' own order, minus the

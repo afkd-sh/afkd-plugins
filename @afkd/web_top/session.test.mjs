@@ -369,7 +369,8 @@ test("the footer's gated hints track the selected row's own badge", () => {
     rows.forEach((row, i) => {
       if (rowKey(row) === null) return;
       const footer = footerTextAt(board, at, i);
-      // The four operator cells, and the predicate each one's live/dim bit must equal.
+      // The four card keys, and the predicate each one's live/dim bit must equal. No lens is
+      // on, so a header's members are every service in its group.
       const members =
         row.kind === "service"
           ? [row.svc]
@@ -378,39 +379,37 @@ test("the footer's gated hints track the selected row's own badge", () => {
             : [];
       const some = (f) => members.some(f);
       const wedged = some((m) => m.badge === "Stopping");
-      const want = {
-        start: some((m) => ["Stopped", "Crashed"].includes(m.badge) && !m.poisoned),
-        [wedged ? "force-stop" : "stop"]: wedged || some((m) => canStop(m.badge)),
-        "run now": some((m) => m.badge === "Idle"),
-        restart: some((m) => !m.poisoned && m.badge !== "Stopping"),
-      };
-      for (const [label, live] of Object.entries(want)) {
-        if (row.kind === "queue") continue; // a lane row carries no operator cell at all
-        // The drain refuses no operator verb, so a drained row is gated by its badge exactly
-        // as a live one is: the daemon, not the footer, turns away a verb it will not serve.
-        const hit = footer.find((h) => h.label === label);
-        assert.notEqual(hit, undefined, `${name} row ${i}: the footer carries ${label}`);
-        assert.equal(hit.live, live, `${name} row ${i} (${rowKey(row).key}): ${label} is ${live ? "live" : "gated"}`);
-      }
+      const peek = row.kind === "group" ? (row.collapsed ? "expand" : "collapse") : "peek";
+      const want = [
+        ["t", "run now", some((m) => m.badge === "Idle")],
+        ["o", "output", row.kind === "service"],
+        ["Enter", peek, row.kind !== "queue"],
+        ["x", wedged ? "force-stop" : "stop", wedged || some((m) => canStop(m.badge))],
+        ["?", "help", true],
+      ];
+      // The drain refuses no card key, so a drained row is gated by its badge exactly as a
+      // live one is: the daemon, not the footer, turns away a verb it will not serve.
+      assert.deepEqual(
+        footer.map((h) => [h.keys, h.label, h.live]),
+        want,
+        `${name} row ${i} (${rowKey(row).key}): the five keys, each gated by the row`,
+      );
     });
   }
 });
 
-/// The footer's key hints at one cursor position, as `{keys, label, live}` — read off the
-/// rendered screen's own cells, so the gate observed is the gate painted.
+/// The footer's key badges at one cursor position, as `{keys, label, live}` — read off the
+/// rendered screen's own cells, so the gate observed is the gate painted. A key is a non-blank
+/// cell on the rule band, live when bold, and its label sits past its closing end and a space.
 function footerTextAt(board, at, selected) {
   const { layout } = layoutModule;
   const rows = layout(board, { cols: 140, rows: 30, now: at + 1000, version: "0.2.123", selected, grouped: true });
+  const row = rows.at(-1);
   const out = [];
-  for (const row of rows.slice(-4)) {
-    // A hint is a bright key cell, a space, then a legend label cell — the two `hintRowCells`
-    // mints from one hint, which must agree on the dim bit.
-    for (let i = 0; i + 2 < row.length; i += 1) {
-      if (row[i].fg !== "bright" || row[i + 1].text !== " " || row[i + 2].fg !== "muted") continue;
-      if (row[i].text.trim() === "") continue;
-      out.push({ keys: row[i].text, label: row[i + 2].text, live: !row[i + 2].dim });
-    }
-  }
+  row.forEach((c, i) => {
+    if (c.bg !== "rule" || c.text.trim() === "") return;
+    out.push({ keys: c.text, label: row[i + 3].text, live: c.bold });
+  });
   return out;
 }
 

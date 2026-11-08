@@ -41,8 +41,8 @@ const newSession = () => ({ ...bootSession(), grouped: true });
 
 test("the board boots flat: every service its own row, named in full, from column 0", () => {
   // `build_rows`' flat arm, the ADR-0066 amendment's boot view: no header, no connector, no
-  // lead-in — each card spells its qualified name, in config order, and the footer's view key
-  // names where it would go.
+  // lead-in — each card spells its qualified name, in config order, and the footer's `Enter`
+  // names the peek it opens.
   const { board, at } = liveBoard();
   const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
   assertGrid(rows, 100, 30);
@@ -56,15 +56,13 @@ test("the board boots flat: every service its own row, named in full, from colum
     "one row per service, each its whole name, in config order",
   );
   for (const line of body) assert.notEqual(line[0], " ", `${line.trim()} starts at column 0`);
-  const footer = lines.slice(-3).join("\n");
-  assert.ok(footer.includes("v grouped") && !footer.includes("v flat"), "the view key names the grouped tree");
-  assert.ok(footer.includes("Enter peek"), "…and Enter the peek it opens");
+  assert.ok(lines.at(-1).includes("Enter  peek"), "Enter names the peek it opens");
 });
 
 test("the busy lens keeps the working and the crashed, and measures nothing new", () => {
   // `visible_cards`' state axis: `Starting`/`Busy`/`Stopping` plus the `Crashed` alarm. The
   // `Service` column is measured over the needle's survivors alone, so lensing the board moves
-  // no column, and the key's own label carries the lens's state.
+  // no column, and the footer's affordance row says the lens is on.
   const { board, at } = liveBoard();
   const options = { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", grouped: false };
   const open = screenText(layoutOf(board, options)).split("\n");
@@ -78,8 +76,8 @@ test("the busy lens keeps the working and the crashed, and measures nothing new"
     assert.equal(listed, kept.includes(svc), `${svc.name} (${svc.badge}) is ${kept.includes(svc) ? "kept" : "lensed away"}`);
   }
   assert.equal(lines[3], open[3], "the column header did not move");
-  assert.ok(lines.slice(-3).join("\n").includes("b busy ●"), "the key says the lens is on");
-  assert.ok(open.slice(-3).join("\n").includes("b busy ○"), "…and off, unlensed");
+  assert.equal(lines.at(-2), "busy only (b)".padEnd(100), "the affordance says the lens is on");
+  assert.ok(!open.join("\n").includes("busy only"), "…and nothing does, unlensed");
   // Grouped, the lens force-expands every survivor's header for display.
   const grouped = screenText(layoutOf(board, { ...options, grouped: true, busyOnly: true, collapsed: new Set(["ops"]) }));
   assert.ok(grouped.includes("vacuum") && grouped.includes("broken"), "a folded header does not hide a busy member");
@@ -177,16 +175,15 @@ test("renders the whole overview at 100x30", () => {
   // The lane by its name alone, as the terminal's section reads it: its `high` priority is
   // the info view's `Queue` row's to print, not this row's.
   assert.match(lines[queueHeader + 1], /^≡ heavy +▮▮ ╎ ∙ +2 +2 +1/, "the `heavy` lane, held and waited on");
-  // The footer, with a real hint on it.
-  assert.ok(lines.slice(-3).some((l) => l.includes("? help")), "the footer legend");
+  // The footer, with its five keys on it.
+  assert.equal(lines.at(-1).trimEnd(), " t  run now    o  output    Enter  peek    x  stop    ?  help", "the footer's badges");
 });
 
 test("the drain is its own screen", () => {
   // The same capture folded **whole**. Adversarial against the live screen in four ways at
   // once: the header reads `Quitting` off a different anchor with its own drain count, the
-  // reload hint is gone (the input side refuses it, so it reads as unbound) while the operator
-  // hints stay, the rows are a shelf of receding `Stopped` ones, and the band reads the daemon's
-  // lane table at the drain's end.
+  // footer's five keys stay (the drain refuses none of them), the rows are a shelf of receding
+  // `Stopped` ones, and the band reads the daemon's lane table at the drain's end.
   const drained = drainedBoard();
   const at = drained.at;
   // The table afkd's registry held at the end of the drain: nightly's queued run refused,
@@ -197,15 +194,9 @@ test("the drain is its own screen", () => {
   assertGolden("drain-100x30.txt", rows);
   const lines = screenText(rows).split("\n");
   assert.match(lines[0], /^afkd 0\.2\.123 · ■ Quitting \d+s/, "the drain owns the header, dot and all");
-  const footer = lines.slice(-3).join("\n");
-  for (const kept of ["s start", "x stop", "t run now", "r restart", "+ widen", "- narrow", "? help"]) {
-    assert.ok(footer.includes(kept), `${kept} still works while draining, so it is still advertised`);
+  for (const kept of ["t  run now", "o  output", "Enter  peek", "x  stop", "?  help"]) {
+    assert.ok(lines.at(-1).includes(kept), `${kept} still works while draining, so it is still advertised`);
   }
-  // The reload is refused, so it is not advertised — and the same board undrained, at the same
-  // size, does carry it, so the absence is the drain's doing and not the width's.
-  assert.ok(!footer.includes("reload"), "the reload is refused while draining, so it is not advertised");
-  const live = layout({ ...board, quittingSince: null }, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123" });
-  assert.ok(footerOf(live, 3).join("\n").includes("Ctrl+R reload"), "…which the undrained footer carries");
 });
 
 test("the Queues section lists a lane only a block reaches, at the daemon's counts", () => {
@@ -255,13 +246,13 @@ test("the reconcile markers ride the name", () => {
   for (const line of marked) {
     assert.ok(!(line.includes("🪦") && line.includes("🕸️")), "a row wears one marker at most");
   }
-  // No fixture folds a **poisoned** card, so the footer's `✕` note and its `POISON_RECOVERY`
-  // sentence are unreached by every golden here. They are reachable only from a wire the
-  // recorder never captured; saying so is cheaper than a hand-written frame the fixtures'
-  // own rule forbids.
+  // No fixture folds a **poisoned** card, so the info page's `Recovery` row and its
+  // `POISON_RECOVERY` sentence are unreached by every golden here. They are reachable only from
+  // a wire the recorder never captured; saying so is cheaper than a hand-written frame the
+  // fixtures' own rule forbids.
   assert.ok(
     Object.values(board.services).every((svc) => !svc.poisoned),
-    "no capture folds a poisoned card — the note arm is unrendered, deliberately",
+    "no capture folds a poisoned card — the Recovery row is unrendered, deliberately",
   );
 });
 
@@ -592,17 +583,20 @@ test("the stylesheet spends only the product's palette", { skip: NO_AFKD_SRC }, 
   // Swept over **both** boards: the live one never reaches a `Starting`/`Stopping` badge, so a
   // sweep of it alone would leave `caution` looking like a rule nobody emits; its lane is full,
   // so a capture whose lane is idle draws the free cells. No capture runs a plugin trigger, so
-  // the live board gains one.
+  // the live board gains one. The `?` overlay is swept too: its keys are the list's `bright`
+  // ones, since the footer's sit on the rule band.
   const live = liveBoard();
   const plugin = { ...live, board: restyled(live.board, "archivist", { triggerLabel: "@afkd/linear.issue" }) };
   const fg = new Set();
   const bg = new Set();
   for (const { board, at } of [live, drainedBoard(), liveBoard("fire.jsonl"), plugin]) {
     for (const cols of [100, 80, 60, 40]) {
-      for (const row of layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123" })) {
-        for (const cell of row) {
-          fg.add(cell.fg);
-          if (cell.bg !== null) bg.add(cell.bg);
+      for (const help of [false, true]) {
+        for (const row of layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123", help })) {
+          for (const cell of row) {
+            fg.add(cell.fg);
+            if (cell.bg !== null) bg.add(cell.bg);
+          }
         }
       }
     }
@@ -732,7 +726,7 @@ test("the night board paints each role where afkd top does", () => {
   // The rules: under the strip, and directly above the footer.
   const rule = [cell("─".repeat(100), { fg: "rule" })];
   assert.deepEqual(rows[2], rule, "the title band ends on a rule");
-  const footerAt = rows.findIndex((r, i) => i > 4 && /quit/.test(screenText([r])));
+  const footerAt = rows.findIndex((r, i) => i > 4 && /\? +help/.test(screenText([r])));
   assert.deepEqual(rows[footerAt - 1], rule, "a rule sits directly above the footer");
 });
 
@@ -905,47 +899,235 @@ test("the layout names neither document nor window", () => {
 
 // --- the footer's own contract ------------------------------------------------------
 
-/// The footer rows of a screen — everything below the last body row, which is the tail the
-/// ladder painted.
+/// The footer rows of a screen — everything below the rule, which is the tail the footer
+/// painted.
 function footerOf(rows, height) {
   return screenText(rows).split("\n").slice(-height);
 }
 
-/// The footer's `key label` cells, sorted: a cell is a run of single-spaced words and the
-/// ladder pads two or more spaces between cells, so a reflow that moves a cell to another row
-/// or column compares equal.
-function footerCells(rows, height) {
-  return footerOf(rows, height)
-    .flatMap((line) => line.split(/ {2,}/))
-    .filter((cell) => cell !== "")
-    .sort();
+/// The list footer's key badges, read off the frame's last row **structurally**: a key is a
+/// non-blank cell on the rule band, closed by one blank rule cell either side, and its label is
+/// the cell after the plain space that follows. `live` is the key's bold, `at` its first column.
+function badgesOf(rows) {
+  const row = rows.at(-1);
+  const out = [];
+  let x = 0;
+  row.forEach((c, i) => {
+    if (c.bg === "rule" && c.text.trim() !== "") {
+      for (const end of [row[i - 1], row[i + 1]]) {
+        assert.deepEqual([end?.text, end?.bg], [" ", "rule"], `${c.text} sits between two blank ends on the band`);
+      }
+      const label = row[i + 3];
+      assert.deepEqual([row[i + 2]?.text, row[i + 2]?.bg], [" ", null], `a plain space parts ${c.text} from its label`);
+      out.push({ key: c.text, label: label?.text ?? "", live: c.bold, at: x - 1 });
+    }
+    x += c.width;
+  });
+  return out;
 }
 
-test("the footer advertises no unpressable key", () => {
+/// The badges as `[key, label, live]` triples, the shape every expectation below is written in.
+function badgeTriples(rows) {
+  return badgesOf(rows).map(({ key, label, live }) => [key, label, live]);
+}
+
+/// The 100-column badge row's text at its 16-colour reading, which is the page's cell text too.
+const BADGE_ROW = (peek) => ` t  run now    o  output    Enter  ${peek}    x  stop    ?  help`;
+
+test("a service row's footer is the five keys, each gated by its card", () => {
   const { board, at } = liveBoard();
-  const rows = layout(board, { cols: 120, rows: 30, now: at + 1000, version: "0.2.123" });
-  const footer = footerOf(rows, 3).join("\n");
-  // A bound key the selection cannot take **holds its slot**: the first row is `janitor`,
-  // which is `Stopped`, so `s start` is live and `x stop`/`t trigger` are there but gated.
-  for (const cell of ["s start", "x stop", "t run now", "r restart", "o output", "? help", "q quit"]) {
-    assert.ok(footer.includes(cell), `the footer carries ${cell}`);
+  const at100 = (b, extra) => layout(b, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", ...extra });
+  // Row 0 is `janitor`, `Stopped`: it cannot run or stop, but its output and its peek are there.
+  const janitor = at100(board, { selected: 0 });
+  assertGrid(janitor, 100, 30);
+  assert.deepEqual(badgeTriples(janitor), [
+    ["t", "run now", false],
+    ["o", "output", true],
+    ["Enter", "peek", true],
+    ["x", "stop", false],
+    ["?", "help", true],
+  ]);
+  assert.equal(screenText(janitor.slice(-1)).trimEnd(), BADGE_ROW("peek"), "the row reads as afkd top's");
+  // Row 6 is `archivist`, `Idle`: every key is live.
+  assert.deepEqual(
+    badgeTriples(at100(board, { selected: 6 })).map(([key, , live]) => [key, live]),
+    [["t", true], ["o", true], ["Enter", true], ["x", true], ["?", true]],
+  );
+  // A `Stopping` card flips `x` to `force-stop`, live, since the press then can only force.
+  const wedged = wedgedBoard();
+  const row = visibleRows(wedged.board).findIndex((r) => r.kind === "service" && r.svc.name === "janitor");
+  assert.equal(wedged.board.services.janitor.badge, "Stopping", "the capture wedges janitor");
+  const forced = layout(wedged.board, { cols: 100, rows: 30, now: wedged.at + 1000, version: "0.2.123", selected: row });
+  assertGrid(forced, 100, 30);
+  assert.deepEqual(badgeTriples(forced)[3], ["x", "force-stop", true]);
+});
+
+test("a group header's footer folds the members its lenses leave, and Enter toggles it", () => {
+  // `ops` is open on the live board, its members Queued, Busy, Crashed and Busy: none can run,
+  // two can stop, and a header opens no run view.
+  const { board, at } = liveBoard();
+  const at100 = (extra) => layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", ...extra });
+  const open = at100({ selected: 1 });
+  assertGrid(open, 100, 30);
+  assert.deepEqual(badgeTriples(open), [
+    ["t", "run now", false],
+    ["o", "output", false],
+    ["Enter", "collapse", true],
+    ["x", "stop", true],
+    ["?", "help", true],
+  ]);
+  assert.equal(screenText(open.slice(-1)).trimEnd(), BADGE_ROW("collapse"));
+  // Folded, `Enter` names the verb it would do next.
+  const folded = at100({ selected: 1, collapsed: new Set(["ops"]) });
+  assert.deepEqual(badgeTriples(folded)[2], ["Enter", "expand", true]);
+  // `selected_targets` folds the **visible** members: a needle that leaves only the crashed
+  // one leaves `x` with nothing it can stop, though `nightly`, `sleeper` and `vacuum` could.
+  const rows = visibleRows(board, { filter: "broken" });
+  assert.deepEqual(rows.slice(0, 2).map((r) => r.svc?.name ?? r.path), ["ops", "ops.broken"], "ops and its one survivor");
+  assert.deepEqual(badgeTriples(at100({ filter: "broken", selected: 0 })), [
+    ["t", "run now", false],
+    ["o", "output", false],
+    ["Enter", "collapse", true],
+    ["x", "stop", false],
+    ["?", "help", true],
+  ]);
+});
+
+test("a queue lane's footer and no selection's are the four card keys faint and help", () => {
+  const { board, at } = liveBoard();
+  const at100 = (extra) => layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", ...extra });
+  const faint = [
+    ["t", "run now", false],
+    ["o", "output", false],
+    ["Enter", "peek", false],
+    ["x", "stop", false],
+    ["?", "help", true],
+  ];
+  // Row 13 is `≡ heavy`: a lane is not a card, so every operator key is inert on it.
+  const lane = at100({ selected: 13 });
+  assertGrid(lane, 100, 30);
+  assert.deepEqual(badgeTriples(lane), faint, "a lane row");
+  assert.equal(screenText(lane.slice(-1)).trimEnd(), BADGE_ROW("peek"));
+  // A needle that matches no service leaves the Queues rows, so the cursor at -1 selects
+  // nothing, and the cursor at 0 selects the section's header, which is no card either.
+  const none = at100({ filter: "zzzz", selected: -1 });
+  assertGrid(none, 100, 30);
+  assert.deepEqual(badgeTriples(none), faint, "no selection");
+  assert.equal(screenText(none.slice(-2, -1)).trim(), "/zzzz (esc)", "the lens says what hides the rows, above the keys");
+  assert.deepEqual(at100({ filter: "zzzz", selected: 0 }).slice(-2), none.slice(-2), "the Queues header reads the same");
+});
+
+test("a page too narrow for five keys drops them from the right and keeps ? help last", () => {
+  // `fit_badges_drops_from_the_right_and_keeps_help_last`'s blank-end edges, on the live board
+  // with `archivist` selected so every key is live: each edge fits its count, and a column
+  // fewer drops the rightmost key that is not `? help`.
+  const { board, at } = liveBoard();
+  const keysAt = (cols) => {
+    const rows = layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123", selected: 6 });
+    assertGrid(rows, cols, 30);
+    return badgesOf(rows).map((b) => b.key);
+  };
+  const counts = [
+    ["t", "o", "Enter", "x", "?"],
+    ["t", "o", "Enter", "?"],
+    ["t", "o", "?"],
+    ["t", "?"],
+    ["?"],
+  ];
+  BLANK_BADGE_EDGES.forEach((edge, i) => {
+    assert.deepEqual(keysAt(edge), counts[i], `${counts[i].length} keys at ${edge}`);
+    assert.deepEqual(keysAt(edge - 1), counts[i + 1], `${counts[i + 1].length} keys at ${edge - 1}`);
+  });
+  // Too narrow even for help, the lone badge is kept and clipped to the row.
+  assert.deepEqual(keysAt(5), ["?"], "? help is the last key standing");
+});
+
+/// `fit_badges_drops_from_the_right_and_keeps_help_last`'s `BadgeEnds::Blank` edges: the widths
+/// at which five, four, three and two badges still fit.
+const BLANK_BADGE_EDGES = [61, 50, 35, 22];
+
+test("the badge gap and the drop edges are legend.rs's", { skip: NO_AFKD_SRC }, () => {
+  const legend = afkdSource("crates", "tui", "src", "legend.rs");
+  const gap = Number(legend.match(/pub\(crate\) const BADGE_GAP: usize = (\d+);/)?.[1]);
+  const { board, at } = liveBoard();
+  const rows = layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected: 6 });
+  // The cells between a label's end and the next badge's opening end.
+  const badges = badgesOf(rows);
+  const drawn = badges.slice(1).map((b, i) => b.at - (badges[i].at + 3 + 1 + textWidth(badges[i].key) + textWidth(badges[i].label) - 1));
+  assert.ok(gap > 0, "legend.rs still spells BADGE_GAP");
+  assert.deepEqual(drawn, Array(4).fill(gap), "the page parts its badges by legend::BADGE_GAP");
+  const edges = legend.match(/\(BadgeEnds::Blank, \[(\d+), (\d+), (\d+), (\d+)\]\)/)?.slice(1).map(Number);
+  assert.deepEqual(edges, BLANK_BADGE_EDGES, "the drop test's edges are afkd's own for blank ends");
+});
+
+test("a dead key is faint on the band and holds its live slot", () => {
+  // `shell::badge_line` at 24-bit: a live key is bold text on the rule band, a dead one faint
+  // and not bold, and the label is muted either way. Nothing is dimmed: the faint is the gate.
+  const { board, at } = liveBoard();
+  const at100 = (selected) => layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected });
+  const dead = at100(0).at(-1);
+  const live = at100(6).at(-1);
+  const keyCell = (row, key) => row.find((c) => c.bg === "rule" && c.text === key);
+  const labelCell = (row, label) => row.find((c) => c.fg === "muted" && c.text === label);
+  const look = (c) => ({ fg: c.fg, bg: c.bg, bold: c.bold, dim: c.dim });
+  assert.deepEqual(look(keyCell(live, "t")), { fg: "text", bg: "rule", bold: true, dim: false }, "a live key");
+  assert.deepEqual(look(keyCell(dead, "t")), { fg: "faint", bg: "rule", bold: false, dim: false }, "a dead key");
+  for (const row of [live, dead]) {
+    assert.deepEqual(look(labelCell(row, "run now")), { fg: "muted", bg: null, bold: false, dim: false }, "the label");
   }
-  // …while an **unbound** action renders nothing at all. The drain is the reachable case: it
-  // empties the chord list for the refused reload, and the cell vanishes rather than dimming.
-  // `quitting_footer_is_the_contextual_footer_minus_refused`, computed: the drained footer is
-  // the same board's undrained footer minus exactly the cells whose key the drain refuses, so
-  // every key the drain leaves alone keeps its hint.
+  // The shape is the point: dead or live, every cell is the same width in the same column.
+  assert.deepEqual(
+    dead.map((c) => [c.text, c.width]),
+    live.map((c) => [c.text, c.width]),
+    "a dead badge is as wide as a live one at the same slot",
+  );
+});
+
+test("the lenses name themselves on a row of their own above the keys", () => {
+  // `layout::lens_affordance`, in the footer's prose tone, and never in the badge row.
+  const { board, at } = liveBoard();
+  const at100 = (extra) => layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", ...extra });
+  for (const [extra, said] of [
+    [{ filter: "ops" }, "/ops (esc)"],
+    [{ busyOnly: true }, "busy only (b)"],
+    [{ filter: "ops", busyOnly: true }, "/ops (esc) · busy only (b)"],
+  ]) {
+    const rows = at100(extra);
+    assertGrid(rows, 100, 30);
+    const [above, keys] = rows.slice(-2);
+    assert.equal(screenText([above]).trim(), said, `${said} above the keys`);
+    const ink = above.filter((c) => c.text.trim() !== "");
+    assert.ok(ink.every((c) => c.fg === "muted" && c.bg === null && !c.dim), `${said} is in the footer's prose tone`);
+    assert.ok(!screenText([keys]).includes("(esc)") && !screenText([keys]).includes("busy"), "and not in the badge row");
+    assert.ok(badgesOf(rows).length === 5, "under all five keys");
+  }
+  // With no lens the footer is the badge row alone, straight under the rule.
+  const bare = at100({});
+  assert.equal(screenText(bare.slice(-2, -1)), "─".repeat(100), "no lens, no affordance row");
+  // At one footer row the affordance outranks the keys: it names the key that undoes the lens.
+  const squeezed = layout(board, { cols: 40, rows: 6, now: at + 1000, version: "0.2.123", filter: "ops" });
+  assertGrid(squeezed, 40, 6);
+  assert.equal(screenText(squeezed.slice(-1)).trim(), "/ops (esc)", "the affordance alone");
+  assert.equal(screenText(squeezed.slice(-2, -1)), "─".repeat(40), "directly under the rule");
+});
+
+test("the footer advertises no unpressable key", () => {
+  // None of the five is a key the drain refuses, so the drained footer is the same board's
+  // undrained one, cell for cell: the header, not the footer, reports the drain.
   const drained = drainedBoard();
   const options = { cols: 120, rows: 30, now: drained.at + 1000, version: "0.2.123" };
-  const liveCells = footerCells(layout({ ...drained.board, quittingSince: null }, options), 3);
-  assert.ok(liveCells.includes("Ctrl+R reload"), "the undrained footer advertises the reload");
-  const refusedKeys = new Set(REFUSED_WHILE_QUITTING.flatMap(glyphs));
-  const isRefused = (cell) => cell.split(" ")[0].split("/").some((key) => refusedKeys.has(key));
-  assert.deepEqual(
-    footerCells(layout(drained.board, options), 3),
-    liveCells.filter((cell) => !isRefused(cell)),
-    "the drained footer is the undrained one minus the refused cells — absent, not dim",
-  );
+  const footer = layout(drained.board, options).at(-1);
+  assert.deepEqual(footer, layout({ ...drained.board, quittingSince: null }, options).at(-1), "the drain moves no key");
+  for (const [action, key] of [
+    ["overview.service_run", "t"],
+    ["overview.show_output", "o"],
+    ["overview.service_peek", "Enter"],
+    ["overview.service_stop", "x"],
+    ["global.help", "?"],
+  ]) {
+    assert.ok(!REFUSED_WHILE_QUITTING.includes(action), `the drain does not refuse ${action}`);
+    assert.ok(footer.some((c) => c.bg === "rule" && c.text === key), `the drained footer keeps ${key}`);
+  }
   // The `?` legend is the table's other display reader: the refused row goes, the operator
   // verbs and both scopes' lane keys stay.
   const legendOf = (b) => screenText(layout(b, { ...options, cols: 160, rows: 44, help: true }));
@@ -963,32 +1145,6 @@ test("the footer advertises no unpressable key", () => {
 // The goldens carry all three as planes, so every one of these is guarded there too. They are
 // written out as well because a plane diff says *a* cell moved and these say **which** rule
 // broke — and because three of them are behaviours the card names in its own words.
-
-test("a gated hint is dim and a live one is not", () => {
-  const { board, at } = liveBoard();
-  const rows = layout(board, { cols: 120, rows: 30, now: at + 1000, version: "0.2.123" });
-  // The `muted`-toned label cell of a footer hint, with the `bright` key glyph that precedes
-  // it — the two cells `hintRowCells` mints from one hint, which must agree on the bit.
-  const hint = (label) => {
-    for (const row of rows) {
-      const at = row.findIndex((c) => c.fg === "muted" && c.text === label);
-      if (at === -1) continue;
-      const key = row.slice(0, at).reverse().find((c) => c.fg === "bright");
-      return { label: row[at], key };
-    }
-    return undefined;
-  };
-  // The cursor is on `janitor`, which is `Stopped`: `s` can act on it; `x` and `t` are bound
-  // and cannot. That is the whole gated/unbound distinction in one row.
-  for (const [label, dim] of [["start", false], ["stop", true], ["run now", true]]) {
-    const cells = hint(label);
-    assert.ok(cells !== undefined, `the footer carries ${label}`);
-    assert.equal(cells.label.dim, dim, `${label} is ${dim ? "gated, so dim" : "live, so lit"} against a Stopped row`);
-    assert.equal(cells.key.dim, dim, `${label}'s key glyph carries the same weight its label does`);
-  }
-  // …and the shape is the point: gated or live, the cell is the same width in the same slot.
-  assert.equal(hint("stop").label.width, textWidth("stop"));
-});
 
 test("the selection bar sits over the cursor's row and follows it", () => {
   const { board, at } = liveBoard();
@@ -1078,12 +1234,14 @@ test("the load strip draws each lane on a chip in its own hue", () => {
 test("the key glyphs are canonical", () => {
   // The javascript restatement of `legend::assert_canonical_key_glyphs`: named and modifier
   // keys take the help overlay's Title-case spelling, and no key cell wears a bracket — keys
-  // whiten structurally, never with a `[…]` delimiter.
+  // whiten structurally, never with a `[…]` delimiter. A key here is a badge's cell on the
+  // rule band; the overlay's own keys are held to the same rule further down.
   const { board, at } = liveBoard();
   const seen = new Set();
   for (const cols of [120, 100, 80]) {
-    for (const line of footerOf(layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123" }), 3)) {
-      for (const word of line.split(/\s+/)) if (word !== "") seen.add(word);
+    for (const selected of [0, 1, 13]) {
+      const footer = layout(board, { cols, rows: 30, now: at + 1000, version: "0.2.123", selected }).at(-1);
+      for (const c of footer) if (c.bg === "rule" && c.text.trim() !== "") seen.add(c.text);
     }
   }
   const text = [...seen].join(" ");
@@ -1094,7 +1252,6 @@ test("the key glyphs are canonical", () => {
     assert.ok(!seen.has(bad), `${bad} takes its Title-case form`);
   }
   assert.ok(seen.has("Enter"), "…which is what it takes: Enter");
-  assert.ok(seen.has("Ctrl+R"), "and Ctrl+R");
 });
 
 // --- the `/` needle ------------------------------------------------------------------
@@ -1140,12 +1297,8 @@ test("the cursor on a service row mid-board", () => {
   const lines = screenText(rows).split("\n");
   const banded = rows.findIndex((row) => row.some((c) => c.bg === "selection"));
   assert.ok(lines[banded].includes("archivist"), "the band is on the row the index names");
-  // `archivist` is `Idle`, so the footer's four operator cells read off *its* badge: stop,
-  // trigger and restart are live, start is not.
-  const footer = footerOf(rows, 3).join("\n");
-  for (const cell of ["s start", "x stop", "t run now", "r restart"]) {
-    assert.ok(footer.includes(cell), `the footer carries ${cell}`);
-  }
+  // `archivist` is `Idle`, so the footer's keys read off *its* badge: all five are live.
+  assert.ok(badgesOf(rows).every((b) => b.live), "every key is live on an Idle service");
 });
 
 test("the cursor on a group header, with its members folded away", () => {
@@ -1174,8 +1327,8 @@ test("the cursor on a group header, with its members folded away", () => {
   // now hiding it, which is the whole point of rolling a group up.
   const header = screenText(rows).split("\n").find((l) => l.includes("⊞ 📦 ops"));
   assert.match(header, /✕ Crashed/, "the hidden crash still reaches the header");
-  const footer = footerOf(rows, 3).join("\n");
-  assert.ok(footer.includes("expand"), "the collapse hint names the verb the key would do next");
+  const footer = footerOf(rows, 1).join("\n");
+  assert.ok(footer.includes("Enter  expand"), "Enter names the verb it would do next");
   assert.ok(!footer.includes("collapse"), "…and not the one it just did");
 });
 
@@ -1186,13 +1339,13 @@ test("the cursor on a queue lane", () => {
   assertGolden("cursor-lane-100x30.txt", rows);
   const banded = rows.findIndex((row) => row.some((c) => c.bg === "selection"));
   assert.ok(screenText(rows).split("\n")[banded].includes("≡ heavy"), "the band is on the lane");
-  // A lane row's footer is the `queues` scope's two cells and no operator verb: a lane is not a
-  // card, and `h`/`l` there are the lane's own capacity keys.
-  const footer = footerOf(rows, 3).join("\n");
-  for (const cell of ["h narrow", "l widen"]) assert.ok(footer.includes(cell), `the footer carries ${cell}`);
-  for (const gone of ["s start", "t run now", "r restart"]) {
-    assert.ok(!footer.includes(gone), `${gone} needs a card, so a lane row does not advertise it`);
-  }
+  // A lane is not a card, so every operator key is there but faint, and only `? help` is live:
+  // the lane's own capacity keys are in the overlay.
+  assert.deepEqual(
+    badgesOf(rows).filter((b) => b.live).map((b) => b.key),
+    ["?"],
+    "a card key needs a card, so a lane row lights none",
+  );
 });
 
 test("the body scrolls to keep the cursor on screen", () => {
@@ -1677,13 +1830,13 @@ test("a flash owns the footer for four seconds and reverts byte for byte", () =>
   const before = layout(board, options);
   const flashed = layout(board, { ...options, flash: "Run sent to ops.nightly" });
   assertGrid(flashed, 100, 30);
-  // The flash **is** the footer, at precedence 2: one line, replacing the contextual legend
-  // rather than sitting under it.
+  // The flash **is** the footer, at precedence 2: one line, replacing the contextual keys
+  // rather than sitting under them.
   const footer = footerOf(flashed, 1)[0];
   assert.ok(footer.startsWith("Run sent to ops.nightly"), "the flash is the footer's own line");
   assert.ok(!screenText(flashed).includes("? help"), "…and the contextual hints are not beside it");
-  // A footer of one row leaves the body two rows taller, which is why expiry has to revert
-  // exactly rather than approximately.
+  // Expiry has to revert exactly rather than approximately: the badges come back in the very
+  // row the flash took.
   assert.deepEqual(
     screenText(layout(board, { ...options, flash: null })),
     screenText(before),
@@ -1716,6 +1869,7 @@ test("a flash and a filter affordance are the two the footer arms on", () => {
   const both = layout(board, { ...options, flash: "Starting archivist" });
   assertGrid(both, 100, 30);
   assert.equal(footerOf(both, 1)[0].trim(), "Starting archivist", "the flash alone");
+  assert.ok(!screenText(both).includes("/ops (esc)"), "…with no affordance row above it");
 });
 
 // --- the info page ------------------------------------------------------------------------

@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.13.1 (companion)
+Installed @afkd/web_top 0.14.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -183,10 +183,10 @@ skips loudly on a host with no `node`.
 filter, collapsed, typing, flash, confirm, help, now, version})` returns one array of `{text, fg, bg, dim, bold, width}` cells per
 screen row — the title bar and its shed ladder, the host-load strip and its four trend lanes,
 the five columns and *their* shed ladder, the service and group rows with their icons,
-badges, markers, cadences, ages and countdowns, the `Queues` section, the footer legend laid out as
-the terminal's own column grid, and the two popups over all of it — the verb-carrying confirm
-modal and the `?` overlay, each framed by one `render_popup` that owns the gutter so no call
-site pads its own body. It is `crates/tui/src/layout.rs`, `legend.rs` and
+badges, markers, cadences, ages and countdowns, the `Queues` section, the list footer's five key
+badges, the run view's footer laid out as the terminal's own column grid, and the two popups
+over all of it — the verb-carrying confirm modal and the `?` overlay, each framed by one
+`render_popup` that owns the gutter so no call site pads its own body. It is `crates/tui/src/layout.rs`, `legend.rs` and
 `shell.rs`'s width family, restated the way the fold restates `model.rs`, with the same
 per-arm citations.
 
@@ -226,7 +226,7 @@ are.
 Its suites are `layout.test.mjs` — fixture-driven the same way and gated by the same `cargo
 test` bridge — plus `keymap.test.mjs`, `session.test.mjs` and `input.test.mjs` beside it. A golden holds the screen as **three planes** — what it says, the palette role
 each cell says it in, and its weight-or-band, one letter per cell so the planes read under the
-text in any terminal. A cell's look is half its meaning here (the gated footer hints, the
+text in any terminal. A cell's look is half its meaning here (the footer's faint badges, the
 load chips, the muted column header, the selection bar), and a text-only golden
 would pass over a page painted flat. They are regenerated deliberately — `node
 @afkd/web_top/layout.test.mjs --write-goldens` — never by the test run.
@@ -248,7 +248,7 @@ does. `input.mjs` is the browser half, and the only file here that touches an ev
 |---|---|
 | `j`/`k`, `↓`/`↑`, `g`, `G` | move the cursor; the body scrolls to keep it on screen |
 | `v` | flip the list between the flat boot view — every service its own row, named in full — and the grouped tree; the cursor rides its row across |
-| `b` | the busy lens: only the services running something of their own (`Starting`, `Busy`, `Stopping`, and a run whose `with queue(…)` block waits on a lane) and any `Crashed` one; `b busy ●` says it is on |
+| `b` | the busy lens: only the services running something of their own (`Starting`, `Busy`, `Stopping`, and a run whose `with queue(…)` block waits on a lane) and any `Crashed` one; `busy only (b)` above the footer says it is on |
 | `Enter`/`Space` | open or close the selected service's **activity peek** — its run's active branch under its row — or fold the group header under the cursor |
 | `h`/`←`, `l`/`→` | fold and unfold a group — from a member too, which moves the cursor onto its header; grouped view only. On a lane row in the `Queues` section they narrow and widen that lane instead |
 | `+` / `-` | widen or narrow the selected service's queue lane by one, from the capacity on screen; on a service with no lane, a group header or nothing they say why in the footer, as the terminal does |
@@ -476,8 +476,8 @@ say so, which is how the release workflow runs this directory's suites.
 ## What this card deliberately does not do
 
 - **A few keys are bound and inert.** `q` is one: a page cannot close itself, and `Ctrl+C` is
-  the browser's copy. They are listed in the `?` overlay and the footer exactly as the terminal
-  lists them, and reported unhandled, so the browser keeps them. `o` and `i` on a group header or a
+  the browser's copy. They are listed in the `?` overlay exactly as the terminal lists
+  them, and reported unhandled, so the browser keeps them. `o` and `i` on a group header or a
   lane row are a different shape of refusal, and are **partial**: `TreeOpen` and
   `toggle_info_view` both open on the selected *card*, so there is no subject.
 - **`H`/`L` in the tree are a blanket override, not a mode.** Both write an explicit override

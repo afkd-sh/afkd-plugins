@@ -39,9 +39,9 @@ Queue     Usage                                  │  x            Stop service 
                                                                                                                                                                 
                                                                                                                                                                 
                                                                                                                                                                 
+                                                                                                                                                                
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-s start  t run now  + widen     o output  Enter peek    g/G first/last  b busy ○    Ctrl+R reload  q quit                                                       
-x stop   r restart  - narrow    i info                  v flat          / find      ? help                                                                      
+ t  run now    o  output    Enter  peek    x  stop    ?  help                                                                                                   
 
 ── fg · n text · b bright · m muted · f faint · a accent · p pre-run · c caution · x alarm · k ok · s secondary · r rule · u plugin · o mark · e free
 nnnnnnnnnnnnnfnknnnnnnnnnnnnnfnkkkknfnxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnccccc
@@ -85,11 +85,11 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffffffffffffffffffffffffffff
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
-bnmmmmmmmbnmmmmmmmmmbnmmmmmmmmmmbnmmmmmmmmbbbbbnmmmmmmmmbbbnmmmmmmmmmmmmbnmmmmmmmmmmbbbbbbnmmmmmmmmbnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-bnmmmmmmmbnmmmmmmmmmbnmmmmmmmmmmbnmmmmmmmmmmmmmmmmmmmmmmbnmmmmmmmmmmmmmmbnmmmmmmmmmmbnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nfnnmmmmmmmnnnnnnnmmmmmmnnnnnnnnnnnmmmmnnnnfnnmmmmnnnnnnnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
-── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · s selection band · D band, dim · B band, bold
+── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · r rule band · R rule band, dim · g rule band, bold · s selection band · D band, dim · B band, bold
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 ddddHHHHHHHHHHHHHHHHHHHHHHHHHHHHddddddddddddHHHHHHHHHHHHHHHHHHHHHHHHHHHHdddddddddddddddddHHHHHHHHHHHHHHHHHHHHHHHHHHHdddddddddHHHHHHHHHHHHHHHHHHHHHHHHHHHdddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
@@ -133,4 +133,4 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+RRRdddddddddddRRRddddddddddRRRRRRRddddddddRRRddddddddRRRdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

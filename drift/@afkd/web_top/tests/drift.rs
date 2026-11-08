@@ -3158,14 +3158,24 @@ fn the_plugins_own_suites_run_under_node() {
 
 /// The grid both screens are captured on. Wide enough that all five list columns render —
 /// the list sheds `Last Activity` and `Next Run` on a narrow terminal — and tall enough to
-/// hold the whole footer legend, which is one of the things compared.
+/// hold the whole footer, which is one of the things compared.
 const DRIFT_COLS: u16 = 100;
 const DRIFT_ROWS: u16 = 30;
 
 /// The terminal every `afkd top` leg runs: `COLORTERM=truecolor`, so afkd top paints the 24-bit
 /// night look web_top pictures (`palette::detect`), whatever the launching shell advertises;
-/// and `NO_COLOR` empty, which afkd reads as unset, so an ambient one cannot flatten it.
-const TOP_TERM_ENV: [(&str, &str); 2] = [("COLORTERM", "truecolor"), ("NO_COLOR", "")];
+/// `NO_COLOR` empty, which afkd reads as unset, so an ambient one cannot flatten it; and a
+/// `TERM`, `TERM_PROGRAM` and `WT_SESSION` that name no terminal drawing the Powerline caps
+/// (`palette::draws_round_caps`), so afkd top closes its footer badges and load chips with the
+/// blank ends web_top draws, even when the launching shell is kitty, ghostty, WezTerm or
+/// Windows Terminal.
+const TOP_TERM_ENV: [(&str, &str); 5] = [
+    ("COLORTERM", "truecolor"),
+    ("NO_COLOR", ""),
+    ("TERM", "xterm-256color"),
+    ("TERM_PROGRAM", ""),
+    ("WT_SESSION", ""),
+];
 
 /// The board the drift leg diffs, chosen for what the comparison has to carry rather than
 /// for what a daemon does:
@@ -3258,13 +3268,14 @@ backup :: service(interval) {
 const STOPPED: &str = "never";
 
 /// What has to be on a screen before comparing it means anything: the fixture's five rows,
-/// two distinct badges among them, and the whole footer legend. They are the floors [`drift`]
+/// two distinct badges among them, and the footer's five key badges, each read as two hints,
+/// its key and its label. They are the floors [`drift`]
 /// closes with **and** the condition the terminal's own capture waits for, deliberately the
 /// same numbers — a screen caught mid-paint then fails the wait, with itself printed, rather
 /// than reading downstream as a row or a hint the plugin is missing.
 const SERVICE_ROW_FLOOR: usize = 5;
 const BADGE_FLOOR: usize = 2;
-const FOOTER_HINT_FLOOR: usize = 12;
+const FOOTER_HINT_FLOOR: usize = 10;
 
 /// One reconstructed screen as **columns**: `grid[row][col]` is that cell's contents, and a
 /// wide glyph's covered cell is the empty string beside it.
@@ -3332,8 +3343,8 @@ impl Screen {
     /// the runs of two-or-more blanks that separate one hint from the next.
     ///
     /// Sorted rather than positional, because the footer's *shelf* — which hint sits in
-    /// which of the three rows — is a width shed both surfaces compute for themselves, and
-    /// the card scopes this to the hint **set**.
+    /// which row — is a width shed both surfaces compute for themselves, and the card scopes
+    /// this to the hint **set**.
     fn footer_hints(&self) -> Vec<String> {
         let mut hints: Vec<String> = (self.footer_start()..self.grid.len())
             .flat_map(|at| segments(&self.grid[at]).into_iter().map(|(text, _)| text))
@@ -3925,7 +3936,7 @@ fn a_last_activity_cell_reading_now_is_an_age_and_an_empty_one_still_differs() {
 }
 
 /// Poll the terminal until its screen holds everything the comparison needs to mean
-/// something — the fixture's rows, both badges, the whole hint legend — and hand that screen
+/// something — the fixture's rows, both badges, the footer's every hint — and hand that screen
 /// back. Gives up at [`BUDGET`] with the screen printed.
 ///
 /// Read through the very readers [`drift`] compares with, and against the very floors it
@@ -6269,11 +6280,11 @@ fn a_refused_command_flashes_the_daemons_error_alike_on_afkd_top_and_web_top() {
     let tui = spawn_captured_sized(
         dir.path(),
         &["top"],
-        &[
-            TOP_TERM_ENV[0],
-            TOP_TERM_ENV[1],
-            ("XDG_STATE_HOME", state_home),
-        ],
+        &TOP_TERM_ENV
+            .iter()
+            .copied()
+            .chain([("XDG_STATE_HOME", state_home)])
+            .collect::<Vec<_>>(),
         DRIFT_COLS,
         DRIFT_ROWS,
     );
