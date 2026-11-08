@@ -2575,9 +2575,9 @@ function infoSections(svc, now) {
   // A healthy service has no `Config` row at all, so the row's presence *is* the verdict.
   if (svc.orphan) health.push(field("Config", CONFIG_ORPHAN));
   else if (svc.stale) health.push(field("Config", CONFIG_STALE));
-  // Not named by the card, but the fold tracks `poisoned` and the footer already carries
-  // `POISON_RECOVERY`: a `Health` section that omitted a fault signal the board holds would be
-  // wrong rather than minimal. Independent of the reconcile branch — the two are orthogonal.
+  // The fold tracks `poisoned`, and a `Health` section that left out a fault signal the board
+  // holds would be wrong rather than minimal. Independent of the reconcile branch — the two are
+  // orthogonal.
   if (svc.poisoned) health.push(field("Recovery", POISON_RECOVERY));
 
   return [
@@ -3439,8 +3439,9 @@ function logScrollHint(keys) {
   return { kind: "key", keys: up === "" || down === "" ? paired : `${paired} or ${up}${down}`, label: "scroll", live: true };
 }
 
-/// The `f follow ●/○` label — the state rides the *label* so only the key whitens, the
-/// convention the list's `busy ○` cell already keeps.
+/// `logview::log_nav_hints` / `treeview::tree_nav_hints`'s `follow ●`/`follow ○` — the state
+/// rides the *label*, so the `f` cell stays the bare chord [`hintRowCells`] whitens and only the
+/// key reads bright.
 function followLabel(following) {
   return following ? "follow ●" : "follow ○";
 }
