@@ -3,10 +3,14 @@
 // This is the pinning test the card asks for. `keymap.mjs` is a hand-written copy of afkd's
 // `DEFAULT_KEYS`, and a hand-written copy of a table in another language is exactly the kind of
 // thing that rots — so every assertion below reads the **Rust** and holds the javascript to it:
-// the 51 rows in order, the eight scopes and their dotted names, the glyph vocabulary, and the
-// drain's refusal set. A row gained, lost or rebound over there is a failing test here, which is
+// the 51 rows in order, the eight scopes in `Scope`'s order, the glyph vocabulary, and the
+// drain's refusal set. A row gained, lost or changed over there is a failing test here, which is
 // the only thing that makes "the stock keymap, transcribed" a claim rather than a hope. The Rust
 // is read out of the afkd checkout `AFKD_SRC` names, and those tests skip without one.
+//
+// The dotted scope names (`output.tree`) and the bare key words are this page's own vocabulary,
+// since afkd top names neither: a scope's name comes from its `Scope` variant by `dotted`'s rule,
+// and a key's word is the one `NamedKey::from_token` reads, so both stay pinned to the Rust.
 //
 // Each read is guarded the way `web/scripts/check-dist.mjs` guards its palette read: if the
 // regex finds implausibly little, the test fails *with that* as its message, so a renamed
@@ -46,55 +50,99 @@ function fnBody(source, signature) {
   return source.slice(at, source.indexOf("\n    }", at));
 }
 
-/// `Scope::dsl_name`'s arms, in order, as [variant, dotted name], whether afkd writes an arm
-/// `Scope::X` or `Self::X`.
-function dslNames(source) {
-  return [...fnBody(source, "fn dsl_name(").matchAll(/(?:Scope|Self)::(\w+) => "([\w.]+)",/g)].map(
-    ([, variant, name]) => [variant, name],
+/// `pub enum Scope`'s variants, in declaration order. The read starts at `Scope`'s own
+/// declaration and stops at its closing brace, so `Ctx`'s variants above it and `NamedKey`'s
+/// below it stay out; a variant is a line of its own at item indent, which no `///` line is.
+function scopeVariants(source) {
+  const from = source.indexOf("pub enum Scope {");
+  assert.notEqual(from, -1, "keymap.rs still declares pub enum Scope");
+  const body = source.slice(from, source.indexOf("\n}", from));
+  return [...body.matchAll(/^ {4}(\w+),$/gm)].map(([, variant]) => variant);
+}
+
+/// The page's name for a scope: its variant's CamelCase words, lowercased and joined by a dot
+/// (`OutputTree` → `output.tree`, `Global` → `global`).
+function dotted(variant) {
+  return variant.replace(/(?<=[a-z0-9])(?=[A-Z])/g, ".").toLowerCase();
+}
+
+/// Each `Scope` variant mapped to its dotted name.
+function scopeNames(source) {
+  return Object.fromEntries(scopeVariants(source).map((variant) => [variant, dotted(variant)]));
+}
+
+/// `NamedKey::from_token`'s arms, in order, as [variant, bare word], whether afkd writes an arm
+/// `NamedKey::X` or `Self::X`.
+function namedKeyWords(source) {
+  return [...fnBody(source, "fn from_token(").matchAll(/"([a-z]+)" => (?:NamedKey|Self)::(\w+),/g)].map(
+    ([, word, variant]) => [variant, word],
   );
 }
 
-/// `NamedKey::token`'s arms, in order, as [variant, bare word], whether afkd writes an arm
-/// `NamedKey::X` or `Self::X`.
-function namedKeyTokens(source) {
-  return [...fnBody(source, "fn token(self)").matchAll(/(?:NamedKey|Self)::(\w+) => "([a-z]+)",/g)].map(
-    ([, variant, name]) => [variant, name],
+/// `DEFAULT_KEYS`'s rows, in order, as `{scope, action, binding}` with each scope dotted.
+function rustRows(source) {
+  // The slice itself, bounded so a `(Scope::…, "…", "…")` tuple elsewhere in the file cannot
+  // drift into the comparison.
+  const from = source.indexOf("const DEFAULT_KEYS: &[(Scope, &str, &str)] = &[");
+  assert.notEqual(from, -1, "keymap.rs still declares DEFAULT_KEYS as a slice of triples");
+  const slice = source.slice(from, source.indexOf("\n];", from));
+  const rows = [...slice.matchAll(/\(Scope::(\w+),\s*"([\w_]+)",\s*"([^"]*)"\)/g)].map(
+    ([, scope, action, binding]) => ({ scope, action, binding }),
   );
+  assert.ok(
+    rows.length >= 51,
+    `the DEFAULT_KEYS read found only ${rows.length} rows — the table's shape moved, so this test is comparing against a stub`,
+  );
+  // `Scope::OutputTree` → `output.tree`, named from the enum rather than transcribed, so a
+  // scope renamed there fails here too.
+  const names = scopeNames(source);
+  assert.equal(Object.keys(names).length, 8, "Scope still declares eight variants");
+  return rows.map(({ scope, action, binding }) => ({ scope: names[scope], action, binding }));
 }
 
 // --- AC1: the transcription is the Rust table ---------------------------------------
 
 test("the 51 rows are DEFAULT_KEYS's, in order", { skip: NO_AFKD_SRC }, () => {
-  // The slice itself, bounded so a `(Scope::…, "…", "…")` tuple elsewhere in the file cannot
-  // drift into the comparison.
-  const from = KEYMAP_RS.indexOf("const DEFAULT_KEYS: &[(Scope, &str, &str)] = &[");
-  assert.notEqual(from, -1, "keymap.rs still declares DEFAULT_KEYS as a slice of triples");
-  const slice = KEYMAP_RS.slice(from, KEYMAP_RS.indexOf("\n];", from));
-  const rust = [...slice.matchAll(/\(Scope::(\w+),\s*"([\w_]+)",\s*"([^"]*)"\)/g)].map(
-    ([, scope, action, binding]) => ({ scope, action, binding }),
-  );
-  assert.ok(
-    rust.length >= 51,
-    `the DEFAULT_KEYS read found only ${rust.length} rows — the table's shape moved, so this test is comparing against a stub`,
-  );
-
-  // `Scope::OutputTree` → `output.tree`, read off `dsl_name` rather than transcribed, so a
-  // scope renamed there fails here too.
-  const dsl = Object.fromEntries(dslNames(KEYMAP_RS));
-  assert.equal(Object.keys(dsl).length, 8, "dsl_name still spells eight scopes");
-
   assert.deepEqual(
     DEFAULT_KEYS,
-    rust.map(({ scope, action, binding }) => ({ scope: dsl[scope], action, binding })),
+    rustRows(KEYMAP_RS),
     "keymap.mjs's transcription is DEFAULT_KEYS row for row, scope for scope, binding for binding",
   );
   assert.equal(DEFAULT_KEYS.length, 51, "…and it is still 51 rows");
 });
 
+/// One edit of each kind a `DEFAULT_KEYS` row can take, as [what, needle, replacement]: a
+/// binding changed, an action renamed, a row moved to another scope, a row dropped and a row
+/// added.
+const ROW_EDITS = [
+  ["a binding changed", '(Scope::Global, "help", "?"),', '(Scope::Global, "help", "/"),'],
+  ["an action renamed", '(Scope::Overview, "service_start", "s"),', '(Scope::Overview, "service_begin", "s"),'],
+  ["a row moved to another scope", '(Scope::Info, "back", "i esc"),', '(Scope::Confirm, "back", "i esc"),'],
+  ["a row dropped", '    (Scope::Confirm, "accept", "y"),\n', ""],
+  [
+    "a row added",
+    '    (Scope::Global, "help", "?"),\n',
+    '    (Scope::Global, "help", "?"),\n    (Scope::Global, "extra", "z"),\n',
+  ],
+];
+
+test("a changed DEFAULT_KEYS row reddens the transcription", { skip: NO_AFKD_SRC }, () => {
+  for (const [what, needle, replacement] of ROW_EDITS) {
+    const edited = KEYMAP_RS.replace(needle, replacement);
+    // A target the Rust no longer holds would make the edit a no-op and this check vacuous.
+    assert.notEqual(edited, KEYMAP_RS, `${what}: keymap.rs still holds ${JSON.stringify(needle)}`);
+    assert.throws(
+      () => assert.deepEqual(DEFAULT_KEYS, rustRows(edited)),
+      assert.AssertionError,
+      `${what} in DEFAULT_KEYS fails the transcription`,
+    );
+  }
+});
+
 test("the scopes are Scope's, in its own order", { skip: NO_AFKD_SRC }, () => {
-  const arms = dslNames(KEYMAP_RS).map(([, name]) => name);
-  assert.equal(arms.length, 8, "the dsl_name read found the eight arms");
-  assert.deepEqual(SCOPES, arms, "SCOPES is dsl_name's list in its own order");
+  const names = scopeVariants(KEYMAP_RS).map(dotted);
+  assert.equal(names.length, 8, "the Scope read found the eight variants");
+  assert.deepEqual(SCOPES, names, "SCOPES is Scope's variants in declaration order");
   // …and every row's scope is one of them, so a typo cannot mint a ninth.
   for (const row of DEFAULT_KEYS) {
     assert.ok(SCOPES.includes(row.scope), `${row.scope} is a scope`);
@@ -124,10 +172,10 @@ test("the alternates are transcribed, not collapsed to the first", () => {
 // --- the glyph vocabulary ------------------------------------------------------------
 
 test("the glyphs are keys::glyph's", { skip: NO_AFKD_SRC }, () => {
-  // `named_glyph`'s arms, read out of the Rust and keyed by the token `NamedKey::token`
-  // spells — so both halves of the pair come from the file rather than from this test.
-  const token = Object.fromEntries(namedKeyTokens(KEYMAP_RS));
-  assert.equal(Object.keys(token).length, 11, "NamedKey::token still spells eleven keys");
+  // `named_glyph`'s arms, read out of the Rust and keyed by the word `NamedKey::from_token`
+  // reads — so both halves of the pair come from the file rather than from this test.
+  const token = Object.fromEntries(namedKeyWords(KEYMAP_RS));
+  assert.equal(Object.keys(token).length, 11, "NamedKey::from_token still reads eleven words");
   const rust = [...KEYS_RS.matchAll(/NamedKey::(\w+) => "([^"]+)",/g)].map(([, variant, spelling]) => [
     token[variant],
     spelling,
@@ -236,11 +284,11 @@ test("the four lane keys are handled, carry no note and read afkd top's legend",
 test("the lane legend is help.rs's own", { skip: NO_AFKD_SRC }, () => {
   // `keys.hint(act::LIST_QUEUE_WIDEN, "Widen the service's queue lane")`: each `act::` constant
   // is joined to its dotted id through `keys.rs` and `keymap.rs`, as the drain's test joins its.
-  const dsl = Object.fromEntries(dslNames(KEYMAP_RS));
+  const scopes = scopeNames(KEYMAP_RS);
   const legend = {};
   for (const [, name, line] of HELP_RS.matchAll(/keys\.hint\(act::(\w+), "([^"]*)"\)/g)) {
     const decl = KEYS_RS.match(new RegExp(`const ${name}: Action = \\(Scope::(\\w+), "([\\w_]+)"\\);`));
-    if (decl !== null) legend[`${dsl[decl[1]]}.${decl[2]}`] = line;
+    if (decl !== null) legend[`${scopes[decl[1]]}.${decl[2]}`] = line;
   }
   assert.ok(Object.keys(legend).length >= 10, `the help.rs read found only ${Object.keys(legend).length} hints`);
   for (const id of Object.keys(LANE_LEGEND)) {
@@ -263,11 +311,11 @@ test("the drain refuses exactly the actions keys.rs refuses", { skip: NO_AFKD_SR
   const names = [...list.matchAll(/act::(\w+)/g)].map(([, name]) => name);
   assert.ok(names.length > 0, "the refusal read found no act:: constants in REFUSED_WHILE_QUITTING");
   // `pub(crate) const LIST_START: Action = (Scope::Overview, "service_start");`
-  const dsl = Object.fromEntries(dslNames(KEYMAP_RS));
+  const scopes = scopeNames(KEYMAP_RS);
   const rust = names.map((name) => {
     const decl = KEYS_RS.match(new RegExp(`const ${name}: Action = \\(Scope::(\\w+), "([\\w_]+)"\\);`));
     assert.notEqual(decl, null, `keys.rs declares act::${name}`);
-    return `${dsl[decl[1]]}.${decl[2]}`;
+    return `${scopes[decl[1]]}.${decl[2]}`;
   });
   assert.deepEqual(
     [...REFUSED_WHILE_QUITTING].sort(),
@@ -278,134 +326,138 @@ test("the drain refuses exactly the actions keys.rs refuses", { skip: NO_AFKD_SR
   for (const id of REFUSED_WHILE_QUITTING) assert.ok(ACTIONS.includes(id), `${id} is a row`);
 });
 
-// --- the reads take either spelling of an arm ------------------------------------------
+// --- the reads are bounded, and take either spelling of an arm ---------------------------
 
-/// `impl Scope` and `impl NamedKey` as afkd wrote them before clippy's `use_self` (`efab5017^`),
-/// trimmed to the methods the reads cover.
-const KEYMAP_BY_TYPE = `impl Scope {
-    /// The dotted DSL name of this scope, for diagnostics (\`output.tree\`, \`global\`).
-    fn dsl_name(self) -> &'static str {
-        match self {
-            Scope::Global => "global",
-            Scope::Overview => "overview",
-            Scope::Queues => "queues",
-            Scope::Output => "output",
-            Scope::OutputTree => "output.tree",
-            Scope::OutputLog => "output.log",
-            Scope::Info => "info",
-            Scope::Confirm => "confirm",
-        }
-    }
+/// `keymap.rs`'s three enums and `NamedKey::from_token` as afkd writes them, each arm `Self::X`,
+/// trimmed to what the reads cover: `Ctx`'s variants above `Scope` and `NamedKey`'s below it
+/// share their shape, so the `Scope` read is bounded at both ends or it reads too many.
+const KEYMAP_BY_SELF = `#[cfg(any(test, feature = "testutil"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Ctx {
+    Global,
+    Overview,
+    /// The overview's queue-lane rows. Consulted before \`overview\`, which is live at the same
+    /// instant, so it shadows it, as \`global\` shadows every view.
+    Queues,
+    OutputTree,
+    OutputLog,
+    Info,
+    Confirm,
+}
 
-    /// The dispatch contexts a binding in this scope is live in.
-    fn contexts(self) -> &'static [Ctx] {
-        match self {
-            Scope::Global => &[Ctx::Global],
-            Scope::Overview => &[Ctx::Overview],
-            Scope::Queues => &[Ctx::Queues],
-            Scope::Output => &[Ctx::OutputTree, Ctx::OutputLog],
-            Scope::OutputTree => &[Ctx::OutputTree],
-            Scope::OutputLog => &[Ctx::OutputLog],
-            Scope::Info => &[Ctx::Info],
-            Scope::Confirm => &[Ctx::Confirm],
-        }
-    }
+/// A keymap scope: a named view or an \`output\` sub-pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Scope {
+    /// Process-global keys, live in every view (\`quit\`/\`reload\`/\`help\`).
+    Global,
+    /// The service overview list.
+    Overview,
+    /// The overview's queue-lane rows, live while the cursor sits on one; shadows
+    /// [\`Overview\`](Scope::Overview).
+    Queues,
+    /// The output view's frame (focus, scope, back), active whichever pane is shown.
+    Output,
+    /// The output view's tree pane (active while the tree has focus).
+    OutputTree,
+    /// The output view's log pane (active while the log has focus).
+    OutputLog,
+    /// The service info view.
+    Info,
+    /// The confirm modal (accept/cancel).
+    Confirm,
+}
+
+/// A named key in the binding vocabulary (a bare word like \`enter\` / \`pageup\`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NamedKey {
+    /// The up-arrow key.
+    Up,
+    /// The down-arrow key.
+    Down,
+    /// The left-arrow key.
+    Left,
+    /// The right-arrow key.
+    Right,
+    /// The enter/return key.
+    Enter,
+    /// The space bar (as a named key, distinct from a literal space glyph).
+    Space,
+    /// The escape key.
+    Esc,
+    /// The tab key.
+    Tab,
+    /// The page-up key.
+    PageUp,
+    /// The page-down key.
+    PageDown,
+    /// The backspace key.
+    Backspace,
 }
 
 impl NamedKey {
-    /// The bare DSL word for this key.
-    fn token(self) -> &'static str {
-        match self {
-            NamedKey::Up => "up",
-            NamedKey::Down => "down",
-            NamedKey::Left => "left",
-            NamedKey::Right => "right",
-            NamedKey::Enter => "enter",
-            NamedKey::Space => "space",
-            NamedKey::Esc => "esc",
-            NamedKey::Tab => "tab",
-            NamedKey::PageUp => "pageup",
-            NamedKey::PageDown => "pagedown",
-            NamedKey::Backspace => "backspace",
-        }
+    /// Parses a bare word into a named key, or \`None\` when the word is not one.
+    fn from_token(s: &str) -> Option<Self> {
+        Some(match s {
+            "up" => Self::Up,
+            "down" => Self::Down,
+            "left" => Self::Left,
+            "right" => Self::Right,
+            "enter" => Self::Enter,
+            "space" => Self::Space,
+            "esc" => Self::Esc,
+            "tab" => Self::Tab,
+            "pageup" => Self::PageUp,
+            "pagedown" => Self::PageDown,
+            "backspace" => Self::Backspace,
+            _ => return None,
+        })
+    }
+
+    /// A second method's arms, which the \`from_token\` read must not take.
+    fn other(s: &str) -> Option<Self> {
+        Some(match s {
+            "home" => Self::Up,
+            _ => return None,
+        })
     }
 }
 `;
 
-/// The same two impls as afkd writes them since `efab5017`, each arm `Self::X`.
-const KEYMAP_BY_SELF = `impl Scope {
-    /// The dotted DSL name of this scope, for diagnostics (\`output.tree\`, \`global\`).
-    fn dsl_name(self) -> &'static str {
-        match self {
-            Self::Global => "global",
-            Self::Overview => "overview",
-            Self::Queues => "queues",
-            Self::Output => "output",
-            Self::OutputTree => "output.tree",
-            Self::OutputLog => "output.log",
-            Self::Info => "info",
-            Self::Confirm => "confirm",
-        }
-    }
+/// The same text with each arm spelled by its type, `NamedKey::X`, as afkd wrote arms before
+/// clippy's `use_self`.
+const KEYMAP_BY_TYPE = KEYMAP_BY_SELF.replaceAll("=> Self::", "=> NamedKey::");
 
-    /// The dispatch contexts a binding in this scope is live in.
-    fn contexts(self) -> &'static [Ctx] {
-        match self {
-            Self::Global => &[Ctx::Global],
-            Self::Overview => &[Ctx::Overview],
-            Self::Queues => &[Ctx::Queues],
-            Self::Output => &[Ctx::OutputTree, Ctx::OutputLog],
-            Self::OutputTree => &[Ctx::OutputTree],
-            Self::OutputLog => &[Ctx::OutputLog],
-            Self::Info => &[Ctx::Info],
-            Self::Confirm => &[Ctx::Confirm],
-        }
-    }
-}
-
-impl NamedKey {
-    /// The bare DSL word for this key.
-    fn token(self) -> &'static str {
-        match self {
-            Self::Up => "up",
-            Self::Down => "down",
-            Self::Left => "left",
-            Self::Right => "right",
-            Self::Enter => "enter",
-            Self::Space => "space",
-            Self::Esc => "esc",
-            Self::Tab => "tab",
-            Self::PageUp => "pageup",
-            Self::PageDown => "pagedown",
-            Self::Backspace => "backspace",
-        }
-    }
-}
-`;
-
-test("the dsl_name and token reads take an arm spelled Scope:: or Self::", () => {
-  const scopes = [
-    ["Global", "global"],
-    ["Overview", "overview"],
-    ["Queues", "queues"],
-    ["Output", "output"],
-    ["OutputTree", "output.tree"],
-    ["OutputLog", "output.log"],
-    ["Info", "info"],
-    ["Confirm", "confirm"],
-  ];
+test("the Scope and from_token reads take an arm spelled NamedKey:: or Self::", () => {
+  assert.notEqual(KEYMAP_BY_TYPE, KEYMAP_BY_SELF, "the fixture's arms are respelled");
   for (const source of [KEYMAP_BY_TYPE, KEYMAP_BY_SELF]) {
-    // Both impls sit in one text, so this is also the bound: eight scopes, not the nineteen
-    // `Self::X => "…",` arms the whole text holds.
-    assert.deepEqual(dslNames(source), scopes);
-    assert.deepEqual(scopes.map(([, name]) => name), SCOPES, "…the list the live test holds SCOPES to");
-    const token = Object.fromEntries(namedKeyTokens(source));
+    // Eight, not `Ctx`'s seven before them or `NamedKey`'s eleven after: the read is bounded.
+    assert.deepEqual(scopeVariants(source), [
+      "Global",
+      "Overview",
+      "Queues",
+      "Output",
+      "OutputTree",
+      "OutputLog",
+      "Info",
+      "Confirm",
+    ]);
+    assert.deepEqual(scopeVariants(source).map(dotted), SCOPES, "…the list the live test holds SCOPES to");
+    // Eleven, not the twelve arms the two methods hold between them.
+    const token = Object.fromEntries(namedKeyWords(source));
     assert.equal(Object.keys(token).length, 11);
     assert.equal(token.PageDown, "pagedown");
   }
-  // A real change still shows: a scope dropped reads seven, which the live count reds on.
-  const dropped = KEYMAP_BY_SELF.replace('            Self::Confirm => "confirm",\n', "");
-  assert.equal(dslNames(dropped).length, 7);
-  assert.equal(namedKeyTokens(KEYMAP_BY_SELF.replace('            Self::Tab => "tab",\n', "")).length, 10);
-  assert.throws(() => dslNames(KEYMAP_BY_SELF.replace("fn dsl_name(", "fn name(")), /keymap\.rs still has fn dsl_name\(/);
+  // A real change still shows: a scope dropped reads seven and a word dropped reads ten, which
+  // the live counts red on.
+  const confirmDropped = KEYMAP_BY_SELF.replace("    Confirm,\n}\n\n/// A named key", "}\n\n/// A named key");
+  assert.equal(scopeVariants(confirmDropped).length, 7);
+  assert.equal(namedKeyWords(KEYMAP_BY_SELF.replace('            "tab" => Self::Tab,\n', "")).length, 10);
+  assert.throws(
+    () => namedKeyWords(KEYMAP_BY_SELF.replace("fn from_token(", "fn parse(")),
+    /keymap\.rs still has fn from_token\(/,
+  );
+  assert.throws(
+    () => scopeVariants(KEYMAP_BY_SELF.replace("pub enum Scope {", "pub enum Pane {")),
+    /still declares pub enum Scope/,
+  );
 });

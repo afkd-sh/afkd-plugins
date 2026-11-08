@@ -1,17 +1,16 @@
 // The keymap: afkd's stock bindings, transcribed for a browser.
 //
 // The keymap is **not on the control wire** — `crates/app/src/proto.rs` carries no keys
-// field — so a companion never sees the operator's effective `Keymap`. What it can do is
-// transcribe the *defaults* verbatim: [`DEFAULT_KEYS`] below is `crates/lang/src/keymap.rs`'s
-// 51-row table, same scopes, same action names, same binding strings including the alternates
-// (`quit` is `q` or `ctrl-c`; `cancel` is `n` or `esc`). `keymap.test.mjs` reads the Rust table
-// and deep-equals it against this one, so a row gained, lost or rebound there is a failing test
-// here rather than a page that stopped answering a key.
+// field — so a companion transcribes it: [`DEFAULT_KEYS`] below is
+// `crates/lang/src/keymap.rs`'s 51-row table, same scopes, same action names, same binding
+// strings including the alternates (`quit` is `q` or `ctrl-c`; `cancel` is `n` or `esc`).
+// afkd top's keys are built in, so that table is the keymap every terminal runs, and this
+// page answers the same keys. `keymap.test.mjs` reads the Rust table and deep-equals it
+// against this one, so a row gained, lost or changed there is a failing test here rather than
+// a page that stopped answering a key.
 //
-// What it costs is stated rather than hidden: an operator who rebinds `x` sees `x` on this page
-// and a different key in their terminal. What it buys is the rule every surface here keeps —
-// an action with no chord renders no hint and takes no key, because a page must never advertise
-// something unpressable.
+// What it buys is the rule every surface here keeps — an action with no chord renders no hint
+// and takes no key, because a page must never advertise something unpressable.
 //
 // Three vocabularies live here because all three are per-action and must not drift from the
 // rows: the glyphs (`crates/tui/src/keys.rs`'s `glyph`/`named_glyph`), the Sentence-case
@@ -20,10 +19,10 @@
 
 // --- the table ----------------------------------------------------------------------
 
-/// The scopes, in `Scope`'s own declaration order and spelled with its `dsl_name`
-/// (`keymap.rs:99`). The order is load-bearing twice: it is the order the `?` overlay
-/// groups by, and its prefix `global` → `queues` → `overview` is the precedence
-/// `translate_list_key` walks.
+/// The scopes, in `Scope`'s own declaration order, each named by its variant's words lowercased
+/// and joined with a dot (`OutputTree` → `output.tree`). The order is load-bearing twice: it is
+/// the order the `?` overlay groups by, and its prefix `global` → `queues` → `overview` is the
+/// precedence `translate_list_key` walks.
 export const SCOPES = [
   "global",
   "overview",
@@ -35,7 +34,7 @@ export const SCOPES = [
   "confirm",
 ];
 
-/// `afkd_lang`'s `DEFAULT_KEYS` (`crates/lang/src/keymap.rs:289-350`), row for row and in
+/// `afkd_lang`'s `DEFAULT_KEYS` (`crates/lang/src/keymap.rs`), row for row and in
 /// table order. `binding` is the Rust's own spelling — a whitespace-separated run of
 /// alternative **atoms**, either of which fires — so the pinning test compares strings it did
 /// not have to normalise.
@@ -113,8 +112,9 @@ export const ACTIONS = DEFAULT_KEYS.map(idOf);
 
 // --- chords -------------------------------------------------------------------------
 
-/// The named tokens the binding grammar admits (`config::keymap`'s `NamedKey`), mapped to the
-/// Title-case / arrow glyph `keys::named_glyph` spells them with.
+/// The named tokens the binding grammar admits (`afkd_lang::keymap`'s `NamedKey`, the words
+/// `NamedKey::from_token` reads), mapped to the Title-case / arrow glyph `keys::named_glyph`
+/// spells them with.
 const NAMED_GLYPH = {
   up: "↑",
   down: "↓",
@@ -131,7 +131,8 @@ const NAMED_GLYPH = {
 
 /// One atom parsed into a chord — `{ctrl, key}`, `key` being a named token or a single char.
 /// The grammar's own shape: a `ctrl-` prefix modifies exactly one following atom, and the
-/// lowercase spelling is the only one the Rust admits (`ConfigError::KeyCtrlUppercase`).
+/// lowercase spelling is the only one the Rust admits (`parse_chord`'s
+/// `ChordError::CtrlUppercase`).
 function chordOfAtom(atom) {
   const ctrl = atom.startsWith("ctrl-");
   const key = ctrl ? atom.slice(5) : atom;

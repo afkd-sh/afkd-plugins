@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.14.0 (companion)
+Installed @afkd/web_top 0.14.1 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -485,17 +485,16 @@ say so, which is how the release workflow runs this directory's suites.
   per-kind default rather than the bulk choice. The terminal behaves identically, for the same
   reason — its override map is per node id too — and it is worth knowing before it looks like a
   bug the first time an operator opens all and a new agent lands folded.
-- **The keymap is the stock one, and no `keys { … }` rebind is mirrored.** The keymap is not
-  on the control wire, so `keymap.mjs` ships a transcription of afkd's `DEFAULT_KEYS` — all 51
-  rows, all eight scopes, alternates included — pinned to `crates/lang/src/keymap.rs` by
-  `keymap.test.mjs`, so a rebind in the Rust is a failing test here rather than a page that
-  stopped answering a key. What that buys is the rule it has to keep: an action with no chord
-  renders **no hint at all** and takes no key — including the reload while the daemon is
-  draining (the one key `afkd top` refuses then), which the input side refuses from the same
-  table the footer reads. The operator verbs and lane keys stay; one the quitting daemon will
-  not serve flashes the daemon's refusal. What it costs is that an operator who rebinds `x`
-  sees `x` here and a different key in their terminal. A layout whose keyboard cannot reach `/`
-  or `?` loses those actions, exactly as it would in a terminal.
+- **The keymap is `afkd top`'s own, which is built in.** Every terminal runs the same keys, and
+  the keymap is not on the control wire, so `keymap.mjs` ships a transcription of afkd's
+  `DEFAULT_KEYS` — all 51 rows, all eight scopes, alternates included — pinned to
+  `crates/lang/src/keymap.rs` by `keymap.test.mjs`, so a row changed in the Rust is a failing
+  test here rather than a page that stopped answering a key. What that buys is the rule it has
+  to keep: an action with no chord renders **no hint at all** and takes no key — including the
+  reload while the daemon is draining (the one key `afkd top` refuses then), which the input
+  side refuses from the same table the footer reads. The operator verbs and lane keys stay; one
+  the quitting daemon will not serve flashes the daemon's refusal. A layout whose keyboard
+  cannot reach `/` or `?` loses those actions, exactly as it would in a terminal.
 - **A group a reload adds opens expanded.** `afkd top` tracks the groups an operator has
   *opened*, seeded with every group the board boots with; this page tracks the ones they have
   *closed*. The two agree on every group the board booted with, which is all of them until a
