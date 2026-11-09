@@ -463,15 +463,16 @@ under a real daemon, and diffs the page's screen against the one `afkd top` pain
 of the same size, cell for cell. Run it from the repository root:
 
 ```console
-$ AFKD_SRC=/path/to/afkd cargo test
+$ AFKD_SRC=/path/to/afkd AFKD_SITE_SRC=/path/to/afkd.sh cargo test
 ```
 
 The daemon is the `afkd` first on `PATH` — the install an operator runs, never a build — so
 the gate answers whether this page matches the afkd it will meet. `AFKD_SRC` names an afkd
 checkout for the checks that read afkd's own source: the keymap and palette transcriptions,
-the rail glyph table, the source inventory, the variation-selector scan, the index entry, and
-the `unicode-width` every width here is measured against. Without one those checks skip and
-say so, which is how the release workflow runs this directory's suites.
+the rail glyph table, the source inventory, the variation-selector scan, and the
+`unicode-width` every width here is measured against. `AFKD_SITE_SRC` names an afkd.sh
+checkout, whose `public/plugins.json` the index-entry check reads. Without them those checks
+skip and say so, which is how the release workflow runs this directory's suites.
 
 ## What this card deliberately does not do
 

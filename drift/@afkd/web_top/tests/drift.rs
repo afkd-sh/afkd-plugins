@@ -2,7 +2,8 @@
 //! daemon's control wire in front of a browser — to a real afkd: the `afkd` first on `PATH`,
 //! the installed one and never a build, since a plugin is checked against the afkd it will
 //! meet ([`bin_path`]). The legs that read afkd's own source as well want an afkd checkout
-//! named by `AFKD_SRC` ([`afkd_src`]), and skip loudly without one.
+//! named by `AFKD_SRC` ([`afkd_src`]), and the leg that reads the plugin index wants an
+//! afkd.sh checkout named by `AFKD_SITE_SRC` ([`site_src`]); each skips loudly without one.
 //!
 //! web_top folds **nothing**, and that is the shape the suite is built around.
 //! Every subscriber opens its own attach, every frame that attach reads is forwarded
@@ -1419,10 +1420,10 @@ fn manifest_name() -> String {
         .expect("the manifest declares a name")
 }
 
-/// The index afkd serves at <https://afkd.sh/plugins.json>, as bytes: `web/public/plugins.json`
-/// in the checkout [`afkd_src`] names, or `None` without one.
+/// The index afkd.sh serves at <https://afkd.sh/plugins.json>, as bytes: `public/plugins.json`
+/// in the afkd.sh checkout [`site_src`] names, or `None` without one.
 fn shipped_index() -> Option<String> {
-    let path = afkd_src()?.join("web/public/plugins.json");
+    let path = site_src()?.join("public/plugins.json");
     let bytes = std::fs::read_to_string(&path);
     Some(bytes.unwrap_or_else(|err| panic!("the index at {}: {err}", path.display())))
 }
@@ -1616,9 +1617,9 @@ fn the_published_index_entry_matches_the_shipped_plugin() {
     // afkd never cross-checks an index key against the manifest it fetches, so a key that
     // drifts from the declared name installs under one spelling and lists under another —
     // a fault an operator discovers and no parse catches. Caught here instead, over the two
-    // files that would drift: the index afkd deploys and the manifest this repository ships.
+    // files that would drift: the index afkd.sh serves and the manifest this repository ships.
     let Some(shipped) = shipped_index() else {
-        eprintln!("SKIP: AFKD_SRC names no afkd checkout, and the index is afkd's");
+        eprintln!("SKIP: AFKD_SITE_SRC names no afkd.sh checkout, and the index is the site's");
         return;
     };
     let index: serde_json::Value =

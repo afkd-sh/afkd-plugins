@@ -571,8 +571,8 @@ function restyled(board, name, fields) {
 test("the stylesheet spends only the product's palette", { skip: NO_AFKD_SRC }, () => {
   const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
   // The arm is read **out of the Rust** rather than transcribed — the same relation
-  // `web/scripts/check-dist.mjs` holds for the site's window, so a respelling in `palette.rs`
-  // reddens here.
+  // afkd.sh's `scripts/check-dist.mjs` holds for the site's window, so a respelling in
+  // `palette.rs` reddens here.
   const rust = afkdSource("crates", "tui", "src", "palette.rs");
   assert.deepEqual(paletteMismatches(rust, css), [], "dashboard.css spells palette.rs's 24-bit arm and the ground");
 

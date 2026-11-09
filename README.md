@@ -23,13 +23,14 @@ also has a drift gate, under `drift/` at the plugin's own path. Every gate is a
 member of the Cargo workspace at the root, so one command runs them all:
 
 ```console
-$ AFKD_SRC=/path/to/afkd cargo test
+$ AFKD_SRC=/path/to/afkd AFKD_SITE_SRC=/path/to/afkd.sh cargo test
 ```
 
 A gate runs the `afkd` first on `PATH`, the installed one, and never builds
 afkd. `AFKD_SRC` names an afkd checkout for the tests that read afkd's own
-source, in a gate and in a plugin's own suites alike; without one those tests
-skip and say so. That is how `.github/workflows/release.yml` runs a plugin's
+source, in a gate and in a plugin's own suites alike, and `AFKD_SITE_SRC` an
+afkd-sh/afkd.sh checkout for the one that reads the plugin index the site
+serves; without one those tests skip and say so. That is how `.github/workflows/release.yml` runs a plugin's
 suites on every push, and a red suite does not publish.
 
 ## Installing

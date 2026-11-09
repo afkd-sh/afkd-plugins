@@ -12,8 +12,8 @@
 // since afkd top names neither: a scope's name comes from its `Scope` variant by `dotted`'s rule,
 // and a key's word is the one `NamedKey::from_token` reads, so both stay pinned to the Rust.
 //
-// Each read is guarded the way `web/scripts/check-dist.mjs` guards its palette read: if the
-// regex finds implausibly little, the test fails *with that* as its message, so a renamed
+// Each read is guarded the way afkd.sh's `scripts/check-dist.mjs` guards its palette read: if
+// the regex finds implausibly little, the test fails *with that* as its message, so a renamed
 // constant reddens rather than silently comparing against an empty list.
 
 import assert from "node:assert/strict";

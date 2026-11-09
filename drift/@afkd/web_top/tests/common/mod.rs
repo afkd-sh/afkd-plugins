@@ -54,6 +54,14 @@ pub(crate) fn afkd_src() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The afkd-sh/afkd.sh checkout `AFKD_SITE_SRC` names, for the leg that reads the plugin index
+/// the site serves. Without one that leg skips loudly.
+pub(crate) fn site_src() -> Option<PathBuf> {
+    std::env::var_os("AFKD_SITE_SRC")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+}
+
 /// afkd's three directories under a temp `$HOME` (ADR-0075), spelled **once** for
 /// the whole gate. Every fixture that plants a file where afkd will look for it
 /// — or asserts one is absent — goes through these rather than re-deriving the
