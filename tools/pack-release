@@ -13,7 +13,7 @@
 set -eu
 
 usage() {
-	echo "usage: tools/pack-release <trello|github|gitlab|gitea|linear> <out-dir> <binary>" >&2
+	echo "usage: tools/pack-release <trello|github|gitlab|gitea|linear|telegram> <out-dir> <binary>" >&2
 	echo "       tools/pack-release web_top <out-dir>" >&2
 	exit 2
 }
@@ -26,7 +26,7 @@ src="$root/@afkd/$leaf"
 dst="$out/afkd-$leaf"
 
 case $leaf in
-trello | github | gitlab | gitea | linear)
+trello | github | gitlab | gitea | linear | telegram)
 	[ $# -eq 3 ] || usage
 	binary=$3
 	[ -f "$binary" ] || {

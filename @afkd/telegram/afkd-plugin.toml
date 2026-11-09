@@ -1,0 +1,256 @@
+name = "@afkd/telegram"
+version = "0.1.0"
+proto = 2
+shape = "provider"
+source = "https://github.com/afkd-sh/afkd-plugins"
+exec = "afkd-telegram"
+
+# The bot's credential for a call made outside a `service(telegram)`, read from
+# `plugins/@afkd/telegram.afkd`: an interval service's `telegram.send`, say. Neither is
+# required, so a config that imports the plugin and only runs a `service(telegram)` needs no
+# file; a call that finds no token in either place is refused, naming the file.
+[[config.setting]]
+name = "token"
+type = "str"
+
+[[config.setting]]
+name = "base_url"
+type = "str"
+
+# A Telegram message, `telegram.Message` in a config: what a `service(telegram)` is passed,
+# and what `send`, `send_file` and `reply` give back, so a message received and a message
+# sent are one type. afkd carries `id` (Telegram's message id, `4711`) and `key`
+# (`telegram:<chat>/<id>`) for every handle; the fields below are the rest. Every one is
+# always sent: a message with no text has `text` as `""`, one that replies to nothing
+# `reply_to` as `""`, and one with no file an empty `files`.
+[[handle]]
+name = "Message"
+
+  # The chat's id, `-1001234567890` for a group, the user's id for a private chat.
+  [[handle.field]]
+  name = "chat"
+  type = "str"
+
+  # The sender's user id, or "" for a message sent on behalf of a chat.
+  [[handle.field]]
+  name = "sender"
+  type = "str"
+
+  # The sender's first and last name, or `@username` for one with no name.
+  [[handle.field]]
+  name = "sender_name"
+  type = "str"
+
+  # The message's text, or a file's caption.
+  [[handle.field]]
+  name = "text"
+  type = "str"
+
+  # The id of the message in the same chat it replies to.
+  [[handle.field]]
+  name = "reply_to"
+  type = "str"
+
+  # The Telegram file ids of its document, photo (the largest size), video, audio or voice,
+  # each one `fetch_file` takes.
+  [[handle.field]]
+  name = "files"
+  type = "List[str]"
+
+# The one kind, `service(telegram)` in a config: messages to the bot, one per run, each
+# confirmed to Telegram before its run starts, so a run never starts twice for one message.
+# A bot token's updates have one reader, so one service per token. afkd's own claim keys,
+# `every` and `max_attempts`, are afkd's and not declared here.
+[[kind]]
+name = "message"
+role = "trigger"
+main = true
+claims = true
+
+  # The bot's token, as BotFather gave it.
+  [[kind.setting]]
+  name = "token"
+  type = "str"
+  required = true
+
+  # The chat ids whose messages start a run; any other chat's are skipped, so a bot anyone
+  # can message runs nothing for a stranger.
+  [[kind.setting]]
+  name = "chats"
+  type = "List[str]"
+  required = true
+
+  [[kind.setting]]
+  name = "base_url"
+  type = "str"
+
+  # The slots afkd runs, each passed the run and its message, and after the run its outcome.
+  [[kind.slot]]
+  name = "on_run"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "message"
+    type = "Message"
+
+  [[kind.slot]]
+  name = "on_claim"
+  when = "pre"
+
+    [[kind.slot.param]]
+    name = "message"
+    type = "Message"
+
+  [[kind.slot]]
+  name = "on_done"
+  when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "message"
+    type = "Message"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
+  name = "on_fail"
+  when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "message"
+    type = "Message"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+# The calls a config makes. A chat is its id as a string, or `@channel` where Telegram takes
+# one; a file is a Telegram file id. None is queued: each is done now or refused, and a 429
+# is waited out while the wait fits the call.
+
+# A text sent to `chat`. A text over Telegram's 4096 is sent as several messages, each cut
+# after a newline where it can be, and the last one is the message given back.
+[[action]]
+name = "send"
+returns = "Message"
+
+  [[action.param]]
+  name = "chat"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "text"
+  type = "str"
+  required = true
+
+# The file at the absolute path `path` sent to `chat` as `kind`, with `caption` under it.
+# A caption over 1024 is refused, as is a file over 50 MB, or a photo over 10 MB.
+[[action]]
+name = "send_file"
+returns = "Message"
+
+  [[action.param]]
+  name = "chat"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "path"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "kind"
+  type = "enum"
+  values = ["document", "photo", "video", "audio", "voice"]
+  named_only = true
+  default = "document"
+
+  [[action.param]]
+  name = "caption"
+  type = "str"
+  named_only = true
+  default = ""
+
+# A text sent to the message's chat as a reply to it, split as `send` splits; only the
+# first part replies, and the last is the message given back.
+[[action]]
+name = "reply"
+returns = "Message"
+
+  [[action.param]]
+  name = "message"
+  type = "Message"
+  required = true
+
+  [[action.param]]
+  name = "text"
+  type = "str"
+  required = true
+
+# The bot's reaction to the message set to `emoji`, one of Telegram's reaction emoji
+# (👍 👌 👀 🔥 🎉 ❤), or taken off with "".
+[[action]]
+name = "react"
+
+  [[action.param]]
+  name = "message"
+  type = "Message"
+  required = true
+
+  [[action.param]]
+  name = "emoji"
+  type = "str"
+  required = true
+
+# The text of a message the bot sent replaced with `text`, or its caption when it carries
+# a file. Never split: a text over 4096, or a caption over 1024, is refused.
+[[action]]
+name = "edit"
+
+  [[action.param]]
+  name = "message"
+  type = "Message"
+  required = true
+
+  [[action.param]]
+  name = "text"
+  type = "str"
+  required = true
+
+# The message deleted.
+[[action]]
+name = "delete"
+
+  [[action.param]]
+  name = "message"
+  type = "Message"
+  required = true
+
+# The file of Telegram file id `file` written to the absolute path `to`, whose directory
+# must exist. Telegram hands a bot files of up to 20 MB.
+[[action]]
+name = "fetch_file"
+
+  [[action.param]]
+  name = "file"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "to"
+  type = "str"
+  required = true

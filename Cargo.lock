@@ -204,6 +204,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "telegram-drift"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

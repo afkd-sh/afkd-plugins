@@ -1,0 +1,145 @@
+# Cut the release `afkd install @afkd/telegram` fetches.
+#
+# afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose
+# `@afkd/telegram` entry names this repository's
+# `releases/download/telegram/afkd-telegram-{platform}.tar.gz`, and fills `{platform}` with the
+# host's `<arch>-<os>` before the download. So this workflow ships a finished binary per
+# platform, never source: each archive holds the manifest, a static musl build of the plugin
+# for one CPU (it runs on any Linux of that CPU, whatever its glibc) and the `telegram` skill,
+# and nothing else. afkd never builds a plugin and places what the archive holds, so no
+# operator's host needs a toolchain. afkd cannot install a subdirectory of a monorepo — its
+# git leg requires the manifest at the clone root, and its tarball leg steps through exactly
+# one wrapper directory — so each archive's single top-level directory is the plugin.
+#
+# The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
+# `{platform}` URL it recorded at install time and never re-reads the index, so the fixed tag
+# behind that one template is how an already-installed operator reaches the next version.
+#
+# A `workflow_dispatch` on a branch runs everything up to the release itself, which only main
+# publishes: that is how a change to this file is proven on real runners before it ships.
+name: Release @afkd/telegram
+
+on:
+  push:
+    branches: [main]
+    paths: ['@afkd/telegram/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-telegram
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A red suite must not publish, so the plugin's own suite — its unit tests, the wire
+      # contract suite against the loopback fake Telegram and the skill suite, which runs the
+      # skill's scripts against that same fake — runs here, `--locked` as the release build
+      # below is. The drift gate under `drift/` needs an afkd on PATH, so it runs on a host
+      # that has one, not here.
+      - name: The plugin's own suite
+        working-directory: '@afkd/telegram'
+        run: cargo test --locked
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          # Native runners for both CPUs, so `ring`'s C builds with the runner's own musl-gcc
+          # and no cross toolchain.
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+      ASSET: afkd-telegram-${{ matrix.arch }}-linux.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - name: musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build
+        working-directory: '@afkd/telegram'
+        run: cargo build --release --locked --target "$TARGET"
+
+      # A binary tied to this runner's glibc would refuse to start on an older host, so the
+      # link is asserted rather than trusted. Read from a file: under the runner's `pipefail`,
+      # a `grep -q` that stops reading early can fail its writer on SIGPIPE.
+      - name: The binary is static
+        run: |
+          file -b "@afkd/telegram/target/$TARGET/release/afkd-telegram" > kind
+          cat kind
+          grep -Eq 'statically linked|static-pie linked' kind
+          rm kind
+
+      - name: Pack
+        run: |
+          tools/pack-release telegram out "@afkd/telegram/target/$TARGET/release/afkd-telegram"
+          tar czf "$ASSET" -C out afkd-telegram
+          # Assert the shape exactly rather than trust it: the expected listing is built from
+          # the repository, not from what was packed — the manifest, the binary, and every
+          # file git tracks under `skills/` with its directories, under one top-level
+          # `afkd-telegram/` — so a stray file and a missing one are both red.
+          {
+            echo 'afkd-telegram/afkd-plugin.toml'
+            echo 'afkd-telegram/afkd-telegram'
+            git ls-files -- '@afkd/telegram/skills' | sed 's|^@afkd/telegram/|afkd-telegram/|'
+          } | awk -F/ '{ dir = ""; for (i = 1; i < NF; i++) { dir = dir $i "/"; print dir } print }' \
+            | LC_ALL=C sort -u > expected
+          tar tzf "$ASSET" | LC_ALL=C sort > listing
+          diff expected listing
+          # Unpacked, not read off the listing: `test -x` after extraction is the same
+          # question afkd's own unpack answers, asked the same way.
+          mkdir shape && tar xzf "$ASSET" -C shape
+          test -x shape/afkd-telegram/afkd-telegram
+          for script in shape/afkd-telegram/skills/telegram/*.py; do test -x "$script"; done
+          rm -rf shape out expected listing
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      # Delete-then-create, because a tag is unique and the replacement cannot be made
+      # first. The brief 404 window on the download URL is a loud, retryable failure for an
+      # `afkd update` that races it. Both platforms go up in one create, so the tag never
+      # holds one without the other.
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/telegram/afkd-plugin.toml')
+          test -n "$version"
+          assets="assets/afkd-telegram-x86_64-linux.tar.gz assets/afkd-telegram-aarch64-linux.tar.gz"
+          ls -l $assets
+          # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
+          # the notes name the afkd it needs: 0.2.575 is the first whose plugin action gives
+          # back the handle it made, as `send`, `send_file` and `reply` do (0.2.414 filled in
+          # `{platform}`, and 0.2.241 brought the handle fields a claim carries).
+          printf '`afkd install @afkd/telegram`, or `afkd update @afkd/telegram` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.575 or newer (an action that returns a handle; the platform archive, no build step; the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          gh release delete telegram --yes --cleanup-tag || true
+          gh release create telegram --target "$GITHUB_SHA" --title "@afkd/telegram $version" --notes-file notes.md $assets

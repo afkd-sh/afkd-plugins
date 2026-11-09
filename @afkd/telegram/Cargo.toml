@@ -1,0 +1,23 @@
+[package]
+name = "afkd-telegram"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The @afkd/telegram plugin: messages to a Telegram bot as afkd units, and the calls that send, reply, react, edit, delete and fetch, over the plugin wire"
+
+[[bin]]
+name = "afkd-telegram"
+path = "src/main.rs"
+
+# Three dependencies and no afkd crate: afkd's crates are unpublished. This repository's
+# release workflow builds it as a static musl binary and ships it finished; no operator's host
+# ever compiles it.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "3"
+
+# Its own workspace, so the repository's root workspace (the drift gates) never captures it.
+# `target/` is local build output that never ships: `tools/pack-release` copies the binary out
+# of it.
+[workspace]

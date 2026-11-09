@@ -1,0 +1,103 @@
+{
+  "sendMessage": {
+    "ok": true,
+    "result": {
+      "message_id": 4715,
+      "from": {"id": 7712345678, "is_bot": true, "first_name": "afkd", "username": "afkd_drift_bot"},
+      "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+      "date": 1794218500,
+      "reply_to_message": {
+        "message_id": 4711,
+        "from": {"id": 111111111, "is_bot": false, "first_name": "Anna", "last_name": "Lindqvist", "username": "annal", "language_code": "sv"},
+        "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+        "date": 1794218280,
+        "caption": "デプロイ failed here — see the log ⬇"
+      },
+      "text": "deploying …"
+    }
+  },
+  "sendDocument": {
+    "ok": true,
+    "result": {
+      "message_id": 4716,
+      "from": {"id": 7712345678, "is_bot": true, "first_name": "afkd", "username": "afkd_drift_bot"},
+      "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+      "date": 1794218510,
+      "document": {"file_name": "report.txt", "mime_type": "text/plain", "file_id": "BQACAgQAAxkDAAISbGcvReport", "file_unique_id": "AgADe1UAAm", "file_size": 512},
+      "caption": "the report"
+    }
+  },
+  "sendPhoto": {
+    "ok": true,
+    "result": {
+      "message_id": 4717,
+      "from": {"id": 7712345678, "is_bot": true, "first_name": "afkd", "username": "afkd_drift_bot"},
+      "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+      "date": 1794218520,
+      "photo": [
+        {"file_id": "AgACAgQAAxkDAAISbWcvShot_s", "file_unique_id": "AQADt8YxG3", "file_size": 1104, "width": 90, "height": 51},
+        {"file_id": "AgACAgQAAxkDAAISbWcvShot_x", "file_unique_id": "AQADt8YxG4", "file_size": 66710, "width": 1280, "height": 720}
+      ],
+      "caption": "the dashboard"
+    }
+  },
+  "sendVideo": {
+    "ok": true,
+    "result": {
+      "message_id": 4718,
+      "from": {"id": 7712345678, "is_bot": true, "first_name": "afkd", "username": "afkd_drift_bot"},
+      "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+      "date": 1794218530,
+      "video": {"duration": 4, "width": 640, "height": 360, "file_name": "run.mp4", "mime_type": "video/mp4", "file_id": "BAACAgQAAxkDAAISbmcvRun", "file_unique_id": "AgADfFUAAm", "file_size": 401230}
+    }
+  },
+  "sendAudio": {
+    "ok": true,
+    "result": {
+      "message_id": 4719,
+      "from": {"id": 7712345678, "is_bot": true, "first_name": "afkd", "username": "afkd_drift_bot"},
+      "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+      "date": 1794218540,
+      "audio": {"duration": 30, "file_name": "summary.mp3", "mime_type": "audio/mpeg", "file_id": "CQACAgQAAxkDAAISb2cvSummary", "file_unique_id": "AgADfVUAAm", "file_size": 480001}
+    }
+  },
+  "sendVoice": {
+    "ok": true,
+    "result": {
+      "message_id": 4720,
+      "from": {"id": 7712345678, "is_bot": true, "first_name": "afkd", "username": "afkd_drift_bot"},
+      "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+      "date": 1794218550,
+      "voice": {"duration": 3, "mime_type": "audio/ogg", "file_id": "AwACAgQAAxkDAAIScGcvNote", "file_unique_id": "AgADflUAAm", "file_size": 9133}
+    }
+  },
+  "editMessageText": {
+    "ok": true,
+    "result": {
+      "message_id": 4715,
+      "from": {"id": 7712345678, "is_bot": true, "first_name": "afkd", "username": "afkd_drift_bot"},
+      "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+      "date": 1794218500,
+      "edit_date": 1794218600,
+      "text": "deployed ✓"
+    }
+  },
+  "editMessageCaption": {
+    "ok": true,
+    "result": {
+      "message_id": 4716,
+      "from": {"id": 7712345678, "is_bot": true, "first_name": "afkd", "username": "afkd_drift_bot"},
+      "chat": {"id": -1001234567890, "title": "Drift 🚀", "type": "supergroup"},
+      "date": 1794218510,
+      "edit_date": 1794218610,
+      "document": {"file_name": "report.txt", "mime_type": "text/plain", "file_id": "BQACAgQAAxkDAAISbGcvReport", "file_unique_id": "AgADe1UAAm", "file_size": 512},
+      "caption": "the report, final"
+    }
+  },
+  "setMessageReaction": {"ok": true, "result": true},
+  "deleteMessage": {"ok": true, "result": true},
+  "getFile": {
+    "ok": true,
+    "result": {"file_id": "BQACAgQAAxkBAAISaGcvDeploy", "file_unique_id": "AgADd1UAAm", "file_size": 2048, "file_path": "documents/file_12.log"}
+  }
+}
