@@ -666,7 +666,7 @@ test("a verb the quitting daemon turns away flashes its refusal over the ack", (
 test("control_refused is read off afkd's own wire literal", { skip: NO_AFKD_SRC }, () => {
   // `proto.rs`'s round-trip test spells the frame the daemon writes; reading it here keeps the
   // tag and the field names the daemon's rather than a second spelling of them.
-  const literal = afkdSource("crates", "app", "src", "proto.rs").match(
+  const literal = afkdSource("crates", "wire", "src", "proto.rs").match(
     /r#"(\{"type":"meta","meta":"control_refused".*?\})"#/,
   );
   assert.notEqual(literal, null, "proto.rs still pins the control_refused wire line");
@@ -1149,7 +1149,7 @@ test("a daemon refusal wears afkd top's class glyph", { skip: NO_AFKD_SRC }, () 
   );
   // The failed reload below flips `outcome` to the word the daemon writes for `Failed`.
   assert.match(
-    source("app/src/proto.rs"),
+    source("wire/src/proto.rs"),
     /#\[serde\(rename_all = "snake_case"\)\]\s*pub enum ReloadOutcome \{[^}]*?\bFailed,/,
   );
 

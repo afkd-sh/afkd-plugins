@@ -1429,7 +1429,7 @@ fn shipped_index() -> Option<String> {
 }
 
 /// Whether `tar` is on `PATH` — the [`python3_available`] idiom, so a `tar`-less host skips
-/// loudly. afkd's own extraction is proved hermetically in its `crates/app/src/fetch.rs`;
+/// loudly. afkd's own extraction is proved hermetically in its `crates/plugin-host/src/fetch.rs`;
 /// `tar` here only *builds* the fixture, the way `.github/workflows/release.yml` builds the
 /// real one.
 fn tar_available() -> bool {
@@ -2082,7 +2082,7 @@ fn the_lane_verb_is_composed_exactly_and_its_capacity_is_a_wire_u32() {
     );
     if let Some(afkd) = afkd_src() {
         let proto =
-            std::fs::read_to_string(afkd.join("crates/app/src/proto.rs")).expect("read proto.rs");
+            std::fs::read_to_string(afkd.join("crates/wire/src/proto.rs")).expect("read proto.rs");
         // The pin is a `format!` template over the test's own `lane`, so its braces are
         // doubled and the queue is that binding — the last one spelled before the pin.
         let template = r#"{{"type":"command","command":"queue_parallelism""#;

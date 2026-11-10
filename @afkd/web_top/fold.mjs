@@ -167,7 +167,7 @@ function withService(board, name, update) {
 // --- the snapshot seed -------------------------------------------------------------
 
 /**
- * One service record seeded from its wire `ServiceState` (`crates/app/src/proto.rs`), the
+ * One service record seeded from its wire `ServiceState` (`crates/wire/src/proto.rs`), the
  * mirror of `top.rs::seed_from_snapshot`. The badge is set **directly** rather than through
  * `enter`, which would clear the anchors the seed just computed; the tree and the ring start
  * **empty** and are never transplanted from a previous record, which is
@@ -307,7 +307,7 @@ function foldEvent(board, frame, now) {
 }
 
 /**
- * One arm per `Event` variant (`crates/app/src/proto.rs`), folding as
+ * One arm per `Event` variant (`crates/wire/src/proto.rs`), folding as
  * `DashboardModel::fold_event` does. An unknown tag takes the ignore path; a known tag naming a
  * service the board never saw folds to nothing.
  */

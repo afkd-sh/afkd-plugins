@@ -410,8 +410,9 @@ frame.
 It exists because the daemon will not serve the burst here. `host.rs` sends it only to a **TCP**
 client, on the reasoning that a local-socket client shares the filesystem and can read the run
 dirs itself; a companion is handed the local socket, so the page is the local client and this is
-the read it would otherwise never get. The relay's own section mirrors `crates/app/src/backfill.rs`
-and `host::served_backfill_lines` function for function, each one naming the Rust it was read off:
+the read it would otherwise never get. The relay's own section mirrors
+`crates/wire/src/backfill.rs`, `served_backfill_lines` included, function for function, each one
+naming the Rust it was read off:
 
 - the **tree** is that service's run-dir window — newest generation, bounded by the run tree's own
   `TRACE_TREE_CAPACITY` nodes, a fire-less lifecycle dir skipped, replayed oldest → newest;

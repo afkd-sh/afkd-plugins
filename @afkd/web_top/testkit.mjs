@@ -39,8 +39,6 @@ export const NO_AFKD_SRC = AFKD_SRC === "" ? "AFKD_SRC names no afkd checkout to
 /// docs cite them. `sources.test.mjs` holds each one to the checkout by name, so a file that
 /// moves in afkd is a test naming it rather than a module-load ENOENT in whichever suite read it.
 export const AFKD_SOURCES = Object.freeze([
-  "crates/app/src/proto.rs",
-  "crates/app/src/tracefile.rs",
   "crates/lang/src/keymap.rs",
   "crates/tui/src/family.rs",
   "crates/tui/src/help.rs",
@@ -52,6 +50,8 @@ export const AFKD_SOURCES = Object.freeze([
   "crates/tui/src/palette.rs",
   "crates/tui/src/shell.rs",
   "crates/tui/src/treeview.rs",
+  "crates/wire/src/proto.rs",
+  "crates/wire/src/tracefile.rs",
 ]);
 
 /// One of afkd's own source files, `parts` relative to the checkout's root. It must be in

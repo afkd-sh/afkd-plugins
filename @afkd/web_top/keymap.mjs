@@ -1,6 +1,6 @@
 // The keymap: afkd's stock bindings, transcribed for a browser.
 //
-// The keymap is **not on the control wire** — `crates/app/src/proto.rs` carries no keys
+// The keymap is **not on the control wire** — `crates/wire/src/proto.rs` carries no keys
 // field — so a companion transcribes it: [`DEFAULT_KEYS`] below is
 // `crates/lang/src/keymap.rs`'s 51-row table, same scopes, same action names, same binding
 // strings including the alternates (`quit` is `q` or `ctrl-c`; `cancel` is `n` or `esc`).

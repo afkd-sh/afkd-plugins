@@ -70,7 +70,7 @@ KEEPALIVE_S = 15.0
 STREAM_DRAIN_S = 1.0
 
 # The verbs `POST /command` composes a frame for, split by what each one carries
-# (`crates/app/src/proto.rs`, `enum Command`). Nothing outside these reaches the socket.
+# (`crates/wire/src/proto.rs`, `enum Command`). Nothing outside these reaches the socket.
 SERVICE_VERBS = ("start", "stop", "restart", "run", "abandon")
 GLOBAL_VERBS = ("reload", "status", "doctor", "validate")
 OPTIONAL_SERVICE_VERBS = ("runs",)
@@ -188,7 +188,7 @@ def setting_dir(settings, key, default):
 # opened after a fire would be empty. This section is that read, performed here and served
 # per subscriber as the very frames the daemon would have sent.
 #
-# It is a **mirror** of `crates/app/src/backfill.rs` plus `host::served_backfill_lines`,
+# It is a **mirror** of `crates/wire/src/backfill.rs`, `served_backfill_lines` included,
 # function for function, and each function names the Rust it was read off — the citation
 # discipline `fold.mjs` already holds for `model.rs`, because the two can drift and the
 # citation is the only thing that makes the drift findable.
@@ -207,11 +207,11 @@ def setting_dir(settings, key, default):
 TRACE_FILE = "trace.jsonl"
 RUN_LOG_FILE = "run.log"
 
-# The live root's path under the temp dir. `TEMP_RUNS_SUBDIR` (`crates/app/src/lib.rs`).
+# The live root's path under the temp dir. `TEMP_RUNS_SUBDIR` (`crates/wire/src/paths.rs`).
 TEMP_RUNS_SUBDIR = os.path.join("afkd", "runs")
 
 # The trailing bytes of a `run.log` the tail read spans, so a multi-MB transcript is never
-# read whole. `TAIL_CAP_BYTES` (`crates/app/src/logfile.rs`).
+# read whole. `TAIL_CAP_BYTES` (`crates/wire/src/logfile.rs`).
 TAIL_CAP_BYTES = 1 << 20
 
 # How many trace nodes the window walk keeps before it stops. `TRACE_TREE_CAPACITY`
@@ -220,7 +220,7 @@ TAIL_CAP_BYTES = 1 << 20
 TRACE_TREE_CAPACITY = 2000
 
 # The kinds that are a lifecycle **scope wrapper** rather than work. `is_run_node`
-# (`crates/app/src/backfill.rs`): a dir holding only these recorded no run.
+# (`crates/wire/src/backfill.rs`): a dir holding only these recorded no run.
 WRAPPER_KINDS = ("sandbox", "worktree")
 
 # The node kinds and terminal statuses the wire spells, and what an unrecognised one

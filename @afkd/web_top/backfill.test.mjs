@@ -573,7 +573,7 @@ test("a busy service's served tail arms the seam on the whole tail", { skip: SKI
  * order the match spells them, and the arm its `_` fallback degrades an unknown kind to.
  */
 function kindFromStr() {
-  const rust = afkdSource("crates", "app", "src", "tracefile.rs");
+  const rust = afkdSource("crates", "wire", "src", "tracefile.rs");
   const from = rust.indexOf("fn kind_from_str");
   const body = rust.slice(rust.indexOf("{", from), rust.indexOf("\n}", from));
   const pairs = [...body.matchAll(/"(\w+)" => NodeKind::(\w+)/g)].map(([, wire, arm]) => [wire, arm]);
