@@ -172,7 +172,7 @@ message does not carry:
 | `files`       | `List[str]` | the file ids of its document, photo (the largest size), video, audio or voice |
 
 **What a run gets.** The run's thread is `telegram:<chat>`, so an agent with
-`session=.per_claim` carries a chat's conversation on. Its brief, `task.md`, holds who sent
+`session=.per_item` carries a chat's conversation on. Its brief, `task.md`, holds who sent
 the message, in which chat, when, what it replies to, its text, and a line per file with its
 kind, name, size and file id. Its env holds what the skill reads:
 
