@@ -234,7 +234,7 @@ ops :: service(telegram) {{
         $ echo sent #{{sent.id}} #{{sent.reply_to}} #{{sent.text}} >> {FIELDS}
         edited := telegram.edit(sent, "{EDITED}")
         if edited != nil {{ fail("telegram.edit: #{{edited.message}}") }}
-        match telegram.send_file(message.chat, "{home}/{SHOT}", ~kind=.photo, ~caption="監視 ✓") {{
+        match telegram.send_file(message.chat, "{home}/{SHOT}", kind=.photo, caption="監視 ✓") {{
           .ok(shot) => {{
             for file in shot.files {{
               $ echo shot #{{file}} >> {FIELDS}
@@ -653,23 +653,23 @@ ops :: service(telegram) {{
       }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.document", ~kind=.document, ~caption="監視 ✓") {{
+    match telegram.send_file(message.chat, "/srv/acme/widgets/out.document", kind=.document, caption="監視 ✓") {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.photo", ~kind=.photo, ~caption="監視 ✓") {{
+    match telegram.send_file(message.chat, "/srv/acme/widgets/out.photo", kind=.photo, caption="監視 ✓") {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.video", ~kind=.video, ~caption="監視 ✓") {{
+    match telegram.send_file(message.chat, "/srv/acme/widgets/out.video", kind=.video, caption="監視 ✓") {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.audio", ~kind=.audio, ~caption="監視 ✓") {{
+    match telegram.send_file(message.chat, "/srv/acme/widgets/out.audio", kind=.audio, caption="監視 ✓") {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.voice", ~kind=.voice, ~caption="監視 ✓") {{
+    match telegram.send_file(message.chat, "/srv/acme/widgets/out.voice", kind=.voice, caption="監視 ✓") {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}

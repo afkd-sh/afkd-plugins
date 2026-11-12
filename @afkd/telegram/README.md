@@ -47,7 +47,7 @@ import "@afkd/telegram"
 
 BOT_TOKEN :: env.get("TELEGRAM_BOT_TOKEN") ?? ""
 
-helper :: claude.agent(~timeout=30m, ~skills=[ "@afkd/telegram/telegram" ])
+helper :: claude.agent(timeout=30m, skills=[ "@afkd/telegram/telegram" ])
 
 ops :: service(telegram) {
   token    BOT_TOKEN
@@ -107,7 +107,7 @@ nightly :: service(interval) {
         match telegram.send_file(
           "-1001234567890",
           "/srv/acme/widgets/build.log",
-          ~caption="the build log",
+          caption="the build log",
         ) {
           .ok(_) => { }
           .err(e) => fail("telegram.send_file: #{e.message}")
@@ -172,7 +172,7 @@ message does not carry:
 | `files`       | `List[str]` | the file ids of its document, photo (the largest size), video, audio or voice |
 
 **What a run gets.** The run's thread is `telegram:<chat>`, so an agent with
-`~session=.per_claim` carries a chat's conversation on. Its brief, `task.md`, holds who sent
+`session=.per_claim` carries a chat's conversation on. Its brief, `task.md`, holds who sent
 the message, in which chat, when, what it replies to, its text, and a line per file with its
 kind, name, size and file id. Its env holds what the skill reads:
 
@@ -194,15 +194,15 @@ Every action is one call any service makes from any slot. A chat is its id as a 
 a message is a `telegram.Message`, one a `service(telegram)` was passed or one an action gave
 back.
 
-| Action                                                | Gives back               |
-|-------------------------------------------------------|--------------------------|
-| `send(chat, text)`                                    | `Result[Message, Error]` |
-| `send_file(chat, path, ~kind=.document, ~caption="")` | `Result[Message, Error]` |
-| `reply(message, text)`                                | `Result[Message, Error]` |
-| `react(message, emoji)`                               | `Error?`                 |
-| `edit(message, text)`                                 | `Error?`                 |
-| `delete(message)`                                     | `Error?`                 |
-| `fetch_file(file, to)`                                | `Error?`                 |
+| Action                                                      | Gives back               |
+|-------------------------------------------------------------|--------------------------|
+| `send(chat, text)`                                          | `Result[Message, Error]` |
+| `send_file(chat, path, ~kind := .document, ~caption := "")` | `Result[Message, Error]` |
+| `reply(message, text)`                                      | `Result[Message, Error]` |
+| `react(message, emoji)`                                     | `Error?`                 |
+| `edit(message, text)`                                       | `Error?`                 |
+| `delete(message)`                                           | `Error?`                 |
+| `fetch_file(file, to)`                                      | `Error?`                 |
 
 - **`send`** sends a text to a chat. A text over Telegram's 4096 is sent as several
   messages, each cut after its last newline inside the cap, or at the cap when it has none,
