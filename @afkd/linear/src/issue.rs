@@ -1001,11 +1001,12 @@ impl LinearUnits {
     /// Finish, or reverse, a claim named by a whole journal key — the `release` call.
     ///
     /// **The finish is still owed** (a `held` finish): replay it. **Otherwise it is a crash
-    /// victim**, or a unit afkd handed back unrun: prune the `[afkd-claim]` comment and move
-    /// the issue back to the **bottom** of the state it was claimed from — the first
-    /// `pick_from` state for a key that names none — so a repeatedly-crashing issue cannot
-    /// starve the queue head. Best-effort: a tracker failure is diagnosed and the key still
-    /// released.
+    /// victim**, a unit whose `on_claim` failed, or a key the reaper found: prune the
+    /// `[afkd-claim]` comment and move the issue back to the **bottom** of the state it was
+    /// claimed from — the first `pick_from` state for a key that names none — so a
+    /// repeatedly-crashing issue cannot starve the queue head. Best-effort: a tracker failure
+    /// is diagnosed and the key still released. A unit a stop handed back goes through
+    /// [`Self::hand_back`] instead.
     ///
     /// `None` for a key with no `#`, which names nothing releasable.
     pub(crate) fn release_stale(&self, key: &str, now: Instant, diag: &dyn Diag) -> Option<bool> {
@@ -1015,9 +1016,7 @@ impl LinearUnits {
                 return Some(verdict);
             }
         }
-        if let Err(e) = self.tracker.delete_comment(claim_id) {
-            diag.err(&e);
-        }
+        self.prune_claim(claim_id, diag);
         let moved = self.team_id().and_then(|team_id| {
             let state_id = match state_id {
                 Some(state_id) => state_id.to_string(),
@@ -1032,6 +1031,25 @@ impl LinearUnits {
             diag.err(&e);
         }
         Some(true)
+    }
+
+    /// Give back a claim afkd handed back before its run started — the `release` call marked
+    /// `handed_back`: prune the `[afkd-claim]` comment and leave the issue where it is. The
+    /// claim never moved it, and nothing ran on it, so it keeps its place at the head of its
+    /// state. Best-effort, as [`Self::release_stale`].
+    ///
+    /// `None` for a key with no `#`, which names nothing releasable.
+    pub(crate) fn hand_back(&self, key: &str, diag: &dyn Diag) -> Option<bool> {
+        let (_, claim_id, _) = split_issue_key(key)?;
+        self.prune_claim(claim_id, diag);
+        Some(true)
+    }
+
+    /// Delete a claim's `[afkd-claim]` comment, diagnosing a failure.
+    fn prune_claim(&self, claim_id: &str, diag: &dyn Diag) {
+        if let Err(e) = self.tracker.delete_comment(claim_id) {
+            diag.err(&e);
+        }
     }
 
     /// Keep this issue's claim comment alive for as long as afkd's fire holds it.
@@ -2600,6 +2618,46 @@ mod tests {
             f.units.release_stale("garbage", f.clock.now(), &f.diag),
             None
         );
+    }
+
+    /// A unit afkd handed back before its run is unclaimed where it stands: its claim is
+    /// pruned and the issue keeps its place at the head of its state. A failed delete is
+    /// diagnosed and still moves nothing; a key with no `#` names nothing.
+    #[test]
+    fn a_hand_back_prunes_the_claim_and_leaves_the_issue_in_place() {
+        let f = fx(json!({}));
+        f.tracker.add_issue("Todo", "ENG-1", TITLE, BODY);
+        f.tracker.add_issue("Todo", "ENG-2", "queued", "");
+        f.tracker.add_issue("Todo", "ENG-3", "queued too", "");
+        let unit = f.poll().unwrap();
+        assert_eq!(unit.identifier(), "ENG-1");
+        assert_eq!(f.units.hand_back(&unit.key(), &f.diag), Some(true));
+        assert!(f.texts("ENG-1").iter().all(|t| !is_claim(t)));
+        assert_eq!(f.tracker.in_state("Todo"), ["ENG-1", "ENG-2", "ENG-3"]);
+
+        let unit = f.poll().unwrap();
+        assert_eq!(unit.identifier(), "ENG-1", "the head is claimed again");
+        f.tracker.fail(
+            "delete comment",
+            LinearError::Transport {
+                stage: "delete comment",
+                reason: "mock failure".into(),
+            },
+        );
+        assert_eq!(f.units.hand_back(&unit.key(), &f.diag), Some(true));
+        assert_eq!(
+            f.diag.errs(),
+            ["linear delete comment: no response (mock failure)"]
+        );
+        assert_eq!(f.tracker.in_state("Todo"), ["ENG-1", "ENG-2", "ENG-3"]);
+        assert!(
+            !f.tracker
+                .actions()
+                .iter()
+                .any(|a| matches!(a, Action::Move { .. })),
+            "a hand-back moves nothing"
+        );
+        assert_eq!(f.units.hand_back("garbage", &f.diag), None);
     }
 
     #[test]

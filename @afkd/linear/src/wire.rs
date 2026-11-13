@@ -45,8 +45,14 @@ pub(crate) enum Request {
         outcome: UnitOutcome,
         facts: Facts,
     },
-    /// A leftover journal key, a `held` finish's, or a unit handed back by a stop.
-    Release { key: String },
+    /// A leftover journal key, a `held` finish's, a unit whose `on_claim` failed, or a unit
+    /// handed back by a stop. `handed_back` marks the last: afkd gave the unit back between the
+    /// `poll` and its run, so nothing ran on it.
+    Release {
+        key: String,
+        #[serde(default)]
+        handed_back: bool,
+    },
     /// A live claim's periodic renewal, counting from 1.
     Renew { key: String, renewal: u64 },
     /// The mid-run watch's read of a unit's comments.

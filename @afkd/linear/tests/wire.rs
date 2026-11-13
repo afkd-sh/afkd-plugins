@@ -1282,6 +1282,31 @@ fn release_reverses_a_crashed_claim_to_the_bottom_of_its_state() {
     end(plugin, &t.fake);
 }
 
+/// A unit afkd hands back before its run, the `release` marked `handed_back`, keeps its
+/// place at the head of its state: the claim is deleted, no `IssueUpdate` is sent, and the
+/// next poll hands the same issue over again.
+#[test]
+fn a_unit_handed_back_keeps_its_place_at_the_head_of_its_state() {
+    let t = team();
+    let second = t.fake.issue("Todo", "Next in line — 次 🧵", "");
+    let mut plugin = Plugin::armed(settings(&t.fake));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(unit["thread"], t.issue);
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": unit["key"], "handed_back": true})),
+        json!({"released": true})
+    );
+    assert!(claims(&t.fake, &t.issue).is_empty());
+    assert_eq!(t.fake.in_state("Todo"), [t.issue.clone(), second]);
+    assert!(
+        !operations(&t.fake).iter().any(|o| o == "IssueUpdate"),
+        "{:?}",
+        operations(&t.fake)
+    );
+    assert_eq!(plugin.poll()["unit"]["thread"], t.issue);
+    end(plugin, &t.fake);
+}
+
 /// A clean finish posts one `[afkd-ran]` watermark carrying, in milliseconds, the boundary
 /// fixed at the claim read, prunes the prior one, and releases the claim last; the issue
 /// stays where it is.

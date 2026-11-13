@@ -308,9 +308,10 @@ develop :: service(linear) {
 team's manual order from the top, and claims the first issue that passes every gate below;
 a name the team has no state for fails the poll, naming it. An issue blocked by another
 that is not yet completed, canceled or a duplicate is passed over until it is. An issue the
-plugin puts back — its run crashed, or afkd handed it back unrun — goes to the bottom of
-the state it was claimed from, so an issue that keeps crashing cannot starve the head of the
-queue.
+plugin puts back — its run crashed, its `on_claim` failed or its finish could not be
+delivered — goes to the bottom of the state it was claimed from, so an issue that keeps
+crashing cannot starve the head of the queue. An issue afkd handed back because its service
+stopped before the run started keeps its place, with its claim comment deleted.
 
 `require_member` claims only an issue assigned or delegated to a user it names: `"me"`,
 whoever the credential authenticates as, or a user by display name or email. It takes one

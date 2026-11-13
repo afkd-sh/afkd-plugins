@@ -175,9 +175,9 @@ impl Plugin {
                 )
             }
             Request::Poll => on_armed(armed, clock, |a| a.poll(clock, diag)),
-            Request::Release { key } => {
-                on_armed(armed, clock, |a| a.release(&key, clock.now(), diag))
-            }
+            Request::Release { key, handed_back } => on_armed(armed, clock, |a| {
+                a.release(&key, handed_back, clock.now(), diag)
+            }),
             Request::Renew { key, renewal } => {
                 on_armed(armed, clock, |a| a.renew(&key, renewal, diag))
             }
@@ -321,10 +321,18 @@ impl Armed {
 
     /// Release a journal key — a crashed run's, a `held` finish's, a unit afkd handed
     /// straight back, or one whose `on_claim` failed — and forget it.
-    fn release(&mut self, key: &str, now: Instant, diag: &dyn Diag) -> Answer {
-        self.live.remove(key);
+    ///
+    /// A unit afkd marks `handed_back` while this plugin still holds it live keeps its place:
+    /// nothing ran on it, so only its claim is pruned. Every other key goes through
+    /// [`LinearUnits::release_stale`], to the bottom of its state.
+    fn release(&mut self, key: &str, handed_back: bool, now: Instant, diag: &dyn Diag) -> Answer {
+        let live = self.live.remove(key).is_some();
         self.finished.retain(|(finished, _)| finished != key);
-        let released = self.units.release_stale(key, now, diag);
+        let released = if handed_back && live {
+            self.units.hand_back(key, diag)
+        } else {
+            self.units.release_stale(key, now, diag)
+        };
         Answer::Reply(json!({ "released": released }).to_string())
     }
 
@@ -521,6 +529,7 @@ mod tests {
     use super::*;
     use crate::claim::{claim_text, is_claim};
     use crate::common::{CaptureDiag, FakeClock, TempDir};
+    use crate::outbox::RETRY_FOR;
     use crate::tracker::{Action, LinearError, MockTracker, SELF_ID};
     use serde_json::Value;
     use std::time::{Duration, SystemTime};
@@ -1132,6 +1141,54 @@ mod tests {
                 .any(|a| matches!(a, Action::Move { .. })),
             "a finish moves nothing"
         );
+    }
+
+    /// A unit afkd hands back marked `handed_back` keeps its place at the head of its state,
+    /// its claim pruned, and is the next poll's again; the plain `release` afkd sends after a
+    /// failed `on_claim` puts it at the bottom.
+    #[test]
+    fn a_unit_handed_back_keeps_its_place_and_a_plain_release_goes_to_the_bottom() {
+        let mut f = Fixture::armed(settings());
+        f.tracker.add_issue("Todo", "ENG-2", "課題 2 🚧", "");
+        let key = f.poll()["unit"]["key"].clone();
+        assert_eq!(
+            f.call(json!({"call": "release", "key": key, "handed_back": true})),
+            json!({"released": true})
+        );
+        assert_eq!(f.claims_on("ENG-1"), 0);
+        assert_eq!(f.tracker.in_state("Todo"), ["ENG-1", "ENG-2"]);
+
+        let unit = f.poll()["unit"].clone();
+        assert_eq!(unit["id"], "ENG-1", "the head is claimed again");
+        assert_eq!(
+            f.call(json!({"call": "release", "key": unit["key"]})),
+            json!({"released": true})
+        );
+        assert_eq!(f.claims_on("ENG-1"), 0);
+        assert_eq!(f.tracker.in_state("Todo"), ["ENG-2", "ENG-1"]);
+    }
+
+    /// A `held` finish that gives up goes to the bottom of its state, even on a `release`
+    /// marked `handed_back`: the mark keeps the place only of a unit still live.
+    #[test]
+    fn a_held_finish_goes_to_the_bottom_even_marked_handed_back() {
+        let mut f = Fixture::armed(settings());
+        f.tracker.add_issue("Todo", "ENG-2", "課題 2 🚧", "");
+        let key = f.poll()["unit"]["key"].clone();
+        f.tracker.fail(
+            "delete comment",
+            LinearError::Transport {
+                stage: "delete comment",
+                reason: "mock failure".into(),
+            },
+        );
+        assert_eq!(f.finish(&key, "clean"), json!({"ok": true, "held": true}));
+        f.clock.advance(RETRY_FOR);
+        assert_eq!(
+            f.call(json!({"call": "release", "key": key, "handed_back": true})),
+            json!({"released": true})
+        );
+        assert_eq!(f.tracker.in_state("Todo"), ["ENG-2", "ENG-1"]);
     }
 
     /// `renew` edits the live claim and refuses a key it holds no claim on; `release` of a
