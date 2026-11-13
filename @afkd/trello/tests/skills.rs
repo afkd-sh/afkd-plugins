@@ -6,8 +6,11 @@
 
 mod common;
 
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Command, Output};
+use std::thread;
 
 use serde_json::{json, Value};
 
@@ -528,4 +531,72 @@ fn fetch_attachment_takes_an_id_or_a_name_not_both() {
         );
     }
     assert!(b.fake.seen().is_empty(), "{:?}", b.fake.seen());
+}
+
+/// A proxy on a loopback port that answers one `CONNECT` by tunnelling to where it asks,
+/// and hands back the head it was sent; its address.
+fn tunnelling_proxy() -> (String, thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let at = listener.local_addr().expect("its address");
+    let served = thread::spawn(move || {
+        let (mut client, _) = listener.accept().expect("the helper connects");
+        let mut head = Vec::new();
+        let mut byte = [0u8];
+        while !head.ends_with(b"\r\n\r\n") {
+            client.read_exact(&mut byte).expect("a request head");
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).expect("a text head");
+        let target = head.split(' ').nth(1).expect("a CONNECT target").to_owned();
+        let upstream = TcpStream::connect(&target).expect("the fake answers");
+        client
+            .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            .expect("answer the CONNECT");
+        let (mut up_read, mut up_write) = (upstream.try_clone().expect("clone"), upstream);
+        let mut client_read = client.try_clone().expect("clone");
+        let back = thread::spawn(move || {
+            let _ = std::io::copy(&mut up_read, &mut client);
+            let _ = client.shutdown(Shutdown::Write);
+        });
+        let _ = std::io::copy(&mut client_read, &mut up_write);
+        let _ = up_write.shutdown(Shutdown::Write);
+        let _ = back.join();
+        head
+    });
+    (format!("http://afkd:t0k3n@{at}"), served)
+}
+
+#[test]
+fn a_helper_reaches_the_api_through_the_proxy_its_environment_names() {
+    // A sandbox with a network list hands its processes its proxy in the `*_PROXY`
+    // variables and lets no connection past it (afkd's ADR-0084), so a helper tunnels its
+    // request through the proxy, with the credentials the proxy URL carries.
+    let b = board();
+    let (proxy, served) = tunnelling_proxy();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/trello/move_card.py");
+    let out = Command::new("python3")
+        .arg(path)
+        .args(["--card", b.parked.as_str(), b.queue.as_str()])
+        .env("TRELLO_API_KEY", KEY)
+        .env("TRELLO_TOKEN", TOKEN)
+        .env("TRELLO_API_BASE", b.fake.base_url())
+        .env("HTTP_PROXY", &proxy)
+        .env("http_proxy", &proxy)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .env_remove("TRELLO_CARD_ID")
+        .env_remove("TRELLO_BOARD_ID")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("run python3");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let head = served.join().expect("the proxy served");
+    let api = b.fake.base_url().trim_start_matches("http://");
+    let api = api.split('/').next().unwrap_or(api);
+    assert!(head.starts_with(&format!("CONNECT {api} ")), "{head}");
+    assert!(
+        head.contains("Proxy-Authorization: Basic YWZrZDp0MGszbg==\r\n"),
+        "{head}"
+    );
+    assert_eq!(b.fake.cards_in("Up for Grabs")[0], b.parked);
 }

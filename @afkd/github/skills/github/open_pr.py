@@ -29,12 +29,14 @@
 # push still shell out to the `git` CLI via `subprocess`, exactly as gitea does.
 
 import argparse
+import base64
 import http.client
 import json
 import os
 import subprocess
 import sys
 import urllib.parse
+import urllib.request
 
 # A non-empty User-Agent is mandatory on GitHub REST — http.client sends none by
 # default and real GitHub 403s a UA-less request (crates/github/src/client.rs).
@@ -73,11 +75,25 @@ def api_path(api_base, suffix):
 
 
 def connection(api_base):
-    """Open an HTTP(S) connection to the API host parsed from `api_base`."""
+    """Open an HTTP(S) connection to the API host parsed from `api_base`, tunnelled through
+    the proxy the environment names for its scheme, minus the hosts NO_PROXY lists: a sandbox
+    with a network list reaches its names only through afkd's proxy (ADR-0084)."""
     parts = urllib.parse.urlsplit(api_base)
-    if parts.scheme == "https":
-        return http.client.HTTPSConnection(parts.hostname, parts.port)
-    return http.client.HTTPConnection(parts.hostname, parts.port)
+    https = parts.scheme == "https"
+    kind = http.client.HTTPSConnection if https else http.client.HTTPConnection
+    proxy = urllib.request.getproxies().get(parts.scheme)
+    if not proxy or urllib.request.proxy_bypass(parts.hostname):
+        return kind(parts.hostname, parts.port)
+    via = urllib.parse.urlsplit(proxy)
+    conn = kind(via.hostname, via.port)
+    headers = {}
+    if via.username is not None:
+        user = urllib.parse.unquote(via.username)
+        password = urllib.parse.unquote(via.password or "")
+        token = base64.b64encode(f"{user}:{password}".encode()).decode()
+        headers["Proxy-Authorization"] = f"Basic {token}"
+    conn.set_tunnel(parts.hostname, parts.port or (443 if https else 80), headers=headers)
+    return conn
 
 
 def issue_number():
