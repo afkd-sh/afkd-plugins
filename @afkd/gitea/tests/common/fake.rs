@@ -9,9 +9,10 @@
 //! assignee `PATCH` replaces the whole set; a pull request is an issue too, so its labels,
 //! assignees, state and comments are the issue's, and only an open one is listed; a
 //! comment carries separate `created_at` and `updated_at`, and a review a `submitted_at`,
-//! stamped from a clock the test moves. Every request is recorded, and any
-//! route can be made to answer a status instead — or the whole fake taken out of reach,
-//! every connection closed unanswered.
+//! stamped from a clock the test moves; an issue's assets are listed with an absolute
+//! `browser_download_url` on this fake, which serves their bytes behind the same token.
+//! Every request is recorded, and any route can be made to answer a status instead — or
+//! the whole fake taken out of reach, every connection closed unanswered.
 
 #![allow(dead_code)]
 
@@ -87,8 +88,22 @@ pub struct Comment {
     pub updated: u64,
 }
 
+/// A file attached to an issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asset {
+    pub id: u64,
+    pub uuid: String,
+    pub repo: String,
+    pub number: u64,
+    pub name: String,
+    pub bytes: Vec<u8>,
+    pub created: u64,
+}
+
 #[derive(Default)]
 struct State {
+    /// The instance root, which an asset's download URL is under.
+    base: String,
     /// The token's own login.
     me: String,
     now: u64,
@@ -101,6 +116,7 @@ struct State {
     reviews: Vec<Review>,
     labels: BTreeMap<String, Vec<Label>>,
     comments: Vec<Comment>,
+    assets: Vec<Asset>,
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
     seen: Vec<Seen>,
@@ -130,6 +146,7 @@ impl FakeGitea {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let base = format!("http://{}", listener.local_addr().expect("local addr"));
         let state = Arc::new(Mutex::new(State {
+            base: base.clone(),
             me: me.to_string(),
             now: EPOCH,
             next_id: 1_000,
@@ -281,6 +298,24 @@ impl FakeGitea {
             created: at,
             updated: at,
         });
+    }
+
+    /// Attach a file named `name` holding `bytes` to an issue, now; returns the asset.
+    pub fn asset(&self, repo: &str, number: u64, name: &str, bytes: &[u8]) -> Asset {
+        let mut s = lock(&self.state);
+        s.next_id += 1;
+        let id = s.next_id;
+        let asset = Asset {
+            id,
+            uuid: format!("{id:08x}-0000-4000-8000-{id:012x}"),
+            repo: repo.to_string(),
+            number,
+            name: name.to_string(),
+            bytes: bytes.to_vec(),
+            created: s.now,
+        };
+        s.assets.push(asset.clone());
+        asset
     }
 
     /// Make every request to `route` answer `status`.
@@ -439,6 +474,19 @@ fn comment_json(c: &Comment) -> Value {
     })
 }
 
+/// An asset as Gitea lists it, its download absolute under the instance root.
+fn asset_json(s: &State, a: &Asset) -> Value {
+    json!({
+        "id": a.id,
+        "name": a.name,
+        "size": a.bytes.len(),
+        "download_count": 0,
+        "created_at": stamp(a.created),
+        "uuid": a.uuid,
+        "browser_download_url": format!("{}/attachments/{}", s.base, a.uuid),
+    })
+}
+
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -522,7 +570,7 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
         .collect();
     let path = percent_decode(&path);
 
-    let (status, reply) = {
+    let (status, mime, reply) = {
         let mut s = lock(state);
         let seen = Seen {
             method: method.clone(),
@@ -537,15 +585,13 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
         }
         s.seen.push(seen);
         if auth != format!("token {TOKEN}") {
-            (401, json!({ "message": "token is required" }))
+            json_reply(401, &json!({ "message": "token is required" }))
+        } else if let Some(reply) = download(&s, &method, &path) {
+            reply
         } else {
-            route(&mut s, &method, &path, &body)
+            let (status, reply) = route(&mut s, &method, &path, &body);
+            json_reply(status, &reply)
         }
-    };
-    let text = if status == 204 {
-        String::new()
-    } else {
-        reply.to_string()
     };
     let reason = match status {
         200 => "OK",
@@ -558,11 +604,42 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
     let mut stream = stream;
     let _ = write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n{text}",
-        text.len()
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        reply.len()
     );
+    let _ = stream.write_all(&reply);
     let _ = stream.flush();
+}
+
+/// A JSON reply as `serve` writes it: a `204` has no body.
+fn json_reply(status: u16, reply: &Value) -> (u16, &'static str, Vec<u8>) {
+    let body = if status == 204 {
+        Vec::new()
+    } else {
+        reply.to_string().into_bytes()
+    };
+    (status, "application/json", body)
+}
+
+/// Answer a download of an asset's bytes, or `None` when the request is no download: a
+/// `GET /attachments/{uuid}`, the `browser_download_url` Gitea lists. A route made to fail
+/// answers its status, as every other does.
+fn download(s: &State, method: &str, path: &str) -> Option<(u16, &'static str, Vec<u8>)> {
+    let uuid = path.strip_prefix("/attachments/")?;
+    if method != "GET" {
+        return None;
+    }
+    if let Some(status) = s.faults.get("download attachment") {
+        return Some(json_reply(*status, &json!({ "message": "injected" })));
+    }
+    match s.assets.iter().find(|a| a.uuid == uuid) {
+        Some(a) => Some((200, "application/octet-stream", a.bytes.clone())),
+        None => Some(json_reply(
+            404,
+            &json!({ "message": "attachment not found" }),
+        )),
+    }
 }
 
 /// Answer one authenticated request.
@@ -593,6 +670,7 @@ fn route(s: &mut State, method: &str, path: &str, body: &str) -> (u16, Value) {
         ("POST", ["repos", _, _, "labels"]) => "create label",
         ("POST", ["repos", _, _, "issues", _, "labels"]) => "add label",
         ("DELETE", ["repos", _, _, "issues", _, "labels", _]) => "remove label",
+        ("GET", ["repos", _, _, "issues", _, "assets"]) => "list issue assets",
         ("GET", ["repos", _, _, "issues", _, "comments"]) => "list comments",
         ("POST", ["repos", _, _, "issues", _, "comments"]) => "post comment",
         _ => return (404, json!({ "message": "no such route" })),
@@ -747,6 +825,16 @@ fn route(s: &mut State, method: &str, path: &str, body: &str) -> (u16, Value) {
                 }
                 _ => (404, json!({ "message": "not found" })),
             }
+        }
+        "list issue assets" => {
+            let (repo, n) = (repo(), number(4));
+            let list: Vec<Value> = s
+                .assets
+                .iter()
+                .filter(|a| a.repo == repo && a.number == n)
+                .map(|a| asset_json(s, a))
+                .collect();
+            (200, Value::Array(list))
         }
         "list comments" => {
             let (repo, n) = (repo(), number(4));

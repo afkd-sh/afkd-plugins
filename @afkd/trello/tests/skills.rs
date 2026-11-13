@@ -2,7 +2,9 @@
 //! name, `fetch_attachment.py --name`, run as an agent runs them — `python3` on the script,
 //! the board credentials in the environment — against the stateful fake Trello through
 //! their `TRELLO_API_BASE` seam. Each leg reads the board back: where a card landed, that a
-//! refused placement wrote nothing, and which file a fetch wrote where.
+//! refused placement wrote nothing, and which file a fetch wrote where. The proxy legs run a
+//! helper behind a tunnelling proxy, as a sandbox with a network list does, and read back
+//! which requests rode a tunnel.
 
 mod common;
 
@@ -10,6 +12,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use serde_json::{json, Value};
@@ -81,13 +84,26 @@ fn board() -> Board {
     }
 }
 
-/// Run one helper with the fake's credentials and base, and none of the selfdev run's
-/// card or board locators.
-fn helper(script: &str, args: &[&str], fake: &FakeTrello) -> Output {
+/// The variables a proxy is named by, in both the cases Python reads.
+const PROXY_VARS: [&str; 8] = [
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+/// One helper with the fake's credentials and base, and none of the selfdev run's card or
+/// board locators, nor any proxy the test's own environment names.
+fn helper_command(script: &str, args: &[&str], fake: &FakeTrello) -> Command {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("skills/trello")
         .join(script);
-    Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg(path)
         .args(args)
         .env("TRELLO_API_KEY", KEY)
@@ -95,9 +111,27 @@ fn helper(script: &str, args: &[&str], fake: &FakeTrello) -> Output {
         .env("TRELLO_API_BASE", fake.base_url())
         .env_remove("TRELLO_CARD_ID")
         .env_remove("TRELLO_BOARD_ID")
-        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    for var in PROXY_VARS {
+        command.env_remove(var);
+    }
+    command
+}
+
+/// Run one helper, as [`helper_command`] sets it up.
+fn helper(script: &str, args: &[&str], fake: &FakeTrello) -> Output {
+    helper_command(script, args, fake)
         .output()
         .expect("run python3")
+}
+
+/// Name `proxy` in every variable afkd's sandbox hands a child, with `NO_PROXY` emptied so
+/// the loopback fake stands in for a remote host.
+fn behind_proxy<'a>(command: &'a mut Command, proxy: &str) -> &'a mut Command {
+    for var in &PROXY_VARS[..6] {
+        command.env(var, proxy);
+    }
+    command.env("NO_PROXY", "").env("no_proxy", "")
 }
 
 /// A description file under a temp dir, as an agent writes one into its scratch dir.
@@ -533,37 +567,104 @@ fn fetch_attachment_takes_an_id_or_a_name_not_both() {
     assert!(b.fake.seen().is_empty(), "{:?}", b.fake.seen());
 }
 
-/// A proxy on a loopback port that answers one `CONNECT` by tunnelling to where it asks,
-/// and hands back the head it was sent; its address.
-fn tunnelling_proxy() -> (String, thread::JoinHandle<String>) {
+/// One connection the proxy tunnelled: the `CONNECT` head it was sent, and the request
+/// line it carried.
+#[derive(Debug, Clone)]
+struct Tunnel {
+    head: String,
+    request: String,
+}
+
+/// A proxy on a loopback port that answers every `CONNECT` by tunnelling to where it asks,
+/// and records each tunnel; its URL, with credentials, and the records.
+///
+/// A tunnel is recorded before its request goes upstream, so every record is in place once
+/// the helper has its replies.
+fn tunnelling_proxy() -> (String, Arc<Mutex<Vec<Tunnel>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let at = listener.local_addr().expect("its address");
-    let served = thread::spawn(move || {
-        let (mut client, _) = listener.accept().expect("the helper connects");
-        let mut head = Vec::new();
-        let mut byte = [0u8];
-        while !head.ends_with(b"\r\n\r\n") {
-            client.read_exact(&mut byte).expect("a request head");
-            head.push(byte[0]);
+    let tunnels = Arc::new(Mutex::new(Vec::new()));
+    let records = Arc::clone(&tunnels);
+    thread::spawn(move || {
+        for client in listener.incoming().flatten() {
+            let records = Arc::clone(&records);
+            thread::spawn(move || tunnel(client, &records));
         }
-        let head = String::from_utf8(head).expect("a text head");
-        let target = head.split(' ').nth(1).expect("a CONNECT target").to_owned();
-        let upstream = TcpStream::connect(&target).expect("the fake answers");
-        client
-            .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
-            .expect("answer the CONNECT");
-        let (mut up_read, mut up_write) = (upstream.try_clone().expect("clone"), upstream);
-        let mut client_read = client.try_clone().expect("clone");
-        let back = thread::spawn(move || {
-            let _ = std::io::copy(&mut up_read, &mut client);
-            let _ = client.shutdown(Shutdown::Write);
-        });
-        let _ = std::io::copy(&mut client_read, &mut up_write);
-        let _ = up_write.shutdown(Shutdown::Write);
-        let _ = back.join();
-        head
     });
-    (format!("http://afkd:t0k3n@{at}"), served)
+    (format!("http://afkd:t0k3n@{at}"), tunnels)
+}
+
+/// Serve one `CONNECT`: answer it, record it with the request line it carries, and copy
+/// both ways until each side is done.
+fn tunnel(mut client: TcpStream, records: &Mutex<Vec<Tunnel>>) {
+    let head = read_until(&mut client, b"\r\n\r\n");
+    let target = head.split(' ').nth(1).expect("a CONNECT target").to_owned();
+    let mut upstream = TcpStream::connect(&target).expect("the fake answers");
+    client
+        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        .expect("answer the CONNECT");
+    let request = read_until(&mut client, b"\r\n");
+    records
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(Tunnel {
+            head,
+            request: request.clone(),
+        });
+    upstream
+        .write_all(request.as_bytes())
+        .expect("pass the request line on");
+    let (mut up_read, mut up_write) = (upstream.try_clone().expect("clone"), upstream);
+    let mut client_read = client.try_clone().expect("clone");
+    let back = thread::spawn(move || {
+        let _ = std::io::copy(&mut up_read, &mut client);
+        let _ = client.shutdown(Shutdown::Write);
+    });
+    let _ = std::io::copy(&mut client_read, &mut up_write);
+    let _ = up_write.shutdown(Shutdown::Write);
+    let _ = back.join();
+}
+
+/// Read a stream byte by byte through the first `end`, as text.
+fn read_until(stream: &mut TcpStream, end: &[u8]) -> String {
+    let mut text = Vec::new();
+    let mut byte = [0u8];
+    while !text.ends_with(end) {
+        stream
+            .read_exact(&mut byte)
+            .expect("a line through its end");
+        text.push(byte[0]);
+    }
+    String::from_utf8(text).expect("a text line")
+}
+
+/// The fake's `host:port`, as a `CONNECT` names it.
+fn authority(fake: &FakeTrello) -> &str {
+    let api = fake.base_url().trim_start_matches("http://");
+    api.split('/').next().unwrap_or(api)
+}
+
+/// The tunnels whose request line starts with `request`, each asserted to be a `CONNECT` to
+/// the fake carrying the proxy URL's credentials.
+fn tunnels_for(tunnels: &Mutex<Vec<Tunnel>>, fake: &FakeTrello, request: &str) -> Vec<Tunnel> {
+    let tunnels = tunnels.lock().unwrap_or_else(PoisonError::into_inner);
+    let carrying: Vec<Tunnel> = tunnels
+        .iter()
+        .filter(|t| t.request.starts_with(request))
+        .cloned()
+        .collect();
+    for t in &carrying {
+        assert!(
+            t.head.starts_with(&format!("CONNECT {} ", authority(fake))),
+            "{t:?}"
+        );
+        assert!(
+            t.head
+                .contains("Proxy-Authorization: Basic YWZrZDp0MGszbg==\r\n"),
+            "{t:?}"
+        );
+    }
+    carrying
 }
 
 #[test]
@@ -572,31 +673,73 @@ fn a_helper_reaches_the_api_through_the_proxy_its_environment_names() {
     // variables and lets no connection past it (afkd's ADR-0084), so a helper tunnels its
     // request through the proxy, with the credentials the proxy URL carries.
     let b = board();
-    let (proxy, served) = tunnelling_proxy();
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/trello/move_card.py");
-    let out = Command::new("python3")
-        .arg(path)
-        .args(["--card", b.parked.as_str(), b.queue.as_str()])
-        .env("TRELLO_API_KEY", KEY)
-        .env("TRELLO_TOKEN", TOKEN)
-        .env("TRELLO_API_BASE", b.fake.base_url())
-        .env("HTTP_PROXY", &proxy)
-        .env("http_proxy", &proxy)
-        .env("NO_PROXY", "")
-        .env("no_proxy", "")
-        .env_remove("TRELLO_CARD_ID")
-        .env_remove("TRELLO_BOARD_ID")
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("run python3");
+    let (proxy, tunnels) = tunnelling_proxy();
+    let out = behind_proxy(
+        &mut helper_command(
+            "move_card.py",
+            &["--card", b.parked.as_str(), b.queue.as_str()],
+            &b.fake,
+        ),
+        &proxy,
+    )
+    .output()
+    .expect("run python3");
     assert!(out.status.success(), "{}", stderr(&out));
-    let head = served.join().expect("the proxy served");
-    let api = b.fake.base_url().trim_start_matches("http://");
-    let api = api.split('/').next().unwrap_or(api);
-    assert!(head.starts_with(&format!("CONNECT {api} ")), "{head}");
-    assert!(
-        head.contains("Proxy-Authorization: Basic YWZrZDp0MGszbg==\r\n"),
-        "{head}"
-    );
+    let moved = tunnels_for(&tunnels, &b.fake, &format!("PUT /1/cards/{}?", b.parked));
+    assert_eq!(moved.len(), 1, "{:?}", tunnels.lock().unwrap());
     assert_eq!(b.fake.cards_in("Up for Grabs")[0], b.parked);
+}
+
+/// A screenshot pasted onto a card: wide glyphs and spaces in its name, and bytes no text
+/// decoding or line-ending change leaves alone.
+fn screenshot() -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    bytes.extend((0..=255u8).cycle().take(4096));
+    bytes.extend_from_slice(b"\r\n\n\r\0IEND\xaeB`\x82");
+    bytes
+}
+
+/// Behind the proxy, the attachment's download rides a tunnel too, past the metadata read:
+/// the file comes through byte for byte, and the OAuth header with it.
+#[test]
+fn fetch_attachment_downloads_through_the_proxy_its_environment_names() {
+    let b = board();
+    let card = &b.cards[0];
+    let shot = screenshot();
+    let id = b
+        .fake
+        .attachment(card, "截图 2026-11-13 14.02.png", &shot, 60);
+    let dir = TempDir::new("fetch-through-proxy");
+    let to = dir.path().join("shot.png");
+    let to_arg = to.to_string_lossy().into_owned();
+    let (proxy, tunnels) = tunnelling_proxy();
+
+    let out = behind_proxy(
+        &mut helper_command(
+            "fetch_attachment.py",
+            &[&id, "--to", &to_arg, "--card", card],
+            &b.fake,
+        ),
+        &proxy,
+    )
+    .output()
+    .expect("run python3");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), format!("{to_arg}\n"));
+    assert!(
+        std::fs::read(&to).unwrap() == shot,
+        "the screenshot came back changed"
+    );
+    let download = format!("GET /1/cards/{card}/attachments/{id}/download/");
+    let carried = tunnels_for(&tunnels, &b.fake, &download);
+    assert_eq!(carried.len(), 1, "{:?}", tunnels.lock().unwrap());
+    let downloads: Vec<Seen> = b
+        .fake
+        .seen()
+        .into_iter()
+        .filter(|s| s.path.contains("/download/"))
+        .collect();
+    assert_eq!(downloads.len(), 1, "{downloads:?}");
+    assert_eq!(downloads[0].authorization, Some(oauth_header()));
+    assert!(downloads[0].query.is_empty(), "{:?}", downloads[0].query);
 }

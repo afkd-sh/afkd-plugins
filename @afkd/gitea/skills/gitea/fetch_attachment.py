@@ -41,11 +41,11 @@ import urllib.parse
 import urllib.request
 
 
-def connection(base):
-    """Open an HTTP(S) connection to the API host parsed from `base`, tunnelled through
-    the proxy the environment names for its scheme, minus the hosts NO_PROXY lists: a sandbox
-    with a network list reaches its names only through afkd's proxy (ADR-0084)."""
-    parts = urllib.parse.urlsplit(base)
+def connection(url):
+    """Open an HTTP(S) connection to the host of `url`, the API's or a download's, tunnelled
+    through the proxy the environment names for its scheme, minus the hosts NO_PROXY lists: a
+    sandbox with a network list reaches its names only through afkd's proxy (ADR-0084)."""
+    parts = urllib.parse.urlsplit(url)
     https = parts.scheme == "https"
     kind = http.client.HTTPSConnection if https else http.client.HTTPConnection
     proxy = urllib.request.getproxies().get(parts.scheme)
@@ -129,17 +129,14 @@ def download(url, base, token):
 
     A relative url is joined to `base` (GITEA_BASE_URL); an absolute one is used as
     returned. The same `token` Authorization header rides the download as every
-    other call (single auth shape). The token is never echoed.
+    other call (single auth shape), through the same proxy. The token is never echoed.
     """
     resolved = urllib.parse.urljoin(base, url)
     parts = urllib.parse.urlsplit(resolved)
     target = parts.path
     if parts.query:
         target += f"?{parts.query}"
-    if parts.scheme == "https":
-        conn = http.client.HTTPSConnection(parts.hostname, parts.port)
-    else:
-        conn = http.client.HTTPConnection(parts.hostname, parts.port)
+    conn = connection(resolved)
     try:
         conn.request("GET", target, headers={"Authorization": f"token {token}"})
         response = conn.getresponse()

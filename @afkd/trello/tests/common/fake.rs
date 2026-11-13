@@ -17,11 +17,11 @@
 //! whose `pos` is greater than the number it names, as those positions stood before the
 //! move; adding a member already on the card is Trello's `400`; a comment or card that
 //! does not exist is a `404`. An attachment is uploaded as a multipart form whose `name`
-//! part names it, listed with its date, size and a download `url` on this fake, and
-//! downloaded from there with the OAuth `Authorization` header and **no** query
-//! credential — either of those wrong is a `401`, as on Trello's download host. Every
-//! request is recorded, and any route can be made to answer a status instead — or the
-//! whole fake taken out of reach, every connection closed unanswered.
+//! part names it, listed — or read alone by its id — with its date, size and a download
+//! `url` on this fake, and downloaded from there with the OAuth `Authorization` header and
+//! **no** query credential — either of those wrong is a `401`, as on Trello's download
+//! host. Every request is recorded, and any route can be made to answer a status instead —
+//! or the whole fake taken out of reach, every connection closed unanswered.
 
 #![allow(dead_code)]
 
@@ -1058,6 +1058,7 @@ fn route(s: &mut State, request: &Request) -> (u16, Value) {
         ("DELETE", ["cards", _, "idMembers", _]) => "remove member",
         ("POST", ["cards", _, "attachments"]) => "post attachment",
         ("GET", ["cards", _, "attachments"]) => "list attachments",
+        ("GET", ["cards", _, "attachments", _]) => "get attachment",
         _ => return not_found,
     };
     if let Some(status) = s.faults.get(name) {
@@ -1331,6 +1332,17 @@ fn route(s: &mut State, request: &Request) -> (u16, Value) {
             }
             None => not_found,
         },
+        "get attachment" => {
+            let card = card_at(s).map(|at| s.cards[at].id.clone());
+            match s
+                .attachments
+                .iter()
+                .find(|a| Some(&a.card) == card.as_ref() && a.id == segs[3])
+            {
+                Some(a) => (200, s.attachment_json(a)),
+                None => not_found,
+            }
+        }
         _ => not_found,
     }
 }

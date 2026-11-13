@@ -44,11 +44,11 @@ import urllib.parse
 import urllib.request
 
 
-def connection(base):
-    """Open an HTTP(S) connection to the API host parsed from `base`, tunnelled through
-    the proxy the environment names for its scheme, minus the hosts NO_PROXY lists: a sandbox
-    with a network list reaches its names only through afkd's proxy (ADR-0084)."""
-    parts = urllib.parse.urlsplit(base)
+def connection(url):
+    """Open an HTTP(S) connection to the host of `url`, the API's or a download's, tunnelled
+    through the proxy the environment names for its scheme, minus the hosts NO_PROXY lists: a
+    sandbox with a network list reaches its names only through afkd's proxy (ADR-0084)."""
+    parts = urllib.parse.urlsplit(url)
     https = parts.scheme == "https"
     kind = http.client.HTTPSConnection if https else http.client.HTTPConnection
     proxy = urllib.request.getproxies().get(parts.scheme)
@@ -115,7 +115,8 @@ def download(url, key, token):
     Trello's download host authenticates the file transfer with the OAuth
     `Authorization` header, NOT query-string creds (finding 2). The url is parsed
     only to split host from path+query; the path+query is sent unchanged, so no
-    cred ever rides the download's query string. The token is never echoed.
+    cred ever rides the download's query string. The transfer goes through the same proxy
+    as the metadata read. The token is never echoed.
     """
     parts = urllib.parse.urlsplit(url)
     target = parts.path
@@ -124,10 +125,7 @@ def download(url, key, token):
     header = {
         "Authorization": f'OAuth oauth_consumer_key="{key}", oauth_token="{token}"'
     }
-    if parts.scheme == "https":
-        conn = http.client.HTTPSConnection(parts.hostname, parts.port)
-    else:
-        conn = http.client.HTTPConnection(parts.hostname, parts.port)
+    conn = connection(url)
     try:
         conn.request("GET", target, headers=header)
         response = conn.getresponse()
