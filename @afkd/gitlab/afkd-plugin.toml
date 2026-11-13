@@ -1,5 +1,5 @@
 name = "@afkd/gitlab"
-version = "0.10.0"
+version = "0.11.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
