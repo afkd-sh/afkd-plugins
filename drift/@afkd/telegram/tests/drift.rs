@@ -843,7 +843,7 @@ ops :: service(telegram) {{
         "send gives back a result, not an error:\n{report}"
     );
     assert!(
-        report.contains("Result[telegram.Message, telegram.Error]"),
+        report.contains("result[telegram.Message, telegram.Error]"),
         "the refusal names the result send gives back:\n{report}"
     );
 

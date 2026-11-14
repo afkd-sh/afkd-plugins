@@ -1,6 +1,6 @@
 [package]
 name = "afkd-telegram"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 publish = false
 description = "The @afkd/telegram plugin: messages to a Telegram bot as afkd units, and the calls that send, reply, react, edit, delete and fetch, over the plugin wire"

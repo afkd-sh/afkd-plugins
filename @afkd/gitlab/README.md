@@ -350,7 +350,7 @@ Neither kind parks, so neither has `on_park`:
 | `title`  | `str`          | ✓              | ✓                      | its title                   |
 | `url`    | `str`          | ✓              | ✓                      | its page on GitLab          |
 | `number` | `int`          | ✓              | ✓                      | its `iid`, the number the project shows (`#7`, `!7`), not GitLab's global `id` |
-| `labels` | `List[str]`    | ✓              |                        | the names of its labels     |
+| `labels` | `list[str]`    | ✓              |                        | the names of its labels     |
 | `branch` | `str`          |                | ✓                      | the merge request's source branch |
 
 A config passes an item around and compares it, but never builds one. The plugin sends every

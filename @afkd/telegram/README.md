@@ -141,7 +141,7 @@ Telegram.
 | Setting    | Type        | Default                    |                                                |
 |------------|-------------|----------------------------|------------------------------------------------|
 | `token`    | `str`       | required                   | the bot's token, as BotFather gave it          |
-| `chats`    | `List[str]` | required                   | the chat ids whose messages start a run        |
+| `chats`    | `list[str]` | required                   | the chat ids whose messages start a run        |
 | `base_url` | `str`       | `https://api.telegram.org` | the Bot API's root, for a local Bot API server |
 
 afkd's own claim keys work as on any claiming service: `every`, the beat, and
@@ -180,7 +180,7 @@ message does not carry:
 | `sender_name` | `str`       | their first and last name, or `@username` when they have none                 |
 | `text`        | `str`       | the text, or a file's caption                                                 |
 | `reply_to`    | `str`       | the id of the message it replies to                                           |
-| `files`       | `List[str]` | the file ids of its document, photo (the largest size), video, audio or voice |
+| `files`       | `list[str]` | the file ids of its document, photo (the largest size), video, audio or voice |
 
 **What a run gets.** The run's thread is `telegram:<chat>`, so an agent with
 `session=.per_item` carries a chat's conversation on. Its brief, `task.md`, holds who sent
@@ -207,13 +207,13 @@ back.
 
 | Action                                                      | Gives back               |
 |-------------------------------------------------------------|--------------------------|
-| `send(chat, text)`                                          | `Result[Message, Error]` |
-| `send_file(chat, path, ~kind := .document, ~caption := "")` | `Result[Message, Error]` |
-| `reply(message, text)`                                      | `Result[Message, Error]` |
-| `react(message, emoji)`                                     | `Result[nil, Error]`     |
-| `edit(message, text)`                                       | `Result[nil, Error]`     |
-| `delete(message)`                                           | `Result[nil, Error]`     |
-| `fetch_file(file, to)`                                      | `Result[nil, Error]`     |
+| `send(chat, text)`                                          | `result[Message, Error]` |
+| `send_file(chat, path, ~kind := .document, ~caption := "")` | `result[Message, Error]` |
+| `reply(message, text)`                                      | `result[Message, Error]` |
+| `react(message, emoji)`                                     | `result[nil, Error]`     |
+| `edit(message, text)`                                       | `result[nil, Error]`     |
+| `delete(message)`                                           | `result[nil, Error]`     |
+| `fetch_file(file, to)`                                      | `result[nil, Error]`     |
 
 - **`send`** sends a text to a chat. A text over Telegram's 4096 is sent as several
   messages, each cut after its last newline inside the cap, or at the cap when it has none,

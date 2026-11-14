@@ -25,7 +25,7 @@ const MESSAGE: &str = "Message";
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 
 /// One table of the manifest: its header (`""` for the top level) and its keys, each
-/// with its value as written (`"message"`, `true`, `"List[str]"`).
+/// with its value as written (`"message"`, `true`, `"list[str]"`).
 type Table = (String, BTreeMap<String, String>);
 
 /// A table and the tables written under it: a `[[kind.slot]]` and its `[[kind.slot.param]]`s.
@@ -139,7 +139,7 @@ fn the_config_declares_the_call_credentials() {
 fn shaped(value: &Value, ty: &str) -> bool {
     match ty {
         "str" => value.is_string(),
-        "List[str]" => value
+        "list[str]" => value
             .as_array()
             .is_some_and(|items| items.iter().all(Value::is_string)),
         _ => false,

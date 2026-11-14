@@ -1,5 +1,5 @@
 name = "@afkd/telegram"
-version = "0.1.1"
+version = "0.2.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -55,7 +55,7 @@ name = "Message"
   # each one `fetch_file` takes.
   [[handle.field]]
   name = "files"
-  type = "List[str]"
+  type = "list[str]"
 
 # The one kind, `service(telegram)` in a config: messages to the bot, one per run, each
 # confirmed to Telegram before its run starts, so a run never starts twice for one message.
@@ -77,7 +77,7 @@ claims = true
   # can message runs nothing for a stranger.
   [[kind.setting]]
   name = "chats"
-  type = "List[str]"
+  type = "list[str]"
   required = true
 
   [[kind.setting]]

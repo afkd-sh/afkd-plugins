@@ -1,5 +1,5 @@
 name = "@afkd/trello"
-version = "0.13.0"
+version = "0.14.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -21,7 +21,7 @@ name = "Card"
 
   [[handle.field]]
   name = "labels"
-  type = "List[str]"
+  type = "list[str]"
 
 # The one kind, `service(trello)` in a config: a Trello board whose cards are claimed one
 # per run.
@@ -52,7 +52,7 @@ claims = true
 
   [[kind.setting]]
   name = "pick_from"
-  type = "List[str]"
+  type = "list[str]"
   required = true
 
   [[kind.setting]]
@@ -65,11 +65,11 @@ claims = true
 
   [[kind.setting]]
   name = "without_label"
-  type = "List[str]"
+  type = "list[str]"
 
   [[kind.setting]]
   name = "discuss_with"
-  type = "List[str]"
+  type = "list[str]"
 
   # A threshold, so no range: it is not resampled per read.
   [[kind.setting]]

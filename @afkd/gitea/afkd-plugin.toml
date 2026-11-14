@@ -1,5 +1,5 @@
 name = "@afkd/gitea"
-version = "0.11.0"
+version = "0.12.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -26,7 +26,7 @@ name = "Issue"
 
   [[handle.field]]
   name = "labels"
-  type = "List[str]"
+  type = "list[str]"
 
 [[handle]]
 name = "Pull_Request"
@@ -78,7 +78,7 @@ claims = true
 
   [[kind.setting]]
   name = "discuss_with"
-  type = "List[str]"
+  type = "list[str]"
 
   # These two afkd reads itself, as it declares them for every claiming kind.
   [[kind.setting]]

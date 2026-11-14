@@ -10,7 +10,7 @@
 //! and each action they call is one `call` ([`crate::lifecycle`]).
 //!
 //! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a `bool` its
-//! word `true` or `false`, a duration its largest whole unit), and a `List[…]` its items —
+//! word `true` or `false`, a duration its largest whole unit), and a `list[…]` its items —
 //! an array of them, possibly nested one deep, or the one item alone.
 
 use serde_json::{Map, Value};
@@ -113,7 +113,7 @@ pub(crate) const ISSUE_SETTINGS: &[Declared] = &[
     ("org", "str", &[]),
     ("token", "str", &[("required", "true")]),
     ("source_label", "str", &[]),
-    ("discuss_with", "List[str]", &[]),
+    ("discuss_with", "list[str]", &[]),
     ("max_attempts", "int", &[("default", "1")]),
     (
         "every",

@@ -121,7 +121,7 @@ fn the_handle_is_the_card_with_its_fields() {
             vec![
                 field("title", "str"),
                 field("url", "str"),
-                field("labels", "List[str]"),
+                field("labels", "list[str]"),
             ]
         )]
     );
@@ -132,7 +132,7 @@ fn shaped(value: &Value, ty: &str) -> bool {
     match ty {
         "str" => value.is_string(),
         "int" => value.is_i64(),
-        "List[str]" => value
+        "list[str]" => value
             .as_array()
             .is_some_and(|items| items.iter().all(Value::is_string)),
         _ => false,

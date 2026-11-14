@@ -8,7 +8,7 @@
 //! where no token is written at all.
 //!
 //! The lowering (afkd's `plugintrigger::settings_json`): a scalar is a string, and a
-//! `List[…]` is an array — of the one item, or holding the array of several.
+//! `list[…]` is an array — of the one item, or holding the array of several.
 
 use serde_json::{Map, Value};
 
@@ -55,7 +55,7 @@ pub(crate) type Declared = (
 #[cfg(test)]
 pub(crate) const SETTINGS: &[Declared] = &[
     ("token", "str", &[("required", "true")]),
-    ("chats", "List[str]", &[("required", "true")]),
+    ("chats", "list[str]", &[("required", "true")]),
     ("base_url", "str", &[]),
 ];
 

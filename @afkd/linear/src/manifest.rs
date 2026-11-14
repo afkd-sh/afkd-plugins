@@ -21,7 +21,7 @@ const HANDLE: &str = "issue";
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 
 /// One table of the manifest: its header (`""` for the top level) and its keys, each
-/// with its value as written (`"issue"`, `true`, `"List[str]"`).
+/// with its value as written (`"issue"`, `true`, `"list[str]"`).
 type Table = (String, BTreeMap<String, String>);
 
 /// A table and the tables written under it: a `[[kind.slot]]` and its `[[kind.slot.param]]`s.
@@ -123,11 +123,11 @@ fn the_handle_is_the_issue_with_its_fields() {
             vec![
                 field("title", "str"),
                 field("url", "str"),
-                field("labels", "List[str]"),
+                field("labels", "list[str]"),
                 field("state", "str"),
                 field("parent", "str"),
-                field("sub_issues", "List[str]"),
-                field("blocked_by", "List[str]"),
+                field("sub_issues", "list[str]"),
+                field("blocked_by", "list[str]"),
             ]
         )]
     );
@@ -138,7 +138,7 @@ fn shaped(value: &Value, ty: &str) -> bool {
     match ty {
         "str" => value.is_string(),
         "int" => value.is_i64(),
-        "List[str]" => value
+        "list[str]" => value
             .as_array()
             .is_some_and(|items| items.iter().all(Value::is_string)),
         _ => false,
@@ -316,7 +316,7 @@ fn the_actions_are_the_ones_the_code_answers() {
         required("text"),
         table(&[
             ("name", "\"files\""),
-            ("type", "\"List[str]\""),
+            ("type", "\"list[str]\""),
             ("named_only", "true"),
             ("default", "[]"),
         ]),

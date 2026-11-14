@@ -1,5 +1,5 @@
 name = "@afkd/linear"
-version = "0.8.1"
+version = "0.9.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -25,7 +25,7 @@ name = "Issue"
 
   [[handle.field]]
   name = "labels"
-  type = "List[str]"
+  type = "list[str]"
 
   # The name of the workflow state the issue sat in when it was claimed.
   [[handle.field]]
@@ -40,12 +40,12 @@ name = "Issue"
   # The sub-issues' identifiers, in Linear's order.
   [[handle.field]]
   name = "sub_issues"
-  type = "List[str]"
+  type = "list[str]"
 
   # The identifiers of every issue that blocks this one, done or not.
   [[handle.field]]
   name = "blocked_by"
-  type = "List[str]"
+  type = "list[str]"
 
 # The one kind, `service(linear)` in a config: a Linear team whose issues are claimed one per
 # run. afkd's own claim keys, `every` and `max_attempts`, are afkd's and not declared here.
@@ -82,14 +82,14 @@ claims = true
   # The workflow states new issues are claimed from, by name, in the order they are scanned.
   [[kind.setting]]
   name = "pick_from"
-  type = "List[str]"
+  type = "list[str]"
   required = true
 
   # Who must hold an issue for it to be claimed, any one of them: `me`, a user by display
   # name or email as assignee or delegate, or `none` for an issue with neither.
   [[kind.setting]]
   name = "require_member"
-  type = "List[str]"
+  type = "list[str]"
 
   [[kind.setting]]
   name = "require_label"
@@ -97,11 +97,11 @@ claims = true
 
   [[kind.setting]]
   name = "without_label"
-  type = "List[str]"
+  type = "list[str]"
 
   [[kind.setting]]
   name = "discuss_with"
-  type = "List[str]"
+  type = "list[str]"
 
   # The slots afkd runs, each passed the run and its issue, and after the run its outcome.
   [[kind.slot]]
@@ -192,7 +192,7 @@ name = "comment"
   # after the text on a paragraph of its own: an image shown, any other file linked.
   [[action.param]]
   name = "files"
-  type = "List[str]"
+  type = "list[str]"
   named_only = true
   default = []
 
@@ -213,7 +213,7 @@ name = "describe"
   # Files to put on the issue, embedded after the text as `comment`'s are.
   [[action.param]]
   name = "files"
-  type = "List[str]"
+  type = "list[str]"
   named_only = true
   default = []
 
