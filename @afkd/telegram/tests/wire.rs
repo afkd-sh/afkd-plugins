@@ -20,7 +20,7 @@ use common::{Plugin, TempDir, MAX_LINE};
 
 /// The sentence a call that finds no token is refused with.
 const NO_TOKEN: &str =
-    "no bot token: set token in plugins/@afkd/telegram.afkd, or call from a service(telegram)";
+    "no bot token: set token in plugins/@afkd/telegram.afk, or call from a service(telegram)";
 
 /// The service's settings, lowered to JSON as afkd lowers them: a scalar as a string, a list
 /// as an array holding the array written, afkd's own `every` along for the ride, and no slot,

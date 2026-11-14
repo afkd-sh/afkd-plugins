@@ -5296,7 +5296,7 @@ mod tests {
     const PARK_QUESTION: &str = "I can't build this confidently — the card reads two ways:\n\n\
          1. `pick_from` names the **list** a card is claimed from, or\n\
          2. it names the label 名前 the card must carry\n\n\
-         ```afkd\ndevelop :: service(trello) { pick_from \"Up for Grabs\" }\n```\n\n\
+         ```afk\ndevelop :: service(trello) { pick_from \"Up for Grabs\" }\n```\n\n\
          which did you mean? 🙏   ";
 
     /// The human's answer, posted after afkd's last word — the comment that re-arms a

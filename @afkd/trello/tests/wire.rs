@@ -214,7 +214,7 @@ fn hello_arms_and_lists_every_call_it_answers() {
 /// built-in's own sentence — a kind this plugin does not provide (proto 1's
 /// `trello_card` among them), a block the manifest cannot refuse, a block without the
 /// `pick_from` afkd requires, a `hello` from an afkd too old to say who is asking, and the
-/// protocol of an afkd before config language v2.
+/// protocol of an afkd from before v2 of the afk language.
 #[test]
 fn hello_refuses_what_it_cannot_arm_with() {
     let b = board();

@@ -66,7 +66,7 @@ pub(crate) const CONFIG_SETTINGS: &[Declared] = &[("token", "str", &[]), ("base_
 
 /// The sentence refusing a call that finds no token.
 pub(crate) const NO_TOKEN: &str =
-    "no bot token: set token in plugins/@afkd/telegram.afkd, or call from a service(telegram)";
+    "no bot token: set token in plugins/@afkd/telegram.afk, or call from a service(telegram)";
 
 /// Read the lowered `settings` into a [`MessageConfig`], or say which setting it cannot use.
 pub(crate) fn message_config(settings: &Value) -> Result<MessageConfig, String> {

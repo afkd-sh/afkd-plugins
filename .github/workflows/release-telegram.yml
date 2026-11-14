@@ -139,7 +139,8 @@ jobs:
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
           # the notes name the afkd it needs: 0.2.575 is the first whose plugin action gives
           # back the handle it made, as `send`, `send_file` and `reply` do (0.2.414 filled in
-          # `{platform}`, and 0.2.241 brought the handle fields a claim carries).
-          printf '`afkd install @afkd/telegram`, or `afkd update @afkd/telegram` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.575 or newer (an action that returns a handle; the platform archive, no build step; the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          # `{platform}`, and 0.2.241 brought the handle fields a claim carries); 0.2.644 is
+          # the first that reads its settings from `plugins/@afkd/telegram.afk`.
+          printf '`afkd install @afkd/telegram`, or `afkd update @afkd/telegram` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.575 or newer (an action that returns a handle; the platform archive, no build step; the handle fields a claim carries, handle types and slot signatures, plugin protocol 2). afkd 0.2.644 and newer read its settings from plugins/@afkd/telegram.afk.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete telegram --yes --cleanup-tag || true
           gh release create telegram --target "$GITHUB_SHA" --title "@afkd/telegram $version" --notes-file notes.md $assets

@@ -99,7 +99,8 @@ jobs:
           test -n "$version"
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
           # the notes name the afkd it needs: 0.2.188 is the first whose v2 config runs an
-          # installed companion from `plugins/@scope/name.afkd`, over plugin protocol 2.
-          printf '`afkd install @afkd/web_top`, or `afkd update @afkd/web_top` if you already have it.\n\nNeeds afkd 0.2.188 or newer (a v2 config runs installed companions from plugins/@scope/name.afkd; plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          # installed companion, over plugin protocol 2, and 0.2.644 the first that reads its
+          # settings from `plugins/@scope/name.afk`.
+          printf '`afkd install @afkd/web_top`, or `afkd update @afkd/web_top` if you already have it.\n\nNeeds afkd 0.2.188 or newer (a v2 config runs installed companions; plugin protocol 2). afkd 0.2.644 and newer read its settings from plugins/@afkd/web_top.afk.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete web_top --yes --cleanup-tag || true
           gh release create web_top --target "$GITHUB_SHA" --title "@afkd/web_top $version" --notes-file notes.md afkd-web_top.tar.gz

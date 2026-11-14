@@ -208,9 +208,9 @@ and a second line, then `sleep 3`) and `review` (one copy), and in the main pack
 and the same recorder, so the file opens on the daemon's `welcome`. None of the earlier files was
 re-recorded, so no existing golden moved.
 
-Its config is the dashboard's own example: `daemon.afkd` imports `claude` and `selfdev` and
-declares `janitor` (icon `🧹`); `claude/claude.afkd` declares `brownout` (icon `🔋`); and
-`selfdev/selfdev.afkd` declares `develop` (icon `🛠`, `instances 2`; a `printf` of a CJK line and
+Its config is the dashboard's own example: `daemon.afk` imports `claude` and `selfdev` and
+declares `janitor` (icon `🧹`); `claude/claude.afk` declares `brownout` (icon `🔋`); and
+`selfdev/selfdev.afk` declares `develop` (icon `🛠`, `instances 2`; a `printf` of a CJK line and
 a second line, then `sleep 3`) and `discuss` (icon `💬`). The session, in order:
 
 1. attach, then `run selfdev.develop.0` — the family row goes busy, one copy of two;
@@ -225,7 +225,7 @@ under `/tmp`, a v2 config with no provider trigger and an `every 1h` cadence eve
 same recorder, so the file opens on the daemon's `welcome`. None of the earlier files was
 re-recorded, so no existing golden moved.
 
-Its config: `daemon.afkd` imports `ops` and declares `janitor` (icon `🧹`); `ops/ops.afkd`
+Its config: `daemon.afk` imports `ops` and declares `janitor` (icon `🧹`); `ops/ops.afk`
 declares `heavy :: queue { capacity 2 }`, `nightly` (`queue heavy`, `instances 2`, a wide-glyph
 `description`), `vacuum` (`queue heavy`) and `solo` (no queue). The session, in order, every
 command sent on the recorder's own wire as `{"type":"command","command":"queue_parallelism",…}`:
@@ -246,9 +246,9 @@ under `/tmp`, so no `AFKD_HOME` / `XDG_*` reached it, its working directory that
 the config's marker file is a relative path, and the same recorder, so the file opens on the
 daemon's `welcome`. None of the earlier files was re-recorded, so no existing golden moved.
 
-Its config, `daemon.afkd`, verbatim:
+Its config, `daemon.afk`, verbatim:
 
-```afkd
+```afk
 import "core"; import "service:manual"
 
 heavy :: queue
@@ -322,7 +322,7 @@ under the default `keep_runs on_fail` a run that ends `ok` is removed from the t
 nothing kept, so there would be no run dir to copy; the request is there so the trace holds an
 `http` node and its `N B` OUT cell. `blocker`, verbatim:
 
-```afkd
+```afk
 blocker :: service(manual) {
   keep_runs always
   on_run proc(run: core.Run) {
@@ -358,9 +358,9 @@ started with `env -i` and an isolated `HOME` under `/tmp`, so no `AFKD_HOME` / `
 it, and the same recorder, so the file opens on the daemon's `welcome`. None of the earlier
 files was re-recorded, so no existing golden moved.
 
-Its config, `daemon.afkd` and `ops/ops.afkd`, verbatim:
+Its config, `daemon.afk` and `ops/ops.afk`, verbatim:
 
-```afkd
+```afk
 import "afkd"
 import "service:manual"
 import "ops"
@@ -378,7 +378,7 @@ broken :: service(manual) {
 }
 ```
 
-```afkd
+```afk
 import "afkd"
 import "service:manual"
 

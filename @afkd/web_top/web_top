@@ -2,7 +2,7 @@
 """@afkd/web_top — an afkd companion that relays the control wire to a browser.
 
 The daemon starts this program, hands it the control socket it already bound and the
-settings its `plugins/@afkd/web_top.afkd` carried (under a v1 config, its
+settings its `plugins/@afkd/web_top.afk` carried (under a v1 config, its
 `plugin @afkd/web_top { … }` block), and from there this is a **relay** and very nearly
 nothing else: every subscriber gets its **own** attach to the daemon, every frame that
 attach reads is forwarded verbatim as one SSE `data:` line, and the operator's intents come

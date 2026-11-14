@@ -274,14 +274,14 @@ ops :: service(telegram) {{
 
 /// Write `config` as `home`'s main config.
 fn write_config(home: &Path, config: &str) {
-    let conf = daemon_afkd(home);
+    let conf = daemon_afk(home);
     std::fs::create_dir_all(conf.parent().expect("has parent")).expect("mk the config dir");
     std::fs::write(&conf, config).expect("write the config");
 }
 
 /// Write `settings` as the plugin's settings file in `home`.
 fn write_settings(home: &Path, settings: &str) {
-    let file = plugins_root(home).join(format!("{NAME}.afkd"));
+    let file = plugins_root(home).join(format!("{NAME}.afk"));
     std::fs::create_dir_all(file.parent().expect("has parent")).expect("mk the plugins dir");
     std::fs::write(&file, settings).expect("write the settings file");
 }
@@ -876,7 +876,7 @@ fn conf_fences(readme: &str) -> Vec<(usize, String)> {
 }
 
 /// The first line of the README fence that is the plugin's settings file.
-const SETTINGS_FENCE: &str = "// ~/.config/afkd/plugins/@afkd/telegram.afkd";
+const SETTINGS_FENCE: &str = "// ~/.config/afkd/plugins/@afkd/telegram.afk";
 
 /// Every `conf` fence of the README validates against the installed release, the settings
 /// file's checked against the manifest's `[config]` with the fence after it.

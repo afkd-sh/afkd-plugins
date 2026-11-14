@@ -14,8 +14,8 @@
 //! - The **attachments** leg fetches, in `on_claim`, the newest of two plans an earlier
 //!   attempt left on the card, and finds no patch; its `on_run` then attaches one, and
 //!   the card holds it byte for byte.
-//! - The **complete example** leg `afkd validate`s the selfdev pipeline of config language
-//!   v2's §24 against the installed plugin, and the **handle** leg holds `afkd validate` to
+//! - The **complete example** leg `afkd validate`s the selfdev pipeline of the afk language
+//!   spec's §24 against the installed plugin, and the **handle** leg holds `afkd validate` to
 //!   refusing an action called without its card.
 //! - The **cadence** leg holds `afkd validate` to refusing a service that writes the claim
 //!   key afkd renamed to `every`, pointing it at `every`, and to taking the same service
@@ -230,7 +230,7 @@ widgets :: service(trello) {{
 
 /// Write `config` as `home`'s main config.
 fn write_config(home: &Path, config: &str) {
-    let conf = daemon_afkd(home);
+    let conf = daemon_afk(home);
     std::fs::create_dir_all(conf.parent().expect("has parent")).expect("mk the config dir");
     std::fs::write(&conf, config).expect("write the config");
 }
@@ -804,24 +804,24 @@ fn attachments_leg_on_claim_fetches_the_newest_and_on_run_attaches() {
     fetch_on_claim_and_attach_on_run(home.path());
 }
 
-// --- config language v2's complete example -------------------------------------------
+// --- the afk language spec's complete example --------------------------------------
 
 /// §24's entry file.
-const SECTION_24_DAEMON: &str = r#"// daemon.afkd
+const SECTION_24_DAEMON: &str = r#"// daemon.afk
 import "selfdev"
 "#;
 
 /// §24's shared queues.
-const SECTION_24_QUEUES: &str = r#"// shared/queues.afkd
+const SECTION_24_QUEUES: &str = r#"// shared/queues.afk
 develop :: queue { capacity 1 }
 discuss :: queue { capacity 2 }
 "#;
 
-/// §24's `selfdev/selfdev.afkd`, copied from `docs/lang-v2.md` at afkd master, up to the
+/// §24's `selfdev/selfdev.afk`, copied from `docs/lang-v2.md` at afkd master, up to the
 /// `develop` service's end. The `discuss` half after it is left out: it writes
 /// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
 /// `List[str]` and is written `[ "anyone" ]`.
-const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afkd - Trello-driven pipeline: afkd develops itself.
+const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afk - Trello-driven pipeline: afkd develops itself.
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
 // on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
 
@@ -1054,7 +1054,7 @@ develop :: service(trello) {
 }
 "##;
 
-/// The selfdev pipeline of config language v2's §24, `develop` service and all, validates
+/// The selfdev pipeline of the afk language spec's §24, `develop` service and all, validates
 /// against the installed plugin: every setting it writes is one the manifest declares, of
 /// its type, and every action its slots call is one the plugin provides, on the card its
 /// slot is passed.
@@ -1065,9 +1065,9 @@ fn the_lang_v2_complete_example_develop_service_validates() {
     install(home.path(), &stage(stage_dir.path()));
     let config = config_dir(home.path());
     for (file, text) in [
-        ("daemon.afkd", SECTION_24_DAEMON),
-        ("shared/queues.afkd", SECTION_24_QUEUES),
-        ("selfdev/selfdev.afkd", SECTION_24_SELFDEV),
+        ("daemon.afk", SECTION_24_DAEMON),
+        ("shared/queues.afk", SECTION_24_QUEUES),
+        ("selfdev/selfdev.afk", SECTION_24_SELFDEV),
     ] {
         let path = config.join(file);
         std::fs::create_dir_all(path.parent().expect("has parent")).expect("mk the package");
@@ -1076,7 +1076,7 @@ fn the_lang_v2_complete_example_develop_service_validates() {
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "§24 validates:\n{report}");
     assert!(
-        report.contains("selfdev/selfdev.afkd") && !report.contains("warning:"),
+        report.contains("selfdev/selfdev.afk") && !report.contains("warning:"),
         "every file checked, cleanly:\n{report}"
     );
 }

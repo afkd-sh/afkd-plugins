@@ -1,12 +1,12 @@
 name = "@afkd/telegram"
-version = "0.1.0"
+version = "0.1.1"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 exec = "afkd-telegram"
 
 # The bot's credential for a call made outside a `service(telegram)`, read from
-# `plugins/@afkd/telegram.afkd`: an interval service's `telegram.send`, say. Neither is
+# `plugins/@afkd/telegram.afk`: an interval service's `telegram.send`, say. Neither is
 # required, so a config that imports the plugin and only runs a `service(telegram)` needs no
 # file; a call that finds no token in either place is refused, naming the file.
 [[config.setting]]

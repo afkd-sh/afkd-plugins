@@ -9,7 +9,7 @@ does the same through.
 A message the bot received and a message it sent are one type, `telegram.Message`, so
 `telegram.edit(msg, …)` takes what `telegram.send` gave back as readily as `telegram.reply`
 takes what the service was passed. See [`docs/plugins.md`](https://afkd.sh/docs/plugins/)
-for the wire it speaks, and [config language v2](https://afkd.sh/docs/lang-v2/) for the
+for the wire it speaks, and [the afk language](https://afkd.sh/docs/lang-v2/) for the
 configs that use it.
 
 It is a Rust program, released as a finished binary.
@@ -36,9 +36,10 @@ $ tools/pack-release telegram /tmp/afkd-release @afkd/telegram/target/release/af
 $ afkd install /tmp/afkd-release/afkd-telegram
 ```
 
-The configs below are written in the config language of **afkd 0.2.637 or newer**, the
-first that reads a failure through the call's result; an older afkd still runs the plugin,
-but refuses the examples when they load.
+The configs below are written in the afk language of **afkd 0.2.644 or newer**, the
+first that reads the language from `.afk` files. afkd 0.2.637 to 0.2.643 read the same
+configs under the extension they had before; an older afkd still runs the plugin, but
+refuses the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `telegram`.
 This service hands every message in two chats to an agent, which answers through the skill:
@@ -93,7 +94,7 @@ ops :: service(telegram) {
 Any other service calls the same actions, as the bot your settings file names:
 
 ```conf
-// ~/.config/afkd/plugins/@afkd/telegram.afkd
+// ~/.config/afkd/plugins/@afkd/telegram.afk
 token "7712345678:AAHfiqksKZ8WmR2zSjiQ7_v4TMAKdiHm9T0"
 ```
 
@@ -240,7 +241,7 @@ out of reach is an error. A 429 is waited out while its wait fits the call's 45 
 is an error naming the wait otherwise.
 
 **The bot.** A `service(telegram)` calls as its own bot. Any other service calls as the bot
-of the plugin's settings file, `plugins/@afkd/telegram.afkd` in your afkd config directory,
+of the plugin's settings file, `plugins/@afkd/telegram.afk` in your afkd config directory,
 which takes `token` and `base_url`. Neither is required, so a config that only runs a
 `service(telegram)` needs no file; a call that finds no token says so.
 

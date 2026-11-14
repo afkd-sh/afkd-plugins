@@ -86,8 +86,8 @@ fn next_minor(version: &str) -> String {
 
 // --- the fixtures ------------------------------------------------------------------
 
-/// A v2 config tree: `daemon.afkd`'s whole text, and each package's name with the whole text
-/// of its `<package>/<package>.afkd`. Every file spells its own imports, so what a leg loads is
+/// A v2 config tree: `daemon.afk`'s whole text, and each package's name with the whole text
+/// of its `<package>/<package>.afk`. Every file spells its own imports, so what a leg loads is
 /// exactly what it reads here.
 struct Tree<'a> {
     main: &'a str,
@@ -179,11 +179,11 @@ fn v2_home_with(tree: &Tree) -> TempDir {
     let home = TempDir::new().expect("tempdir");
     let config = config_dir(home.path());
     std::fs::create_dir_all(&config).expect("mk the config dir");
-    std::fs::write(daemon_afkd(home.path()), tree.main).expect("write daemon.afkd");
+    std::fs::write(daemon_afk(home.path()), tree.main).expect("write daemon.afk");
     for (package, body) in tree.packages {
         let dir = config.join(package);
         std::fs::create_dir_all(&dir).expect("mk the package dir");
-        std::fs::write(dir.join(format!("{package}.afkd")), body).expect("write the package");
+        std::fs::write(dir.join(format!("{package}.afk")), body).expect("write the package");
     }
     home
 }
@@ -1068,7 +1068,7 @@ fn the_verbs_accept_the_shipped_manifest() {
 
 // --- manifest v2 -------------------------------------------------------------------------
 
-/// A v2 `daemon.afkd` with two services and **no line about the companion**: under a v2
+/// A v2 `daemon.afk` with two services and **no line about the companion**: under a v2
 /// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
 const V2_MAIN: &str = "\
      import \"afkd\"\nimport \"service:interval\"\nimport \"service:manual\"\n\n\
@@ -1083,10 +1083,10 @@ fn v2_home() -> TempDir {
     })
 }
 
-/// `<config dir>/plugins/@afkd/web_top.afkd` — the relay's settings under a v2 config,
+/// `<config dir>/plugins/@afkd/web_top.afk` — the relay's settings under a v2 config,
 /// beside its install directory `plugins/@afkd/web_top/`.
 fn settings_file(home: &Path) -> PathBuf {
-    plugins_root(home).join(format!("{NAME}.afkd"))
+    plugins_root(home).join(format!("{NAME}.afk"))
 }
 
 /// Write the relay's v2 settings file.
@@ -1117,7 +1117,7 @@ fn nth_relay_port(home: &Path, n: usize) -> u16 {
 #[test]
 fn the_daemon_runs_the_relay_from_its_v2_settings_file_and_restarts_it_on_reload() {
     // The card's first criterion against a real daemon: under a v2 config, installing is
-    // what runs the relay, and `plugins/@afkd/web_top.afkd` is what configures it. The port
+    // what runs the relay, and `plugins/@afkd/web_top.afk` is what configures it. The port
     // is `:0`, so the page is only reachable at all if the file's `listen` crossed; the two
     // ints are left out, so the `log_lines` the page is told is the default; and `runs_dir`
     // names an absolute path that is not
@@ -1266,7 +1266,7 @@ fn a_v2_settings_file_the_manifest_refuses_never_starts_the_relay() {
             "{body:?} is refused: {report}"
         );
         assert!(
-            report.contains(&format!("plugins/{NAME}.afkd")) && report.contains(needle),
+            report.contains(&format!("plugins/{NAME}.afk")) && report.contains(needle),
             "{body:?}: the refusal names the file and says `{needle}`: {report}"
         );
     }
@@ -3212,7 +3212,7 @@ const DRIFT_SERVICES: Tree = Tree {
     packages: &[("ops", DRIFT_OPS)],
 };
 
-/// [`DRIFT_SERVICES`]' `daemon.afkd`: the two services in `main`.
+/// [`DRIFT_SERVICES`]' `daemon.afk`: the two services in `main`.
 const DRIFT_MAIN: &str = r#"import "afkd"; import "service:interval"; import "service:manual"
 
 import "ops"

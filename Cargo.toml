@@ -1,6 +1,7 @@
 # The repository's Rust: the gates that hold a plugin to a real afkd, one member per plugin
-# that has one. A workspace at the root keeps `target/` here, out of the plugin trees that
-# `tools/pack-release` packs.
+# that has one, and `checks`, which holds the whole tree to the rules every plugin shares. A
+# workspace at the root keeps `target/` here, out of the plugin trees that `tools/pack-release`
+# packs.
 [workspace]
 resolver = "2"
-members = ["drift/@afkd/web_top", "drift/@afkd/gitea", "drift/@afkd/trello", "drift/@afkd/gitlab", "drift/@afkd/github", "drift/@afkd/linear", "drift/@afkd/telegram"]
+members = ["drift/@afkd/web_top", "drift/@afkd/gitea", "drift/@afkd/trello", "drift/@afkd/gitlab", "drift/@afkd/github", "drift/@afkd/linear", "drift/@afkd/telegram", "checks"]

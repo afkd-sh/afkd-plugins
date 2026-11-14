@@ -30,14 +30,14 @@ Installed @afkd/web_top 0.14.1 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
-Under a v2 config — a `main.afkd` — installing is what runs it: no config line names a
+Under a v2 config — a `daemon.afk` — installing is what runs it: no config line names a
 companion. What lands in `plugins/@afkd/web_top/` is what the relay serves and runs — the
 manifest, `web_top`, the page, its stylesheet and the modules it loads — and none of the
 suites, fixtures or goldens below. Its settings live beside its install directory, in
-`plugins/@afkd/web_top.afkd`:
+`plugins/@afkd/web_top.afk`:
 
 ```text
-// ~/.config/afkd/plugins/@afkd/web_top.afkd
+// ~/.config/afkd/plugins/@afkd/web_top.afk
 listen "127.0.0.1:8771"
 ```
 

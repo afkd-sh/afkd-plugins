@@ -1,0 +1,6 @@
+[package]
+name = "repo-checks"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Holds the whole repository to the rules every plugin shares"

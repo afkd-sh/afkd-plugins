@@ -13,7 +13,7 @@ claim, watermark, attempt and park comments on the issue, the same brief and the
 environment, mapped onto Linear's states, labels, assignees and sub-issues. The places it
 behaves differently are listed [at the end](#where-it-differs-from-afkdtrello). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[config language v2](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -39,7 +39,7 @@ $ tools/pack-release linear /tmp/afkd-release @afkd/linear/target/release/afkd-l
 $ afkd install /tmp/afkd-release/afkd-linear
 ```
 
-The configs below are written in the config language of **afkd 0.2.637 or newer**, the
+The configs below are written in the afk language of **afkd 0.2.637 or newer**, the
 first that reads a failure through the call's result; an older afkd still runs the plugin,
 but refuses the examples when they load.
 

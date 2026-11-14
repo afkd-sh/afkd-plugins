@@ -15,7 +15,7 @@ on a live card is recognised, renewed and released by the plugin, and the other 
 so switching from one to the other strands nothing. The few places the plugin behaves
 differently are listed [at the end](#where-it-differs-from-the-built-in). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[config language v2](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -43,12 +43,12 @@ $ afkd install /tmp/afkd-release/afkd-trello
 
 Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
 sends with a claim: this is a manifest v2 plugin, which a
-[config language v2](https://afkd.sh/docs/lang-v2/) file imports; afkd passes its slots the
+[config in the afk language](https://afkd.sh/docs/lang-v2/) imports; afkd passes its slots the
 claimed card as a `trello.Card`, and sends each action a slot calls on a card as a `call`.
 afkd 0.2.197 to 0.2.240 install and run it too, but there a slot reading any field beyond
 `id` and `key` fails; an older afkd refuses the manifest when it is installed.
 
-The configs below are written in the config language of **afkd 0.2.637 or newer**; an
+The configs below are written in the afk language of **afkd 0.2.637 or newer**; an
 older afkd still runs the plugin, but refuses the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `trello`:

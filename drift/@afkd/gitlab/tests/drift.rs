@@ -208,7 +208,7 @@ widgets :: service(gitlab) {{
 
 /// Write `config` as `home`'s main config.
 fn write_config(home: &Path, config: &str) {
-    let conf = daemon_afkd(home);
+    let conf = daemon_afk(home);
     std::fs::create_dir_all(conf.parent().expect("has parent")).expect("mk the config dir");
     std::fs::write(&conf, config).expect("write the config");
 }
