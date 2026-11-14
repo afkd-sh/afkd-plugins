@@ -39,15 +39,15 @@ $ tools/pack-release linear /tmp/afkd-release @afkd/linear/target/release/afkd-l
 $ afkd install /tmp/afkd-release/afkd-linear
 ```
 
-The configs below are written in the config language of **afkd 0.2.435 or newer**, the
-first that reads a failure as `r.error != nil`; an older afkd still runs the plugin, but
-refuses the examples when they load.
+The configs below are written in the config language of **afkd 0.2.637 or newer**, the
+first that reads a failure through the call's result; an older afkd still runs the plugin,
+but refuses the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `linear`:
 
 ```conf
-import "core"
-import "core:env"
+import "afkd"
+import "std:env"
 import "@afkd/linear"
 
 LINEAR_API_KEY :: env.get("LINEAR_API_KEY") ?? ""
@@ -64,28 +64,40 @@ develop :: service(linear) {
   every        1m~3m
 
   on_claim proc(issue: linear.Issue) {
-    moved := linear.move_to(issue, "In Progress")
-    if moved != nil { fail("linear.move_to: #{moved.message}") }
+    match linear.move_to(issue, "In Progress") {
+      .ok(_) => { }
+      .err(e) => fail("linear.move_to: #{e.message}")
+    }
   }
-  on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {
-    moved := linear.move_to(issue, "In Review")
-    if moved != nil { fail("linear.move_to: #{moved.message}") }
-    said := linear.comment(issue, "afkd landed this issue in #{outcome.duration}.")
-    if said != nil { fail("linear.comment: #{said.message}") }
+  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {
+    match linear.move_to(issue, "In Review") {
+      .ok(_) => { }
+      .err(e) => fail("linear.move_to: #{e.message}")
+    }
+    match linear.comment(issue, "afkd landed this issue in #{outcome.duration}.") {
+      .ok(_) => { }
+      .err(e) => fail("linear.comment: #{e.message}")
+    }
   }
-  on_park proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {
-    said := linear.comment(issue, "parked after #{outcome.duration}: waiting for a reply.")
-    if said != nil { fail("linear.comment: #{said.message}") }
+  on_park proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {
+    match linear.comment(issue, "parked after #{outcome.duration}: waiting for a reply.") {
+      .ok(_) => { }
+      .err(e) => fail("linear.comment: #{e.message}")
+    }
   }
-  on_fail proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {
-    moved := linear.move_to(issue, "Backlog")
-    if moved != nil { fail("linear.move_to: #{moved.message}") }
-    labelled := linear.add_label(issue, "Problem")
-    if labelled != nil { fail("linear.add_label: #{labelled.message}") }
+  on_fail proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {
+    match linear.move_to(issue, "Backlog") {
+      .ok(_) => { }
+      .err(e) => fail("linear.move_to: #{e.message}")
+    }
+    match linear.add_label(issue, "Problem") {
+      .ok(_) => { }
+      .err(e) => fail("linear.add_label: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) { task() }
+  on_run proc(run: afkd.Run, issue: linear.Issue) { task() }
 }
 ```
 
@@ -98,13 +110,10 @@ wherever it is written.
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-import "vendor:claude"
+import "agent:claude"
 
 // The agent a `service(linear)` runs: the skill is what lets it work the issue.
-builder :: agent(claude) {
-  model  "sonnet"
-  skills [ "@afkd/linear/linear" ]
-}
+builder :: claude.agent(model="sonnet", skills=[ "@afkd/linear/linear" ])
 ```
 
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
@@ -169,13 +178,13 @@ each with its type:
 
 | Slot                                                                         | Runs                                            |
 |------------------------------------------------------------------------------|-------------------------------------------------|
-| `on_run proc(run: core.Run, issue: linear.Issue)`                            | the run itself                                  |
+| `on_run proc(run: afkd.Run, issue: linear.Issue)`                            | the run itself                                  |
 | `on_claim proc(issue: linear.Issue)`                                         | once the issue is claimed, before the run       |
-| `on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome)`    | after a run that finished                       |
-| `on_park proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome)`    | after a run that ended waiting on a human reply |
-| `on_fail proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome)`    | after a run that failed                         |
+| `on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome)`    | after a run that finished                       |
+| `on_park proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome)`    | after a run that ended waiting on a human reply |
+| `on_fail proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome)`    | after a run that failed                         |
 
-`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`duration`,
+`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`duration`,
 `error`). `issue` is a **`linear.Issue`**, the plugin's handle for the issue:
 
 | Field        | Type           | What it is                                                |
@@ -201,8 +210,8 @@ token is fetched again before it expires: the app is then the actor on every com
 `"me"` names the app. Exactly one of the two is written.
 
 ```conf
-import "core"
-import "core:env"
+import "afkd"
+import "std:env"
 import "@afkd/linear"
 
 LINEAR_CLIENT_ID     :: env.get("LINEAR_CLIENT_ID") ?? ""
@@ -216,7 +225,7 @@ triage :: service(linear) {
   require_member "me"
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) {
+  on_run proc(run: afkd.Run, issue: linear.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -250,11 +259,11 @@ refused when the config loads, and so is an action the plugin does not declare. 
 cannot hand a value back, since a plugin exposes none, so it writes what it read to the
 absolute path `to`, through a temp file renamed onto it.
 
-Each action returns an error or `nil`, like any call: one Linear refused — a state the team
-does not have, a sub-issue that is not the issue's — fails with the plugin's sentence. A
-failing `on_claim` gives the issue back and fails the run; a failing post-run slot is logged
-and changes nothing. afkd never retries a slot's action; the plugin retries what Linear
-could not take.
+Each action returns a `Result[nil, linear.Error]`, like any call that can fail: `.ok` when
+it landed, and when Linear refused it — a state the team does not have, a sub-issue that is
+not the issue's — an `.err` with the plugin's sentence. A failing `on_claim` gives the issue
+back and fails the run; a failing post-run slot is logged and changes nothing. afkd never
+retries a slot's action; the plugin retries what Linear could not take.
 
 **When Linear cannot be reached.** A write Linear could not be reached for, or answered
 with a rate limit or a 5xx, is queued and the call answers as if it had landed, so the
@@ -279,7 +288,7 @@ credential, from Linear's file host or the API root and from no other. Each file
 way, is at most 10 MiB.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/linear"
 
 develop :: service(linear) {
@@ -288,16 +297,24 @@ develop :: service(linear) {
   pick_from "Todo"
 
   on_claim proc(issue: linear.Issue) {
-    fetched := linear.fetch_files(issue, "/srv/acme/widgets/files")
-    if fetched != nil { fail("linear.fetch_files: #{fetched.message}") }
+    match linear.fetch_files(issue, "/srv/acme/widgets/files") {
+      .ok(_) => { }
+      .err(e) => fail("linear.fetch_files: #{e.message}")
+    }
   }
-  on_fail proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {
-    said := linear.comment(issue, "The attempt failed; its plan and log:", files=["#{run.scratch_dir}/plan.md", "#{run.scratch_dir}/run.log"])
-    if said != nil { fail("linear.comment: #{said.message}") }
+  on_fail proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {
+    match linear.comment(
+      issue,
+      "The attempt failed; its plan and log:",
+      files=[ "#{run.scratch_dir}/plan.md", "#{run.scratch_dir}/run.log" ],
+    ) {
+      .ok(_) => { }
+      .err(e) => fail("linear.comment: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) {
+  on_run proc(run: afkd.Run, issue: linear.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -322,7 +339,7 @@ carrying a label of that exact name, and `without_label` never claims one carryi
 the labels it names; **deny wins**, so an issue carrying both is skipped.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/linear"
 
 implement :: service(linear) {
@@ -334,14 +351,18 @@ implement :: service(linear) {
   without_label  [ "Blocked", "needs design — ask 陳大文" ]
 
   on_claim proc(issue: linear.Issue) {
-    moved := linear.move_to(issue, "In Progress")
-    if moved != nil { fail("linear.move_to: #{moved.message}") }
-    unlabelled := linear.remove_label(issue, "afkd/ready")
-    if unlabelled != nil { fail("linear.remove_label: #{unlabelled.message}") }
+    match linear.move_to(issue, "In Progress") {
+      .ok(_) => { }
+      .err(e) => fail("linear.move_to: #{e.message}")
+    }
+    match linear.remove_label(issue, "afkd/ready") {
+      .ok(_) => { }
+      .err(e) => fail("linear.remove_label: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) {
+  on_run proc(run: afkd.Run, issue: linear.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -356,8 +377,8 @@ read every issue the app holds as their own, and both fetch and renew a token fo
 app.
 
 ```conf
-import "core"
-import "core:env"
+import "afkd"
+import "std:env"
 import "@afkd/linear"
 
 LINEAR_CLIENT_ID     :: env.get("LINEAR_CLIENT_ID") ?? ""
@@ -371,12 +392,14 @@ develop :: service(linear) {
   require_member "me", "none"
 
   on_claim proc(issue: linear.Issue) {
-    delegated := linear.delegate(issue, "me")
-    if delegated != nil { fail("linear.delegate: #{delegated.message}") }
+    match linear.delegate(issue, "me") {
+      .ok(_) => { }
+      .err(e) => fail("linear.delegate: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) {
+  on_run proc(run: afkd.Run, issue: linear.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -392,7 +415,7 @@ are bookkeeping, not speech, so neither moves the boundary. If a turn's agent po
 the plugin posts one terse comment so the issue does not fire again on the next poll.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/linear"
 
 groom :: service(linear) {
@@ -402,7 +425,7 @@ groom :: service(linear) {
   discuss_with [ "chen@acme.example", "me" ]
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) {
+  on_run proc(run: afkd.Run, issue: linear.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -430,16 +453,13 @@ by whichever service finds it, with one line in the log.
 A **multi-step** run must stop at the ask itself, so nothing runs past the question:
 
 ```conf
-import "core"
-import "core:fs"
-import "vendor:claude"
+import "afkd"
+import "agent:claude"
+import "std:fs"
 import "@afkd/linear"
 
 // The agent the service below calls. Minimal, so this snippet validates on its own.
-builder :: agent(claude) {
-  model  "sonnet"
-  skills [ "@afkd/linear/linear" ]
-}
+builder :: claude.agent(model="sonnet", skills=[ "@afkd/linear/linear" ])
 
 widgets :: service(linear) {
   team      "ENG"
@@ -447,17 +467,21 @@ widgets :: service(linear) {
   pick_from "Todo"
 
   on_claim proc(issue: linear.Issue) {
-    moved := linear.move_to(issue, "In Progress")
-    if moved != nil { fail("linear.move_to: #{moved.message}") }
+    match linear.move_to(issue, "In Progress") {
+      .ok(_) => { }
+      .err(e) => fail("linear.move_to: #{e.message}")
+    }
   }
-  on_park proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {
-    said := linear.comment(issue, "parked after #{outcome.duration} — waiting on you")
-    if said != nil { fail("linear.comment: #{said.message}") }
+  on_park proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {
+    match linear.comment(issue, "parked after #{outcome.duration} — waiting on you") {
+      .ok(_) => { }
+      .err(e) => fail("linear.comment: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) {
-    _ = builder <- "build the issue; ask through the linear skill if unclear"
+  on_run proc(run: afkd.Run, issue: linear.Issue) {
+    _ = builder("build the issue; ask through the linear skill if unclear")
     if fs.is_file("#{run.scratch_dir}/park") { fail("parked: awaiting a human reply") }
     // reviewer and commit steps below never run when the agent asked
   }

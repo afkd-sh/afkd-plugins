@@ -169,7 +169,7 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// then it writes every field of the issue's handle to [`FIELDS`], a line each.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/gitlab"
 
 BOT :: "{ME}"
@@ -183,14 +183,14 @@ widgets :: service(gitlab) {{
   max_attempts 1
 
   on_claim proc(issue: gitlab.Issue) {{ gitlab.assign_me(issue) }}
-  on_done proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {{
     gitlab.remove_label(issue, "afkd::claimed")
     gitlab.comment(issue, "done in #{{outcome.duration}} by #{{BOT}}: #{{issue.title}}")
     gitlab.close(issue)
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: gitlab.Issue) {{
+  on_run proc(run: afkd.Run, issue: gitlab.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -406,7 +406,7 @@ const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max
 /// the feedback, so the next poll does not claim the merge request again.
 fn mr_service(work: &Path, base_url: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/gitlab"
 
 reviews :: service(gitlab.mr) {{
@@ -417,12 +417,12 @@ reviews :: service(gitlab.mr) {{
   every        1s
   max_attempts 1
 
-  on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {{
     gitlab.mr_comment(mr, "round answered: #{{mr.title}}")
   }}
 
   work_dir "{work}"
-  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {{
+  on_run proc(run: afkd.Run, mr: gitlab.Merge_Request) {{
     $ echo title #{{mr.title}} >> {FIELDS}
     $ echo url #{{mr.url}} >> {FIELDS}
     $ echo number #{{mr.number}} >> {FIELDS}
@@ -520,7 +520,7 @@ const NEEDS_HUMAN: &str = "needs::human 🚧";
 /// plugin answering each queued write `ok`.
 fn failing_service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/gitlab"
 
 widgets :: service(gitlab) {{
@@ -532,19 +532,37 @@ widgets :: service(gitlab) {{
   max_attempts 2
 
   on_claim proc(issue: gitlab.Issue) {{
-    if gitlab.assign_me(issue) != nil {{ fail("assign_me") }}
+    match gitlab.assign_me(issue) {{
+      .ok(_) => {{ }}
+      .err(_) => fail("assign_me")
+    }}
   }}
-  on_fail proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {{
-    if gitlab.remove_label(issue, "afkd::ready") != nil {{ fail("remove_label afkd::ready") }}
-    if gitlab.unassign(issue) != nil {{ fail("unassign") }}
-    if gitlab.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
+  on_fail proc(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {{
+    match gitlab.remove_label(issue, "afkd::ready") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("remove_label afkd::ready")
+    }}
+    match gitlab.unassign(issue) {{
+      .ok(_) => {{ }}
+      .err(_) => fail("unassign")
+    }}
+    match gitlab.add_label(issue, "{NEEDS_HUMAN}") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("add_label")
+    }}
     if outcome.error == nil {{ fail("on_fail without an error") }}
-    if gitlab.comment(issue, "attempts spent: #{{outcome.error.message}}") != nil {{ fail("comment") }}
-    if gitlab.remove_label(issue, "afkd::claimed") != nil {{ fail("remove_label afkd::claimed") }}
+    match gitlab.comment(issue, "attempts spent: #{{outcome.error.message}}") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("comment")
+    }}
+    match gitlab.remove_label(issue, "afkd::claimed") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("remove_label afkd::claimed")
+    }}
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: gitlab.Issue) {{
+  on_run proc(run: afkd.Run, issue: gitlab.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -680,7 +698,7 @@ fn outage_leg_a_failed_issue_still_reaches_its_on_fail_state() {
 /// each kind's own six, on the item its slot is passed — name the bot by the config's own
 /// `BOT`, read the run and the outcome, in the argument shapes the manifest types: wide and
 /// scoped label names, and a multi-line comment.
-const BOTH_KINDS: &str = r##"import "core"
+const BOTH_KINDS: &str = r##"import "afkd"
 import "@afkd/gitlab"
 
 BOT :: "autocoder"
@@ -697,18 +715,18 @@ issues :: service(gitlab) {
     _ = gitlab.assign_me(issue)
     _ = gitlab.add_label(issue, "afkd::working ⚙")
   }
-  on_done proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
     _ = gitlab.remove_label(issue, "afkd::working ⚙")
     _ = gitlab.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     _ = gitlab.close(issue)
   }
-  on_fail proc(run: core.Run, issue: gitlab.Issue, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, issue: gitlab.Issue, outcome: afkd.Outcome) {
     _ = gitlab.remove_label(issue, "afkd::working ⚙")
     _ = gitlab.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: gitlab.Issue) {
+  on_run proc(run: afkd.Run, issue: gitlab.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -723,17 +741,17 @@ reviews :: service(gitlab.mr) {
     _ = gitlab.mr_assign_me(mr)
     _ = gitlab.mr_add_label(mr, "afkd::reviewing 👀")
   }
-  on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
     _ = gitlab.mr_remove_label(mr, "afkd::reviewing 👀")
     _ = gitlab.mr_comment(mr, "round answered by #{BOT} in #{outcome.duration}")
   }
-  on_fail proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {
     _ = gitlab.mr_unassign(mr)
     _ = gitlab.mr_close(mr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {
+  on_run proc(run: afkd.Run, mr: gitlab.Merge_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -805,17 +823,17 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"import "core"
+            r#"import "afkd"
 import "@afkd/gitlab"
 
 reviews :: service(gitlab.mr) {{
   project "group/widgets"
   token   "REPLACE_ME"
 
-  on_done proc(run: core.Run, mr: gitlab.Merge_Request, outcome: core.Outcome) {{ {call} }}
+  on_done proc(run: afkd.Run, mr: gitlab.Merge_Request, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {{
+  on_run proc(run: afkd.Run, mr: gitlab.Merge_Request) {{
     $ true
   }}
 }}
@@ -854,7 +872,7 @@ const OLD_CADENCE: &str = concat!("poll", "_interval");
 /// of its own, so the file is as `afkd fmt` prints it under either key.
 fn cadence_services(key: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/gitlab"
 
 issues :: service(gitlab) {{
@@ -866,7 +884,7 @@ issues :: service(gitlab) {{
 
   work_dir "/srv/acme/widgets"
 
-  on_run proc(run: core.Run, issue: gitlab.Issue) {{
+  on_run proc(run: afkd.Run, issue: gitlab.Issue) {{
     $ true
   }}
 }}
@@ -880,7 +898,7 @@ reviews :: service(gitlab.mr) {{
 
   work_dir "/srv/acme/widgets"
 
-  on_run proc(run: core.Run, mr: gitlab.Merge_Request) {{
+  on_run proc(run: afkd.Run, mr: gitlab.Merge_Request) {{
     $ true
   }}
 }}

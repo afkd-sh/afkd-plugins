@@ -50,14 +50,14 @@ each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and
 but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
 manifest when it is installed.
 
-The configs below are written in the config language of **afkd 0.2.273 or newer**; an
+The configs below are written in the config language of **afkd 0.2.615 or newer**; an
 older afkd still runs the plugin, but refuses the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `github`:
 
 ```conf
-import "core"
-import "core:env"
+import "afkd"
+import "std:env"
 import "@afkd/github"
 
 GITHUB_TOKEN :: env.get("GITHUB_TOKEN") ?? ""
@@ -77,18 +77,18 @@ develop :: service(github) {
     github.assign_me(issue)
     github.add_label(issue, "afkd/working")
   }
-  on_done proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.remove_label(issue, "afkd/working")
     github.comment(issue, "Fixed in #{outcome.duration} by #{BOT}.")
     github.close(issue)
   }
-  on_fail proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.remove_label(issue, "afkd/working")
     github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: github.Issue) { task() }
+  on_run proc(run: afkd.Run, issue: github.Issue) { task() }
 }
 
 reviews :: service(github.pr) {
@@ -98,14 +98,14 @@ reviews :: service(github.pr) {
   every     2m~4m
 
   on_claim proc(pr: github.Pull_Request) { github.pr_add_label(pr, "afkd/reviewing") }
-  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
     github.pr_remove_label(pr, "afkd/reviewing")
     github.pr_comment(pr, "Round done in #{outcome.duration}.")
   }
-  on_fail proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
+  on_fail proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, pr: github.Pull_Request) { task() }
+  on_run proc(run: afkd.Run, pr: github.Pull_Request) { task() }
 }
 ```
 
@@ -118,13 +118,10 @@ wherever it is written, and a slot may act on another item than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-import "vendor:claude"
+import "agent:claude"
 
 // The agent a `service(github)` runs: the skill is what lets it answer the issue.
-fixer :: agent(claude) {
-  model  "sonnet"
-  skills [ "@afkd/github/github" ]
-}
+fixer :: claude.agent(model="sonnet", skills=[ "@afkd/github/github" ])
 ```
 
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
@@ -184,7 +181,7 @@ outcome's `#{outcome.duration}` and, once `outcome.error != nil` has narrowed it
 `#{outcome.error.message}`, and the run's `#{run.id}`.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/github"
 
 widgets :: service(github) {
@@ -192,11 +189,11 @@ widgets :: service(github) {
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     github.comment(issue, "Fixed in #{outcome.duration} — run #{run.id}.")
     github.close(issue)
   }
-  on_fail proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     if outcome.error != nil {
       github.comment(issue, "Gave up after #{outcome.duration}: #{outcome.error.message}")
     }
@@ -204,7 +201,7 @@ widgets :: service(github) {
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: github.Issue) {
+  on_run proc(run: afkd.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -219,7 +216,7 @@ the agent **that is already working**, as another turn in the same conversation.
 the block asks for it:
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/github"
 
 widgets :: service(github) {
@@ -228,7 +225,7 @@ widgets :: service(github) {
   every 4m~6m
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: github.Issue) {
+  on_run proc(run: afkd.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -302,7 +299,7 @@ The comment watch works as for `service(github)`: afkd asks the plugin for the P
 while a round runs. The comments the brief was built from are never delivered again.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/github"
 
 reviews :: service(github.pr) {
@@ -315,14 +312,14 @@ reviews :: service(github.pr) {
     github.pr_assign_me(pr)
     github.pr_add_label(pr, "afkd/reviewing")
   }
-  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
-  on_fail proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) { github.pr_remove_label(pr, "afkd/reviewing") }
+  on_fail proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
     github.pr_remove_label(pr, "afkd/reviewing")
     github.pr_unassign(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, pr: github.Pull_Request) {
+  on_run proc(run: afkd.Run, pr: github.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -335,7 +332,7 @@ the run (all but `on_claim`, which runs before one exists), the claimed item, an
 run its outcome — by position, and a slot writes every one of them, in order, each with its
 type:
 `on_claim proc(issue: github.Issue)` on `service(github)`, and
-`on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome)` on `service(github.pr)`.
+`on_done proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome)` on `service(github.pr)`.
 Neither kind parks, so neither has `on_park`:
 
 | Slot       | Passed             | Runs                                                       |
@@ -345,7 +342,7 @@ Neither kind parks, so neither has `on_park`:
 | `on_done`  | run, item, outcome | after a run that finished                                  |
 | `on_fail`  | run, item, outcome | after a run that failed                                    |
 
-`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`duration`,
+`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`duration`,
 `error`). The item is the plugin's handle for it — a **`github.Issue`** on
 `service(github)`, written `issue` in the examples here, and a **`github.Pull_Request`** on
 `service(github.pr)`, written `pr`:

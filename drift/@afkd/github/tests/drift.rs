@@ -168,7 +168,7 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// then it writes every field of the issue's handle to [`FIELDS`], a line each.
 fn service(home: &Path, host: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/github"
 
 BOT :: "{ME}"
@@ -182,14 +182,14 @@ widgets :: service(github) {{
   max_attempts 1
 
   on_claim proc(issue: github.Issue) {{ github.assign_me(issue) }}
-  on_done proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {{
     github.remove_label(issue, "afkd/claimed")
     github.comment(issue, "done in #{{outcome.duration}} by #{{BOT}}: #{{issue.title}}")
     github.close(issue)
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: github.Issue) {{
+  on_run proc(run: afkd.Run, issue: github.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -405,7 +405,7 @@ const REVIEW: &str = "看起来不对 🚨 — the cap never applies:\n\n    max
 /// the feedback, so the next poll does not claim the pull request again.
 fn pr_service(work: &Path, host: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/github"
 
 reviews :: service(github.pr) {{
@@ -416,12 +416,12 @@ reviews :: service(github.pr) {{
   every        1s
   max_attempts 1
 
-  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {{
     github.pr_comment(pr, "round answered: #{{pr.title}}")
   }}
 
   work_dir "{work}"
-  on_run proc(run: core.Run, pr: github.Pull_Request) {{
+  on_run proc(run: afkd.Run, pr: github.Pull_Request) {{
     $ echo title #{{pr.title}} >> {FIELDS}
     $ echo url #{{pr.url}} >> {FIELDS}
     $ echo number #{{pr.number}} >> {FIELDS}
@@ -513,7 +513,7 @@ const NEEDS_HUMAN: &str = "needs/human 🚧";
 /// plugin answering each queued write `ok`.
 fn failing_service(home: &Path, host: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/github"
 
 widgets :: service(github) {{
@@ -525,19 +525,37 @@ widgets :: service(github) {{
   max_attempts 2
 
   on_claim proc(issue: github.Issue) {{
-    if github.assign_me(issue) != nil {{ fail("assign_me") }}
+    match github.assign_me(issue) {{
+      .ok(_) => {{ }}
+      .err(_) => fail("assign_me")
+    }}
   }}
-  on_fail proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {{
-    if github.remove_label(issue, "afkd/ready") != nil {{ fail("remove_label afkd/ready") }}
-    if github.unassign(issue) != nil {{ fail("unassign") }}
-    if github.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
+  on_fail proc(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {{
+    match github.remove_label(issue, "afkd/ready") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("remove_label afkd/ready")
+    }}
+    match github.unassign(issue) {{
+      .ok(_) => {{ }}
+      .err(_) => fail("unassign")
+    }}
+    match github.add_label(issue, "{NEEDS_HUMAN}") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("add_label")
+    }}
     if outcome.error == nil {{ fail("on_fail without an error") }}
-    if github.comment(issue, "attempts spent: #{{outcome.error.message}}") != nil {{ fail("comment") }}
-    if github.remove_label(issue, "afkd/claimed") != nil {{ fail("remove_label afkd/claimed") }}
+    match github.comment(issue, "attempts spent: #{{outcome.error.message}}") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("comment")
+    }}
+    match github.remove_label(issue, "afkd/claimed") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("remove_label afkd/claimed")
+    }}
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: github.Issue) {{
+  on_run proc(run: afkd.Run, issue: github.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -673,7 +691,7 @@ fn outage_leg_a_failed_issue_still_reaches_its_on_fail_state() {
 /// each kind's own six, on the item its slot is passed — name the bot by the config's own
 /// `BOT`, read the run and the outcome, in the argument shapes the manifest types: wide and
 /// scoped label names, and a multi-line comment.
-const BOTH_KINDS: &str = r##"import "core"
+const BOTH_KINDS: &str = r##"import "afkd"
 import "@afkd/github"
 
 BOT :: "autocoder"
@@ -690,18 +708,18 @@ issues :: service(github) {
     _ = github.assign_me(issue)
     _ = github.add_label(issue, "afkd/working ⚙")
   }
-  on_done proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     _ = github.remove_label(issue, "afkd/working ⚙")
     _ = github.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     _ = github.close(issue)
   }
-  on_fail proc(run: core.Run, issue: github.Issue, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, issue: github.Issue, outcome: afkd.Outcome) {
     _ = github.remove_label(issue, "afkd/working ⚙")
     _ = github.unassign(issue)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: github.Issue) {
+  on_run proc(run: afkd.Run, issue: github.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -716,17 +734,17 @@ reviews :: service(github.pr) {
     _ = github.pr_assign_me(pr)
     _ = github.pr_add_label(pr, "afkd/reviewing 👀")
   }
-  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
     _ = github.pr_remove_label(pr, "afkd/reviewing 👀")
     _ = github.pr_comment(pr, "round answered by #{BOT} in #{outcome.duration}")
   }
-  on_fail proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {
     _ = github.pr_unassign(pr)
     _ = github.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, pr: github.Pull_Request) {
+  on_run proc(run: afkd.Run, pr: github.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -798,17 +816,17 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"import "core"
+            r#"import "afkd"
 import "@afkd/github"
 
 reviews :: service(github.pr) {{
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done proc(run: core.Run, pr: github.Pull_Request, outcome: core.Outcome) {{ {call} }}
+  on_done proc(run: afkd.Run, pr: github.Pull_Request, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, pr: github.Pull_Request) {{
+  on_run proc(run: afkd.Run, pr: github.Pull_Request) {{
     $ true
   }}
 }}
@@ -847,7 +865,7 @@ const OLD_CADENCE: &str = concat!("poll", "_interval");
 /// of its own, so the file is as `afkd fmt` prints it under either key.
 fn cadence_services(key: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/github"
 
 issues :: service(github) {{
@@ -858,7 +876,7 @@ issues :: service(github) {{
 
   work_dir "/srv/acme/widgets"
 
-  on_run proc(run: core.Run, issue: github.Issue) {{
+  on_run proc(run: afkd.Run, issue: github.Issue) {{
     $ true
   }}
 }}
@@ -871,7 +889,7 @@ reviews :: service(github.pr) {{
 
   work_dir "/srv/acme/widgets"
 
-  on_run proc(run: core.Run, pr: github.Pull_Request) {{
+  on_run proc(run: afkd.Run, pr: github.Pull_Request) {{
     $ true
   }}
 }}

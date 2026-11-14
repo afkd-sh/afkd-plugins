@@ -212,8 +212,10 @@ ops :: service(telegram) {{
   work_dir  "{home}"
 
   on_claim proc(message: telegram.Message) {{
-    seen := telegram.react(message, "👀")
-    if seen != nil {{ fail("telegram.react: #{{seen.message}}") }}
+    match telegram.react(message, "👀") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("telegram.react: #{{e.message}}")
+    }}
     $ echo claimed #{{message.id}} >> {CLAIMED}
   }}
 
@@ -232,8 +234,10 @@ ops :: service(telegram) {{
     match telegram.reply(message, "{REPLY}") {{
       .ok(sent) => {{
         $ echo sent #{{sent.id}} #{{sent.reply_to}} #{{sent.text}} >> {FIELDS}
-        edited := telegram.edit(sent, "{EDITED}")
-        if edited != nil {{ fail("telegram.edit: #{{edited.message}}") }}
+        match telegram.edit(sent, "{EDITED}") {{
+          .ok(_) => {{ }}
+          .err(e) => fail("telegram.edit: #{{e.message}}")
+        }}
         match telegram.send_file(message.chat, "{home}/{SHOT}", kind=.photo, caption="監視 ✓") {{
           .ok(shot) => {{
             for file in shot.files {{
@@ -242,18 +246,24 @@ ops :: service(telegram) {{
           }}
           .err(e) => fail("telegram.send_file: #{{e.message}}")
         }}
-        fetched := telegram.fetch_file(message.files[0], "{home}/{FETCHED}")
-        if fetched != nil {{ fail("telegram.fetch_file: #{{fetched.message}}") }}
-        deleted := telegram.delete(sent)
-        if deleted != nil {{ fail("telegram.delete: #{{deleted.message}}") }}
+        match telegram.fetch_file(message.files[0], "{home}/{FETCHED}") {{
+          .ok(_) => {{ }}
+          .err(e) => fail("telegram.fetch_file: #{{e.message}}")
+        }}
+        match telegram.delete(sent) {{
+          .ok(_) => {{ }}
+          .err(e) => fail("telegram.delete: #{{e.message}}")
+        }}
       }}
       .err(e) => fail("telegram.reply: #{{e.message}}")
     }}
   }}
 
   on_done proc(run: afkd.Run, message: telegram.Message, outcome: afkd.Outcome) {{
-    done := telegram.react(message, "👍")
-    if done != nil {{ fail("telegram.react: #{{done.message}}") }}
+    match telegram.react(message, "👍") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("telegram.react: #{{e.message}}")
+    }}
     $ echo done #{{message.id}} >> {DONE}
   }}
 }}
@@ -547,8 +557,10 @@ nightly :: service(interval) {{
   on_run proc(run: afkd.Run) {{
     match telegram.send("{GROUP}", "nightly build — ビルド started") {{
       .ok(sent) => {{
-        edited := telegram.edit(sent, "nightly build — ビルド done ✓")
-        if edited != nil {{ fail("telegram.edit: #{{edited.message}}") }}
+        match telegram.edit(sent, "nightly build — ビルド done ✓") {{
+          .ok(_) => {{ }}
+          .err(e) => fail("telegram.edit: #{{e.message}}")
+        }}
         $ echo #{{sent.id}} #{{sent.key}} > sent.txt
       }}
       .err(e) => fail("telegram.send: #{{e.message}}")
@@ -636,40 +648,71 @@ ops :: service(telegram) {{
   work_dir     "/srv/acme/widgets"
 
   on_claim proc(message: telegram.Message) {{
-    seen := telegram.react(message, "👀")
-    if seen != nil {{ fail("telegram.react: #{{seen.message}}") }}
+    match telegram.react(message, "👀") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("telegram.react: #{{e.message}}")
+    }}
   }}
 
   on_run proc(run: afkd.Run, message: telegram.Message) {{
     $ echo #{{message.chat}} #{{message.sender}} #{{message.sender_name}} #{{message.text}}
     for file in message.files {{
-      fetched := telegram.fetch_file(file, "/srv/acme/widgets/#{{file}} 監視.bin")
-      if fetched != nil {{ fail("telegram.fetch_file: #{{fetched.message}}") }}
+      match telegram.fetch_file(file, "/srv/acme/widgets/#{{file}} 監視.bin") {{
+        .ok(_) => {{ }}
+        .err(e) => fail("telegram.fetch_file: #{{e.message}}")
+      }}
     }}
     match telegram.send_file("@ops_channel", "/srv/acme/widgets/report — 報告.pdf") {{
       .ok(doc) => {{
-        gone := telegram.delete(doc)
-        if gone != nil {{ fail("telegram.delete: #{{gone.message}}") }}
+        match telegram.delete(doc) {{
+          .ok(_) => {{ }}
+          .err(e) => fail("telegram.delete: #{{e.message}}")
+        }}
       }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.document", kind=.document, caption="監視 ✓") {{
+    match telegram.send_file(
+      message.chat,
+      "/srv/acme/widgets/out.document",
+      kind=.document,
+      caption="監視 ✓",
+    ) {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.photo", kind=.photo, caption="監視 ✓") {{
+    match telegram.send_file(
+      message.chat,
+      "/srv/acme/widgets/out.photo",
+      kind=.photo,
+      caption="監視 ✓",
+    ) {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.video", kind=.video, caption="監視 ✓") {{
+    match telegram.send_file(
+      message.chat,
+      "/srv/acme/widgets/out.video",
+      kind=.video,
+      caption="監視 ✓",
+    ) {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.audio", kind=.audio, caption="監視 ✓") {{
+    match telegram.send_file(
+      message.chat,
+      "/srv/acme/widgets/out.audio",
+      kind=.audio,
+      caption="監視 ✓",
+    ) {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
-    match telegram.send_file(message.chat, "/srv/acme/widgets/out.voice", kind=.voice, caption="監視 ✓") {{
+    match telegram.send_file(
+      message.chat,
+      "/srv/acme/widgets/out.voice",
+      kind=.voice,
+      caption="監視 ✓",
+    ) {{
       .ok(_) => {{ }}
       .err(e) => fail("telegram.send_file: #{{e.message}}")
     }}
@@ -678,17 +721,24 @@ ops :: service(telegram) {{
   on_done proc(run: afkd.Run, message: telegram.Message, outcome: afkd.Outcome) {{
     match telegram.reply(message, "done in #{{outcome.duration}} ✓\n\n完了") {{
       .ok(sent) => {{
-        edited := telegram.edit(sent, "#{{sent.text}} — edited")
-        if edited != nil {{ fail("telegram.edit: #{{edited.message}}") }}
+        match telegram.edit(sent, "#{{sent.text}} — edited") {{
+          .ok(_) => {{ }}
+          .err(e) => fail("telegram.edit: #{{e.message}}")
+        }}
       }}
       .err(e) => fail("telegram.reply: #{{e.message}}")
     }}
-    cleared := telegram.react(message, "")
-    if cleared != nil {{ fail("telegram.react: #{{cleared.message}}") }}
+    match telegram.react(message, "") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("telegram.react: #{{e.message}}")
+    }}
   }}
 
   on_fail proc(run: afkd.Run, message: telegram.Message, outcome: afkd.Outcome) {{
-    match telegram.send(message.chat, "#{{message.sender_name}}: that failed after #{{outcome.duration}}") {{
+    match telegram.send(
+      message.chat,
+      "#{{message.sender_name}}: that failed after #{{outcome.duration}}",
+    ) {{
       .ok(sent) => {{
         $ echo #{{sent.id}} #{{sent.key}} #{{sent.reply_to}}
       }}

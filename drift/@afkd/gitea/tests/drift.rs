@@ -166,7 +166,7 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// then it writes every field of the issue's handle to [`FIELDS`], a line each.
 fn service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/gitea"
 
 BOT :: "{ME}"
@@ -180,14 +180,14 @@ widgets :: service(gitea) {{
   max_attempts 1
 
   on_claim proc(issue: gitea.Issue) {{ gitea.assign_me(issue) }}
-  on_done proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {{
     gitea.remove_label(issue, "afkd/claimed")
     gitea.comment(issue, "done in #{{outcome.duration}} by #{{BOT}}: #{{issue.title}}")
     gitea.close(issue)
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: gitea.Issue) {{
+  on_run proc(run: afkd.Run, issue: gitea.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -398,7 +398,7 @@ const HEAD: &str = "feature/retry-backoff";
 /// the feedback, so the next poll does not claim the pull request again.
 fn pr_service(work: &Path, base_url: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/gitea"
 
 reviews :: service(gitea.pr) {{
@@ -409,12 +409,12 @@ reviews :: service(gitea.pr) {{
   every        1s
   max_attempts 1
 
-  on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {{
     gitea.pr_comment(pr, "round answered: #{{pr.title}}")
   }}
 
   work_dir "{work}"
-  on_run proc(run: core.Run, pr: gitea.Pull_Request) {{
+  on_run proc(run: afkd.Run, pr: gitea.Pull_Request) {{
     $ echo title #{{pr.title}} >> {FIELDS}
     $ echo url #{{pr.url}} >> {FIELDS}
     $ echo number #{{pr.number}} >> {FIELDS}
@@ -512,7 +512,7 @@ const NEEDS_HUMAN: &str = "needs/human 🚧";
 /// plugin answering each queued write `ok`.
 fn failing_service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/gitea"
 
 widgets :: service(gitea) {{
@@ -524,19 +524,37 @@ widgets :: service(gitea) {{
   max_attempts 2
 
   on_claim proc(issue: gitea.Issue) {{
-    if gitea.assign_me(issue) != nil {{ fail("assign_me") }}
+    match gitea.assign_me(issue) {{
+      .ok(_) => {{ }}
+      .err(_) => fail("assign_me")
+    }}
   }}
-  on_fail proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {{
-    if gitea.remove_label(issue, "afkd/ready") != nil {{ fail("remove_label afkd/ready") }}
-    if gitea.unassign(issue) != nil {{ fail("unassign") }}
-    if gitea.add_label(issue, "{NEEDS_HUMAN}") != nil {{ fail("add_label") }}
+  on_fail proc(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {{
+    match gitea.remove_label(issue, "afkd/ready") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("remove_label afkd/ready")
+    }}
+    match gitea.unassign(issue) {{
+      .ok(_) => {{ }}
+      .err(_) => fail("unassign")
+    }}
+    match gitea.add_label(issue, "{NEEDS_HUMAN}") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("add_label")
+    }}
     if outcome.error == nil {{ fail("on_fail without an error") }}
-    if gitea.comment(issue, "attempts spent: #{{outcome.error.message}}") != nil {{ fail("comment") }}
-    if gitea.remove_label(issue, "afkd/claimed") != nil {{ fail("remove_label afkd/claimed") }}
+    match gitea.comment(issue, "attempts spent: #{{outcome.error.message}}") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("comment")
+    }}
+    match gitea.remove_label(issue, "afkd/claimed") {{
+      .ok(_) => {{ }}
+      .err(_) => fail("remove_label afkd/claimed")
+    }}
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: gitea.Issue) {{
+  on_run proc(run: afkd.Run, issue: gitea.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -674,7 +692,7 @@ fn outage_leg_a_failed_issue_still_reaches_its_on_fail_state() {
 /// `BOT`, read the run and the outcome — the issue kind's `on_park` among them — in the
 /// argument shapes the manifest types: wide and slashed label names, and a multi-line
 /// comment.
-const BOTH_KINDS: &str = r##"import "core"
+const BOTH_KINDS: &str = r##"import "afkd"
 import "@afkd/gitea"
 
 BOT :: "autocoder"
@@ -692,19 +710,19 @@ issues :: service(gitea) {
     _ = gitea.assign_me(issue)
     _ = gitea.add_label(issue, "afkd/working ⚙")
   }
-  on_done proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
     _ = gitea.remove_label(issue, "afkd/working ⚙")
     _ = gitea.comment(issue, "done by #{BOT} in #{outcome.duration}:\n\n- run #{run.id}\n- 完了 ✅")
     _ = gitea.close(issue)
   }
-  on_fail proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {
     _ = gitea.remove_label(issue, "afkd/working ⚙")
     _ = gitea.unassign(issue)
   }
-  on_park proc(run: core.Run, issue: gitea.Issue, outcome: core.Outcome) { _ = gitea.add_label(issue, "needs/human") }
+  on_park proc(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) { _ = gitea.add_label(issue, "needs/human") }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: gitea.Issue) {
+  on_run proc(run: afkd.Run, issue: gitea.Issue) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -720,17 +738,17 @@ reviews :: service(gitea.pr) {
     _ = gitea.pr_assign_me(pr)
     _ = gitea.pr_add_label(pr, "afkd/reviewing 👀")
   }
-  on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {
     _ = gitea.pr_remove_label(pr, "afkd/reviewing 👀")
     _ = gitea.pr_comment(pr, "round answered by #{BOT} in #{outcome.duration}")
   }
-  on_fail proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {
     _ = gitea.pr_unassign(pr)
     _ = gitea.pr_close(pr)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, pr: gitea.Pull_Request) {
+  on_run proc(run: afkd.Run, pr: gitea.Pull_Request) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -799,17 +817,17 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"import "core"
+            r#"import "afkd"
 import "@afkd/gitea"
 
 reviews :: service(gitea.pr) {{
   repo  "acme/widgets"
   token "REPLACE_ME"
 
-  on_done proc(run: core.Run, pr: gitea.Pull_Request, outcome: core.Outcome) {{ {call} }}
+  on_done proc(run: afkd.Run, pr: gitea.Pull_Request, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, pr: gitea.Pull_Request) {{
+  on_run proc(run: afkd.Run, pr: gitea.Pull_Request) {{
     $ true
   }}
 }}
@@ -848,7 +866,7 @@ const OLD_CADENCE: &str = concat!("poll", "_interval");
 /// of its own, so the file is as `afkd fmt` prints it under either key.
 fn cadence_services(key: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/gitea"
 
 issues :: service(gitea) {{
@@ -860,7 +878,7 @@ issues :: service(gitea) {{
 
   work_dir "/srv/acme/widgets"
 
-  on_run proc(run: core.Run, issue: gitea.Issue) {{
+  on_run proc(run: afkd.Run, issue: gitea.Issue) {{
     $ true
   }}
 }}
@@ -874,7 +892,7 @@ reviews :: service(gitea.pr) {{
 
   work_dir "/srv/acme/widgets"
 
-  on_run proc(run: core.Run, pr: gitea.Pull_Request) {{
+  on_run proc(run: afkd.Run, pr: gitea.Pull_Request) {{
     $ true
   }}
 }}

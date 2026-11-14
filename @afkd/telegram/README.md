@@ -36,6 +36,10 @@ $ tools/pack-release telegram /tmp/afkd-release @afkd/telegram/target/release/af
 $ afkd install /tmp/afkd-release/afkd-telegram
 ```
 
+The configs below are written in the config language of **afkd 0.2.637 or newer**, the
+first that reads a failure through the call's result; an older afkd still runs the plugin,
+but refuses the examples when they load.
+
 A config file uses the plugin by importing it, and then names it by its leaf, `telegram`.
 This service hands every message in two chats to an agent, which answers through the skill:
 
@@ -55,8 +59,10 @@ ops :: service(telegram) {
   work_dir "/srv/acme/widgets"
 
   on_claim proc(message: telegram.Message) {
-    seen := telegram.react(message, "👀")
-    if seen != nil { fail("telegram.react: #{seen.message}") }
+    match telegram.react(message, "👀") {
+      .ok(_) => { }
+      .err(e) => fail("telegram.react: #{e.message}")
+    }
   }
 
   on_run proc(run: afkd.Run, message: telegram.Message) {
@@ -69,8 +75,10 @@ ops :: service(telegram) {
   }
 
   on_done proc(run: afkd.Run, message: telegram.Message, outcome: afkd.Outcome) {
-    done := telegram.react(message, "👍")
-    if done != nil { fail("telegram.react: #{done.message}") }
+    match telegram.react(message, "👍") {
+      .ok(_) => { }
+      .err(e) => fail("telegram.react: #{e.message}")
+    }
   }
 
   on_fail proc(run: afkd.Run, message: telegram.Message, outcome: afkd.Outcome) {
@@ -102,8 +110,10 @@ nightly :: service(interval) {
     match telegram.send("-1001234567890", "nightly build — ビルド started") {
       .ok(sent) => {
         $ make nightly
-        edited := telegram.edit(sent, "nightly build — ビルド done ✓")
-        if edited != nil { fail("telegram.edit: #{edited.message}") }
+        match telegram.edit(sent, "nightly build — ビルド done ✓") {
+          .ok(_) => { }
+          .err(e) => fail("telegram.edit: #{e.message}")
+        }
         match telegram.send_file(
           "-1001234567890",
           "/srv/acme/widgets/build.log",
@@ -199,10 +209,10 @@ back.
 | `send(chat, text)`                                          | `Result[Message, Error]` |
 | `send_file(chat, path, ~kind := .document, ~caption := "")` | `Result[Message, Error]` |
 | `reply(message, text)`                                      | `Result[Message, Error]` |
-| `react(message, emoji)`                                     | `Error?`                 |
-| `edit(message, text)`                                       | `Error?`                 |
-| `delete(message)`                                           | `Error?`                 |
-| `fetch_file(file, to)`                                      | `Error?`                 |
+| `react(message, emoji)`                                     | `Result[nil, Error]`     |
+| `edit(message, text)`                                       | `Result[nil, Error]`     |
+| `delete(message)`                                           | `Result[nil, Error]`     |
+| `fetch_file(file, to)`                                      | `Result[nil, Error]`     |
 
 - **`send`** sends a text to a chat. A text over Telegram's 4096 is sent as several
   messages, each cut after its last newline inside the cap, or at the cap when it has none,

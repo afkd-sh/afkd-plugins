@@ -231,7 +231,7 @@ fn seed() -> Seeded {
 /// default `keep_runs on_fail` leaves nothing of a clean run.
 fn service(home: &Path, base_url: &str, keys: &str, claim: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/linear"
 
 widgets :: service(linear) {{
@@ -244,14 +244,16 @@ widgets :: service(linear) {{
   on_claim proc(issue: linear.Issue) {{
     $ echo claimed #{{issue.state}} >> {CLAIMED}
 {claim}  }}
-  on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
     $ echo done #{{issue.title}} >> {DONE}
-    landed := linear.comment(issue, "landed #{{issue.title}} ✅")
-    if landed != nil {{ fail("linear.comment: #{{landed.message}}") }}
+    match linear.comment(issue, "landed #{{issue.title}} ✅") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.comment: #{{e.message}}")
+    }}
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
@@ -269,10 +271,14 @@ widgets :: service(linear) {{
     $ printenv LINEAR_AUTHORIZATION > {AUTH}
     $ printenv LINEAR_API_URL > {API_URL}
     $ cat $AFKD_SCRATCH_DIR/task.md
-    described := linear.read_description(issue, "{home}/{DESCRIPTION}")
-    if described != nil {{ fail("linear.read_description: #{{described.message}}") }}
-    moved := linear.move_to(issue, "Done")
-    if moved != nil {{ fail("linear.move_to: #{{moved.message}}") }}
+    match linear.read_description(issue, "{home}/{DESCRIPTION}") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.read_description: #{{e.message}}")
+    }}
+    match linear.move_to(issue, "Done") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.move_to: #{{e.message}}")
+    }}
   }}
 }}
 "#,
@@ -533,8 +539,10 @@ fn app_auth_leg_runs_one_issue_with_a_fetched_token() {
             "client_id      \"{CLIENT_ID}\"\n  client_secret  \"{CLIENT_SECRET}\"\n  \
              require_member \"me\", \"none\""
         ),
-        "    delegated := linear.delegate(issue, \"me\")\n    \
-         if delegated != nil { fail(\"linear.delegate: #{delegated.message}\") }\n",
+        "    match linear.delegate(issue, \"me\") {\n      \
+         .ok(_) => { }\n      \
+         .err(e) => fail(\"linear.delegate: #{e.message}\")\n    \
+         }\n",
     );
     let fake = &seeded.fake;
     assert!(fake.token_fetches() >= 1, "the app fetched its token");
@@ -584,7 +592,7 @@ fn a_service_linear_config_validates() {
     write_config(
         home.path(),
         &format!(
-            r#"import "core"
+            r#"import "afkd"
 import "@afkd/linear"
 
 develop :: service(linear) {{
@@ -602,21 +610,21 @@ develop :: service(linear) {{
   on_claim proc(issue: linear.Issue) {{
     $ echo #{{issue.title}} #{{issue.state}}
   }}
-  on_run proc(run: core.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
     $ echo #{{issue.url}} #{{issue.parent}}
     for sub in issue.sub_issues {{
       $ echo #{{sub}}
     }}
   }}
-  on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
     $ echo done #{{issue.title}}
   }}
-  on_fail proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
+  on_fail proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
     for blocker in issue.blocked_by {{
       $ echo #{{blocker}}
     }}
   }}
-  on_park proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
+  on_park proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
     for label in issue.labels {{
       $ echo #{{label}}
     }}
@@ -631,7 +639,7 @@ discuss :: service(linear) {{
   discuss_with  "chen@acme.example", "me"
   work_dir      "/srv/acme/widgets"
 
-  on_run proc(run: core.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
 }}
@@ -652,7 +660,7 @@ fn every_action_validates_from_its_slots() {
     write_config(
         home.path(),
         &format!(
-            r###"import "core"
+            r###"import "afkd"
 import "@afkd/linear"
 
 widgets :: service(linear) {{
@@ -662,55 +670,102 @@ widgets :: service(linear) {{
   work_dir  "/srv/acme/widgets"
 
   on_claim proc(issue: linear.Issue) {{
-    moved := linear.move_to(issue, "In Progress 🚧")
-    if moved != nil {{ fail("linear.move_to: #{{moved.message}}") }}
-    labelled := linear.add_label(issue, "afkd/working")
-    if labelled != nil {{ fail("linear.add_label: #{{labelled.message}}") }}
-    delegated := linear.delegate(issue, "me")
-    if delegated != nil {{ fail("linear.delegate: #{{delegated.message}}") }}
+    match linear.move_to(issue, "In Progress 🚧") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.move_to: #{{e.message}}")
+    }}
+    match linear.add_label(issue, "afkd/working") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.add_label: #{{e.message}}")
+    }}
+    match linear.delegate(issue, "me") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.delegate: #{{e.message}}")
+    }}
   }}
-  on_run proc(run: core.Run, issue: linear.Issue) {{
-    thread := linear.list_comments(issue, "/srv/acme/widgets/thread 計画.md")
-    if thread != nil {{ fail("linear.list_comments: #{{thread.message}}") }}
-    described := linear.read_description(issue, "/srv/acme/widgets/description.md")
-    if described != nil {{ fail("linear.read_description: #{{described.message}}") }}
-    subs := linear.list_sub_issues(issue, "/srv/acme/widgets/subs.md")
-    if subs != nil {{ fail("linear.list_sub_issues: #{{subs.message}}") }}
-    files := linear.fetch_files(issue, "/srv/acme/widgets/files 計画")
-    if files != nil {{ fail("linear.fetch_files: #{{files.message}}") }}
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+    match linear.list_comments(issue, "/srv/acme/widgets/thread 計画.md") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.list_comments: #{{e.message}}")
+    }}
+    match linear.read_description(issue, "/srv/acme/widgets/description.md") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.read_description: #{{e.message}}")
+    }}
+    match linear.list_sub_issues(issue, "/srv/acme/widgets/subs.md") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.list_sub_issues: #{{e.message}}")
+    }}
+    match linear.fetch_files(issue, "/srv/acme/widgets/files 計画") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.fetch_files: #{{e.message}}")
+    }}
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
-  on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
-    said := linear.comment(issue, "## 完了 ✅\n\nlanded #{{issue.title}} in #{{outcome.duration}}.")
-    if said != nil {{ fail("linear.comment: #{{said.message}}") }}
-    shown := linear.comment(issue, "After the fix:", files=["/srv/acme/widgets/screen shot — 修复.png", "/srv/acme/widgets/run.log"])
-    if shown != nil {{ fail("linear.comment: #{{shown.message}}") }}
-    described := linear.describe(issue, "Done by afkd — 修复 🚀")
-    if described != nil {{ fail("linear.describe: #{{described.message}}") }}
-    pictured := linear.describe(issue, "", files=["/srv/acme/widgets/before.png"])
-    if pictured != nil {{ fail("linear.describe: #{{pictured.message}}") }}
-    renamed := linear.rename(issue, "[done] #{{issue.title}}")
-    if renamed != nil {{ fail("linear.rename: #{{renamed.message}}") }}
-    unlabelled := linear.remove_label(issue, "afkd/working")
-    if unlabelled != nil {{ fail("linear.remove_label: #{{unlabelled.message}}") }}
-    for sub in issue.sub_issues {{
-      closed := linear.move_sub_issue(issue, sub, "Done")
-      if closed != nil {{ fail("linear.move_sub_issue: #{{closed.message}}") }}
+  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
+    match linear.comment(issue, "## 完了 ✅\n\nlanded #{{issue.title}} in #{{outcome.duration}}.") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.comment: #{{e.message}}")
     }}
-    archived := linear.archive(issue)
-    if archived != nil {{ fail("linear.archive: #{{archived.message}}") }}
+    match linear.comment(
+      issue,
+      "After the fix:",
+      files=[ "/srv/acme/widgets/screen shot — 修复.png", "/srv/acme/widgets/run.log" ],
+    ) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.comment: #{{e.message}}")
+    }}
+    match linear.describe(issue, "Done by afkd — 修复 🚀") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.describe: #{{e.message}}")
+    }}
+    match linear.describe(issue, "", files=[ "/srv/acme/widgets/before.png" ]) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.describe: #{{e.message}}")
+    }}
+    match linear.rename(issue, "[done] #{{issue.title}}") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.rename: #{{e.message}}")
+    }}
+    match linear.remove_label(issue, "afkd/working") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.remove_label: #{{e.message}}")
+    }}
+    for sub in issue.sub_issues {{
+      match linear.move_sub_issue(issue, sub, "Done") {{
+        .ok(_) => {{ }}
+        .err(e) => fail("linear.move_sub_issue: #{{e.message}}")
+      }}
+    }}
+    match linear.archive(issue) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.archive: #{{e.message}}")
+    }}
   }}
-  on_fail proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
-    filed := linear.create_issue(issue, "Follow up on #{{issue.title}}", "It failed:\n\n#{{outcome.duration}}", state="Backlog 📥")
-    if filed != nil {{ fail("linear.create_issue: #{{filed.message}}") }}
-    bare := linear.create_issue(issue, "Look again 👀")
-    if bare != nil {{ fail("linear.create_issue: #{{bare.message}}") }}
-    undelegated := linear.undelegate(issue)
-    if undelegated != nil {{ fail("linear.undelegate: #{{undelegated.message}}") }}
+  on_fail proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
+    match linear.create_issue(
+      issue,
+      "Follow up on #{{issue.title}}",
+      "It failed:\n\n#{{outcome.duration}}",
+      state="Backlog 📥",
+    ) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.create_issue: #{{e.message}}")
+    }}
+    match linear.create_issue(issue, "Look again 👀") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.create_issue: #{{e.message}}")
+    }}
+    match linear.undelegate(issue) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.undelegate: #{{e.message}}")
+    }}
   }}
-  on_park proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
-    split := linear.create_sub_issue(issue, "Answer the question 🙋", "Asked on #{{issue.url}}")
-    if split != nil {{ fail("linear.create_sub_issue: #{{split.message}}") }}
+  on_park proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
+    match linear.create_sub_issue(issue, "Answer the question 🙋", "Asked on #{{issue.url}}") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.create_sub_issue: #{{e.message}}")
+    }}
   }}
 }}
 "###
@@ -731,7 +786,7 @@ const FETCHED: &str = "fetched.txt";
 /// [`FETCHED`], each action checked for its error.
 fn files_service(home: &Path, base_url: &str) -> String {
     format!(
-        r###"import "core"
+        r###"import "afkd"
 import "@afkd/linear"
 
 widgets :: service(linear) {{
@@ -741,16 +796,24 @@ widgets :: service(linear) {{
   pick_from "Todo"
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: linear.Issue) {{
-    described := linear.describe(issue, "## 背景\n\nBefore:", files=["{home}/{SHOT}"])
-    if described != nil {{ fail("linear.describe: #{{described.message}}") }}
-    said := linear.comment(issue, "After the fix ✅", files=["{home}/{SHOT}"])
-    if said != nil {{ fail("linear.comment: #{{said.message}}") }}
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+    match linear.describe(issue, "## 背景\n\nBefore:", files=[ "{home}/{SHOT}" ]) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.describe: #{{e.message}}")
+    }}
+    match linear.comment(issue, "After the fix ✅", files=[ "{home}/{SHOT}" ]) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.comment: #{{e.message}}")
+    }}
     $ mkdir -p fetched
-    fetched := linear.fetch_files(issue, "{home}/fetched")
-    if fetched != nil {{ fail("linear.fetch_files: #{{fetched.message}}") }}
-    moved := linear.move_to(issue, "Done")
-    if moved != nil {{ fail("linear.move_to: #{{moved.message}}") }}
+    match linear.fetch_files(issue, "{home}/fetched") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.fetch_files: #{{e.message}}")
+    }}
+    match linear.move_to(issue, "Done") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.move_to: #{{e.message}}")
+    }}
     $ echo fetched > {FETCHED}
   }}
 }}
@@ -851,14 +914,14 @@ fn a_service_without_team_or_pick_from_fails_validate_naming_the_setting() {
         write_config(
             home.path(),
             &format!(
-                r#"import "core"
+                r#"import "afkd"
 import "@afkd/linear"
 
 widgets :: service(linear) {{
   {keep}
   api_key "{API_KEY}"
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
     $ true
   }}
 }}
@@ -887,7 +950,7 @@ fn a_call_to_an_undeclared_action_is_a_load_error() {
     let home = installed();
     let config = |call: &str| {
         format!(
-            r#"import "core"
+            r#"import "afkd"
 import "@afkd/linear"
 
 widgets :: service(linear) {{
@@ -895,12 +958,12 @@ widgets :: service(linear) {{
   api_key   "{API_KEY}"
   pick_from "Todo"
 
-  on_done proc(run: core.Run, issue: linear.Issue, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
     {call}
   }}
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
     $ true
   }}
 }}
@@ -989,7 +1052,7 @@ const QUESTION: &str = "看起来不对 🚨 — should a 401 reset the backoff?
 /// env the run carries and nothing else, the way an agent's Bash tool does.
 fn skill_service(home: &Path, base_url: &str, skill: &Path) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/linear"
 
 NOTE     :: "{note}"
@@ -1002,7 +1065,7 @@ widgets :: service(linear) {{
   pick_from "Todo"
 
   work_dir "{home}"
-  on_run proc(run: core.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
     $ python3 {skill}/post_comment.py #{{NOTE}}
     $ python3 {skill}/ask.py #{{QUESTION}}
   }}

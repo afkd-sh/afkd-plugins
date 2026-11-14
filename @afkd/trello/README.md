@@ -48,14 +48,14 @@ claimed card as a `trello.Card`, and sends each action a slot calls on a card as
 afkd 0.2.197 to 0.2.240 install and run it too, but there a slot reading any field beyond
 `id` and `key` fails; an older afkd refuses the manifest when it is installed.
 
-The configs below are written in the config language of **afkd 0.2.273 or newer**; an
+The configs below are written in the config language of **afkd 0.2.637 or newer**; an
 older afkd still runs the plugin, but refuses the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `trello`:
 
 ```conf
-import "core"
-import "core:env"
+import "afkd"
+import "std:env"
 import "@afkd/trello"
 
 TRELLO_BOARD   :: "https://trello.com/b/REPLACE_ME/board"
@@ -79,20 +79,20 @@ develop :: service(trello) {
     trello.add_member(card)
     trello.move_to(card, "In Progress", at=.top)
   }
-  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.move_to(card, "Review", at=.top)
     trello.comment(card, "afkd landed this card in #{outcome.duration}.")
   }
-  on_park proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.move_to(card, "Backlog", at=.bottom)
     trello.add_label(card, "Problem")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, card: trello.Card) { task() }
+  on_run proc(run: afkd.Run, card: trello.Card) { task() }
 }
 ```
 
@@ -105,13 +105,10 @@ wherever it is written, and a slot may act on another card than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-import "vendor:claude"
+import "agent:claude"
 
 // The agent a `service(trello)` runs: the skill is what lets it work the card.
-builder :: agent(claude) {
-  model  "sonnet"
-  skills [ "@afkd/trello/trello" ]
-}
+builder :: claude.agent(model="sonnet", skills=[ "@afkd/trello/trello" ])
 ```
 
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
@@ -147,13 +144,13 @@ each with its type:
 
 | Slot                                                                    | Runs                                            |
 |-------------------------------------------------------------------------|-------------------------------------------------|
-| `on_run proc(run: core.Run, card: trello.Card)`                         | the run itself                                  |
+| `on_run proc(run: afkd.Run, card: trello.Card)`                         | the run itself                                  |
 | `on_claim proc(card: trello.Card)`                                      | once the card is claimed, before the run        |
-| `on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome)` | after a run that finished                       |
-| `on_park proc(run: core.Run, card: trello.Card, outcome: core.Outcome)` | after a run that ended waiting on a human reply |
-| `on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome)` | after a run that failed                         |
+| `on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)` | after a run that finished                       |
+| `on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)` | after a run that ended waiting on a human reply |
+| `on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)` | after a run that failed                         |
 
-`run` is a `core.Run` (`id`, `scratch_dir`) and `outcome` a `core.Outcome` (`duration`,
+`run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`duration`,
 `error`). `card` is a **`trello.Card`**, the plugin's handle for the card:
 
 | Field    | Type           | What it is                                         |
@@ -222,7 +219,7 @@ it fails with the reason, and an `attach` still queued behind an outage is not o
 yet. Both paths must be absolute, since the plugin does not run in the slot's `work_dir`.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/trello"
 
 develop :: service(trello) {
@@ -232,16 +229,18 @@ develop :: service(trello) {
   pick_from "Up for Grabs"
 
   on_claim proc(card: trello.Card) {
-    fetched := trello.fetch_attachment(card, "plan.md", "/srv/acme/widgets/earlier-plan.md")
-    if fetched != nil { fail("trello.fetch_attachment: #{fetched.message}") }
+    match trello.fetch_attachment(card, "plan.md", "/srv/acme/widgets/earlier-plan.md") {
+      .ok(_) => { }
+      .err(e) => fail("trello.fetch_attachment: #{e.message}")
+    }
   }
-  on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.attach(card, "#{run.scratch_dir}/plan.md", "plan.md")
     trello.comment(card, "the attempt failed; its plan is attached as plan.md")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -291,7 +290,7 @@ top does not hold up the settled ones under it. Age is measured from the card's
 it is not the claim lock.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/trello"
 
 implement :: service(trello) {
@@ -310,7 +309,7 @@ implement :: service(trello) {
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -339,7 +338,7 @@ nothing, the plugin posts one terse backstop comment so the card does not re-fir
 next poll.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/trello"
 
 groom :: service(trello) {
@@ -352,7 +351,7 @@ groom :: service(trello) {
   on_claim proc(card: trello.Card) { trello.add_member(card) }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -363,7 +362,7 @@ names each list, and this one discusses every card where it sits, in either list
 moves.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/trello"
 
 discuss :: service(trello) {
@@ -374,7 +373,7 @@ discuss :: service(trello) {
   discuss_with [ "anyone" ]
 
   work_dir "/srv/acme/videos"
-  on_run proc(run: core.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -390,7 +389,7 @@ card instead of failing it: it adds the `Awaiting Reply` label, releases the cla
 **moves nothing** — the card keeps its place, its list, and its unspent attempts. `on_fail`
 does not run, no `[afkd-attempt]` marker goes up, and the poll goes on to the next card. The
 label is managed by the plugin itself, so the gate holds with no `on_park` slot; `on_park`
-is only for extras (`on_park proc(run: core.Run, card: trello.Card, outcome: core.Outcome) { trello.move_to(card, "Discussion") }` for a board
+is only for extras (`on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Discussion") }` for a board
 that wants parked cards gathered somewhere).
 
 The badge is also how afkd **finds the card again**. Once a beat, before it reads
@@ -417,16 +416,13 @@ gate — the run ends at the ask. A **multi-step** one must gate the rest on the
 nothing runs past the question:
 
 ```conf
-import "core"
-import "core:fs"
-import "vendor:claude"
+import "afkd"
+import "agent:claude"
+import "std:fs"
 import "@afkd/trello"
 
 // The agent the service below calls. Minimal, so this snippet validates on its own.
-builder :: agent(claude) {
-  model  "sonnet"
-  skills [ "@afkd/trello/trello" ]
-}
+builder :: claude.agent(model="sonnet", skills=[ "@afkd/trello/trello" ])
 
 widgets :: service(trello) {
   board     "https://trello.com/b/REPLACE_ME/board"
@@ -437,8 +433,11 @@ widgets :: service(trello) {
   on_claim proc(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, card: trello.Card) {
-    builder <- "build the card; ask through the trello skill if unclear"
+  on_run proc(run: afkd.Run, card: trello.Card) {
+    match builder("build the card; ask through the trello skill if unclear") {
+      .ok(_) => { }
+      .err(e) => fail(e.message)
+    }
     if fs.is_file("#{run.scratch_dir}/park") { fail("parked: awaiting a human reply") }
     // reviewer / commit steps below never run when the agent asked
   }
@@ -458,7 +457,7 @@ drags a badged card back into the parking service's own `pick_from` gets it clai
 unbadged there, answered or not.
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {
@@ -468,14 +467,14 @@ widgets :: service(trello) {
   pick_from "To Do"
 
   on_claim proc(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
-  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) { trello.move_to(card, "Review", at=.top) }
-  on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome) { trello.move_to(card, "Backlog", at=.bottom) }
-  on_park proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Review", at=.top) }
+  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Backlog", at=.bottom) }
+  on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.comment(card, "parked after #{outcome.duration} — waiting on you")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }
@@ -490,7 +489,7 @@ more when the last agent stops, and hands any new one to the agent **that is alr
 working**, as another turn in the same conversation. Nothing in the block asks for it:
 
 ```conf
-import "core"
+import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {
@@ -501,14 +500,14 @@ widgets :: service(trello) {
   every     2m~3m
 
   on_claim proc(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
-  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
     trello.mark_complete(card)
     trello.move_to(card, "Done", at=.bottom)
     trello.archive(card)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task.md
   }
 }

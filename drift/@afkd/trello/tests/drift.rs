@@ -191,7 +191,7 @@ fn service(home: &Path, base_url: &str) -> String {
 /// written under it.
 fn service_drawing(home: &Path, base_url: &str, intake: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {{
@@ -207,13 +207,13 @@ widgets :: service(trello) {{
     trello.add_member(card)
     trello.move_to(card, "In Progress", at=.top)
   }}
-  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
     trello.move_to(card, "Review", at=.top)
     trello.comment(card, "done in #{{outcome.duration}}: #{{card.title}}")
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{card.title}} >> {FIELDS}
     $ echo url #{{card.url}} >> {FIELDS}
@@ -497,7 +497,7 @@ const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network we
 /// the test creates `release`, then fails.
 fn failing_service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {{
@@ -512,13 +512,13 @@ widgets :: service(trello) {{
   on_claim proc(card: trello.Card) {{
     trello.move_to(card, "In Progress", at=.top)
   }}
-  on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
     trello.move_to(card, "Backlog", at=.bottom)
     trello.add_label(card, "Problem")
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -682,7 +682,7 @@ fn outage_leg_a_failed_card_still_reaches_backlog_with_its_attempt_notes() {
 /// `home`, failing if the plugin refuses it.
 fn attaching_service(home: &Path, base_url: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {{
@@ -695,21 +695,27 @@ widgets :: service(trello) {{
   max_attempts 1
 
   on_claim proc(card: trello.Card) {{
-    plan := trello.fetch_attachment(card, "plan.md", "{home}/earlier-plan.md")
-    if plan != nil {{ fail("trello.fetch_attachment: #{{plan.message}}") }}
-    patch := trello.fetch_attachment(card, "work.patch", "{home}/earlier.patch")
-    if patch != nil {{ fail("trello.fetch_attachment: #{{patch.message}}") }}
+    match trello.fetch_attachment(card, "plan.md", "{home}/earlier-plan.md") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.fetch_attachment: #{{e.message}}")
+    }}
+    match trello.fetch_attachment(card, "work.patch", "{home}/earlier.patch") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.fetch_attachment: #{{e.message}}")
+    }}
     trello.move_to(card, "In Progress", at=.top)
   }}
-  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {{
+  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
     trello.move_to(card, "Review", at=.top)
   }}
 
   work_dir "{home}"
-  on_run proc(run: core.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
-    attached := trello.attach(card, "{home}/work.patch", "work.patch")
-    if attached != nil {{ fail("trello.attach: #{{attached.message}}") }}
+    match trello.attach(card, "{home}/work.patch", "work.patch") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.attach: #{{e.message}}")
+    }}
   }}
 }}
 "#,
@@ -819,11 +825,11 @@ const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afkd - Trello-driven pip
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
 // on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
 
-import "core"
-import "core:env"
-import "core:fs"
-import "core:git"
-import "vendor:claude"
+import "afkd"
+import "std:env"
+import "std:fs"
+import "std:git"
+import "agent:claude"
 import "shared"
 import "@afkd/trello"
 
@@ -850,31 +856,30 @@ GIT_WRITES :: [
 ]
 
 // Plans, implements, commits. Unattended, so bypass_permissions.
-builder :: agent(claude) {
-  timeout         4h
-  model           "opus"
-  effort          high
-  permission_mode bypass_permissions
-  skills          "@afkd/trello/trello"
-  tools           "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write"
-}
+builder :: claude.agent(
+  timeout=4h,
+  model="opus",
+  effort=.high,
+  permission_mode=.bypass_permissions,
+  skills=[ "@afkd/trello/trello" ],
+  allow=[ "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write" ],
+)
 
 // Gates each phase, review-only. Commits stay denied even under bypass_permissions.
-critic :: agent(claude) {
-  timeout         1h
-  model           "opus"
-  effort          high
-  permission_mode bypass_permissions
-  skills          "@afkd/trello/trello"
-  tools           "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write"
-  deny            GIT_WRITES
-}
+critic :: claude.agent(
+  timeout=1h,
+  model="opus",
+  effort=.high,
+  permission_mode=.bypass_permissions,
+  skills=[ "@afkd/trello/trello" ],
+  allow=[ "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write" ],
+  deny=GIT_WRITES,
+)
 
 // Confines the pipeline to the repo plus its Rust/claude toolchain.
 // The run's scratch dir is bound automatically.
 repo_jail :: sandbox {
-  network host
-
+  network "api.anthropic.com:443"
   read_write REPO,
              PLUGINS,
              "#{HOME}/.config/afkd/",
@@ -903,8 +908,10 @@ repo_jail :: sandbox {
 
 // Fresh marker state each run, and a tree that starts where master is.
 prep :: proc() {
-  fetched := git.fetch("origin", "master")
-  if fetched.error != nil { fail("git fetch: #{fetched.error.message}") }
+  match git.fetch("origin", "master") {
+    .ok(_) => { }
+    .err(fetched) => fail("git fetch: #{fetched.message}")
+  }
   $ git reset --hard
   $ git checkout -B master origin/master
   $ rm -f $AFKD_SCRATCH_DIR/plan.md $AFKD_SCRATCH_DIR/*.ok \
@@ -916,26 +923,31 @@ Verdict :: enum { blocked, approved, rejected }
 
 // A prompt file's text; a missing or unreadable one fails the run.
 prompt :: proc(name: str) -> str {
-  text, err := fs.read_file("#{PROMPTS}/#{name}")
-  if err != nil { fail("cannot read #{err.path}: #{err.message}") }
-  return text
+  match fs.read_file("#{PROMPTS}/#{name}") {
+    .ok(text) => text
+    .err(err) => fail("cannot read #{err.path}: #{err.message}")
+  }
 }
 
 // Builds, then critiques, up to three times.
-gate :: proc(run: core.Run, phase: str, build: str, critique: str) -> Verdict {
+gate :: proc(run: afkd.Run, phase: str, build: str, critique: str) -> Verdict {
   for _ in 0..<3 {
-    built := builder <- prompt(build)
-    if built.error != nil { fail("builder: #{built.error.message}") }
+    match builder(prompt(build)) {
+      .ok(_) => { }
+      .err(e) => fail("builder: #{e.message}")
+    }
     if fs.is_file("#{run.scratch_dir}/#{phase}.blocked") { return .blocked }
 
-    critiqued := critic <- prompt(critique)
-    if critiqued.error != nil { fail("critic: #{critiqued.error.message}") }
+    match critic(prompt(critique)) {
+      .ok(_) => { }
+      .err(e) => fail("critic: #{e.message}")
+    }
     if fs.is_file("#{run.scratch_dir}/#{phase}.ok") { return .approved }
   }
-  return .rejected
+  .rejected
 }
 
-plan :: proc(run: core.Run) {
+plan :: proc(run: afkd.Run) {
   verdict := gate(run, "plan", "20-plan-build.md", "21-plan-critique.md")
   if verdict == .blocked {
     fail("card unimplementable as written - see card comment")
@@ -944,7 +956,7 @@ plan :: proc(run: core.Run) {
   }
 }
 
-implement :: proc(run: core.Run) {
+implement :: proc(run: afkd.Run) {
   verdict := gate(run, "impl", "30-implement-build.md", "31-implement-critique.md")
   if verdict == .blocked {
     fail("implementation blocked - see card comment")
@@ -954,21 +966,28 @@ implement :: proc(run: core.Run) {
 }
 
 // Commits the approved work, then checks the fact rather than the agent's word.
-commit :: proc(run: core.Run) {
-  committed := builder <- prompt("40-commit.md")
-  if committed.error != nil { fail("builder: #{committed.error.message}") }
+commit :: proc(run: afkd.Run) {
+  match builder(prompt("40-commit.md")) {
+    .ok(_) => { }
+    .err(e) => fail("builder: #{e.message}")
+  }
   if fs.is_file("#{run.scratch_dir}/commit.blocked") {
     fail("commit blocked: approval stale, real change needed - see card comment")
   }
 
-  fetched := git.fetch("origin", "master")
-  if fetched.error != nil { fail("git fetch: #{fetched.error.message}") }
-  merged, err := git.is_merged("HEAD", into="origin/master")
-  if err != nil { fail("cannot tell whether HEAD reached origin/master: #{err.message}") }
-  if !merged { fail("the commit never reached origin/master - the push did not land") }
+  match git.fetch("origin", "master") {
+    .ok(_) => { }
+    .err(fetched) => fail("git fetch: #{fetched.message}")
+  }
+  match git.is_merged("HEAD", into="origin/master") {
+    .ok(merged) => {
+      if !merged { fail("the commit never reached origin/master - the push did not land") }
+    }
+    .err(err) => fail("cannot tell whether HEAD reached origin/master: #{err.message}")
+  }
 }
 
-task :: proc(run: core.Run) {
+task :: proc(run: afkd.Run) {
   prep()
   plan(run)
   implement(run)
@@ -985,26 +1004,40 @@ develop :: service(trello) {
   every        1m~3m
 
   on_claim proc(card: trello.Card) {
-    added := trello.add_member(card)
-    if added != nil { fail("trello.add_member: #{added.message}") }
-    moved := trello.move_to(card, "In Progress", at=.top)
-    if moved != nil { fail("trello.move_to: #{moved.message}") }
+    match trello.add_member(card) {
+      .ok(_) => { }
+      .err(added) => fail("trello.add_member: #{added.message}")
+    }
+    match trello.move_to(card, "In Progress", at=.top) {
+      .ok(_) => { }
+      .err(moved) => fail("trello.move_to: #{moved.message}")
+    }
   }
-  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
-    moved := trello.move_to(card, "Review", at=.top)
-    if moved != nil { fail("trello.move_to: #{moved.message}") }
-    commented := trello.comment(card, "afkd landed this card in #{outcome.duration}.")
-    if commented != nil { fail("trello.comment: #{commented.message}") }
+  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+    match trello.move_to(card, "Review", at=.top) {
+      .ok(_) => { }
+      .err(moved) => fail("trello.move_to: #{moved.message}")
+    }
+    match trello.comment(card, "afkd landed this card in #{outcome.duration}.") {
+      .ok(_) => { }
+      .err(commented) => fail("trello.comment: #{commented.message}")
+    }
   }
-  on_park proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
-    commented := trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
-    if commented != nil { fail("trello.comment: #{commented.message}") }
+  on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+    match trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.") {
+      .ok(_) => { }
+      .err(commented) => fail("trello.comment: #{commented.message}")
+    }
   }
-  on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
-    moved := trello.move_to(card, "Backlog", at=.bottom)
-    if moved != nil { fail("trello.move_to: #{moved.message}") }
-    labelled := trello.add_label(card, "Problem")
-    if labelled != nil { fail("trello.add_label: #{labelled.message}") }
+  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+    match trello.move_to(card, "Backlog", at=.bottom) {
+      .ok(_) => { }
+      .err(moved) => fail("trello.move_to: #{moved.message}")
+    }
+    match trello.add_label(card, "Problem") {
+      .ok(_) => { }
+      .err(labelled) => fail("trello.add_label: #{labelled.message}")
+    }
   }
 
   work_dir    REPO
@@ -1017,7 +1050,7 @@ develop :: service(trello) {
     PNPM_CONFIG_STORE_DIR: PNPM_STORE,
   }
 
-  on_run proc(run: core.Run, card: trello.Card) { task(run) }
+  on_run proc(run: afkd.Run, card: trello.Card) { task(run) }
 }
 "##;
 
@@ -1058,7 +1091,7 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
     install(home.path(), &stage(stage_dir.path()));
     let config = |call: &str| {
         format!(
-            r#"import "core"
+            r#"import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {{
@@ -1067,10 +1100,10 @@ widgets :: service(trello) {{
   token     "REPLACE_ME"
   pick_from "Up for Grabs"
 
-  on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {{ {call} }}
+  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: core.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, card: trello.Card) {{
     $ true
   }}
 }}
@@ -1133,7 +1166,7 @@ const OLD_CADENCE: &str = concat!("poll", "_interval");
 /// the file is as `afkd fmt` prints it under either key.
 fn cadence_service(key: &str) -> String {
     format!(
-        r#"import "core"
+        r#"import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {{
@@ -1146,7 +1179,7 @@ widgets :: service(trello) {{
 
   work_dir "/srv/acme/widgets"
 
-  on_run proc(run: core.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, card: trello.Card) {{
     $ true
   }}
 }}
