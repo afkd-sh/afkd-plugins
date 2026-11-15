@@ -39,9 +39,9 @@ $ tools/pack-release linear /tmp/afkd-release @afkd/linear/target/release/afkd-l
 $ afkd install /tmp/afkd-release/afkd-linear
 ```
 
-The configs below are written in the afk language of **afkd 0.2.637 or newer**, the
-first that reads a failure through the call's result; an older afkd still runs the plugin,
-but refuses the examples when they load.
+The configs below are written in the afk language of **afkd 0.2.651 or newer**, the
+first that imports agent kinds from `ai`; an older afkd still runs the plugin, but refuses
+the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `linear`:
 
@@ -110,7 +110,7 @@ wherever it is written.
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-import "agent:claude"
+import "ai:claude"
 
 // The agent a `service(linear)` runs: the skill is what lets it work the issue.
 builder :: claude.agent(model="sonnet", skills=[ "@afkd/linear/linear" ])
@@ -454,7 +454,7 @@ A **multi-step** run must stop at the ask itself, so nothing runs past the quest
 
 ```conf
 import "afkd"
-import "agent:claude"
+import "ai:claude"
 import "std:fs"
 import "@afkd/linear"
 

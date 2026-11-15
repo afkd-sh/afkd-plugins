@@ -105,7 +105,7 @@ struct Tree<'a> {
 /// backfill legs read its fire's corpus off `<state>/runs`, where the default `keep_runs on_fail`
 /// leaves nothing of a clean run.
 const SERVICES: Tree = Tree {
-    main: r#"import "afkd"; import "service:manual"
+    main: r#"import "afkd"; import "svc:manual"
 
 import "ops"
 
@@ -117,7 +117,7 @@ never :: service(manual) {
 "#,
     packages: &[(
         "ops",
-        r#"import "afkd"; import "service:manual"
+        r#"import "afkd"; import "svc:manual"
 
 kanshi :: service(manual) {
   description "ウェブ — the wide one"
@@ -150,7 +150,7 @@ const ON_FAIL_SERVICES: Tree = Tree {
     main: SERVICES.main,
     packages: &[(
         "ops",
-        r#"import "afkd"; import "service:manual"
+        r#"import "afkd"; import "svc:manual"
 
 kanshi :: service(manual) {
   description "ウェブ — the wide one"
@@ -1071,7 +1071,7 @@ fn the_verbs_accept_the_shipped_manifest() {
 /// A v2 `daemon.afk` with two services and **no line about the companion**: under a v2
 /// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
 const V2_MAIN: &str = "\
-     import \"afkd\"\nimport \"service:interval\"\nimport \"service:manual\"\n\n\
+     import \"afkd\"\nimport \"svc:interval\"\nimport \"svc:manual\"\n\n\
      tick :: service(interval) {\n  every 1h\n\n  on_run proc(run: afkd.Run) {\n    $ true\n  }\n}\n\n\
      hello :: service(manual) {\n  on_run proc(run: afkd.Run) {\n    $ echo ライン one\n  }\n}\n";
 
@@ -3213,7 +3213,7 @@ const DRIFT_SERVICES: Tree = Tree {
 };
 
 /// [`DRIFT_SERVICES`]' `daemon.afk`: the two services in `main`.
-const DRIFT_MAIN: &str = r#"import "afkd"; import "service:interval"; import "service:manual"
+const DRIFT_MAIN: &str = r#"import "afkd"; import "svc:interval"; import "svc:manual"
 
 import "ops"
 
@@ -3235,7 +3235,7 @@ never :: service(manual) {
 "#;
 
 /// [`DRIFT_SERVICES`]' `ops` package.
-const DRIFT_OPS: &str = r#"import "afkd"; import "service:interval"
+const DRIFT_OPS: &str = r#"import "afkd"; import "svc:interval"
 
 kanshi :: service(interval) {
   description "ウェブ — the wide one"
@@ -5401,7 +5401,7 @@ const INFO_SECTIONS: usize = 5;
 /// lane, so both surfaces draw a `Queues` section and the info view a `Queue` row.
 fn ledger_ops() -> String {
     const OPENER: &str = "backup :: service(interval) {\n";
-    const IMPORTS: &str = "import \"afkd\"; import \"service:interval\"\n\n";
+    const IMPORTS: &str = "import \"afkd\"; import \"svc:interval\"\n\n";
     // A fixture edit that renamed the service would otherwise drop the lane in silence, and
     // the `Queues` section would then go uncompared for a reason neither surface is at.
     assert_eq!(

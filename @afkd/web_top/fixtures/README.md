@@ -249,7 +249,7 @@ daemon's `welcome`. None of the earlier files was re-recorded, so no existing go
 Its config, `daemon.afk`, verbatim:
 
 ```afk
-import "core"; import "service:manual"
+import "core"; import "svc:manual"
 
 heavy :: queue
 gpu :: queue
@@ -362,7 +362,7 @@ Its config, `daemon.afk` and `ops/ops.afk`, verbatim:
 
 ```afk
 import "afkd"
-import "service:manual"
+import "svc:manual"
 import "ops"
 
 fine :: service(manual) {
@@ -380,7 +380,7 @@ broken :: service(manual) {
 
 ```afk
 import "afkd"
-import "service:manual"
+import "svc:manual"
 
 flaky :: service(manual) {
   on_run proc(run: afkd.Run) {

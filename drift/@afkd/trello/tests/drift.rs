@@ -829,7 +829,7 @@ import "afkd"
 import "std:env"
 import "std:fs"
 import "std:git"
-import "agent:claude"
+import "ai:claude"
 import "shared"
 import "@afkd/trello"
 

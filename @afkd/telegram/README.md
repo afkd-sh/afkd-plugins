@@ -36,9 +36,8 @@ $ tools/pack-release telegram /tmp/afkd-release @afkd/telegram/target/release/af
 $ afkd install /tmp/afkd-release/afkd-telegram
 ```
 
-The configs below are written in the afk language of **afkd 0.2.644 or newer**, the
-first that reads the language from `.afk` files. afkd 0.2.637 to 0.2.643 read the same
-configs under the extension they had before; an older afkd still runs the plugin, but
+The configs below are written in the afk language of **afkd 0.2.653 or newer**, the
+first that imports service kinds from `svc`; an older afkd still runs the plugin, but
 refuses the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `telegram`.
@@ -46,7 +45,7 @@ This service hands every message in two chats to an agent, which answers through
 
 ```conf
 import "afkd"
-import "agent:claude"
+import "ai:claude"
 import "std:env"
 import "@afkd/telegram"
 
@@ -100,7 +99,7 @@ token "7712345678:AAHfiqksKZ8WmR2zSjiQ7_v4TMAKdiHm9T0"
 
 ```conf
 import "afkd"
-import "service:interval"
+import "svc:interval"
 import "@afkd/telegram"
 
 nightly :: service(interval) {

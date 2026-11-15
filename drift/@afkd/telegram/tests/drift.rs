@@ -547,7 +547,7 @@ fn install_leg_places_the_plugin_and_runs_one_message_through_it() {
 fn nightly(home: &Path) -> String {
     format!(
         r#"import "afkd"
-import "service:interval"
+import "svc:interval"
 import "@afkd/telegram"
 
 nightly :: service(interval) {{

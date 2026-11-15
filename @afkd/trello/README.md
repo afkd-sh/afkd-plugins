@@ -48,8 +48,9 @@ claimed card as a `trello.Card`, and sends each action a slot calls on a card as
 afkd 0.2.197 to 0.2.240 install and run it too, but there a slot reading any field beyond
 `id` and `key` fails; an older afkd refuses the manifest when it is installed.
 
-The configs below are written in the afk language of **afkd 0.2.637 or newer**; an
-older afkd still runs the plugin, but refuses the examples when they load.
+The configs below are written in the afk language of **afkd 0.2.651 or newer**, the
+first that imports agent kinds from `ai`; an older afkd still runs the plugin, but refuses
+the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `trello`:
 
@@ -105,7 +106,7 @@ wherever it is written, and a slot may act on another card than the one its run 
 The skill is the plugin's own, so it is named with the plugin's name in front:
 
 ```conf
-import "agent:claude"
+import "ai:claude"
 
 // The agent a `service(trello)` runs: the skill is what lets it work the card.
 builder :: claude.agent(model="sonnet", skills=[ "@afkd/trello/trello" ])
@@ -417,7 +418,7 @@ nothing runs past the question:
 
 ```conf
 import "afkd"
-import "agent:claude"
+import "ai:claude"
 import "std:fs"
 import "@afkd/trello"
 
