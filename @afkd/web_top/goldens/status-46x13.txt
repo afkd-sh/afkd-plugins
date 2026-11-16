@@ -1,7 +1,7 @@
 afkd 0.2.123 · ● Running 12s · 8 up · 2 down  
                                               
 Service         State                         
-🧹 janitor      □ Stopped                     
+▫ janitor       □ Stopped                     
 ◇ ops.nightly   ▷ Queued 2s                   
 ◆ ops.sleeper   ▶ Busy 4s                     
 ◇ ops.broken    ✕ Crashed                     
@@ -16,7 +16,7 @@ Service         State
 nnnnnnnnnnnnnfnknnnnnnnnnnnnnfnkkkknfnxxxxxxnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 mmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmnnnnnnnnnnn
-ffffffffffnnnnnnfffffffffnnnnnnnnnnnnnnnnnnnnn
+fffffffffnnnnnnnfffffffffnnnnnnnnnnnnnnnnnnnnn
 onnnnnnnnnnnnnnnpppppppppppnnnnnnnnnnnnnnnnnnn
 annnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnn
 xnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnn

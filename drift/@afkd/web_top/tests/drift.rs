@@ -3181,10 +3181,7 @@ const TOP_TERM_ENV: [(&str, &str); 5] = [
 /// The board the drift leg diffs, chosen for what the comparison has to carry rather than
 /// for what a daemon does:
 ///
-/// - `janitor` — a custom `icon` and a cadence, so the `Service` cell opens with a glyph
-///   each surface has to measure for itself and the `Trigger`/`Next Run` cells are full. The
-///   icon is a VS16 sequence on a base with an emoji presentation sequence ([`VS16_ICON`]), two
-///   cells by the selector alone, so a surface that ignores it pads the row apart;
+/// - `janitor` — a cadence, so the `Trigger`/`Next Run` cells are full;
 /// - `ops.kanshi` — packaged, with a wide-glyph description, so the grouped arm spells its
 ///   leaf under the `ops` header and the flat arm its whole name — each surface strips the
 ///   package for itself, and a name either side mis-spells pushes its own row's later cells
@@ -3197,8 +3194,8 @@ const TOP_TERM_ENV: [(&str, &str); 5] = [
 ///   `… 1 more` elision. Every line it prints is sized under [`LOG_MESSAGE_BUDGET`], so
 ///   neither log pane wraps;
 /// - `ops.backup` — the group's second member, so both tree connectors are on screen, and
-///   an operator `icon` on a base with no emoji presentation sequence ([`OPERATOR_ICON`]), so
-///   a VS16 the terminal ignores is measured by both surfaces;
+///   the one the overview leg stales ([`STALED`]), so its row carries [`STALE_MARKER`], a
+///   VS16 glyph each surface has to measure for itself;
 /// - `never` — `manual`, and the one the leg stops, so a second badge (`□ Stopped`) and a
 ///   `1 down` segment of the header are on the board.
 ///
@@ -3218,7 +3215,6 @@ const DRIFT_MAIN: &str = r#"import "afkd"; import "svc:interval"; import "svc:ma
 import "ops"
 
 janitor :: service(interval) {
-  icon        "❄️"
   description "sweeps the floor"
   every       1h
 
@@ -3256,7 +3252,6 @@ inner :: proc() {
 }
 
 backup :: service(interval) {
-  icon  "★️"
   every 1h
 
   on_run proc(run: afkd.Run) {
@@ -3267,6 +3262,31 @@ backup :: service(interval) {
 
 /// The service the drift leg stops, so the board it compares carries two distinct badges.
 const STOPPED: &str = "never";
+
+/// The service the drift leg stales, so the board it compares carries [`STALE_MARKER`].
+const STALED: &str = "ops.backup";
+
+/// `layout::STALE_MARKER`, the cobweb a service whose config changed under it carries until a
+/// restart adopts it — and the one VS16 glyph afkd top draws on a service row. Its base
+/// **has** an emoji presentation sequence, so `unicode-width` gives it two cells for the
+/// selector alone, and a surface that ignores the selector pads the row apart. Held to the
+/// board by [`drift`]'s floor on it, and to both sources by
+/// `every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top`.
+const STALE_MARKER: &str = "\u{1F578}\u{FE0F}";
+
+/// [`DRIFT_SERVICES`]' `ops` package with [`STALED`]'s step changed, so a reload over it
+/// stages the new config on the armed service rather than adopting it, and stales its row.
+fn restaged_ops() -> String {
+    const STEP: &str = "    $ true\n";
+    // A fixture edit that gave another service the same step would otherwise change that
+    // one too, and the cobweb would land on a row this leg never named.
+    assert_eq!(
+        DRIFT_OPS.matches(STEP).count(),
+        1,
+        "`DRIFT_OPS` runs `$ true` once, in `backup`; the restage is no longer aimed at it"
+    );
+    DRIFT_OPS.replace(STEP, "    $ true; true\n")
+}
 
 /// What has to be on a screen before comparing it means anything: the fixture's five rows,
 /// two distinct badges among them, and the footer's five key badges, each read as two hints,
@@ -3281,9 +3301,9 @@ const FOOTER_HINT_FLOOR: usize = 10;
 /// One reconstructed screen as **columns**: `grid[row][col]` is that cell's contents, and a
 /// wide glyph's covered cell is the empty string beside it.
 ///
-/// Columns rather than characters because a char-index slice cannot survive `❄️` or `★️`:
-/// the terminal's grid and the plugin's own `textWidth` both put a wide glyph in one cell
-/// and leave the next empty, and this is the one shape in which the two are comparable.
+/// Columns rather than characters because a char-index slice cannot survive `🕸️` or a CJK
+/// description: the terminal's grid and the plugin's own `textWidth` both put a wide glyph in
+/// one cell and leave the next empty, and this is the one shape in which the two are comparable.
 struct Screen {
     grid: Vec<Vec<String>>,
 }
@@ -3742,10 +3762,10 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
     }
     if !top_rows
         .iter()
-        .any(|row| cell_text(row, span_of(&spans, "Service")).contains(VS16_ICON))
+        .any(|row| cell_text(row, span_of(&spans, "Service")).contains(STALE_MARKER))
     {
         return Err(format!(
-            "no {VS16_ICON} icon was on screen, so a VS16 glyph's padding was never compared{both}"
+            "no {STALE_MARKER} stale marker was on screen, so a VS16 glyph's padding was never compared{both}"
         ));
     }
     if !top_rows
@@ -3754,14 +3774,6 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
     {
         return Err(format!(
             "no {STOPPED_MARK} stopped mark was on screen, so a switched-off service's row was never compared{both}"
-        ));
-    }
-    if !top_rows
-        .iter()
-        .any(|row| cell_text(row, span_of(&spans, "Service")).contains(OPERATOR_ICON))
-    {
-        return Err(format!(
-            "no {OPERATOR_ICON} operator icon was on screen, so a VS16 on a non-emoji base was never compared{both}"
         ));
     }
     if !has_countdown(&top_rows, &spans) {
@@ -4082,43 +4094,28 @@ fn drive_plugin(
     Screen { grid }
 }
 
-/// `layout::STOPPED_ICON`, the switched-off service's icon below 24-bit — mirrored because the
-/// constant is `pub(crate)`, and held to the source by its membership in [`VARIATION_GLYPHS`].
-const STOPPED_ICON: &str = "\u{25AA}\u{FE0F}";
-
 /// `layout::Mark::text`'s stopped mark, the one-cell `▫` a switched-off service opens on at
 /// 24-bit, the depth every leg's terminal runs at ([`TOP_TERM_ENV`]).
 const STOPPED_MARK: &str = "\u{25AB}";
 
-/// `janitor`'s `icon` in [`DRIFT_SERVICES`]: a VS16 sequence on a base that **has** an emoji
-/// presentation sequence, so `unicode-width` gives it two cells for the selector alone. Held to
-/// the fixture by [`drift`]'s floor on it.
-const VS16_ICON: &str = "\u{2744}\u{FE0F}";
-
-/// `ops.backup`'s `icon` in [`DRIFT_SERVICES`]: an operator icon on a base with **no** emoji
-/// presentation sequence, so `unicode-width` ignores the selector and it measures one cell
-/// (FdK5ONtJ). Held to the fixture by [`drift`]'s floor on it.
-const OPERATOR_ICON: &str = "\u{2605}\u{FE0F}";
-
 /// Every variation-selector glyph afkd top's source (`crates/tui/src`) or web_top's
 /// (`@afkd/web_top/*.mjs`) spells, by name — the set
 /// `every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top` checks.
-const VARIATION_GLYPHS: [&str; 15] = [
+const VARIATION_GLYPHS: [&str; 14] = [
     "\u{21BB}\u{FE0E}",
     "\u{2225}\u{FE0E}",
     "\u{2298}\u{FE0E}",
     "\u{22EF}\u{FE0E}",
     "\u{23F1}\u{FE0E}",
-    STOPPED_ICON,
-    OPERATOR_ICON,
+    "\u{25AA}\u{FE0F}",
+    "\u{2605}\u{FE0F}",
     "\u{2691}\u{FE0E}",
     "\u{2699}\u{FE0E}",
     "\u{2699}\u{FE0F}",
     "\u{270E}\u{FE0E}",
     "\u{2713}\u{FE0E}",
     "\u{2717}\u{FE0E}",
-    VS16_ICON,
-    "\u{1F578}\u{FE0F}",
+    STALE_MARKER,
 ];
 
 /// `text` with every `\u{HEX}` (Rust and javascript) and `\uHHHH` (javascript) escape decoded
@@ -4264,16 +4261,17 @@ fn every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top() {
     };
     let tui = source_glyphs(&afkd.join("crates/tui/src"), "rs", true);
     let web = source_glyphs(&plugin_root(), "mjs", false);
-    for glyph in [STOPPED_ICON, "\u{1F578}\u{FE0F}"] {
-        assert!(
-            tui.contains(glyph) && web.contains(glyph),
-            "{glyph} ({}) is spelled in both trees, so both measure it; the scan found it in \
-             crates/tui: {}, web_top: {}",
-            code_points(glyph),
-            tui.contains(glyph),
-            web.contains(glyph)
-        );
-    }
+    // The stale marker is the one VS16 glyph afkd top draws on a service row, so it has to be
+    // spelled on both sides. The rest may be one side's alone: `▪️`, `★️` and `⚙️` are spelled
+    // only by web_top's own suites, and are measured here all the same.
+    assert!(
+        tui.contains(STALE_MARKER) && web.contains(STALE_MARKER),
+        "{STALE_MARKER} ({}) is spelled in both trees, so both measure it; the scan found it in \
+         crates/tui: {}, web_top: {}",
+        code_points(STALE_MARKER),
+        tui.contains(STALE_MARKER),
+        web.contains(STALE_MARKER)
+    );
 
     let named: BTreeSet<String> = VARIATION_GLYPHS.iter().map(|g| (*g).to_string()).collect();
     let scanned: BTreeSet<String> = tui.union(&web).cloned().collect();
@@ -4516,10 +4514,26 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     let (_daemon, dir, port) = daemon_serving(&DRIFT_SERVICES, "listen \"127.0.0.1:0\"\n");
     let scratch = TempDir::new().expect("a tempdir for the capture");
 
+    // Make `ops.backup` stale before anything attaches: its changed step is staged on the armed
+    // service, and the cobweb it then carries is the VS16 glyph both surfaces measure.
+    std::fs::write(
+        config_dir(dir.path()).join("ops").join("ops.afk"),
+        restaged_ops(),
+    )
+    .expect("write the restaged ops package");
+    let reloaded = run_subcommand_args(dir.path(), &["reload"]);
+    assert!(
+        reloaded.status.success(),
+        "`afkd reload` over the restaged package: {}{}",
+        String::from_utf8_lossy(&reloaded.stdout),
+        String::from_utf8_lossy(&reloaded.stderr)
+    );
+
     // One stream serves all three duties — the snapshot, the stop's own events, and the
     // capture the renderer folds — which is why the order below is fixed: the snapshot lands
     // before the stop, so the fold reaches the same stopped board the terminal's own later
-    // attach starts from. It is also the page's real input (the relay forwards every wire
+    // attach starts from. The reload landed before either attach, so both surfaces read the
+    // cobweb off a snapshot. It is also the page's real input (the relay forwards every wire
     // frame verbatim), so the renderer is fed exactly what a browser gets.
     let mut sse = Sse::admitted(port);
     let (id, welcome) = sse.handshake_with_welcome();
@@ -4532,6 +4546,17 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     assert!(
         sse.collect_frames(BUDGET, &mut frames, |f| f["meta"] == "snapshot"),
         "the attach snapshot never arrived; the stream carried {frames:?}"
+    );
+    // Name a missing cobweb at its cause, rather than as a floor `drift` closes on.
+    let snapshot: serde_json::Value =
+        serde_json::from_str(frames.last().expect("the snapshot frame")).expect("JSON");
+    assert!(
+        snapshot["services"]
+            .as_array()
+            .is_some_and(|services| services
+                .iter()
+                .any(|s| s["name"] == STALED && s["stale"] == true)),
+        "the reload never staled {STALED}; the snapshot carried {snapshot}"
     );
     let (status, body) = post_command(
         port,
@@ -4647,9 +4672,9 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         "the failure names the column whose edge moved: {fault}"
     );
 
-    // The third arm: `❄️` measured one cell narrower in a copy has to redden the leg — B6D5ahX2
-    // in reverse. The icon's covered column is the `Service` cell's own padding, which a
-    // collapsed comparison let through (both cells read `❄️ janitor`).
+    // The third arm: `🕸️` measured one cell narrower in a copy has to redden the leg — B6D5ahX2
+    // in reverse. The cobweb on `ops.backup`'s row covers a column of the `Service` cell's own
+    // padding, which a collapsed comparison let through (both cells read `◇ 🕸️backup`).
     const VS16_RULE: &str = "if (startsEmojiPresentation(cluster, base)) return 2;";
     assert_eq!(
         before.matches(VS16_RULE).count(),
@@ -4664,24 +4689,11 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     std::fs::write(&layout, &narrowed).expect("write the mutated layout module");
     let shifted = render_through_plugin(&copy, &capture, &version, "gvg");
     let fault = drift(&terminal, &shifted, Arm::Grouped).expect_err(
-        "a VS16 icon one cell narrower than afkd top's is drift, and this leg has to say so",
+        "a VS16 glyph one cell narrower than afkd top's is drift, and this leg has to say so",
     );
     assert!(
         fault.contains("`Service` cell differs"),
         "the failure names the column whose padding moved: {fault}"
-    );
-
-    // The fourth arm: FdK5ONtJ restored — every VS16 cluster two cells, whatever its base.
-    // `ops.backup`'s `★️` is one cell in the terminal, which ignores the selector on a base
-    // with no emoji presentation sequence, so the widened icon pushes that row's name out.
-    let widened = before.replace(VS16_RULE, r#"if (cluster.includes("\u{FE0F}")) return 2;"#);
-    std::fs::write(&layout, &widened).expect("write the mutated layout module");
-    let pushed = render_through_plugin(&copy, &capture, &version, "gvg");
-    let fault = drift(&terminal, &pushed, Arm::Grouped)
-        .expect_err("a VS16 widening a non-emoji base is drift, and this leg has to say so");
-    assert!(
-        fault.contains("`Service` cell differs"),
-        "the failure names the column the widened icon pushed: {fault}"
     );
 }
 

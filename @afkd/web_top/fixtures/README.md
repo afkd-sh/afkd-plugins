@@ -7,7 +7,7 @@ the suites derive their expectations from these files, so a re-capture cannot qu
 assertion vacuous, and a frame shape this fold has never actually seen — or a run-dir layout
 the daemon has never actually written — cannot sneak into the suite as a guess.
 
-Three edits were made to them since, each following a rename in afkd that changed no shape.
+Four edits were made to them since, each following a change in afkd that moved nothing else.
 afkd 0.2.171 renamed four event tags, so `fire_started`, `fire_ok`, `fire_failed` and
 `service_next_fire` were rewritten in place to `run_started`, `run_ok`, `run_failed` and
 `service_next_run` — the exact quoted tag, never a bare `fire`, so no service name or log line
@@ -19,7 +19,11 @@ group (lang-v2 §3.6, §20.3), so the v1 identities were rewritten in place: `op
 `ops.sleeper`, `tree.retried` and `ops.監視`, and the two-level `ops::db::vacuum` (group
 `ops::db`) to `ops.vacuum` (group `ops`). Only exact JSON string values that equal an identity
 or a group moved; the log lines, which carry the tag the daemon printed (`[ops::nightly]`), and
-the run logs under `runs*/` were left as recorded.
+the run logs under `runs*/` were left as recorded. And a service has no icon setting in afkd,
+whose rows always open on their state mark, so the daemon sends no `icon` key: every `"icon"`
+member of a service entry — a snapshot's, a `reloaded` verdict's `added` and `changed`, a
+`spawned` service — was deleted from all fourteen captures, 78 in all, and each edited line
+parses to its recorded self with that key gone.
 
 They ride into every operator's plugin directory on `afkd install`, so they stay small —
 about 100 KB for all of them.
@@ -49,8 +53,8 @@ and a `usage` block, so `agent_finished` carries confirmed turns, cost and token
 
 ### The config's shape, and why
 
-Ten services, each there for something an assertion needs: a bare one with an `icon` and a
-`description`; four in the `ops` group — `ops.nightly`, `ops.sleeper`, `ops.broken` and
+Ten services, each there for something an assertion needs: a bare one with a `description`;
+four in the `ops` group — `ops.nightly`, `ops.sleeper`, `ops.broken` and
 `ops.vacuum`, some of them the ones named below — so a header has members to fold and roll up;
 three on one
 `heavy :: queue { capacity 2 }` lane at `high` / `normal` / `low`; one carrying a
@@ -188,7 +192,7 @@ the daemon's `welcome`, as `loud-fail.jsonl` does.
 
 Its config is a `selfdev` package holding `develop` (`instances 3`; a `printf` of a CJK line
 and a second line, then `sleep 3`) and `review` (one copy), and in the main package `backup`
-(`instances auto`, icon `🈶`, `sleep 3`), which validates with the expected warning that an
+(`instances auto`, `sleep 3`), which validates with the expected warning that an
 `auto` pool behind an interval adds runs, not capacity. The session, in order:
 
 1. attach, then `run selfdev.develop.0` and, 0.3s later, `run selfdev.develop.1` — two of the
@@ -209,9 +213,9 @@ and the same recorder, so the file opens on the daemon's `welcome`. None of the 
 re-recorded, so no existing golden moved.
 
 Its config is the dashboard's own example: `daemon.afk` imports `claude` and `selfdev` and
-declares `janitor` (icon `🧹`); `claude/claude.afk` declares `brownout` (icon `🔋`); and
-`selfdev/selfdev.afk` declares `develop` (icon `🛠`, `instances 2`; a `printf` of a CJK line and
-a second line, then `sleep 3`) and `discuss` (icon `💬`). The session, in order:
+declares `janitor`; `claude/claude.afk` declares `brownout`; and `selfdev/selfdev.afk` declares
+`develop` (`instances 2`; a `printf` of a CJK line and a second line, then `sleep 3`) and
+`discuss`. The session, in order:
 
 1. attach, then `run selfdev.develop.0` — the family row goes busy, one copy of two;
 2. the run finishes;
@@ -225,7 +229,7 @@ under `/tmp`, a v2 config with no provider trigger and an `every 1h` cadence eve
 same recorder, so the file opens on the daemon's `welcome`. None of the earlier files was
 re-recorded, so no existing golden moved.
 
-Its config: `daemon.afk` imports `ops` and declares `janitor` (icon `🧹`); `ops/ops.afk`
+Its config: `daemon.afk` imports `ops` and declares `janitor`; `ops/ops.afk`
 declares `heavy :: queue { capacity 2 }`, `nightly` (`queue heavy`, `instances 2`, a wide-glyph
 `description`), `vacuum` (`queue heavy`) and `solo` (no queue). The session, in order, every
 command sent on the recorder's own wire as `{"type":"command","command":"queue_parallelism",…}`:

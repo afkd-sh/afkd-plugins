@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.14.1 (companion)
+Installed @afkd/web_top 0.15.0 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -182,9 +182,9 @@ skips loudly on a host with no `node`.
 `layout.mjs` is the second half of the same idea: `layout(board, {cols, rows, selected, offset,
 filter, collapsed, typing, flash, confirm, help, now, version})` returns one array of `{text, fg, bg, dim, bold, width}` cells per
 screen row — the title bar and its shed ladder, the host-load strip and its four trend lanes,
-the five columns and *their* shed ladder, the service and group rows with their icons,
-badges, markers, cadences, ages and countdowns, the `Queues` section, the list footer's five key
-badges, the run view's footer laid out as the terminal's own column grid, and the two popups
+the five columns and *their* shed ladder, the service rows with their state marks and the
+group rows with their icons, badges, markers, cadences, ages and countdowns, the `Queues`
+section, the list footer's five key badges, the run view's footer laid out as the terminal's own column grid, and the two popups
 over all of it — the verb-carrying confirm modal and the `?` overlay, each framed by one
 `render_popup` that owns the gutter so no call site pads its own body. It is `crates/tui/src/layout.rs`, `legend.rs` and
 `shell.rs`'s width family, restated the way the fold restates `model.rs`, with the same

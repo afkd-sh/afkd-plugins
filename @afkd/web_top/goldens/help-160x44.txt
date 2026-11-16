@@ -2,7 +2,7 @@ afkd 0.2.123 · ● Running 12s · 8 up · 2 down                               
 CPU                         ▁▁▁    1% · Mem                         ▁▁▁  1.5G/31G · Net ↓                       ▆▁▁   717/s ↑                       ▂▁▁   959/s 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Service                                                                        State                 Trigger                            Last Activity   Next Run
-  🧹 janitor                                                                   □ Stopped             Every 1h                                                   
+  ▫ janitor                                                                    □ Stopped             Every 1h                                                   
 ⊟ 📦 ops                                                                       ✕ Crashed                                                           4s           
 ├─ ◇ nightly                                     ┌ Help ─────────────────────────────────────────────────────┐                                     9s           
 ├─ ◆ sleeper                                     │                                                           │                                     4s           
@@ -48,7 +48,7 @@ nnnnnnnnnnnnnfnknnnnnnnnnnnnnfnkkkknfnxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 mmmmnnnnnnnnnnnnnnnnnnnnnnnnuuunnnnnnnnnmmmmnnnnnnnnnnnnnnnnnnnnnnnnpppnnnnnnnnnnnnnmmmmmnnnnnnnnnnnnnnnnnnnnnnnkkknnnnnnnnmmnnnnnnnnnnnnnnnnnnnnnnnkkknnnnnnnnn
 rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmnnnmmmmmmmm
-nnffffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffffffnnnnnnnnnnnnnffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnfffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffffffnnnnnnnnnnnnnffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 nnnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfbbbbbbffffffffffffffffffffffffffffffffffffffffffffffffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 nnnannnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn

@@ -2,7 +2,7 @@ afkd 0.2.123 · ● Running 12s · 8 up · 2 down           $0.04
 CPU   1% · Mem 1.5G/31G · Net ↓717/s ↑959/s                 
 ────────────────────────────────────────────────────────────
 Service         State                 Last Activity         
-  🧹 janitor    □ Stopped                                   
+  ▫ janitor     □ Stopped                                   
 ⊟ 📦 ops        ✕ Crashed                        4s         
 ├─ ◇ nightly    ▷ Queued 2s                      9s         
 ├─ ◆ sleeper    ▶ Busy 4s                        4s         
@@ -34,7 +34,7 @@ nnnnnnnnnnnnnfnknnnnnnnnnnnnnfnkkkknfnxxxxxxnnnnnnnnnnnccccc
 mmmmnnnnnnnmmmmnnnnnnnnnnnmmmmmnnnnnmmnnnnnnnnnnnnnnnnnnnnnn
 rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
 mmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmnnnnnnnnn
-nnffffffffffnnnnfffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnfffffffffnnnnnfffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnn
 nnnonnnnnnnnnnnnpppppppppppnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnn
 nnnannnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnn

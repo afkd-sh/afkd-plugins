@@ -191,11 +191,11 @@ test("a glyph outside ASCII is boxed alone, so a wider face cannot clip the text
   // owns a box of its measured width, so its overhang is the only thing that can clip, and
   // the ASCII after it still coalesces into one run starting on its own column.
   const root = element("div");
-  paint(root, [[cell("▷ Queued 1h 18m", { fg: "pre-run" }), cell("🔹 archivist", { fg: "text" }), cell("├─ ", { fg: "faint" })]]);
+  paint(root, [[cell("▷ Queued 1h 18m", { fg: "pre-run" }), cell("📦 archivist", { fg: "text" }), cell("├─ ", { fg: "faint" })]]);
   const spans = root.children[0].children;
   assert.deepEqual(
     spans.map((s) => [s.textContent, s.style.props["--cells"]]),
-    [["▷", "1"], [" Queued 1h 18m", "14"], ["🔹", "2"], [" archivist", "10"], ["├", "1"], ["─", "1"], [" ", "1"]],
+    [["▷", "1"], [" Queued 1h 18m", "14"], ["📦", "2"], [" archivist", "10"], ["├", "1"], ["─", "1"], [" ", "1"]],
     "every non-ASCII cluster is a box of its own cells, and the ASCII between them one run",
   );
   // …and each such box is marked, so the stylesheet can let its overhang paint over the next
@@ -225,7 +225,7 @@ test("a glyph from a fallback face is centred on its cells, and shrunk only as f
     "▷": { advance: 2, left: 0.5, right: 1.75 }, // a CJK face's: a wide margin, ink wider than its cell
     "▯": { advance: 1.5, left: 0.5, right: 1 }, // a wide margin, ink that fits
     "●": { advance: 1.004, left: 0.1, right: 0.9 }, // the grid's own face, to layout rounding
-    "🔹": { advance: 2.25, left: 0.25, right: 2 }, // an emoji face, a little wider than two cells
+    "📦": { advance: 2.25, left: 0.25, right: 2 }, // an emoji face, a little wider than two cells
     "├": { advance: 1, left: 0.45, right: 1 }, // the grid's own face, meeting the next cell's line
     "　": { advance: 1.667, left: 0, right: 0 }, // a wide blank, with no ink to place
   };
@@ -237,7 +237,7 @@ test("a glyph from a fallback face is centred on its cells, and shrunk only as f
     cell("▷ Queued", { fg: "pre-run" }),
     cell("▯", { fg: "faint" }),
     cell("● Idle", { fg: "secondary", bold: true }),
-    cell("🔹├　", { fg: "text" }),
+    cell("📦├　", { fg: "text" }),
   ];
   paint(root, [row], measure);
   const spans = root.children[0].children;
@@ -249,7 +249,7 @@ test("a glyph from a fallback face is centred on its cells, and shrunk only as f
       ["▯", "1", "-0.25"],
       ["●", "1", "0"],
       [" Idle", "1", "0"],
-      ["🔹", "1", "-0.125"],
+      ["📦", "1", "-0.125"],
       ["├", "1", "0"],
       ["　", "1", "0"],
     ],
@@ -261,7 +261,7 @@ test("a glyph from a fallback face is centred on its cells, and shrunk only as f
       ["▷", "fg-pre-run glyph"],
       ["▯", "fg-faint glyph"],
       ["●", "fg-secondary glyph bold"],
-      ["🔹", "fg-text glyph"],
+      ["📦", "fg-text glyph"],
       ["├", "fg-text glyph"],
       ["　", "fg-text glyph"],
     ],

@@ -115,10 +115,7 @@ test("a snapshot alone seeds one row per service, with its whole wire entry", ()
   }
   assert.ok(snapshot.services.some((s) => s.group === ""), "…and a bare one at the top level");
   assert.ok(snapshot.services.some((s) => s.confined), "…one confined");
-  assert.ok(
-    snapshot.services.some((s) => s.icon !== "" && s.description !== ""),
-    "…one with an icon and a sentence",
-  );
+  assert.ok(snapshot.services.some((s) => s.description !== ""), "…one with a sentence");
   assert.ok(
     snapshot.services.filter((s) => s.queue !== "").length >= 2,
     "…at least two on one lane, with levels and a live capacity",
@@ -149,7 +146,6 @@ test("a snapshot alone seeds one row per service, with its whole wire entry", ()
     assert.equal(svc.triggerLabel, entry.trigger_label, at);
     assert.equal(svc.triggerDetail, entry.trigger_detail, at);
     assert.deepEqual(svc.triggerFields, entry.trigger_fields, at);
-    assert.equal(svc.icon, entry.icon, at);
     assert.equal(svc.description, entry.description, at);
     assert.equal(svc.group, entry.group, at);
     assert.equal(svc.queue, entry.queue, at);
@@ -848,7 +844,6 @@ test("a reload applies its whole reconcile verdict", () => {
     const svc = after.services[entry.name];
     assert.ok(svc, `${entry.name} was added`);
     assert.equal(svc.triggerLabel, entry.trigger_label, "…with its full seed, not a blank husk");
-    assert.equal(svc.icon, entry.icon);
     assert.ok(after.order.includes(entry.name));
   }
   for (const entry of reloaded.changed) {

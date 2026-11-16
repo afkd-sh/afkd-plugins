@@ -92,9 +92,9 @@ const WIDE_RANGES = [
 /// sequence* — is immediately followed by it and listed in `EMOJI_PRESENTATION_BASES`, the
 /// rule `unicode-width`'s `starts_emoji_presentation_seq` applies — measures **two** cells
 /// even where its base scalar is Ambiguous or Neutral. That is the dependency
-/// `layout::STOPPED_ICON` (`▪️`) and `layout::STALE_MARKER` (`🕸️`) both already record, and
-/// the reason neither may be spelled without it. On any other base the selector is ignored
-/// and the base's own width stands: U+2605 with it is still one cell.
+/// `layout::STALE_MARKER` (`🕸️`) already records, and the reason it may not be spelled
+/// without it. On any other base the selector is ignored and the base's own width stands:
+/// U+2605 with it is still one cell.
 const VS16 = 0xfe0f;
 
 /// The bases of every `<base> FE0F ; emoji style` line in Unicode 17.0.0's
@@ -944,7 +944,7 @@ export function copiesBreakdown(count) {
 
 /// `layout::TREE_CONNECTOR_MID` / `_LAST` / `TREE_GUIDE_BAR` / `_BLANK` /
 /// `TREE_TOP_LEVEL_INDENT` — three display cells each, and the two-cell chevron lead-in a
-/// top-level row spends so its icon lands in the group-icon column.
+/// top-level row spends so its mark lands in the group-icon column.
 const TREE_CONNECTOR_MID = "├─ ";
 const TREE_CONNECTOR_LAST = "└─ ";
 const TREE_GUIDE_BAR = "│  ";
@@ -956,9 +956,6 @@ const TREE_TOP_LEVEL_INDENT = "  ";
 const TREE_CHEVRON_EXPANDED = "⊟";
 const TREE_CHEVRON_COLLAPSED = "⊞";
 
-/// `layout::DEFAULT_ICON` — the icon a service without one of its own carries on the wire. It
-/// is never drawn: [`cardMark`] reads it as "draw the mark".
-const DEFAULT_ICON = "🔹";
 /// `layout::ORPHAN_MARKER` / `STALE_MARKER` — the tombstone and the cobweb (ADR-0028).
 const ORPHAN_MARKER = "🪦";
 const STALE_MARKER = "🕸️";
@@ -1026,12 +1023,11 @@ function peekRows(svc, peeked, columns, lead) {
   return lines.map((line) => ({ kind: "peek", svc, columns, lead, line }));
 }
 
-/// `layout::peek_gutter` up to its bar — the columns (or the lead) and the parent's icon width
-/// less one, so the `▏` that follows descends from under the icon's last cell and the content
-/// right of it lands under the name.
+/// `layout::peek_gutter` up to its bar — the columns (or the lead). A mark is one cell, so the
+/// `▏` that follows hangs straight under the parent's mark and the content right of it lands
+/// under the name.
 function peekGuide(row) {
-  const reserve = " ".repeat(Math.max(0, textWidth(cardIcon(row.svc)) - 1));
-  return `${row.columns.length === 0 ? row.lead : row.columns.join("")}${reserve}`;
+  return row.columns.length === 0 ? row.lead : row.columns.join("");
 }
 
 /// `treeview::peek_row_line` through `shell::peek_row_spans` — one real peek line across the
@@ -1115,24 +1111,16 @@ const MARK_ROLE = {
   stopped: "faint",
 };
 
-/// `layout::card_mark` — a default-icon service's mark, the 2×2 over *trouble*
+/// `layout::card_mark` — the mark a service's row opens on, the 2×2 over *trouble*
 /// (`faultedSinceArm || Crashed`) and *executing*, with `stopped` as a guard on the
 /// clean-and-parked cell so the precedence is structural: trouble outranks stopped, and
-/// executing outranks both. `null` for a custom icon, which takes no mark.
+/// executing outranks both.
 function cardMark(svc) {
-  if (svc.icon !== "" && svc.icon !== DEFAULT_ICON) return null;
   const trouble = svc.faultedSinceArm || svc.badge === "Crashed";
   const executing = isExecuting(svc);
   if (trouble) return executing ? "executingTroubled" : "troubled";
   if (executing) return "executing";
   return svc.badge === "Stopped" ? "stopped" : "parked";
-}
-
-/// `layout::card_icon` — the glyph a service row opens on: its mark's, or a custom icon
-/// verbatim.
-function cardIcon(svc) {
-  const mark = cardMark(svc);
-  return mark === null ? svc.icon : MARK_TEXT[mark];
 }
 
 /// `layout::reconcile_marker` — orphan wins the tie (the two are mutually exclusive), and an
@@ -1188,12 +1176,12 @@ function nextCell(svc, now) {
 
 /// The `Service` cell's cells: the tree connector in the ground, at full weight
 /// (`shell::service_prefix_spans` — a stopped member's tint must not fade the group's guide),
-/// then the icon in its own `icon.fg`, the markers and the name. Nothing inside the name is
+/// then the mark in its own `mark.fg`, the markers and the name. Nothing inside the name is
 /// styled apart, so a qualified name — its `.` included — is one cell in the row's tint.
-function identityCells(prefix, icon, body, name, tint, count = "") {
+function identityCells(prefix, mark, body, name, tint, count = "") {
   const cells = [];
   if (prefix !== "") cells.push(cell(prefix, { fg: "text" }));
-  if (icon !== null) cells.push(cell(icon.text, { fg: icon.fg }));
+  if (mark !== null) cells.push(cell(mark.text, { fg: mark.fg }));
   if (body !== "") cells.push(cell(body, { fg: tint }));
   if (name !== "") cells.push(cell(name, { fg: tint }));
   // A multi-copy family's live copy count follows its name in the name's own tint.
@@ -1356,7 +1344,7 @@ function buildRows(board, filter, collapsed, grouped, busyOnly, peeked) {
   for (const entry of roots) {
     if (entry.kind === "service") {
       // `layout::top_level_lead`, read "in exactly one place": a **top-level** service
-      // spends the two-cell chevron lead-in here, where the tree is walked, so its icon
+      // spends the two-cell chevron lead-in here, where the tree is walked, so its mark
       // lands in the group-icon column. It is not synthesised downstream, because the run
       // view's pinned header composes its own row with `layout::service_row`'s empty
       // connector (`runHeaderCells`' `prefix: ""`) and that `""` has to reach the render.
@@ -1422,7 +1410,7 @@ export function rowKey(row) {
   return null;
 }
 
-/// The identity parts of one list row — the tree prefix, the icon, the markers body and the
+/// The identity parts of one list row — the tree prefix, the mark, the markers body and the
 /// displayed name — composed the way `layout::service_row` composes its cell, so the string
 /// the `Service` column is measured against is exactly the one that renders.
 function identityOf(row) {
@@ -1432,7 +1420,7 @@ function identityOf(row) {
     // the `State` cell's own badge.
     return {
       prefix: row.prefix,
-      icon: null,
+      mark: null,
       body: `${row.collapsed ? TREE_CHEVRON_COLLAPSED : TREE_CHEVRON_EXPANDED} ${groupIcon(row.path)} `,
       name: row.path,
       tint: "text",
@@ -1442,7 +1430,7 @@ function identityOf(row) {
   // `shell::row_line_style`: a **stopped** row recedes whole-line so a shelf of switched-off
   // services sinks below the live ones; under the cursor it lifts back to full weight.
   const tint = svc.badge === "Stopped" ? "faint" : "text";
-  // A default icon is a mark in its own role; a custom one is drawn as given in the row's tint.
+  // The mark is drawn in its own role, apart from the row's tint.
   const mark = cardMark(svc);
   return {
     // The prefix the caller resolved, honoured as given — `buildRows`' walk spends the
@@ -1450,7 +1438,7 @@ function identityOf(row) {
     // those two apart (`layout.rs`: "in the flat overview the list row for a top-level
     // service is *byte-identical* to the pinned header row").
     prefix: row.prefix,
-    icon: { text: cardIcon(svc), fg: mark === null ? tint : MARK_ROLE[mark] },
+    mark: { text: MARK_TEXT[mark], fg: MARK_ROLE[mark] },
     body: ` ${reconcileMarker(svc)}`,
     name: displayedName(svc, row.depth),
     count: svc.family == null ? "" : `${COPIES_MARK}${svc.family.copies}`,
@@ -1467,8 +1455,8 @@ function identityText(row) {
   // counts its whole width; a real peek line overpaints the row and counts nothing.
   if (row.kind === "peek") return row.line === null ? `${peekGuide(row)}${TREE_BODY_BAR}${PEEK_EMPTY}` : "";
   if (row.kind !== "service" && row.kind !== "group") return "";
-  const { prefix, icon, body, name, count = "" } = identityOf(row);
-  return `${prefix}${icon?.text ?? ""}${body}${name}${count}`;
+  const { prefix, mark, body, name, count = "" } = identityOf(row);
+  return `${prefix}${mark?.text ?? ""}${body}${name}${count}`;
 }
 
 // --- the `Queues` section ----------------------------------------------------------
@@ -2265,9 +2253,9 @@ function confirmModal(board, confirm, quitting) {
   const words = CONFIRM_WORDS[confirm.verb] ?? CONFIRM_WORDS.abandon;
   const count = confirm.targets.length;
   const noun = count === 1 ? "service" : "services";
-  const icon = (name) => {
+  const marked = (name) => {
     const svc = rowRecord(board, name);
-    return svc === undefined ? name : `${cardIcon(svc)} ${name}`;
+    return svc === undefined ? name : `${MARK_TEXT[cardMark(svc)]} ${name}`;
   };
   if (confirm.verb === "abandon") {
     // Two honesty lines before the `y`, because the "do not oversell it" bar wants both the
@@ -2277,7 +2265,7 @@ function confirmModal(board, confirm, quitting) {
       lines: [
         dialogLine(`Force-stop ${count} stuck ${noun}?`),
         dialogLine(""),
-        ...confirm.targets.map((name) => dialogItem(icon(name))),
+        ...confirm.targets.map((name) => dialogItem(marked(name))),
         dialogLine(""),
         dialogLine("Force kills the running work & abandons the wedged thread"),
         dialogLine("The service reclaims once the abandoned thread finishes"),
@@ -2286,7 +2274,7 @@ function confirmModal(board, confirm, quitting) {
       ],
     };
   }
-  const lines = confirm.targets.slice(0, CONFIRM_NAME_CAP).map((name) => dialogItem(icon(name)));
+  const lines = confirm.targets.slice(0, CONFIRM_NAME_CAP).map((name) => dialogItem(marked(name)));
   if (count > CONFIRM_NAME_CAP) lines.push(dialogItem(`… and ${count - CONFIRM_NAME_CAP} more`));
   if ((confirm.skipped ?? 0) > 0) {
     // A bare note, so the shorter list does not read as a bug.
@@ -3964,7 +3952,7 @@ function bodyRowCells(row, visible, widths, laneCols, rollups, now, cols) {
     service:
       identity === null
         ? peekEmptyCells(row, cols)
-        : identityCells(identity.prefix, identity.icon, identity.body, identity.name, identity.tint, identity.count),
+        : identityCells(identity.prefix, identity.mark, identity.body, identity.name, identity.tint, identity.count),
     state: [],
     trigger: [],
     liveness: [],

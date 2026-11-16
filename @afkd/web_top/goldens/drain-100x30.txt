@@ -2,7 +2,7 @@ afkd 0.2.123 · ■ Quitting 1s (1 busy)                                        
 CPU    ▁▁▁▁▁▁▁▁▁    1% · Mem    ▁▁▁▁▁▁▁▁▁  1.5G/31G · Net ↓  ▆▁▁▁▁▁▁▁▁  1.4k/s ↑  ▂▁▁▁▂▁▁▁▁  1.5k/s 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 Service                          State                 Trigger              Last Activity   Next Run
-  🧹 janitor                     □ Stopped             Every 1h                                     
+  ▫ janitor                      □ Stopped             Every 1h                                     
 ⊟ 📦 ops                         ✕ Crashed                                             1s           
 ├─ ▫ nightly                     □ Stopped             Every 1h                        9s           
 ├─ ◆ sleeper                     ■ Stopping 1s         Every 1h                        4s           
@@ -34,7 +34,7 @@ nnnnnnnnnnnnnfnccccccccccccccccccccccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 mmmmnnnuuuuuuuuunnnnnnnnnmmmmnnnpppppppppnnnnnnnnnnnnnmmmmmnnkkkkkkkkknnnnnnnnmmnnkkkkkkkkknnnnnnnnn
 rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmnnnmmmmmmmm
-nnffffffffffnnnnnnnnnnnnnnnnnnnnnfffffffffnnnnnnnnnnnnnffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnfffffffffnnnnnnnnnnnnnnnnnnnnnnfffffffffnnnnnnnnnnnnnffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 nnnfffffffffnnnnnnnnnnnnnnnnnnnnnfffffffffnnnnnnnnnnnnnffffffffnnnnnnnnnnnnnnnnnnnnnnnnffnnnnnnnnnnn
 nnnannnnnnnnnnnnnnnnnnnnnnnnnnnnncccccccccccccnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn

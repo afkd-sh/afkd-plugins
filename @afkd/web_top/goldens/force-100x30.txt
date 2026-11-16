@@ -2,7 +2,7 @@ afkd 0.2.123 · ● Running 5s · 9 up · 1 down                                
 CPU            ▁    1% · Mem            ▁  1.5G/31G · Net ↓          ▁   483/s ↑          ▁   414/s 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 Service                          State                 Trigger              Last Activity   Next Run
-  🧹 janitor                     ■ Stopping 1s         Every 1h                                     
+  ◆ janitor                      ■ Stopping 1s         Every 1h                                     
 ⊟ 📦 ops                         ✕ Crashed                                             2s           
 ├─ ◇ nightly                     ● Idle                Every 1h                              59m 54s
 ├─ ◆ sleeper                     ▶ Busy 2s             Every 1h                        2s           
@@ -11,7 +11,7 @@ Service                          State                 Trigger              Last
   ◇ archivist     │                                                             │            59m 54s
   ◇ noisy         │  Force-stop 1 stuck service?                                │      1s    59m 58s
   ◇ flaky         │                                                             │      1s    59m 58s
-  ◇ deep          │    🧹 janitor                                               │            59m 54s
+  ◇ deep          │    ◆ janitor                                                │            59m 54s
   ◇ spare         │                                                             │            59m 54s
                   │  Force kills the running work & abandons the wedged thread  │                   
 Queue     Usage   │  The service reclaims once the abandoned thread finishes    │ty   Held   Waiting
@@ -34,7 +34,7 @@ nnnnnnnnnnnnnfnknnnnnnnnnnnnfnkkkknfnxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 mmmmnnnnnnnnnnnunnnnnnnnnmmmmnnnnnnnnnnnpnnnnnnnnnnnnnmmmmmnnnnnnnnnnknnnnnnnnmmnnnnnnnnnnknnnnnnnnn
 rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmmmmmmnnnmmmmmmmmmmmmmnnnmmmmmmmm
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnncccccccccccccnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnannnnnnnnnnnnnnnnnnnnnnnnnnnnnncccccccccccccnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 nnnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
 nnnannnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn

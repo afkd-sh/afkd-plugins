@@ -106,7 +106,7 @@ test("a peek opens the run's active branch beneath its service, the rail on the 
   // The rows the cursor walks skip the peek block.
   const visible = visibleRowsOf(board, { grouped: false, peeked: new Set(["deep"]) });
   assert.ok(visible.filter((r) => r.kind === "peek").length === peek.length, "one row per peek line");
-  // Grouped, the same block hangs under the service's icon at the guide columns a child would.
+  // Grouped, the same block hangs under the service's mark at the guide columns a child would.
   const grouped = screenText(layoutOf(board, { ...options, grouped: true, selected: 0 })).split("\n");
   assert.ok(grouped.some((l) => l.startsWith("  ▏ 🚀 ")), "a root row's peek descends from under its mark");
 });
@@ -416,7 +416,7 @@ test("the glyph vocabulary measures as the tui measures it", () => {
   // Every glyph this file and the wire can put on a row, and the width `unicode-width` 0.2
   // gives it in the terminal. A future glyph outside the modelled classes fails here rather
   // than mismeasuring a row in silence.
-  for (const glyph of ["🔹", "🔸", "🔷", "🔶", "▪️", "🪦", "🕸️", "📦", "📜", "🧵", "🔒", "🧹", "🚦", "⏳"]) {
+  for (const glyph of ["🔸", "🔷", "🔶", "▪️", "🪦", "🕸️", "📦", "📜", "🧵", "🔒", "🚦", "⏳"]) {
     assert.equal(textWidth(glyph), 2, `${glyph} is two cells`);
   }
   for (const glyph of ["◇", "◆", "▫", "≡", "●", "▷", "◎", "▶", "■", "□", "✕", "◌", "⊟", "⊞", "▮", "▯", "∙", "╎", "│", "─", "↓", "↑", "·", "…", "▁", "█"]) {
@@ -648,8 +648,8 @@ function lookOf(c) {
 
 test("the night board paints each role where afkd top does", () => {
   // `docs/tui-style.md` §5, cell by cell, over the live board plus the facts no capture
-  // carries: a plugin trigger, a default-icon service stopped with a fresh age, an age gone
-  // stale and a countdown that is soon.
+  // carries: a plugin trigger, a service stopped with a fresh age, an age gone stale and a
+  // countdown that is soon.
   const live = liveBoard();
   const { at } = live;
   let board = restyled(live.board, "archivist", { triggerLabel: "@afkd/linear.issue" });
@@ -711,7 +711,7 @@ test("the night board paints each role where afkd top does", () => {
   const group = rows.find((r) => r.some((c) => c.text.includes("📦")));
   assert.deepEqual(lookOf(group.find((c) => /^\d+s$/.test(c.text))), plain("muted"), "a group header's fresh age is muted");
 
-  // The marks: each in its own role, a custom icon in its row's tint.
+  // The marks: each in its own role.
   const mark = (name) => {
     const row = rowNamed(rows, name);
     return row[row.findIndex((c) => c.text === name) - 2];
@@ -720,7 +720,7 @@ test("the night board paints each role where afkd top does", () => {
   assert.equal(mark("sleeper").fg, "accent", "an executing mark");
   assert.equal(mark("broken").fg, "alarm", "a troubled mark");
   assert.equal(mark("spare").fg, "faint", "a stopped mark");
-  assert.deepEqual([mark("janitor").text, mark("janitor").fg], ["🧹", "faint"], "a custom icon takes its stopped row's tint");
+  assert.deepEqual([mark("janitor").text, mark("janitor").fg], [MARK_TEXT.stopped, "faint"], "janitor's stopped mark");
   assert.equal(cellNamed(rowNamed(rows, "spare"), "spare").fg, "faint", "the stopped row recedes");
 
   // The rules: under the strip, and directly above the footer.
@@ -731,11 +731,10 @@ test("the night board paints each role where afkd top does", () => {
 });
 
 test("the row marks and the lane lead are one-cell text glyphs", () => {
-  // `layout::Mark::text` and `QUEUE_LANE_GLYPH_NIGHT`: the 24-bit board draws a default-icon
-  // service's mark and a lane's lead as one text cell each, so a name starts two cells in. The
-  // board carries every mark: `flaky` parked and clean, `sleeper` executing, `noisy` parked
-  // with a fault since it armed, `vacuum` executing with one, `spare` stopped, and `janitor`'s
-  // own icon, which is drawn verbatim.
+  // `layout::Mark::text` and `QUEUE_LANE_GLYPH_NIGHT`: the 24-bit board draws a service's
+  // mark and a lane's lead as one text cell each, so a name starts two cells in. The board
+  // carries every mark: `flaky` parked and clean, `sleeper` executing, `noisy` parked with a
+  // fault since it armed, `vacuum` executing with one, and `spare` and `janitor` stopped.
   const live = liveBoard();
   const { at } = live;
   let board = restyled(live.board, "noisy", { faultedSinceArm: true });
@@ -757,15 +756,19 @@ test("the row marks and the lane lead are one-cell text glyphs", () => {
     ["noisy", "◇", "alarm"],
     ["ops.vacuum", "◆", "alarm"],
     ["spare", "▫", "faint"],
+    ["janitor", "▫", "faint"],
   ]) {
     const mark = opening(name);
     assert.deepEqual([mark.text, mark.fg], [glyph, fg], `${name}'s mark`);
     assert.equal(mark.width, 1, `${name}'s mark is one cell`);
     assert.equal(textWidth(mark.text), 1, `${glyph} measures one cell`);
   }
-  const janitor = rowNamed(rows, "janitor");
-  assert.equal(janitor[0].text, "🧹", "a custom icon is drawn verbatim");
-  assert.equal(nameColumn(janitor, "janitor"), 3, "…at its own two cells");
+  // Every service row on the board opens the same way, whatever its state.
+  for (const name of board.order) {
+    const mark = opening(name);
+    assert.ok(Object.values(MARK_TEXT).includes(mark.text), `${name} opens on a mark, not ${mark.text}`);
+    assert.equal(mark.width, 1, `${name}'s mark is one cell`);
+  }
 
   // The lane: `≡`, one space, the name at column 2, and the `Queue` column fits exactly that
   // prefix and the name, so `Usage` starts one gutter after it.
@@ -1422,7 +1425,7 @@ test("the force modal states what force does before it asks", () => {
   // fits there.
   assert.ok(text.includes("┌ Force-stop "), "the title is Sentence case, in the border");
   assert.ok(text.includes("Force-stop 1 stuck service?"), "the body asks, singular");
-  assert.ok(text.includes("🧹 janitor"), "the target is listed with its own status icon");
+  assert.ok(text.includes(`${MARK_TEXT.executing} janitor`), "the target is listed with its status mark");
   // **Both** honesty halves, before the `y`: what force ends, and what it leaves behind. A
   // future edit that drops either fails here.
   assert.ok(text.includes("Force kills the running work & abandons the wedged thread"), "the reach");
@@ -2809,7 +2812,7 @@ test("the run view's pinned header is the list's own row for that service", () =
   const at_ = listRows.findIndex((row) => row.kind === "service" && row.svc.name === "deep");
   assert.ok(at_ >= 0, "the capture's `deep` still has a list row");
   // `deep` is **bare and top-level**, which is the shape the lead-in is about: in the grouped
-  // tree its list row spends `TREE_TOP_LEVEL_INDENT` before its icon so that icon lands in the
+  // tree its list row spends `TREE_TOP_LEVEL_INDENT` before its mark so that mark lands in the
   // group-icon column, while the pinned header — with no group header above it — spends none
   // (`layout.rs`: "`connector` is … `""` for the pinned header. Only the **grouped** tree
   // supplies a non-empty one for a top-level row"). So the `Service` cell is compared apart
@@ -3137,20 +3140,22 @@ test("a package's members show their leaf under its header, and nothing in a nam
   };
   // A row's `Service` cell as it reads: its text up to the gap before `State`.
   const cells = (rows) => listOf(rows).map((row) => screenText([row]).trim().split("  ")[0]);
+  // Every service row opens on its state mark: the family's busy copy executes, the rest idle.
+  const { parked, executing } = MARK_TEXT;
   assert.deepEqual(cells(grouped), [
     "⊟ 📦 claude",
-    "└─ 🔋 brownout",
-    "🧹 janitor",
+    `└─ ${parked} brownout`,
+    `${parked} janitor`,
     "⊟ 📦 selfdev",
-    "├─ 🛠 develop ×2",
-    "└─ 💬 discuss",
+    `├─ ${executing} develop ×2`,
+    `└─ ${parked} discuss`,
   ]);
-  assert.deepEqual(cells(flat), ["🔋 claude.brownout", "🧹 janitor", "🛠 selfdev.develop ×2", "💬 selfdev.discuss"]);
+  assert.deepEqual(cells(flat), [`${parked} claude.brownout`, `${parked} janitor`, `${executing} selfdev.develop ×2`, `${parked} selfdev.discuss`]);
   for (const identity of ["claude.brownout", "selfdev.develop", "selfdev.discuss"]) {
     assert.ok(!cells(grouped).some((cell) => cell.includes(identity)), `no grouped row spells ${identity} whole`);
   }
 
-  // Every name is one cell, in the tint its icon wears, and neither it nor a family's count
+  // Every name is one cell, in the tint its row wears, and neither it nor a family's count
   // after it recedes — the `.` of a qualified one included.
   const spelled = [
     [grouped, ["brownout", "janitor", "develop", "discuss"]],
@@ -3162,7 +3167,7 @@ test("a package's members show their leaf under its header, and nothing in a nam
     services.forEach((row, i) => {
       const at = row.findIndex((c) => c.text === names[i]);
       assert.notEqual(at, -1, `${names[i]} is one cell: ${JSON.stringify(row.slice(0, 4))}`);
-      assert.equal(row[at].fg, row[at - 1].fg, `${names[i]} wears its icon's tint`);
+      assert.equal(row[at].fg, row[at - 1].fg, `${names[i]} wears the tint its row wears`);
       for (const c of row.slice(at, at + 2)) {
         assert.notEqual(c.fg, "faint", `nothing in ${names[i]} recedes: ${JSON.stringify(c)}`);
         assert.ok(!c.dim, `nothing in ${names[i]} is dim: ${JSON.stringify(c)}`);
@@ -3220,7 +3225,7 @@ test("a family with one busy and one idle copy reads ▶ Busy and its time, with
   assert.deepEqual(copies.map((c) => [c.name, c.badge]), [["selfdev.develop.0", "Busy"], ["selfdev.develop.1", "Idle"]]);
   const rows = layoutOf(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.382", grouped: false });
   const line = screenText(rows).split("\n").find((l) => l.includes("selfdev.develop ×2"));
-  assert.equal(line, "🛠 selfdev.develop ×2             ▶ Busy 1s             Every 1h                        1s           ");
+  assert.equal(line, `${MARK_TEXT.executing} selfdev.develop ×2             ▶ Busy 1s             Every 1h                        1s           `);
   assert.equal(familyState(rows, "selfdev.develop"), "▶ Busy 1s");
 });
 
@@ -3264,7 +3269,7 @@ test("an auto family mid-mint moves only its count and its state", () => {
   assertGolden("pool-mint-100x30.txt", rows);
   const [was, now] = [lines(before), lines(after)];
   const changed = was.map((line, i) => i).filter((i) => was[i] !== now[i] && i > 3 && i < 24);
-  assert.deepEqual(changed.map((i) => now[i].trim().split(/\s+/).slice(0, 2).join(" ")), ["🈶 backup"], "only the pool's own line moved");
+  assert.deepEqual(changed.map((i) => now[i].trim().split(/\s+/).slice(0, 2).join(" ")), [`${MARK_TEXT.executing} backup`], "only the pool's own line moved");
   assert.ok(was[changed[0]].includes("backup ×1") && now[changed[0]].includes("backup ×2 "));
   assert.equal(familyState(rows, "backup"), "▶ Busy 1s");
 });
@@ -3456,7 +3461,7 @@ test("a phone's connection notice is a line of its own below the services", () =
 });
 
 test("a phone draws the desktop's own flat rows, at every width it sheds to", () => {
-  // The parity the card asks for: one icon, badge and elapsed per service on either surface.
+  // The parity the card asks for: one mark, badge and elapsed per service on either surface.
   // The desktop's flat list is drawn with no cursor, so its rows carry no band either.
   const { board, at } = liveBoard();
   for (const cols of [46, 60, 100]) {
