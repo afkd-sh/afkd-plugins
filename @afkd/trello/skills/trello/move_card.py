@@ -215,7 +215,7 @@ def main():
     parser.add_argument("list_id", nargs="?", help="the target list id")
     parser.add_argument("--name", help="a list's name to resolve to an id")
     # Where in the list the card lands: an end (by default the top, matching the
-    # DSL `move_to`'s positionless default), or directly above or below a named
+    # `move_to` action's positionless default), or directly above or below a named
     # card. Only one may be given: argparse rejects a pair (exit 2) before any
     # network.
     place = parser.add_mutually_exclusive_group()
