@@ -1,19 +1,75 @@
 name = "@afkd/linear"
-version = "0.9.0"
+version = "0.10.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 exec = "afkd-linear"
 
-# The item a run claims, `linear.Issue` in a config: every slot is passed it, and every
-# action takes it first. afkd carries `id` (the issue's identifier, `ENG-123`) and `key`
-# (afkd's claim key) for every handle; the
-# fields below are the rest of what the plugin knows about an issue. Every one is always sent,
-# since a field left out is not delivered and a slot reading it would fail its run: an issue
-# with no parent sends `parent` as `""`, and one with no label, sub-issue or blocker an empty
-# list.
+# An issue's priority, Linear's 0 to 4.
+[[enum]]
+name = "Priority"
+values = ["none", "urgent", "high", "medium", "low"]
+
+# The category of a workflow state. Linear's `duplicate` reads as `canceled`.
+[[enum]]
+name = "State_Type"
+values = ["triage", "backlog", "unstarted", "started", "completed", "canceled"]
+
+# A key of Linear's own sort on issues, what `issues` orders by, at most three to an `order`.
+[[enum]]
+name = "Sort"
+values = ["manual", "team", "state", "priority", "assignee", "project", "cycle", "due", "estimate", "title", "created", "updated", "completed"]
+
+# The credentials a read reaches Linear with: exactly one of a personal API key, or an OAuth
+# app's client id and secret, which the plugin trades for the app's own token. A credential
+# reaches one workspace, so two workspaces are two values.
+[[struct]]
+name = "Workspace"
+
+  [[struct.field]]
+  name = "api_key"
+  type = "str?"
+  secret = true
+
+  [[struct.field]]
+  name = "client_id"
+  type = "str?"
+
+  [[struct.field]]
+  name = "client_secret"
+  type = "str?"
+  secret = true
+
+  # A stand-in's address, in tests.
+  [[struct.field]]
+  name = "base_url"
+  type = "str"
+  default = "https://api.linear.app"
+
+# An issue: the item a `service(linear)` run claims, and every issue a read hands back.
+# afkd carries `id` (the issue's identifier, `ENG-123`) and `key` for every handle: afkd's
+# claim key for a claimed issue, and `linear:<organization uuid>/<issue uuid>` for one a read
+# hands back. The fields below are the rest of what the plugin knows about an issue. Every one
+# is always sent, since a field left out is not delivered and a slot reading it would fail its
+# run: one that holds nothing as `null`, and a list with nothing in it empty. A time is unix
+# milliseconds.
 [[handle]]
 name = "Issue"
+
+  # Linear's id for the issue, the same after it moves team and its identifier changes.
+  [[handle.field]]
+  name = "uuid"
+  type = "str"
+
+  # The url key of the workspace it is in.
+  [[handle.field]]
+  name = "workspace"
+  type = "str"
+
+  # Its team's key.
+  [[handle.field]]
+  name = "team"
+  type = "str"
 
   [[handle.field]]
   name = "title"
@@ -23,29 +79,295 @@ name = "Issue"
   name = "url"
   type = "str"
 
+  # Markdown, "" when it has none.
   [[handle.field]]
-  name = "labels"
-  type = "list[str]"
+  name = "description"
+  type = "str"
 
-  # The name of the workflow state the issue sat in when it was claimed.
+  # Linear's git branch name for it.
+  [[handle.field]]
+  name = "branch"
+  type = "str"
+
+  # The name of the workflow state it sits in.
   [[handle.field]]
   name = "state"
   type = "str"
 
-  # The parent issue's identifier, or "" for an issue that is no sub-issue.
+  [[handle.field]]
+  name = "state_type"
+  type = "State_Type"
+
+  [[handle.field]]
+  name = "priority"
+  type = "Priority"
+
+  [[handle.field]]
+  name = "estimate"
+  type = "int?"
+
+  # Its due date, YYYY-MM-DD.
+  [[handle.field]]
+  name = "due"
+  type = "str?"
+
+  # The display names of who it is assigned and delegated to, and of who filed it, nil for
+  # an issue an integration filed.
+  [[handle.field]]
+  name = "assignee"
+  type = "str?"
+
+  [[handle.field]]
+  name = "delegate"
+  type = "str?"
+
+  [[handle.field]]
+  name = "creator"
+  type = "str?"
+
+  # The names of its project and milestone, and its cycle's number.
+  [[handle.field]]
+  name = "project"
+  type = "str?"
+
+  [[handle.field]]
+  name = "milestone"
+  type = "str?"
+
+  [[handle.field]]
+  name = "cycle"
+  type = "int?"
+
+  # The names of the labels on it.
+  [[handle.field]]
+  name = "labels"
+  type = "list[str]"
+
+  # The parent issue's identifier.
   [[handle.field]]
   name = "parent"
-  type = "str"
+  type = "str?"
 
   # The sub-issues' identifiers, in Linear's order.
   [[handle.field]]
   name = "sub_issues"
   type = "list[str]"
 
-  # The identifiers of every issue that blocks this one, done or not.
+  # The identifiers of the issues it relates to, one list per relation, done or not.
+  [[handle.field]]
+  name = "blocks"
+  type = "list[str]"
+
   [[handle.field]]
   name = "blocked_by"
   type = "list[str]"
+
+  [[handle.field]]
+  name = "related"
+  type = "list[str]"
+
+  [[handle.field]]
+  name = "similar"
+  type = "list[str]"
+
+  [[handle.field]]
+  name = "duplicates"
+  type = "list[str]"
+
+  [[handle.field]]
+  name = "duplicate_of"
+  type = "str?"
+
+  # The urls of its links, Linear's attachments.
+  [[handle.field]]
+  name = "links"
+  type = "list[str]"
+
+  # The display names of its subscribers.
+  [[handle.field]]
+  name = "subscribers"
+  type = "list[str]"
+
+  [[handle.field]]
+  name = "created_at"
+  type = "time"
+
+  [[handle.field]]
+  name = "updated_at"
+  type = "time"
+
+  # nil unless it was completed or canceled.
+  [[handle.field]]
+  name = "completed_at"
+  type = "time?"
+
+  [[handle.field]]
+  name = "canceled_at"
+  type = "time?"
+
+  # Whether it is archived (a trashed issue is too), and whether it is in the trash.
+  [[handle.field]]
+  name = "archived"
+  type = "bool"
+
+  [[handle.field]]
+  name = "trashed"
+  type = "bool"
+
+# A comment, its `id` its uuid.
+[[handle]]
+name = "Comment"
+
+  # The identifier of the issue it is on.
+  [[handle.field]]
+  name = "issue"
+  type = "str"
+
+  [[handle.field]]
+  name = "body"
+  type = "str"
+
+  [[handle.field]]
+  name = "url"
+  type = "str"
+
+  # Its author's display name, or the integration's or the external user's name.
+  [[handle.field]]
+  name = "author"
+  type = "str?"
+
+  # The id of the comment it answers.
+  [[handle.field]]
+  name = "reply_to"
+  type = "str?"
+
+  [[handle.field]]
+  name = "resolved_at"
+  type = "time?"
+
+  [[handle.field]]
+  name = "created_at"
+  type = "time"
+
+  [[handle.field]]
+  name = "edited_at"
+  type = "time?"
+
+# A team, its `id` its key (`ENG`).
+[[handle]]
+name = "Team"
+
+  [[handle.field]]
+  name = "name"
+  type = "str"
+
+# A workflow state, its `id` its uuid.
+[[handle]]
+name = "State"
+
+  [[handle.field]]
+  name = "name"
+  type = "str"
+
+  [[handle.field]]
+  name = "type"
+  type = "State_Type"
+
+  # Its team's key.
+  [[handle.field]]
+  name = "team"
+  type = "str"
+
+# A label, its `id` its uuid.
+[[handle]]
+name = "Label"
+
+  [[handle.field]]
+  name = "name"
+  type = "str"
+
+  # The name of the label group it is in.
+  [[handle.field]]
+  name = "group"
+  type = "str?"
+
+  # Its team's key, nil for a workspace label.
+  [[handle.field]]
+  name = "team"
+  type = "str?"
+
+# A user, its `id` its uuid.
+[[handle]]
+name = "User"
+
+  # The display name.
+  [[handle.field]]
+  name = "name"
+  type = "str"
+
+  [[handle.field]]
+  name = "full_name"
+  type = "str"
+
+  [[handle.field]]
+  name = "email"
+  type = "str"
+
+  # Whether it is an app's user.
+  [[handle.field]]
+  name = "app"
+  type = "bool"
+
+# A project, its `id` its uuid.
+[[handle]]
+name = "Project"
+
+  [[handle.field]]
+  name = "name"
+  type = "str"
+
+  # Its teams' keys.
+  [[handle.field]]
+  name = "teams"
+  type = "list[str]"
+
+  # Its milestones' names, in order.
+  [[handle.field]]
+  name = "milestones"
+  type = "list[str]"
+
+  [[handle.field]]
+  name = "url"
+  type = "str"
+
+# A cycle, its `id` its uuid.
+[[handle]]
+name = "Cycle"
+
+  [[handle.field]]
+  name = "number"
+  type = "int"
+
+  [[handle.field]]
+  name = "name"
+  type = "str?"
+
+  # Its team's key.
+  [[handle.field]]
+  name = "team"
+  type = "str"
+
+  [[handle.field]]
+  name = "starts_at"
+  type = "time"
+
+  [[handle.field]]
+  name = "ends_at"
+  type = "time"
+
+  [[handle.field]]
+  name = "active"
+  type = "bool"
 
 # The one kind, `service(linear)` in a config: a Linear team whose issues are claimed one per
 # run. afkd's own claim keys, `every` and `max_attempts`, are afkd's and not declared here.
@@ -171,8 +493,9 @@ claims = true
     name = "outcome"
     type = "afkd.Outcome"
 
-# The actions a slot calls, each on the issue it is passed first. A write is done in the
-# service's team, and queued and retried like every write when Linear is down.
+# The issue actions, which a `service(linear)`'s slots call, each on the issue that service
+# claimed, passed first. A write is done in the service's team, and queued and retried like
+# every write when Linear is down. The reads after them take a `linear.Workspace` first.
 
 # A comment on the issue, its text verbatim.
 [[action]]
@@ -431,6 +754,316 @@ name = "fetch_files"
   [[action.param]]
   name = "issue"
   type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "to"
+  type = "str"
+  required = true
+
+# The reads. Each takes a `linear.Workspace` first and reaches Linear only through it, so a
+# read answers alike from any service's slots, and reads no service's settings. A read is
+# done now or refused, never queued.
+
+# The issues every filter given keeps, workspace-wide unless `team` says. A list on a
+# single-valued field keeps an issue holding any of it; `labels` keeps one carrying every one.
+[[action]]
+name = "issues"
+returns = "list[Issue]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  # Identifiers or uuids.
+  [[action.param]]
+  name = "id"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "team"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "state"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "state_type"
+  type = "list[State_Type]"
+  named_only = true
+
+  [[action.param]]
+  name = "priority"
+  type = "list[Priority]"
+  named_only = true
+
+  [[action.param]]
+  name = "labels"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "without_labels"
+  type = "list[str]"
+  named_only = true
+
+  # Users by display name or email, "me", or "none" for nobody.
+  [[action.param]]
+  name = "assignee"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "delegate"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "project"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "milestone"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "cycle"
+  type = "list[int]"
+  named_only = true
+
+  # Sub-issues of these identifiers or uuids.
+  [[action.param]]
+  name = "parent"
+  type = "list[str]"
+  named_only = true
+
+  # true keeps an issue an open issue blocks, false one no open issue blocks.
+  [[action.param]]
+  name = "blocked"
+  type = "bool"
+  named_only = true
+
+  # In the title or the description, case ignored.
+  [[action.param]]
+  name = "text"
+  type = "str"
+  named_only = true
+
+  [[action.param]]
+  name = "created_after"
+  type = "time"
+  named_only = true
+
+  [[action.param]]
+  name = "created_before"
+  type = "time"
+  named_only = true
+
+  [[action.param]]
+  name = "updated_after"
+  type = "time"
+  named_only = true
+
+  [[action.param]]
+  name = "updated_before"
+  type = "time"
+  named_only = true
+
+  [[action.param]]
+  name = "completed_after"
+  type = "time"
+  named_only = true
+
+  [[action.param]]
+  name = "completed_before"
+  type = "time"
+  named_only = true
+
+  [[action.param]]
+  name = "canceled_after"
+  type = "time"
+  named_only = true
+
+  [[action.param]]
+  name = "canceled_before"
+  type = "time"
+  named_only = true
+
+  # YYYY-MM-DD.
+  [[action.param]]
+  name = "due_after"
+  type = "str"
+  named_only = true
+
+  [[action.param]]
+  name = "due_before"
+  type = "str"
+  named_only = true
+
+  # Archived and trashed issues too.
+  [[action.param]]
+  name = "include_archived"
+  type = "bool"
+  named_only = true
+  default = false
+
+  # Linear's own sort, at most three keys, each breaking the ties of the one before.
+  [[action.param]]
+  name = "order"
+  type = "list[Sort]"
+  named_only = true
+  default = ["team", "state", "manual"]
+
+  # 1 to 250, Linear's largest page.
+  [[action.param]]
+  name = "limit"
+  type = "int"
+  named_only = true
+  default = 50
+
+# The issue's comments, oldest first, each reply right after the comment it answers.
+[[action]]
+name = "comments"
+returns = "list[Comment]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+# The user the credential acts as.
+[[action]]
+name = "me"
+returns = "User"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+# The workspace's users, apps included, disabled accounts not.
+[[action]]
+name = "users"
+returns = "list[User]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+# The teams the credential can reach.
+[[action]]
+name = "teams"
+returns = "list[Team]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+# The team's workflow states, in workflow order.
+[[action]]
+name = "states"
+returns = "list[State]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  # The team's key.
+  [[action.param]]
+  name = "team"
+  type = "str"
+  required = true
+
+# The workspace's labels, and the team's when given.
+[[action]]
+name = "labels"
+returns = "list[Label]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "team"
+  type = "str"
+  named_only = true
+
+# The workspace's projects, or the team's when given.
+[[action]]
+name = "projects"
+returns = "list[Project]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "team"
+  type = "str"
+  named_only = true
+
+# The team's cycles, oldest first.
+[[action]]
+name = "cycles"
+returns = "list[Cycle]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "team"
+  type = "str"
+  required = true
+
+# The urls of every file Linear hosts that the issue's description and comments link: the
+# description's first, then the comments' oldest first, each once. A link in one of afkd's own
+# control markers is left out, though `comments` returns the markers themselves.
+[[action]]
+name = "files"
+returns = "list[str]"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+# The file at `url` saved to the absolute path `to`, fetched with the credential Linear's
+# file host asks for, from Linear and from no other host.
+[[action]]
+name = "download_file"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "url"
+  type = "str"
   required = true
 
   [[action.param]]

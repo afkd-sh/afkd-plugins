@@ -24,6 +24,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 /// afkd's line cap, newline included.
 pub const MAX_LINE: usize = 64 * 1024;
 
+/// afkd's cap on a call's reply, newline included.
+pub const MAX_CALL_LINE: usize = 8 * 1024 * 1024;
+
 /// The service the ordinary legs arm as.
 pub const DEVELOP: &str = "afkd::develop";
 
@@ -106,35 +109,43 @@ impl Plugin {
         plugin
     }
 
-    /// Greet as today's afkd does, as `afkd::develop`.
+    /// Spawn and greet with `settings` as `afkd::develop`, the plugin's own directory
+    /// `state_dir`, asserting it arms.
+    pub fn armed_in(settings: Value, state_dir: &Path) -> Self {
+        let mut plugin = Self::spawn();
+        let reply = plugin.call(json!({"call": "hello", "proto": 2, "kind": "issue",
+                                       "service": DEVELOP, "roster": [DEVELOP, DISCUSS],
+                                       "owner": OWNER, "settings": settings,
+                                       "state_dir": state_dir}));
+        assert_eq!(reply["ok"], true, "hello refused: {}", plugin.stderr());
+        plugin
+    }
+
+    /// Greet as afkd does, as `afkd::develop`.
     pub fn hello(&mut self, settings: Value) -> Value {
         self.hello_as(DEVELOP, settings)
     }
 
-    /// Greet as today's afkd does: the kind and its settings, and the service's name,
-    /// the daemon's roster (both services this team runs) and the claim owner beside
-    /// them.
+    /// Greet as afkd does: the kind and its settings, and the service's name, the daemon's
+    /// roster (both services this team runs) and the claim owner beside them.
     pub fn hello_as(&mut self, service: &str, settings: Value) -> Value {
         self.call(json!({"call": "hello", "proto": 2, "kind": "issue",
                          "service": service, "roster": [DEVELOP, DISCUSS],
                          "owner": OWNER, "settings": settings}))
     }
 
+    /// Call the read `action` with `args` on this armed child, as a slot of its service
+    /// does, and read the reply: a call's, under afkd's 8 MiB.
+    pub fn read_call(&mut self, action: &str, args: Value) -> Value {
+        let line = self.call_raw(json!({"call": "call", "action": action, "args": args}));
+        reply_of(&line, MAX_CALL_LINE)
+    }
+
     /// Write one request and read its reply line: under afkd's cap, newline-terminated,
     /// one JSON object.
     pub fn call(&mut self, request: Value) -> Value {
         let line = self.call_raw(request);
-        assert!(
-            line.len() <= MAX_LINE,
-            "a reply line over afkd's cap: {}",
-            line.len()
-        );
-        assert!(line.ends_with('\n'), "an unterminated reply: {line:?}");
-        let reply: Value = serde_json::from_str(&line).unwrap_or_else(|e| {
-            panic!("stdout carried a line that is not a JSON reply ({e}): {line:?}")
-        });
-        assert!(reply.is_object(), "{line}");
-        reply
+        reply_of(&line, MAX_LINE)
     }
 
     /// Write one request and read the raw reply line.
@@ -233,6 +244,49 @@ impl Drop for Plugin {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// `line` read as one reply: no longer than `cap`, newline-terminated, one JSON object.
+fn reply_of(line: &str, cap: usize) -> Value {
+    assert!(
+        line.len() <= cap,
+        "a reply line over afkd's cap of {cap}: {}",
+        line.len()
+    );
+    assert!(line.ends_with('\n'), "an unterminated reply: {line:?}");
+    let reply: Value = serde_json::from_str(line).unwrap_or_else(|e| {
+        panic!("stdout carried a line that is not a JSON reply ({e}): {line:?}")
+    });
+    assert!(reply.is_object(), "{line}");
+    reply
+}
+
+/// Call the action `action` with `args` as afkd does from outside the plugin's own
+/// services: a child started for the one call, sent the one `call` with the protocol, an
+/// empty settings file and the plugin's directory `state_dir`, and no `hello`. The child is
+/// held to the wire: it answers one line under afkd's 8 MiB, writes nothing else to stdout,
+/// and exits cleanly once its stdin closes. The reply comes back with everything it wrote
+/// to stderr.
+pub fn once(action: &str, args: Value, state_dir: &Path) -> (Value, String) {
+    let mut plugin = Plugin::spawn();
+    let line = plugin.call_raw(json!({"call": "call", "proto": 2, "action": action,
+                                      "args": args, "settings": {}, "state_dir": state_dir}));
+    let reply = reply_of(&line, MAX_CALL_LINE);
+    (reply, plugin.finish())
+}
+
+/// A `linear.Workspace` reaching `fake` with its API key, every field sent as afkd sends a
+/// struct.
+pub fn ws(fake: &fake::FakeLinear) -> Value {
+    json!({"api_key": fake.api_key(), "client_id": null, "client_secret": null,
+           "base_url": fake.base_url()})
+}
+
+/// A `linear.Workspace` reaching `fake` as its OAuth app.
+pub fn app_ws(fake: &fake::FakeLinear) -> Value {
+    let (client_id, client_secret) = fake.app_credentials();
+    json!({"api_key": null, "client_id": client_id, "client_secret": client_secret,
+           "base_url": fake.base_url()})
 }
 
 /// A scratch directory standing in for an attempt's, removed on drop.

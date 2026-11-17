@@ -4,9 +4,9 @@
 # It holds every type, field and argument @afkd/linear or its skill selects or sends, and no
 # other. Each type keeps a subset of its fields, each kept field carries every argument Linear
 # declares for it, and every line is Linear's own with its docstring dropped. An input type
-# keeps every field it requires. CommentFilter and UserSortInput are empty: kept arguments name
-# them, and the plugin never sends them. tests/common/sdl.rs reads it, and holds every request
-# to it.
+# keeps every field it requires. AttachmentFilter, CommentFilter, ProjectMilestoneFilter,
+# ProjectSortInput and UserSortInput are empty: kept arguments name them, and the plugin never
+# sends them. tests/common/sdl.rs reads it, and holds every request to it.
 #
 # To check it against Linear's at that commit (it prints every line that is not Linear's, so
 # nothing when all are):
@@ -14,6 +14,15 @@
 # curl -sL https://raw.githubusercontent.com/linear/linear/618a737a4e6aa279b7853c650f79f209a5142bbc/packages/sdk/src/schema.graphql | awk 'NR == FNR { if (/^(type|input|enum|scalar) /) t = $2; else if (/^}/) t = ""; else have[t, $0] = 1; next } /^#/ || /^$/ { next } /^(type|input|enum|scalar) / { t = $2; next } /^}/ { next } !((t, $0) in have) { print t ": " $0 }' - tests/schema.graphql
 
 type Query {
+  cycles(
+    after: String
+    before: String
+    filter: CycleFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): CycleConnection!
   issue(
     id: String!
   ): Issue!
@@ -36,6 +45,18 @@ type Query {
     orderBy: PaginationOrderBy
     sort: [IssueSortInput!]
   ): IssueConnection!
+  organization: Organization!
+  project(id: String!): Project!
+  projects(
+    after: String
+    before: String
+    filter: ProjectFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+    sort: [ProjectSortInput!]
+  ): ProjectConnection!
   team(
     id: String!
   ): Team!
@@ -115,6 +136,15 @@ type ActorBot {
   type: String!
 }
 
+type Attachment {
+  url: String!
+}
+
+type AttachmentConnection {
+  nodes: [Attachment!]!
+  pageInfo: PageInfo!
+}
+
 type Comment {
   botActor: ActorBot
   body: String!
@@ -122,6 +152,9 @@ type Comment {
   editedAt: DateTime
   externalUser: ExternalUser
   id: ID!
+  parent: Comment
+  resolvedAt: DateTime
+  url: String!
   user: User
 }
 
@@ -135,6 +168,21 @@ type CommentPayload {
   success: Boolean!
 }
 
+type Cycle {
+  endsAt: DateTime!
+  id: ID!
+  isActive: Boolean!
+  name: String
+  number: Float!
+  startsAt: DateTime!
+  team: Team!
+}
+
+type CycleConnection {
+  nodes: [Cycle!]!
+  pageInfo: PageInfo!
+}
+
 type DeletePayload {
   success: Boolean!
 }
@@ -145,7 +193,19 @@ type ExternalUser {
 }
 
 type Issue {
+  archivedAt: DateTime
   assignee: User
+  attachments(
+    after: String
+    before: String
+    filter: AttachmentFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): AttachmentConnection!
+  branchName: String!
+  canceledAt: DateTime
   children(
     after: String
     before: String
@@ -164,9 +224,14 @@ type Issue {
     last: Int
     orderBy: PaginationOrderBy
   ): CommentConnection!
+  completedAt: DateTime
   createdAt: DateTime!
+  creator: User
+  cycle: Cycle
   delegate: User
   description: String
+  dueDate: TimelessDate
+  estimate: Float
   id: ID!
   identifier: String!
   inverseRelations(
@@ -187,9 +252,33 @@ type Issue {
     orderBy: PaginationOrderBy
   ): IssueLabelConnection!
   parent: Issue
+  priority: Float!
+  project: Project
+  projectMilestone: ProjectMilestone
+  relations(
+    after: String
+    before: String
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): IssueRelationConnection!
   sortOrder: Float!
   state: WorkflowState!
+  subscribers(
+    after: String
+    before: String
+    filter: UserFilter
+    first: Int
+    includeArchived: Boolean
+    includeDisabled: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): UserConnection!
+  team: Team!
   title: String!
+  trashed: Boolean
+  updatedAt: DateTime!
   url: String!
 }
 
@@ -206,6 +295,7 @@ type IssueLabel {
   color: String!
   id: ID!
   name: String!
+  parent: IssueLabel
   team: Team
 }
 
@@ -235,9 +325,53 @@ type IssueRelationConnection {
   pageInfo: PageInfo!
 }
 
+type Organization {
+  id: ID!
+  urlKey: String!
+}
+
 type PageInfo {
   endCursor: String
   hasNextPage: Boolean!
+}
+
+type Project {
+  id: ID!
+  name: String!
+  projectMilestones(
+    after: String
+    before: String
+    filter: ProjectMilestoneFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): ProjectMilestoneConnection!
+  teams(
+    after: String
+    before: String
+    filter: TeamFilter
+    first: Int
+    includeArchived: Boolean
+    last: Int
+    orderBy: PaginationOrderBy
+  ): TeamConnection!
+  url: String!
+}
+
+type ProjectConnection {
+  nodes: [Project!]!
+  pageInfo: PageInfo!
+}
+
+type ProjectMilestone {
+  name: String!
+  sortOrder: Float!
+}
+
+type ProjectMilestoneConnection {
+  nodes: [ProjectMilestone!]!
+  pageInfo: PageInfo!
 }
 
 type Team {
@@ -257,6 +391,7 @@ type Team {
 
 type TeamConnection {
   nodes: [Team!]!
+  pageInfo: PageInfo!
 }
 
 type UploadFile {
@@ -276,6 +411,7 @@ type UploadPayload {
 }
 
 type User {
+  app: Boolean!
   displayName: String!
   email: String!
   id: ID!
@@ -284,6 +420,7 @@ type User {
 
 type UserConnection {
   nodes: [User!]!
+  pageInfo: PageInfo!
 }
 
 type WorkflowState {
@@ -297,6 +434,15 @@ type WorkflowStateConnection {
   nodes: [WorkflowState!]!
 }
 
+input AssigneeSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input BooleanComparator {
+  eq: Boolean
+}
+
 input CommentCreateInput {
   body: String
   issueId: String
@@ -304,6 +450,40 @@ input CommentCreateInput {
 
 input CommentUpdateInput {
   body: String
+}
+
+input CompletedAtSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input CreatedAtSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input CycleFilter {
+  team: TeamFilter
+}
+
+input CycleSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input DateComparator {
+  gt: DateTimeOrDuration
+  lt: DateTimeOrDuration
+}
+
+input DueDateSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input EstimateSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
 }
 
 input IDComparator {
@@ -320,12 +500,36 @@ input IssueCreateInput {
 }
 
 input IssueFilter {
+  and: [IssueFilter!]
+  assignee: NullableUserFilter
+  canceledAt: NullableDateComparator
+  completedAt: NullableDateComparator
+  createdAt: DateComparator
+  cycle: NullableCycleFilter
+  delegate: NullableUserFilter
+  description: NullableStringComparator
+  dueDate: NullableTimelessDateComparator
+  hasBlockedByRelations: RelationExistsComparator
+  id: IssueIDComparator
   labels: IssueLabelCollectionFilter
+  number: NumberComparator
+  or: [IssueFilter!]
+  parent: NullableIssueFilter
+  priority: NullableNumberComparator
+  project: NullableProjectFilter
+  projectMilestone: NullableProjectMilestoneFilter
   state: WorkflowStateFilter
   team: TeamFilter
+  title: StringComparator
+  updatedAt: DateComparator
+}
+
+input IssueIDComparator {
+  in: [ID!]
 }
 
 input IssueLabelCollectionFilter {
+  every: IssueLabelFilter
   name: StringComparator
   some: IssueLabelFilter
 }
@@ -342,7 +546,19 @@ input IssueLabelFilter {
 }
 
 input IssueSortInput {
+  assignee: AssigneeSort
+  completedAt: CompletedAtSort
+  createdAt: CreatedAtSort
+  cycle: CycleSort
+  dueDate: DueDateSort
+  estimate: EstimateSort
   manual: ManualSort
+  priority: PrioritySort
+  project: ProjectSort
+  team: TeamSort
+  title: TitleSort
+  updatedAt: UpdatedAtSort
+  workflowState: WorkflowStateSort
 }
 
 input IssueUpdateInput {
@@ -358,18 +574,110 @@ input ManualSort {
   order: PaginationSortOrder
 }
 
+input NullableCycleFilter {
+  number: NumberComparator
+}
+
+input NullableDateComparator {
+  gt: DateTimeOrDuration
+  lt: DateTimeOrDuration
+}
+
+input NullableIssueFilter {
+  id: IssueIDComparator
+  number: NumberComparator
+  or: [NullableIssueFilter!]
+  team: TeamFilter
+}
+
+input NullableNumberComparator {
+  in: [Float!]
+}
+
+input NullableProjectFilter {
+  name: StringComparator
+}
+
+input NullableProjectMilestoneFilter {
+  name: NullableStringComparator
+}
+
+input NullableStringComparator {
+  containsIgnoreCase: String
+  in: [String!]
+}
+
 input NullableTeamFilter {
   id: IDComparator
+  key: StringComparator
   null: Boolean
 }
 
+input NullableTimelessDateComparator {
+  gt: TimelessDateOrDuration
+  lt: TimelessDateOrDuration
+}
+
+input NullableUserFilter {
+  displayName: StringComparator
+  email: StringComparator
+  isMe: BooleanComparator
+  null: Boolean
+  or: [NullableUserFilter!]
+}
+
+input NumberComparator {
+  eq: Float
+  in: [Float!]
+}
+
+input PrioritySort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input ProjectFilter {
+  accessibleTeams: TeamCollectionFilter
+}
+
+input ProjectSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input RelationExistsComparator {
+  eq: Boolean
+}
+
 input StringComparator {
+  containsIgnoreCase: String
   eq: String
+  in: [String!]
+  nin: [String!]
+}
+
+input TeamCollectionFilter {
+  some: TeamFilter
 }
 
 input TeamFilter {
   id: IDComparator
   key: StringComparator
+}
+
+input TeamSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input TitleSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
+}
+
+input UpdatedAtSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
 }
 
 input UserFilter {
@@ -380,6 +688,13 @@ input UserFilter {
 
 input WorkflowStateFilter {
   id: IDComparator
+  name: StringComparator
+  type: StringComparator
+}
+
+input WorkflowStateSort {
+  nulls: PaginationNulls = last
+  order: PaginationSortOrder
 }
 
 enum PaginationNulls {
@@ -399,9 +714,24 @@ enum PaginationSortOrder {
 
 scalar DateTime
 
+scalar DateTimeOrDuration
+
 scalar JSON
 
+scalar TimelessDate
+
+scalar TimelessDateOrDuration
+
+input AttachmentFilter {
+}
+
 input CommentFilter {
+}
+
+input ProjectMilestoneFilter {
+}
+
+input ProjectSortInput {
 }
 
 input UserSortInput {

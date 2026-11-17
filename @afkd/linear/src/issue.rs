@@ -18,6 +18,11 @@
 //! The actions a slot calls on an issue ([`crate::action`]) come through here too: a write
 //! is [`deliver`](LinearUnits::deliver)ed like the kind's own, and a read is done at once.
 //!
+//! The issue a won claim hands over is read whole first ([`Tracker::issue_full`]), so its
+//! handle carries every field a workspace read's does, through the same builder
+//! ([`IssueFields::of`]). Its key stays the claim-journal key ([`issue_key`]), which the
+//! release after a restart recovers the claim comment from.
+//!
 //! Every marker text that crosses the tracker is trello's, byte for byte, with one
 //! difference: `[afkd-ran]`'s `upto=` is in epoch **milliseconds**, since Linear stamps a
 //! comment to the millisecond and a seconds watermark would deliver a comment posted at
@@ -42,7 +47,9 @@ use crate::common::{
 use crate::file;
 use crate::outbox::{lost_line, named, queued_behind_line, queued_line, Outbox, Write, RETRY_FOR};
 use crate::settings::{DiscussWith, Holder, IssueConfig};
-use crate::tracker::{state_named, Child, Comment, Issue, LinearError, State, Team, Tracker};
+use crate::tracker::{
+    state_named, Child, Comment, Issue, LinearError, Organization, State, Team, Tracker,
+};
 use crate::wire::{Facts, IssueFields, UnitOutcome, WireFile, WireUnit};
 use crate::{PARK_FILE, TASK_FILE};
 
@@ -316,6 +323,9 @@ pub(crate) struct LinearUnits {
     /// The team's id, resolved from its key on the first poll that needs it, and kept: a
     /// team's id never changes.
     team_id: Mutex<Option<String>>,
+    /// The workspace the credential reaches, read on the first poll and kept: what a claimed
+    /// handle's `workspace` names, and what a read passed a claimed handle checks it against.
+    organization: Mutex<Option<Organization>>,
     /// The GraphQL endpoint a run reaches Linear at.
     api_url: String,
     /// The workflow states new work is claimed from, by name, in the order written.
@@ -353,6 +363,7 @@ impl LinearUnits {
             tracker,
             team_key: cfg.team_key.clone(),
             team_id: Mutex::new(None),
+            organization: Mutex::new(None),
             api_url: format!("{}{GRAPHQL_PATH}", cfg.base_url),
             pick_from: cfg.pick_from.clone(),
             require_member: cfg.require_member.clone(),
@@ -410,6 +421,27 @@ impl LinearUnits {
     pub(crate) fn set_call_deadline(&self, deadline: Option<Instant>) {
         *lock(&self.call_deadline) = deadline;
         self.tracker.set_call_deadline(deadline);
+    }
+
+    /// The current call's deadline, `None` between calls.
+    pub(crate) fn call_deadline(&self) -> Option<Instant> {
+        *lock(&self.call_deadline)
+    }
+
+    /// The workspace the credential reaches, once a poll has read it.
+    pub(crate) fn organization(&self) -> Option<Organization> {
+        lock(&self.organization).clone()
+    }
+
+    /// The workspace the credential reaches, read once and kept.
+    fn resolve_organization(&self) -> Result<Organization, LinearError> {
+        let mut slot = lock(&self.organization);
+        if let Some(organization) = &*slot {
+            return Ok(organization.clone());
+        }
+        let organization = self.tracker.organization()?;
+        *slot = Some(organization.clone());
+        Ok(organization)
     }
 
     /// The team's id, resolved from its key once and kept.
@@ -675,6 +707,7 @@ impl LinearUnits {
         clock: &dyn Clock,
     ) -> Result<Option<Unit>, LinearError> {
         let budget = ScanBudget::start(clock, diag, *lock(&self.call_deadline));
+        self.resolve_organization()?;
         let team_id = self.team_id()?;
         match self.scan_parked(&team_id, diag, clock, &budget)? {
             ParkScan::Claimed(unit) => return Ok(Some(*unit)),
@@ -780,11 +813,12 @@ impl LinearUnits {
 
     /// Race one candidate for the comment lock: post a claim, settle so a rival's earlier
     /// claim has time to be seen, re-read the thread, and win only as the single earliest
-    /// still-live claim ([`won_claim`]).
+    /// still-live claim ([`won_claim`]). A won issue is read again whole, so the unit carries
+    /// every field of its handle.
     ///
     /// The win narrates **here**, and takes the park badge and owner marker off an issue
-    /// that carried them. A failed re-read is a tracker fault, not a lost round: our claim is
-    /// released and the error propagates.
+    /// that carried them. A failed re-read, of the thread or of the issue, is a tracker fault,
+    /// not a lost round: our claim is released and the error propagates.
     fn attempt_claim(
         &self,
         team_id: &str,
@@ -811,6 +845,13 @@ impl LinearUnits {
             self.drop_claim(&claim.id, diag);
             return Ok(ClaimRound::Lost);
         }
+        let issue = match self.tracker.issue_full(&issue.id) {
+            Ok(issue) => issue,
+            Err(e) => {
+                self.drop_claim(&claim.id, diag);
+                return Err(e);
+            }
+        };
         // The run's credential, read now: an app's token is the one the claim just used.
         let authorization = match self.tracker.authorization() {
             Ok(authorization) => authorization,
@@ -1067,7 +1108,8 @@ impl LinearUnits {
     ///
     /// - `id`: the sanitized identifier (the run-name component);
     /// - `key`: the claim-journal key ([`issue_key`]);
-    /// - `fields`: the handle's fields, as the claiming read saw the issue;
+    /// - `fields`: the handle's fields, as the read after the won claim saw the issue
+    ///   ([`IssueFields::of`]);
     /// - `thread`: the issue's uuid, stable across every claim and every move of team;
     /// - `seen`: the claim-read comment ids, which the brief already carries;
     /// - `self`: the viewer's id;
@@ -1078,26 +1120,13 @@ impl LinearUnits {
         WireUnit {
             id: sanitize(&issue.identifier),
             key: unit.key(),
-            fields: IssueFields {
-                title: issue.title.clone(),
-                url: issue.url.clone(),
-                labels: issue.labels.clone(),
-                state: issue.state.name.clone(),
-                parent: issue
-                    .parent
-                    .as_ref()
-                    .map_or_else(String::new, |p| p.identifier.clone()),
-                sub_issues: issue
-                    .children
-                    .iter()
-                    .map(|c| c.identifier.clone())
-                    .collect(),
-                blocked_by: issue
-                    .blockers
-                    .iter()
-                    .map(|b| b.identifier.clone())
-                    .collect(),
-            },
+            fields: IssueFields::of(
+                issue,
+                &self
+                    .organization()
+                    .map(|organization| organization.url_key)
+                    .unwrap_or_default(),
+            ),
             thread: issue.id.clone(),
             seen: unit.comments.iter().map(|c| c.id.clone()).collect(),
             me: unit.me.first().to_string(),
@@ -1665,7 +1694,10 @@ mod tests {
     use super::*;
     use crate::common::{CaptureDiag, FakeClock, TempDir};
     use crate::settings::issue_config;
-    use crate::tracker::{Action, Blocker, Child, MockTracker, Related, SELF_ID, TEAM_ID};
+    use crate::tracker::{
+        Action, Blocker, Child, MockTracker, Priority, Related, StateType, FILED_AT, SELF_ID,
+        TEAM_ID,
+    };
     use serde_json::{json, Value};
 
     /// An issue title carrying the delimiter a success line wraps it in, wide CJK, an emoji
@@ -2087,8 +2119,9 @@ mod tests {
     // --- the scan and the claim ---
 
     /// The won race hands over the issue as a unit: the identifier as its id and its key's
-    /// uuid and claim, the uuid as its thread, every handle field, the viewer as `self`, the
-    /// five env names, and the brief.
+    /// uuid and claim, the uuid as its thread, every handle field as the full read after the
+    /// win saw the issue, in the workspace the poll read, the viewer as `self`, the five env
+    /// names, and the brief.
     #[test]
     fn a_won_claim_hands_over_the_issue_as_a_unit() {
         let f = fx(json!({}));
@@ -2106,6 +2139,18 @@ mod tests {
                 title: "c".into(),
                 state: "Todo".into(),
             }];
+            let detail = &mut i.detail;
+            detail.priority = Priority::High;
+            detail.estimate = Some(3);
+            detail.due = Some("2026-12-24".into());
+            detail.assignee_name = Some("陳大文".into());
+            detail.creator = Some("phil".into());
+            detail.project = Some("Trackers 🧭".into());
+            detail.cycle = Some(12);
+            detail.blocks = vec!["ENG-9".into()];
+            detail.related = vec!["ENG-2".into()];
+            detail.links = vec!["https://github.com/acme/widgets/pull/42".into()];
+            detail.subscribers = vec!["phil".into(), "陳大文".into()];
         });
         f.tracker
             .seed_comment_by("ENG-7", "h1", "看起来不对 🚨", "u-chen", now_secs() - 3600);
@@ -2120,15 +2165,49 @@ mod tests {
         assert_eq!(
             wire.fields,
             IssueFields {
+                uuid: "ENG-7".into(),
+                workspace: "acme".into(),
+                team: "ENG".into(),
                 title: TITLE.into(),
                 url: "https://linear.app/acme/issue/ENG-7".into(),
-                labels: vec!["afkd/ready".into(), "Väntar på svar".into()],
+                description: BODY.into(),
+                branch: "eng-7".into(),
                 state: "Todo".into(),
-                parent: String::new(),
+                state_type: StateType::Unstarted,
+                priority: Priority::High,
+                estimate: Some(3),
+                due: Some("2026-12-24".into()),
+                assignee: Some("陳大文".into()),
+                delegate: None,
+                creator: Some("phil".into()),
+                project: Some("Trackers 🧭".into()),
+                milestone: None,
+                cycle: Some(12),
+                labels: vec!["afkd/ready".into(), "Väntar på svar".into()],
+                parent: None,
                 sub_issues: vec!["ENG-8".into()],
+                blocks: vec!["ENG-9".into()],
                 blocked_by: vec!["ENG-3".into()],
+                related: vec!["ENG-2".into()],
+                similar: Vec::new(),
+                duplicates: Vec::new(),
+                duplicate_of: None,
+                links: vec!["https://github.com/acme/widgets/pull/42".into()],
+                subscribers: vec!["phil".into(), "陳大文".into()],
+                created_at: FILED_AT,
+                updated_at: FILED_AT,
+                completed_at: None,
+                canceled_at: None,
+                archived: false,
+                trashed: false,
             }
         );
+        let calls = f.tracker.calls();
+        let won = calls
+            .iter()
+            .rposition(|c| *c == "read comments")
+            .expect("the claim's re-read");
+        assert_eq!(calls[won + 1], "read issue", "the won issue is read whole");
         assert_eq!(
             wire.env,
             BTreeMap::from([
@@ -2148,6 +2227,70 @@ mod tests {
             [format!("[linear] claimed issue ENG-7 \"{TITLE}\"")]
         );
         assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+    }
+
+    /// A full read of the won issue that fails is a tracker fault, not a claim: the claim
+    /// comment is taken back, the poll fails with the read's error, and the issue is claimed
+    /// on a later beat once Linear answers.
+    #[test]
+    fn a_won_issue_that_cannot_be_read_whole_gives_its_claim_back() {
+        let f = fx(json!({}));
+        f.tracker.add_issue("Todo", "ENG-7", TITLE, BODY);
+        f.tracker.fail(
+            "read issue",
+            LinearError::Status {
+                stage: "read issue",
+                status: 503,
+                retry_after: None,
+            },
+        );
+        assert_eq!(
+            f.poll_err().to_string(),
+            "linear read issue: Linear returned status 503"
+        );
+        assert!(
+            f.tracker.comments_on("ENG-7").is_empty(),
+            "the claim was taken back"
+        );
+        assert!(f.diag.narrated().is_empty(), "nothing was claimed");
+        f.tracker.clear_failure();
+        assert_eq!(f.wire().id, "ENG-7");
+    }
+
+    /// The workspace is read on the first poll, kept for every claimed handle, and read no
+    /// more; a poll that cannot read it is an idle beat's error, before any state is read.
+    #[test]
+    fn the_workspace_is_read_once_on_the_first_poll() {
+        let f = fx(json!({}));
+        assert_eq!(f.units.organization(), None);
+        f.tracker.fail(
+            "read organization",
+            LinearError::Transport {
+                stage: "read organization",
+                reason: "mock failure".into(),
+            },
+        );
+        assert_eq!(
+            f.poll_err().to_string(),
+            "linear read organization: no response (mock failure)"
+        );
+        assert!(!f.tracker.calls().contains(&"read issues"));
+        f.tracker.clear_failure();
+        f.tracker.add_issue("Todo", "ENG-1", TITLE, "");
+        assert_eq!(f.wire().fields.workspace, "acme");
+        f.tracker.add_issue("Todo", "ENG-2", TITLE, "");
+        assert_eq!(f.wire().fields.workspace, "acme");
+        let reads = f
+            .tracker
+            .calls()
+            .iter()
+            .filter(|c| **c == "read organization")
+            .count();
+        assert_eq!(reads, 2, "the failed read and the one kept");
+        assert_eq!(
+            f.units.organization().map(|o| o.url_key).as_deref(),
+            Some("acme")
+        );
     }
 
     /// `require_member` holds an issue to the user it names, as its assignee or its

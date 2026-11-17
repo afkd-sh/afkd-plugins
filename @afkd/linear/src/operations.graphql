@@ -26,6 +26,7 @@ query States($teamId: String!) {
         id
         name
         type
+        position
       }
     }
   }
@@ -193,6 +194,493 @@ query Labels($filter: IssueLabelFilter!) {
       id
       team {
         id
+      }
+    }
+  }
+}
+
+query Organization {
+  organization {
+    id
+    urlKey
+  }
+}
+
+query Me {
+  viewer {
+    id
+    name
+    displayName
+    email
+    app
+  }
+}
+
+query TeamList($after: String) {
+  teams(first: 100, after: $after) {
+    nodes {
+      id
+      key
+      name
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query UserList($after: String) {
+  users(first: 100, after: $after) {
+    nodes {
+      id
+      name
+      displayName
+      email
+      app
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query LabelList($filter: IssueLabelFilter!, $after: String) {
+  issueLabels(filter: $filter, first: 100, after: $after) {
+    nodes {
+      id
+      name
+      team {
+        key
+      }
+      parent {
+        name
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query ProjectList($filter: ProjectFilter!, $after: String) {
+  projects(filter: $filter, first: 25, after: $after) {
+    nodes {
+      id
+      name
+      url
+      teams(first: 50) {
+        nodes {
+          key
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      projectMilestones(first: 50) {
+        nodes {
+          name
+          sortOrder
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query ProjectTeams($id: String!, $after: String) {
+  project(id: $id) {
+    teams(first: 50, after: $after) {
+      nodes {
+        key
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query ProjectMilestones($id: String!, $after: String) {
+  project(id: $id) {
+    projectMilestones(first: 50, after: $after) {
+      nodes {
+        name
+        sortOrder
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query CycleList($filter: CycleFilter!, $after: String) {
+  cycles(filter: $filter, first: 100, after: $after) {
+    nodes {
+      id
+      number
+      name
+      startsAt
+      endsAt
+      isActive
+      team {
+        key
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query IssueList($filter: IssueFilter!, $sort: [IssueSortInput!]!, $first: Int!, $after: String, $includeArchived: Boolean!) {
+  issues(filter: $filter, sort: $sort, first: $first, after: $after, includeArchived: $includeArchived) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      url
+      branchName
+      sortOrder
+      priority
+      estimate
+      dueDate
+      createdAt
+      updatedAt
+      completedAt
+      canceledAt
+      archivedAt
+      trashed
+      team {
+        key
+      }
+      state {
+        id
+        name
+        type
+      }
+      assignee {
+        id
+        displayName
+      }
+      delegate {
+        id
+        displayName
+      }
+      creator {
+        displayName
+      }
+      project {
+        name
+      }
+      projectMilestone {
+        name
+      }
+      cycle {
+        number
+      }
+      parent {
+        identifier
+        title
+      }
+      labels(first: 20) {
+        nodes {
+          name
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      children(first: 20) {
+        nodes {
+          id
+          identifier
+          title
+          state {
+            name
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      relations(first: 20) {
+        nodes {
+          type
+          relatedIssue {
+            identifier
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      inverseRelations(first: 20) {
+        nodes {
+          type
+          issue {
+            identifier
+            state {
+              type
+            }
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      attachments(first: 20) {
+        nodes {
+          url
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      subscribers(first: 20) {
+        nodes {
+          displayName
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query IssueFull($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    description
+    url
+    branchName
+    sortOrder
+    priority
+    estimate
+    dueDate
+    createdAt
+    updatedAt
+    completedAt
+    canceledAt
+    archivedAt
+    trashed
+    team {
+      key
+    }
+    state {
+      id
+      name
+      type
+    }
+    assignee {
+      id
+      displayName
+    }
+    delegate {
+      id
+      displayName
+    }
+    creator {
+      displayName
+    }
+    project {
+      name
+    }
+    projectMilestone {
+      name
+    }
+    cycle {
+      number
+    }
+    parent {
+      identifier
+      title
+    }
+    labels(first: 20) {
+      nodes {
+        name
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    children(first: 20) {
+      nodes {
+        id
+        identifier
+        title
+        state {
+          name
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    relations(first: 20) {
+      nodes {
+        type
+        relatedIssue {
+          identifier
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    inverseRelations(first: 20) {
+      nodes {
+        type
+        issue {
+          identifier
+          state {
+            type
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    attachments(first: 20) {
+      nodes {
+        url
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    subscribers(first: 20) {
+      nodes {
+        displayName
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueThread($id: String!, $after: String) {
+  issue(id: $id) {
+    identifier
+    comments(first: 100, after: $after) {
+      nodes {
+        id
+        body
+        createdAt
+        editedAt
+        resolvedAt
+        url
+        parent {
+          id
+        }
+        user {
+          displayName
+        }
+        botActor {
+          name
+        }
+        externalUser {
+          name
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueLabelNames($id: String!, $after: String) {
+  issue(id: $id) {
+    labels(first: 50, after: $after) {
+      nodes {
+        name
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueOutRelations($id: String!, $after: String) {
+  issue(id: $id) {
+    relations(first: 50, after: $after) {
+      nodes {
+        type
+        relatedIssue {
+          identifier
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueAttachments($id: String!, $after: String) {
+  issue(id: $id) {
+    attachments(first: 50, after: $after) {
+      nodes {
+        url
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueSubscribers($id: String!, $after: String) {
+  issue(id: $id) {
+    subscribers(first: 50, after: $after) {
+      nodes {
+        displayName
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
       }
     }
   }

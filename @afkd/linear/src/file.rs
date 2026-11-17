@@ -1,5 +1,6 @@
 //! Files on an issue, both ways: the files `comment` and `describe` upload and embed, and
-//! the `fetch_files` read that writes an issue's files back to a directory.
+//! the files an issue links ([`linked_issue_files`]), which `fetch_files` writes back to a
+//! directory and the workspace read `linear.files` hands back as urls.
 //!
 //! Linear stores a file in two steps: `fileUpload` signs an upload url and names the asset
 //! url the file will live at, and the bytes are PUT to the signed url. The file is then
@@ -382,12 +383,42 @@ fn cut_to(name: &str, budget: usize) -> String {
     format!("{}{ext}", &name[..end])
 }
 
-/// Fetch every file Linear hosts that `issue` embeds or links — in its description, then in
-/// its thread oldest first, control markers left out, each url once — and write them to the
-/// directory `to`, each under [`file_name_for`]. All are fetched before any is written, and
-/// each is written to a temp file renamed onto its name: a file that cannot be fetched or
-/// written leaves nothing, no file is ever half there, and only a rename that fails keeps
-/// the files renamed before it. An issue with no file writes nothing and says so.
+/// Every file Linear hosts that the issue `issue_id` embeds or links, as its name and its url:
+/// in its description, then in its thread oldest first, control markers left out, each url
+/// once.
+///
+/// # Errors
+///
+/// Returns the sentence of the read of the description or the thread Linear refused.
+pub(crate) fn linked_issue_files(
+    tracker: &dyn Tracker,
+    issue_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let description = tracker
+        .issue_description(issue_id)
+        .map_err(|e| e.to_string())?;
+    let mut thread = tracker
+        .issue_comments(issue_id)
+        .map_err(|e| e.to_string())?;
+    thread.retain(|c| !is_control_marker(&c.text));
+    thread.sort_by(|a, b| (a.posted_at, &a.id).cmp(&(b.posted_at, &b.id)));
+    let is_linear = |url: &str| tracker.is_linear_file(url);
+    let mut files: Vec<(String, String)> = Vec::new();
+    for text in std::iter::once(&description).chain(thread.iter().map(|c| &c.text)) {
+        for (name, url) in linked_files(text, &is_linear) {
+            if !files.iter().any(|(_, seen)| *seen == url) {
+                files.push((name, url));
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Fetch every file [`linked_issue_files`] finds on `issue`, and write them to the directory
+/// `to`, each under [`file_name_for`]. All are fetched before any is written, and each is
+/// written to a temp file renamed onto its name: a file that cannot be fetched or written
+/// leaves nothing, no file is ever half there, and only a rename that fails keeps the files
+/// renamed before it. An issue with no file writes nothing and says so.
 pub(crate) fn fetch(
     tracker: &dyn Tracker,
     issue: &Issue,
@@ -407,23 +438,7 @@ pub(crate) fn fetch(
         }
         Err(e) => return Err(format!("{ACTION}: cannot read {to}: {e}")),
     }
-    let description = tracker
-        .issue_description(&issue.id)
-        .map_err(|e| e.to_string())?;
-    let mut thread = tracker
-        .issue_comments(&issue.id)
-        .map_err(|e| e.to_string())?;
-    thread.retain(|c| !is_control_marker(&c.text));
-    thread.sort_by(|a, b| (a.posted_at, &a.id).cmp(&(b.posted_at, &b.id)));
-    let is_linear = |url: &str| tracker.is_linear_file(url);
-    let mut files: Vec<(String, String)> = Vec::new();
-    for text in std::iter::once(&description).chain(thread.iter().map(|c| &c.text)) {
-        for (name, url) in linked_files(text, &is_linear) {
-            if !files.iter().any(|(_, seen)| *seen == url) {
-                files.push((name, url));
-            }
-        }
-    }
+    let files = linked_issue_files(tracker, &issue.id)?;
     if files.is_empty() {
         diag.narrate(&format!(
             "{ACTION_TAG} no files on {}; nothing written to {to}",

@@ -13,8 +13,8 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   triggers, with the skill an agent answers them through.
 - [`@afkd/github`](@afkd/github) — GitHub issues and pull-request reviews as afkd
   triggers, with the skill an agent answers them through.
-- [`@afkd/linear`](@afkd/linear) — Linear issues as afkd triggers, with the skill an
-  agent works the issue through.
+- [`@afkd/linear`](@afkd/linear) — Linear issues as afkd triggers, the reads a config
+  makes through a `linear.Workspace`, and the skill an agent works the issue through.
 - [`@afkd/telegram`](@afkd/telegram) — messages to a Telegram bot as afkd
   triggers, the calls a config sends, replies, reacts, edits and fetches with, and
   the skill an agent does the same through.

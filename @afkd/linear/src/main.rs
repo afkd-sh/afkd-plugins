@@ -14,6 +14,12 @@
 //! a sub-issue, archive, and read its thread, description and sub-issues — are [`action`]'s.
 //! A comment or a description carries files, and an issue's files are fetched back
 //! ([`file`]).
+//!
+//! The reads a config makes of a whole workspace — issues by any filter, an issue's comments
+//! and files, the viewer, users, teams, states, labels, projects and cycles, and a file
+//! downloaded — are [`reads`]'s. Each reaches Linear through the `linear.Workspace` it is
+//! passed ([`workspace`]), never a service's settings, so it answers alike in the trigger
+//! child and in a child afkd starts for that one call.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -30,6 +36,7 @@ mod issue;
 mod manifest;
 mod outbox;
 mod plugin;
+mod reads;
 mod rfc3339;
 #[cfg(test)]
 #[path = "../tests/common/sdl.rs"]
@@ -37,6 +44,7 @@ mod sdl;
 mod settings;
 mod tracker;
 mod wire;
+mod workspace;
 
 use std::io::{BufRead, Write};
 

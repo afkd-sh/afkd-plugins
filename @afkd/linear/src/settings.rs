@@ -221,35 +221,71 @@ pub(crate) fn issue_config(settings: &Value) -> Result<IssueConfig, SettingsErro
     })
 }
 
+/// What is wrong with a credential that is not exactly one of an API key or an app's
+/// `client_id` and `client_secret`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialProblem {
+    /// Neither form is written.
+    Missing,
+    /// An API key is written beside the app's id, its secret, or both, as each says.
+    Doubled {
+        client_id: bool,
+        client_secret: bool,
+    },
+    /// The app's id is written without its secret.
+    IdWithoutSecret,
+    /// The app's secret is written without its id.
+    SecretWithoutId,
+}
+
+/// The one credential rule a service's block and a `linear.Workspace` are both read by:
+/// exactly one of an `api_key`, or a `client_id` with its `client_secret`.
+///
+/// # Errors
+///
+/// Returns the problem when the three name no credential, or more than one form of it.
+pub(crate) fn credential(
+    api_key: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+) -> Result<AuthConfig, CredentialProblem> {
+    match (api_key, client_id, client_secret) {
+        (Some(key), None, None) => Ok(AuthConfig::ApiKey(key)),
+        (None, Some(client_id), Some(client_secret)) => Ok(AuthConfig::App {
+            client_id,
+            client_secret,
+        }),
+        (Some(_), id, secret) => Err(CredentialProblem::Doubled {
+            client_id: id.is_some(),
+            client_secret: secret.is_some(),
+        }),
+        (None, Some(_), None) => Err(CredentialProblem::IdWithoutSecret),
+        (None, None, Some(_)) => Err(CredentialProblem::SecretWithoutId),
+        (None, None, None) => Err(CredentialProblem::Missing),
+    }
+}
+
 /// The credential the block writes: an `api_key`, or a `client_id` with its
 /// `client_secret`, and never both forms. Each refusal names the setting it is about.
 fn auth_config(settings: &Map<String, Value>) -> Result<AuthConfig, SettingsError> {
     let key = required_scalar(settings, "api_key")?;
     let id = required_scalar(settings, "client_id")?;
     let secret = required_scalar(settings, "client_secret")?;
-    match (key, id, secret) {
-        (Some(key), None, None) => Ok(AuthConfig::ApiKey(key)),
-        (None, Some(client_id), Some(client_secret)) => Ok(AuthConfig::App {
-            client_id,
-            client_secret,
-        }),
-        (Some(_), _, _) => Err(SettingsError::new(
+    credential(key, id, secret).map_err(|problem| match problem {
+        CredentialProblem::Doubled { .. } => SettingsError::new(
             "api_key",
             "write api_key or client_id and client_secret, not both",
-        )),
-        (None, Some(_), None) => Err(SettingsError::new(
-            "client_id",
-            "client_id needs client_secret",
-        )),
-        (None, None, Some(_)) => Err(SettingsError::new(
-            "client_secret",
-            "client_secret needs client_id",
-        )),
-        (None, None, None) => Err(SettingsError::new(
-            "api_key",
-            "needs api_key, or client_id and client_secret",
-        )),
-    }
+        ),
+        CredentialProblem::IdWithoutSecret => {
+            SettingsError::new("client_id", "client_id needs client_secret")
+        }
+        CredentialProblem::SecretWithoutId => {
+            SettingsError::new("client_secret", "client_secret needs client_id")
+        }
+        CredentialProblem::Missing => {
+            SettingsError::new("api_key", "needs api_key, or client_id and client_secret")
+        }
+    })
 }
 
 /// The one [`ME`]-or-name rule every member operand is read by: `me` (case-sensitively)

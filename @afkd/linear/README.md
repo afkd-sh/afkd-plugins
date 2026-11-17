@@ -8,6 +8,11 @@ and fetch its files back. It also ships the `linear` skill an agent works the is
 read and post comments, fetch and put up files, move the issue and its sub-issues, label
 it, file follow-up issues, and ask a question that parks the issue until a human replies.
 
+Beside it, the plugin gives a config the reads of a whole workspace, each through the
+[`linear.Workspace`](#reading-linear-through-a-linearworkspace) it is passed: the issues any
+filters keep, an issue's comments and files, the viewer, users, teams, states, labels,
+projects and cycles.
+
 It does for a Linear team what [`@afkd/trello`](../trello) does for a board: the same
 claim, watermark, attempt and park comments on the issue, the same brief and the same run
 environment, mapped onto Linear's states, labels, assignees and sub-issues. The places it
@@ -27,8 +32,8 @@ afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
 is: the manifest, the `afkd-linear` binary and its `skills/`, nothing else. Nothing is
 compiled on your host, and no Rust toolchain is needed there. Installing it needs **afkd
-0.2.414 or newer**, the first that fills in the platform; `afkd update @afkd/linear` moves
-an installed copy onto the next release.
+0.2.693 or newer**, the first whose manifests declare a `list[str]` an action returns;
+`afkd update @afkd/linear` moves an installed copy onto the next release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:
@@ -186,23 +191,15 @@ each with its type:
 | `on_fail proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome)`    | after a run that failed                         |
 
 `run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`duration`,
-`error`). `issue` is a **`linear.Issue`**, the plugin's handle for the issue:
+`error`). `issue` is a **`linear.Issue`**, the plugin's handle for the issue, with every
+field [its table](#linearissue) lists: its identifier as `id`, and as `key` afkd's claim key
+for it.
 
-| Field        | Type           | What it is                                                |
-|--------------|----------------|-----------------------------------------------------------|
-| `id`         | `str`          | the issue's identifier, `ENG-123`                         |
-| `key`        | `str`          | afkd's claim key for the issue                            |
-| `title`      | `str`          | the issue's title                                         |
-| `url`        | `str`          | the issue's address on linear.app                         |
-| `labels`     | `list[str]`    | the names of the labels on the issue                      |
-| `state`      | `str`          | the workflow state it sat in when it was claimed          |
-| `parent`     | `str`          | the parent issue's identifier, `""` for no sub-issue      |
-| `sub_issues` | `list[str]`    | the sub-issues' identifiers, in Linear's order            |
-| `blocked_by` | `list[str]`    | every issue that blocks this one, done or not             |
-
-A config passes an issue around and compares it, but never builds one. The plugin sends
-every field with the claim, as the claiming poll read the issue, and they hold for the whole
-run.
+A config passes an issue around and compares it, but never builds one. The plugin reads the
+issue whole once its claim is won and sends every field with the claim, and they hold for the
+whole run. A description too long for afkd's 64 KiB plugin line beside the brief is cut in
+the handle's `description`, ending in a line saying so; the brief keeps it whole when the two
+then fit.
 
 **Credentials.** A personal API key acts as the user who made it. An OAuth app's
 `client_id` and `client_secret` are traded for the app's own token with Linear's
@@ -256,9 +253,9 @@ first. A state or a label is named by its name, in the service's team:
 | `linear.fetch_files(issue, "<to>")`                          | write every file the issue links into the directory `to`, numbered |
 
 The issue is a `linear.Issue` and nothing else: `linear.move_to("Done")`, with no issue, is
-refused when the config loads, and so is an action the plugin does not declare. A read
-cannot hand a value back, since a plugin exposes none, so it writes what it read to the
-absolute path `to`, through a temp file renamed onto it.
+refused when the config loads, and so is an action the plugin does not declare. These reads
+write what they read to the absolute path `to`, through a temp file renamed onto it; the
+[workspace reads](#reading-linear-through-a-linearworkspace) hand theirs back.
 
 Each action returns a `result[nil, linear.Error]`, like any call that can fail: `.ok` when
 it landed, and when Linear refused it — a state the team does not have, a sub-issue that is
@@ -492,6 +489,202 @@ widgets :: service(linear) {
 The `fail` aborts the run; the plugin reads the marker and parks the issue instead. The
 scratch dir is **outside** any `with git.worktree(…)` copy, so the marker survives the copy
 being torn down, and agent, gate and plugin all name the same file.
+
+## Reading Linear through a `linear.Workspace`
+
+Beside the issue a service claims, a config reads a whole workspace: the issues any set of
+filters keeps, an issue's comments and the files it links, the viewer, the users, teams,
+states, labels, projects and cycles, and a file downloaded. Each read takes a
+`linear.Workspace` first, the credential it reaches Linear with, and reaches Linear through
+nothing else: no read takes a service's settings, so it reads the same from an interval
+service's run, from another plugin's service and from a `service(linear)`'s slots. Called
+outside the plugin's own services, a read is a child afkd starts for that one call.
+
+```conf
+import "afkd"
+import "std:env"
+import "svc:interval"
+import "@afkd/linear"
+
+ACME :: linear.Workspace{ api_key: env.get("LINEAR_API_KEY") ?? fail("LINEAR_API_KEY is unset") }
+
+standup :: service(interval) {
+  every    1h
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {
+    match linear.issues(ACME, team=[ "ENG", "OPS" ], state=[ "Todo" ], order=[ .priority, .created ]) {
+      .ok(issues) => {
+        for issue in issues {
+          if issue.priority == .urgent {
+            $ echo #{issue.id} #{issue.title} #{issue.assignee ?? "nobody"}
+          }
+        }
+      }
+      .err(e) => fail("linear.issues: #{e.message}")
+    }
+  }
+}
+```
+
+### `linear.Workspace`
+
+A struct the plugin declares, built as `linear.Workspace{ … }`:
+
+| Field           | Type                              | What it is                                    |
+|-----------------|-----------------------------------|-----------------------------------------------|
+| `api_key`       | `str?`, secret                    | a personal API key                            |
+| `client_id`     | `str?`                            | an OAuth app's client id                      |
+| `client_secret` | `str?`, secret                    | its secret, traded for the app's own token with the `client_credentials` grant |
+| `base_url`      | `str = "https://api.linear.app"`  | a stand-in's address in tests                 |
+
+- Exactly one of `api_key` or the pair `client_id` and `client_secret` is set and not empty;
+  any other is an `.err` of every read naming the fields, such as `issues: the
+  linear.Workspace sets api_key beside client_id; set one or the other`.
+- An app's token is kept in the plugin's own directory by client id, readable by its owner
+  alone, so the children afkd starts for each call share it. It is fetched anew shortly
+  before it expires, or once Linear refuses it, and never per call.
+- A credential reaches exactly one workspace, so two workspaces are two `Workspace` values,
+  used side by side.
+- Every handle a read hands back has the `key` `linear:<organization uuid>/<object uuid>`. A
+  read finds the object by it, so a handle keeps working after its issue moves team and its
+  identifier changes, and `==` on two handles compares it. A read passed a handle of another
+  workspace than its `Workspace` reaches is an `.err` naming both url keys, `comments: issue
+  is ACME-12 of workspace acme, and the linear.Workspace reaches globex`.
+- The issue a `service(linear)` claimed carries afkd's claim key instead, so a read in its
+  slots passed it finds the issue the service holds; it is not `==` a handle a read hands
+  back of the same issue.
+
+### The enums
+
+| Enum                | Members                                                                    |
+|---------------------|----------------------------------------------------------------------------|
+| `linear.Priority`   | `none`, `urgent`, `high`, `medium`, `low`: Linear's 0 to 4                 |
+| `linear.State_Type` | `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`; a state Linear marks `duplicate` is `canceled` |
+| `linear.Sort`       | `manual`, `team`, `state`, `priority`, `assignee`, `project`, `cycle`, `due`, `estimate`, `title`, `created`, `updated`, `completed`: keys of Linear's own sort on issues, at most three to an `order` |
+
+A field, a filter and a local are typed by them alike: `issue.priority == .urgent`,
+`priority=[ .urgent, .high ]`.
+
+### `linear.Issue`
+
+Every field is sent, filled wherever the plugin hands an issue out, the claimed one
+included. A field that may hold nothing is `T?`, and is `nil` when it does.
+
+| Field                                                     | Type                 | What it is |
+|-----------------------------------------------------------|----------------------|------------|
+| `id`                                                      | `str`                | the identifier as it is now, `ENG-123` |
+| `key`                                                     | `str`                | `linear:<organization uuid>/<issue uuid>`, or afkd's claim key for a claimed issue |
+| `uuid`                                                    | `str`                | Linear's id for it, the same after it moves team and its identifier changes |
+| `workspace`                                               | `str`                | the workspace's url key, `acme` |
+| `team`                                                    | `str`                | the team's key |
+| `title`, `url`                                            | `str`                | |
+| `description`                                             | `str`                | markdown, `""` when empty |
+| `branch`                                                  | `str`                | Linear's git branch name for it |
+| `state`                                                   | `str`                | the workflow state's name |
+| `state_type`                                              | `linear.State_Type`  | |
+| `priority`                                                | `linear.Priority`    | |
+| `estimate`                                                | `int?`               | |
+| `due`                                                     | `str?`               | `YYYY-MM-DD` |
+| `assignee`, `delegate`                                    | `str?`               | display names |
+| `creator`                                                 | `str?`               | `nil` for one an integration filed |
+| `project`, `milestone`                                    | `str?`               | names |
+| `cycle`                                                   | `int?`               | number |
+| `labels`                                                  | `list[str]`          | names |
+| `parent`                                                  | `str?`               | identifier |
+| `sub_issues`                                              | `list[str]`          | identifiers, in Linear's order |
+| `blocks`, `blocked_by`, `related`, `similar`, `duplicates` | `list[str]`         | identifiers, one list per relation, done or not |
+| `duplicate_of`                                            | `str?`               | identifier |
+| `links`                                                   | `list[str]`          | the urls of its links (Linear's attachments) |
+| `subscribers`                                             | `list[str]`          | display names |
+| `created_at`, `updated_at`                                | `time.Time`          | |
+| `completed_at`, `canceled_at`                             | `time.Time?`         | `nil` unless it was |
+| `archived`, `trashed`                                     | `bool`               | a trashed issue is archived too |
+
+A field that points at an issue carries its identifier, since a field cannot hold a handle;
+`linear.issues(ws, id=[ … ])` turns identifiers into handles in one call.
+
+### The other handles
+
+| Handle           | Fields |
+|------------------|--------|
+| `linear.Comment` | `id` (its uuid), `issue` (identifier), `body`, `author: str?` (a display name, or an integration's or an external user's name), `reply_to: str?` (the id of the comment it answers), `resolved_at: time.Time?`, `created_at: time.Time`, `edited_at: time.Time?`, `url` |
+| `linear.Team`    | `id` (its key, `ENG`), `name` |
+| `linear.State`   | `id`, `name`, `type: linear.State_Type`, `team` |
+| `linear.Label`   | `id`, `name`, `group: str?`, `team: str?` (`nil` for a workspace label) |
+| `linear.User`    | `id`, `name` (display name), `full_name`, `email`, `app: bool` |
+| `linear.Project` | `id`, `name`, `teams: list[str]`, `milestones: list[str]` (in order), `url` |
+| `linear.Cycle`   | `id`, `number: int`, `name: str?`, `team`, `starts_at`, `ends_at: time.Time`, `active: bool` |
+
+### The reads
+
+| Call                                  | Gives |
+|---------------------------------------|-------|
+| `linear.issues(ws, ~filters…)`        | `list[linear.Issue]` matching every filter given, workspace-wide unless `team` says |
+| `linear.comments(ws, issue)`          | `list[linear.Comment]`, oldest first, each reply right after the comment it answers |
+| `linear.me(ws)`                       | the `linear.User` the credential acts as |
+| `linear.users(ws)`                    | `list[linear.User]`, apps included, disabled accounts not |
+| `linear.teams(ws)`                    | `list[linear.Team]` the credential can reach |
+| `linear.states(ws, team)`             | `list[linear.State]`, in workflow order |
+| `linear.labels(ws, ~team)`            | `list[linear.Label]`: the workspace's, and the team's when given |
+| `linear.projects(ws, ~team)`          | `list[linear.Project]`, every one or the team's |
+| `linear.cycles(ws, team)`             | `list[linear.Cycle]`, oldest first |
+| `linear.files(ws, issue)`             | `list[str]`: the urls of every file Linear hosts that its description and comments link, the description's first, then the comments' oldest first; a link in one of afkd's own control markers (its claim, attempt, ran and park comments) is left out, though `comments` returns the markers themselves |
+| `linear.download_file(ws, url, to)`   | nil; saves the file at `url` to the absolute path `to`, sending the credential Linear's file host asks for, and to no other host |
+
+A team is named by its key. An unknown one is refused by `states` and `cycles`, `linear
+resolve team: no team with the key 'QA'`, and matches nothing in a filter.
+
+### `linear.issues`'s filters
+
+All are named-only and may be left out. Each is named after the field it reads, a list on a
+single-valued field meaning any of them.
+
+| Filter                                         | Type                       | Keeps |
+|------------------------------------------------|----------------------------|-------|
+| `id`                                           | `list[str]`                | these identifiers or uuids |
+| `team`                                         | `list[str]`                | |
+| `state`                                        | `list[str]`                | |
+| `state_type`                                   | `list[linear.State_Type]`  | |
+| `priority`                                     | `list[linear.Priority]`    | |
+| `labels`                                       | `list[str]`                | carrying every one |
+| `without_labels`                               | `list[str]`                | carrying none |
+| `assignee`, `delegate`                         | `list[str]`                | a user by display name or email, `"me"`, or `"none"` for nobody |
+| `project`, `milestone`                         | `list[str]`                | |
+| `cycle`                                        | `list[int]`                | |
+| `parent`                                       | `list[str]`                | sub-issues of these identifiers or uuids |
+| `blocked`                                      | `bool`                     | `true` an issue another open issue blocks, `false` one no open issue blocks |
+| `text`                                         | `str`                      | title or description containing it, case ignored |
+| `created_after`, `created_before`, `updated_after`, `updated_before`, `completed_after`, `completed_before`, `canceled_after`, `canceled_before` | `time.Time` | |
+| `due_after`, `due_before`                      | `str`                      | `YYYY-MM-DD` |
+| `include_archived`                             | `bool = false`             | archived and trashed ones too |
+| `order`                                        | `list[linear.Sort] = [ .team, .state, .manual ]` | Linear's own sort, at most three keys, each breaking the ties of the one before: `.manual` top to bottom as Linear shows a state, the dates newest first, the rest as Linear orders them |
+| `limit`                                        | `int = 50`                 | 1 to 250, Linear's largest page |
+
+- A list that names nothing is refused rather than read as keeping nothing, ``issues: `team`
+  is empty; leave it out to keep every issue``. So is a `limit` outside 1 to 250, a due date
+  that is no `YYYY-MM-DD` day of the calendar, and an `id` or a `parent` that is neither an
+  identifier nor a uuid.
+- An `order` of more than three keys is refused before anything is sent, ``issues: `order`
+  names 4 keys, and Linear sorts by at most 3``, for Linear refuses a longer sort.
+- A time filter before 1970 reads as 1970 itself, Linear holding no earlier time: an
+  `_after` keeps every issue, and a `_before` none.
+- An identifier an issue carried before it moved team names nothing; its uuid always finds
+  it.
+- A user named by no display name or email matches nothing, where `require_member` refuses
+  the poll.
+
+**Retries, and the size of a reply.** A read Linear rate limits, answers with a 5xx or does
+not answer is tried again within the call's deadline, after the `Retry-After` Linear named,
+else after a second, then two, doubling, and is refused with the last reason once no wait
+fits; nothing is queued. A reply runs to afkd's 8 MiB for one call. One past it is refused,
+`issues: the reply comes to 9437184 bytes, over afkd's 8 MiB for one call; ask for fewer
+with limit`.
+
+**The issue actions act on a claimed issue.** `comment`, `move_to` and the rest of the
+actions [above](#servicelinear-issues) take the issue a `service(linear)` claimed, and do it
+in that service's team. Called from anywhere else they are refused, `comment acts only on an
+issue a service(linear) claimed; call it from that service's slots`.
 
 ## Where it differs from `@afkd/trello`
 

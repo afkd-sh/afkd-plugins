@@ -7,6 +7,10 @@
 //! requests that did not conform to Linear's schema empty. So a line that strayed onto
 //! stdout, and a request Linear would refuse, fails whichever leg sent it.
 
+// A whole unit, its handle's every field among it, written as one `json!`, nests deeper than
+// the default limit.
+#![recursion_limit = "256"]
+
 mod common;
 
 use std::time::{Duration, Instant};
@@ -14,10 +18,10 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use common::fake::{
-    png, utc, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, SCOPE, TEAM,
+    now_ms, png, utc, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, SCOPE, TEAM,
     UPLOAD_CACHE_CONTROL, UPLOAD_HEADER,
 };
-use common::{Plugin, TempDir, DEVELOP, DISCUSS, MAX_LINE, OWNER};
+use common::{ws, Plugin, TempDir, DEVELOP, DISCUSS, MAX_LINE, OWNER};
 
 /// An issue title carrying the delimiter a success line wraps it in, wide CJK, an emoji and
 /// an em dash.
@@ -289,15 +293,17 @@ fn hello_refuses_each_wrong_auth_combination() {
 // --- claiming ---
 
 /// The won race hands over the unit: the identifier as its id, the issue's uuid and the
-/// claim's as its key, the uuid as its thread, the claim-read thread as `seen`, the viewer
-/// as `self`, every `LINEAR_*` env value, and the brief unframed — and the claim comment on
-/// the issue is the viewer's.
+/// claim's as its key, the uuid as its thread, every field of its handle, the claim-read
+/// thread as `seen`, the viewer as `self`, every `LINEAR_*` env value, and the brief
+/// unframed — and the claim comment on the issue is the viewer's.
 #[test]
 fn a_won_race_hands_over_the_unit() {
     let t = team();
     for label in ["afkd/ready", "Väntar på svar"] {
         t.fake.label(&t.issue, label);
     }
+    let filed = 1_793_000_000_000;
+    t.fake.set_times(&t.issue, filed, filed + 3_600_000);
     let mut plugin = Plugin::armed(settings(&t.fake));
     let reply = plugin.poll();
     assert_eq!(reply["fire"], true, "{}", plugin.stderr());
@@ -312,13 +318,16 @@ fn a_won_race_hands_over_the_unit() {
             "id": "ENG-101",
             "key": format!("{}#{}", t.issue, claim.id),
             "fields": {
-                "title": TITLE,
-                "url": t.fake.url(&t.issue),
-                "labels": ["afkd/ready", "Väntar på svar"],
-                "state": "Todo",
-                "parent": "",
-                "sub_issues": [],
-                "blocked_by": [],
+                "uuid": t.issue, "workspace": "acme", "team": "ENG", "title": TITLE,
+                "url": t.fake.url(&t.issue), "description": BODY,
+                "branch": t.fake.branch(&t.issue), "state": "Todo", "state_type": "unstarted",
+                "priority": "none", "estimate": null, "due": null, "assignee": null,
+                "delegate": null, "creator": null, "project": null, "milestone": null,
+                "cycle": null, "labels": ["afkd/ready", "Väntar på svar"], "parent": null,
+                "sub_issues": [], "blocks": [], "blocked_by": [], "related": [], "similar": [],
+                "duplicates": [], "duplicate_of": null, "links": [], "subscribers": [],
+                "created_at": filed, "updated_at": filed + 3_600_000, "completed_at": null,
+                "canceled_at": null, "archived": false, "trashed": false,
             },
             "thread": t.issue,
             "seen": [claim.id, t.asked[1], t.asked[0]],
@@ -816,44 +825,202 @@ fn a_blocker_behind_twenty_other_relations_still_holds_the_issue_back() {
 
 // --- the handle and the brief ---
 
-/// The handle carries the issue's state, its parent's identifier, its sub-issues' and its
-/// blockers' — done or not — exactly, and `parent` is `""` for an issue with none.
-#[test]
-fn the_handle_carries_state_parent_sub_issues_and_blocked_by() {
+/// A rich issue's family and detail, as the claimed issue's handle carries it: a parent, two
+/// sub-issues, two blockers (done and canceled), an issue it blocks, relations of every type
+/// both ways, a priority, an estimate, a due date, an assignee, a delegate, a creator, a
+/// project and its milestone, a cycle, a link and two subscribers.
+struct Rich {
+    t: Team,
+    epic: String,
+    one: String,
+    two: String,
+    done: String,
+    canceled: String,
+    blocked: String,
+    related: String,
+    similar: String,
+    original: String,
+    copy: String,
+}
+
+fn rich() -> Rich {
     let t = team();
-    let epic = t.fake.issue("Backlog", "Epic: 重试 that works", "");
-    t.fake.set_parent(&t.issue, &epic);
-    let one = t.fake.issue("Todo", "Cap the backoff", "");
-    let two = t.fake.issue("Done", "Read Retry-After 🚦", "");
+    let f = &t.fake;
+    let epic = f.issue("Backlog", "Epic: 重试 that works", "");
+    f.set_parent(&t.issue, &epic);
+    let one = f.issue("Todo", "Cap the backoff", "");
+    let two = f.issue("Done", "Read Retry-After 🚦", "");
     for child in [&one, &two] {
-        t.fake.set_parent(child, &t.issue);
+        f.set_parent(child, &t.issue);
     }
-    let done = t.fake.issue("Done", "Upgrade ureq", "");
-    let canceled = t.fake.issue("Canceled", "Rewrite in Go", "");
-    let related = t.fake.issue("In Progress", "Related work", "");
-    t.fake.relate(&done, &t.issue, "blocks");
-    t.fake.relate(&canceled, &t.issue, "blocks");
-    t.fake.relate(&related, &t.issue, "related");
-    t.fake.label(&one, "afkd/hold");
-    let mut plugin = Plugin::armed(with(
-        settings(&t.fake),
-        json!({"without_label": "afkd/hold"}),
-    ));
+    let done = f.issue("Done", "Upgrade ureq", "");
+    let canceled = f.issue("Canceled", "Rewrite in Go", "");
+    let blocked = f.issue("Backlog", "Ship 1.0", "");
+    let related = f.issue("In Progress", "Related work", "");
+    let similar = f.issue("Backlog", "Retry storm in the worker", "");
+    let original = f.issue("Done", "Retry storm, first report", "");
+    let copy = f.issue("Canceled", "Retry storm, again", "");
+    f.relate(&done, &t.issue, "blocks");
+    f.relate(&canceled, &t.issue, "blocks");
+    f.relate(&t.issue, &blocked, "blocks");
+    f.relate(&related, &t.issue, "related");
+    f.relate(&t.issue, &similar, "similar");
+    f.relate(&t.issue, &original, "duplicate");
+    f.relate(&copy, &t.issue, "duplicate");
+    f.label(&one, "afkd/hold");
+    f.label(&t.issue, "afkd/ready");
+    f.set_priority(&t.issue, 2);
+    f.set_estimate(&t.issue, 5.0);
+    f.set_due(&t.issue, "2026-12-24");
+    f.assign(&t.issue, &t.phil);
+    f.delegate(&t.issue, &f.app_user());
+    f.set_creator(&t.issue, &t.chen);
+    let project = f.project("Trackers 🧭", &["ENG"], &[("B — reads", 1.0)]);
+    f.set_project(&t.issue, &project, Some("B — reads"));
+    let cycle = f.cycle(
+        "ENG",
+        12,
+        Some("Sprint 12"),
+        1_793_000_000_000,
+        1_794_000_000_000,
+        true,
+    );
+    f.set_cycle(&t.issue, &cycle);
+    f.link(&t.issue, "https://github.com/acme/widgets/pull/42");
+    f.subscribe(&t.issue, &t.phil);
+    f.subscribe(&t.issue, &t.chen);
+    f.set_times(&t.issue, 1_793_000_000_000, 1_793_000_500_000);
+    Rich {
+        t,
+        epic,
+        one,
+        two,
+        done,
+        canceled,
+        blocked,
+        related,
+        similar,
+        original,
+        copy,
+    }
+}
+
+/// The claimed issue's handle carries every field the design's `linear.Issue` has, read after
+/// the won claim: its state and category, its family, its blockers done or not, every
+/// relation both ways, its detail and the workspace it is in.
+#[test]
+fn the_claimed_issue_carries_every_field_of_the_handle() {
+    let r = rich();
+    let (t, f) = (&r.t, &r.t.fake);
+    let id = |issue: &str| f.identifier(issue);
+    let mut plugin = Plugin::armed(with(settings(f), json!({"without_label": "afkd/hold"})));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(unit["thread"], t.issue);
     assert_eq!(
         unit["fields"],
         json!({
-            "title": TITLE,
-            "url": t.fake.url(&t.issue),
-            "labels": [],
-            "state": "Todo",
-            "parent": t.fake.identifier(&epic),
-            "sub_issues": [t.fake.identifier(&one), t.fake.identifier(&two)],
-            "blocked_by": [t.fake.identifier(&done), t.fake.identifier(&canceled)],
+            "uuid": t.issue, "workspace": "acme", "team": "ENG", "title": TITLE,
+            "url": f.url(&t.issue), "description": BODY, "branch": f.branch(&t.issue),
+            "state": "Todo", "state_type": "unstarted", "priority": "high", "estimate": 5,
+            "due": "2026-12-24", "assignee": "phil", "delegate": "afkd-app", "creator": "chen",
+            "project": "Trackers 🧭", "milestone": "B — reads", "cycle": 12,
+            "labels": ["afkd/ready"], "parent": id(&r.epic),
+            "sub_issues": [id(&r.one), id(&r.two)],
+            "blocks": [id(&r.blocked)],
+            "blocked_by": [id(&r.done), id(&r.canceled)],
+            "related": [id(&r.related)], "similar": [id(&r.similar)],
+            "duplicates": [id(&r.copy)], "duplicate_of": id(&r.original),
+            "links": ["https://github.com/acme/widgets/pull/42"],
+            "subscribers": ["phil", "chen"],
+            "created_at": 1_793_000_000_000_u64, "updated_at": 1_793_000_500_000_u64,
+            "completed_at": null, "canceled_at": null, "archived": false, "trashed": false,
         })
     );
+    let ops = operations(f);
+    let won = ops
+        .iter()
+        .rposition(|o| o == "IssueComments")
+        .expect("the claim's re-read");
+    assert_eq!(ops[won + 1], "IssueFull", "the won issue is read whole");
+    end(plugin, f);
+}
+
+/// A claimed issue and the same issue a read hands back carry the same fields, the one
+/// builder making both: a slot's handle and `linear.issues`'s agree on every field of the
+/// richest issue.
+#[test]
+fn a_claimed_issue_and_the_same_issue_read_carry_the_same_fields() {
+    let r = rich();
+    let (t, f) = (&r.t, &r.t.fake);
+    let mut plugin = Plugin::armed(with(settings(f), json!({"without_label": "afkd/hold"})));
+    let unit = plugin.poll()["unit"].clone();
+    let read = plugin.read_call("issues", json!({"ws": ws(f), "id": [t.issue]}));
+    assert_eq!(read["handles"][0]["fields"], unit["fields"]);
+    assert_eq!(read["handles"][0]["id"], unit["id"]);
+    assert_ne!(
+        read["handles"][0]["key"], unit["key"],
+        "a read's key is the workspace's, the claim's afkd's"
+    );
+    end(plugin, f);
+}
+
+/// A `service(linear)`'s slot reads the issue it claimed through a `linear.Workspace`: its
+/// comments and its files, the claim's handle resolved to the issue it holds, live and once
+/// finished; a workspace of another organization is refused naming both url keys.
+#[test]
+fn a_slot_reads_its_claimed_issue_through_a_workspace() {
+    let t = team();
+    let shot = t
+        .fake
+        .seed_file("screen shot — 修复.png", "image/png", &png());
+    t.fake.comment(
+        &t.issue,
+        Author::User(t.chen.clone()),
+        &format!("Here: ![shot]({shot})"),
+        60,
+    );
+    let state = TempDir::new("wire-slot-reads");
+    let mut plugin = Plugin::armed_in(settings(&t.fake), state.path());
+    let unit = plugin.poll()["unit"].clone();
+    let issue = json!({"id": unit["id"], "key": unit["key"]});
+    let comments = plugin.read_call("comments", json!({"ws": ws(&t.fake), "issue": issue}));
+    let bodies: Vec<&str> = comments["handles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["fields"]["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        bodies[..3],
+        [PHIL, CHEN, format!("Here: ![shot]({shot})").as_str()]
+    );
+    assert!(
+        bodies[3].starts_with("[afkd-claim]"),
+        "the thread is Linear's, afkd's own marker among it: {bodies:?}"
+    );
+    assert_eq!(
+        plugin.read_call("files", json!({"ws": ws(&t.fake), "issue": issue})),
+        json!({"ok": true, "value": [shot]})
+    );
+    assert!(state
+        .path()
+        .join(format!("organization-{}.txt", t.fake.org_id()))
+        .is_file());
+    finish(&mut plugin, &unit, "clean", facts("proceed", None));
+    assert_eq!(
+        plugin.read_call("files", json!({"ws": ws(&t.fake), "issue": issue}))["ok"],
+        true,
+        "the finished issue is reached too"
+    );
+    let globex = FakeLinear::start_globex();
+    assert_eq!(
+        plugin.read_call("comments", json!({"ws": ws(&globex), "issue": issue})),
+        json!({"ok": false, "error":
+            "comments: issue is ENG-101 of workspace acme, and the linear.Workspace reaches \
+             globex"})
+    );
     end(plugin, &t.fake);
+    assert_eq!(globex.invalid_requests(), Vec::<String>::new());
 }
 
 /// The brief names the parent, and lists each sub-issue with its state, between the
@@ -1141,29 +1308,36 @@ fn comments_report_only_what_afkd_has_not_seen() {
     let mut plugin = Plugin::armed(settings(&t.fake));
     let unit = plugin.poll()["unit"].clone();
     let read = |plugin: &mut Plugin| plugin.call(json!({"call": "comments", "key": unit["key"]}));
-    let late = t.fake.comment(
+    // Each a millisecond after the one before, so the order they were posted in is the
+    // order of their times and never of their ids.
+    let now = now_ms();
+    let late = t.fake.comment_at(
         &t.issue,
         Author::User(t.chen.clone()),
         "别急着移走 🚨\n\n    max_backoff = 30\n",
-        0,
+        now,
+        None,
     );
-    t.fake.comment(
+    t.fake.comment_at(
         &t.issue,
         Author::User(t.fake.key_user()),
         "Looking into it.",
-        0,
+        now + 1,
+        None,
     );
-    t.fake.comment(
+    t.fake.comment_at(
         &t.issue,
         Author::User(t.phil.clone()),
         "[afkd-attempt] 1/2: pasted from another issue",
-        0,
+        now + 2,
+        None,
     );
-    let external = t.fake.comment(
+    let external = t.fake.comment_at(
         &t.issue,
         Author::External("x-alvaro".into()),
         "Exponential, please — see §4 🙏",
-        0,
+        now + 3,
+        None,
     );
     let at = |id: &str| {
         let c = t
@@ -1632,9 +1806,50 @@ fn an_oversized_brief_is_cut_to_fit_one_line() {
     assert_eq!(reply["unit"]["thread"], big);
     let brief = reply["unit"]["files"][0]["text"].as_str().unwrap();
     assert!(brief.ends_with("read the whole issue in Linear]"));
-    assert!(plugin
-        .stderr_soon("was cut")
+    let stderr = plugin.stderr_soon("the brief for");
+    assert!(stderr.contains(
+        "afkd-linear: the description field of ENG-102 was cut to fit afkd's 64 KiB plugin \
+         line\n"
+    ));
+    assert!(stderr
         .contains("afkd-linear: the brief for ENG-102 was cut to fit afkd's 64 KiB plugin line\n"));
+    end(plugin, &t.fake);
+}
+
+/// A description that only overflows the line carried twice, as the handle's field and in
+/// the brief, is cut in the field alone: the brief is handed over whole, and the field ends
+/// in the trailer naming the whole size.
+#[test]
+fn an_oversized_description_is_cut_in_the_handle_before_the_brief() {
+    let t = team();
+    let description = "看起来不对 🚨 — the retry path.\n".repeat(1_000);
+    let big = t.fake.issue("Backlog", TITLE, &description);
+    let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"pick_from": "Backlog"})));
+    let line = plugin.call_raw(json!({"call": "poll"}));
+    assert!(line.len() <= MAX_LINE, "{}", line.len());
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(reply["unit"]["thread"], big);
+    let brief = reply["unit"]["files"][0]["text"].as_str().unwrap();
+    assert!(
+        brief.starts_with(&format!("{TITLE}\n\n{description}")),
+        "the brief is whole"
+    );
+    let field = reply["unit"]["fields"]["description"].as_str().unwrap();
+    assert!(
+        field.ends_with(&format!(
+            "of {} bytes to fit afkd's 64 KiB plugin line — read the whole issue in Linear]",
+            description.len()
+        )),
+        "{}",
+        &field[field.len() - 200..]
+    );
+    assert!(description.starts_with(field.split("\n\n[afkd-linear:").next().unwrap()));
+    let stderr = plugin.stderr_soon("was cut");
+    assert!(
+        stderr.contains("the description field of ENG-102 was cut"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("the brief for"), "{stderr}");
     end(plugin, &t.fake);
 }
 

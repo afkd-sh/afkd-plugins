@@ -8,13 +8,21 @@
 //! ([`crate::action`]). A finished unit's issue is kept a while for that
 //! ([`FINISHED_MAX`]), since its post-run slot's calls arrive after `finish`.
 //!
+//! **A read reaches a workspace, not the service** ([`crate::reads`]). It comes as a `call`
+//! too: to the trigger child from a `service(linear)`'s slot, which may pass it the issue the
+//! service claimed, and from anywhere else to a child afkd starts for that one call, which
+//! gets no `hello` and reads its `proto` and the plugin's directory off the call itself.
+//! The issue actions act on a claimed issue, which such a child never holds, so it refuses
+//! them.
+//!
 //! What the wire forces, as for `@afkd/trello`:
 //!
 //! - **Who is asking arrives in `hello`**, and a `hello` without it is refused, since the
 //!   park owner cannot work without a service name.
-//! - **Every reply fits one line.** afkd caps a line at 64 KiB. A `poll` whose brief would
-//!   overflow it is cut to fit ([`fit_poll`]); a `comments` reply sends only what afkd has
-//!   not been told yet, and if that still overflows, the newest that fit.
+//! - **Every reply fits one line.** afkd caps a line at 64 KiB, and a call's reply at 8 MiB.
+//!   A `poll` whose issue's description and brief would overflow it is cut to fit
+//!   ([`fit_poll`]); a `comments` reply sends only what afkd has not been told yet, and if
+//!   that still overflows, the newest that fit.
 //! - **An undelivered finish is `held`**: `finish` answers `{"ok":true,"held":true}` and
 //!   afkd asks `release` for the key on a later beat, which replays what is owed.
 //! - **The lines go to stderr**, which afkd files under `[@afkd/linear:err]`.
@@ -24,23 +32,24 @@
 //!   thread ([`crate::outbox`]), each issue's writes in order, for up to an hour.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
-use crate::action::{from_call, posted, Call, Op};
+use crate::action::{from_call, posted, Call, Op, ACTIONS};
 use crate::auth::Auth;
 use crate::client::LinearClient;
 use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
 use crate::issue::{is_afkd, Identity, LinearUnits, SelfIds, Unit};
 use crate::outbox::Outbox;
+use crate::reads::{self, Claimed, ReadContext, READS};
 use crate::rfc3339::format_utc;
 use crate::settings::{issue_config, IssueConfig};
 use crate::tracker::{Issue, Tracker};
 use crate::wire::{
-    fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
+    fit_comments, fit_poll, Facts, Fitted, Request, UnitOutcome, WireComment, PROTO,
 };
 
 /// The one kind this plugin provides, its main one: `service(linear)` in a config.
@@ -53,6 +62,10 @@ const FINISHED_MAX: usize = 16;
 
 /// The optional calls the kind answers, exactly as `hello` lists them: every one afkd has.
 const CALLS: &[&str] = &["release", "renew", "comments", "attempt_failed", "classify"];
+
+/// The sentence the process ends on when a request that is no call for a child of its own
+/// comes before a `hello` this plugin accepted: afkd is out of step.
+const BEFORE_HELLO: &str = "afkd sent a call before a `hello` this plugin accepted";
 
 /// What the process does with one request.
 #[derive(Debug, PartialEq)]
@@ -83,6 +96,8 @@ pub(crate) struct Plugin {
 /// The armed service: the kind's vendor half, and the units afkd is running.
 struct Armed {
     units: LinearUnits,
+    /// The plugin's own directory, as `hello` named it.
+    state_dir: Option<PathBuf>,
     /// The units handed over and not yet finished or released, by key.
     live: BTreeMap<String, LiveUnit>,
     /// The issues of the units most recently finished, by key and oldest first, for the
@@ -151,13 +166,15 @@ impl Plugin {
                 service,
                 roster,
                 owner,
+                state_dir,
             } => {
                 let id = Identity {
                     owner,
                     service,
                     roster,
                 };
-                let arming = arm(&self.connect, proto, &kind, &settings, id)
+                let state_dir = state_dir.map(PathBuf::from);
+                let arming = arm(&self.connect, proto, &kind, &settings, id, state_dir)
                     .map_err(|problem| diag.err(&problem))
                     .ok();
                 *armed = arming.map(|(armed, cfg, auth)| {
@@ -201,9 +218,15 @@ impl Plugin {
             } => on_armed(armed, clock, |a| {
                 a.finish(&key, outcome, &facts, clock, diag)
             }),
-            Request::Call { action, args } => {
-                on_armed(armed, clock, |a| a.call(&action, &args, clock, diag))
-            }
+            Request::Call {
+                action,
+                args,
+                proto,
+                state_dir,
+            } => match armed {
+                Some(_) => on_armed(armed, clock, |a| a.call(&action, &args, clock, diag)),
+                None => once(&action, &args, proto, state_dir.as_deref(), clock, diag),
+            },
             Request::Unknown => {
                 diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
                 Answer::Reply(json!({"ok": false}).to_string())
@@ -229,21 +252,66 @@ fn on_armed(
             armed.units.set_call_deadline(None);
             answer
         }
-        None => Answer::Fatal("afkd sent a call before a `hello` this plugin accepted".into()),
+        None => Answer::Fatal(BEFORE_HELLO.into()),
     }
 }
 
-/// Arm the kind `hello` names over its settings, as `id`, or say why not; the settings and
-/// the credential it armed with come back too, for the outbox's worker. afkd has already
-/// held the block to the manifest, so what can be wrong here is the protocol, the kind, a
-/// missing identity, or a rule the manifest cannot express. Nothing is sent to Linear: an
-/// outage when the service arms is a poll's idle beat, not a refused service.
+/// Answer the one `call` a child afkd started for it gets, with no `hello` before it: a read,
+/// with the plugin's directory the call names and the call's own budget. The issue actions
+/// ([`ACTIONS`]) act only on an issue a `service(linear)` claimed, which this child holds
+/// none of, so each is refused saying so, as is an action no one declared and a protocol
+/// this plugin does not speak. A call with no `proto` at all is no such call: afkd is out of
+/// step, as for any request before a `hello`.
+fn once(
+    action: &str,
+    args: &Map<String, Value>,
+    proto: Option<u32>,
+    state_dir: Option<&str>,
+    clock: &dyn Clock,
+    diag: &dyn Diag,
+) -> Answer {
+    let Some(proto) = proto else {
+        return Answer::Fatal(BEFORE_HELLO.into());
+    };
+    let refuse = |error: String| {
+        diag.err(&error);
+        Answer::Reply(json!({"ok": false, "error": error}).to_string())
+    };
+    if proto != PROTO {
+        return refuse(format!(
+            "afkd speaks plugin protocol {proto}, and this plugin speaks {PROTO}"
+        ));
+    }
+    if READS.contains(&action) {
+        let ctx = ReadContext {
+            state_dir: state_dir.map(Path::new),
+            deadline: clock.now() + CALL_BUDGET,
+            claimed: &|_| None,
+        };
+        return Answer::Reply(reads::answer(action, args, &ctx, diag));
+    }
+    if ACTIONS.contains(&action) {
+        return refuse(format!(
+            "{action} acts only on an issue a service(linear) claimed; call it from that \
+             service's slots"
+        ));
+    }
+    refuse(format!("no action `{action}`"))
+}
+
+/// Arm the kind `hello` names over its settings, as `id`, keeping the plugin's directory
+/// `state_dir`, or say why not; the settings and the credential it armed with come back too,
+/// for the outbox's worker. afkd has already held the block to the manifest, so what can be
+/// wrong here is the protocol, the kind, a missing identity, or a rule the manifest cannot
+/// express. Nothing is sent to Linear: an outage when the service arms is a poll's idle beat,
+/// not a refused service.
 fn arm(
     connect: &Connect,
     proto: u32,
     kind: &str,
     settings: &serde_json::Value,
     id: Identity,
+    state_dir: Option<PathBuf>,
 ) -> Result<(Armed, IssueConfig, Arc<Auth>), String> {
     if proto != PROTO {
         return Err(format!(
@@ -264,6 +332,7 @@ fn arm(
     let auth = Arc::new(Auth::new(&cfg.auth));
     let armed = Armed {
         units: LinearUnits::new(connect(&cfg, Arc::clone(&auth)), &cfg, id),
+        state_dir,
         live: BTreeMap::new(),
         finished: VecDeque::new(),
     };
@@ -295,22 +364,33 @@ impl Armed {
             }
         };
         let wire = self.units.wire_unit(&unit);
-        let whole = fire_line(&wire);
-        let line = if whole.len() <= MAX_REPLY {
-            whole
-        } else if let Some(cut) = fit_poll(&wire) {
-            diag.err(&format_args!(
-                "the brief for {} was cut to fit afkd's 64 KiB plugin line",
-                unit.identifier()
-            ));
-            cut
+        let line = if let Some(Fitted {
+            line,
+            description_cut,
+            brief_cut,
+        }) = fit_poll(&wire)
+        {
+            if description_cut {
+                diag.err(&format_args!(
+                    "the description field of {} was cut to fit afkd's 64 KiB plugin line",
+                    unit.identifier()
+                ));
+            }
+            if brief_cut {
+                diag.err(&format_args!(
+                    "the brief for {} was cut to fit afkd's 64 KiB plugin line",
+                    unit.identifier()
+                ));
+            }
+            line
         } else {
-            // Only a unit whose fields besides the brief overflow the line reaches this:
-            // nothing can be handed over, so the claim is taken back before the service ends.
+            // Only a unit whose fields besides the brief and the description overflow the
+            // line reaches this: nothing can be handed over, so the claim is taken back
+            // before the service ends.
             self.units.release_stale(&wire.key, clock.now(), diag);
             return Answer::Fatal(format!(
-                "{} cannot be handed to afkd: even with its brief cut away, the unit is over \
-                 afkd's 64 KiB plugin line",
+                "{} cannot be handed to afkd: even with its description and brief cut away, \
+                 the unit is over afkd's 64 KiB plugin line",
                 unit.identifier()
             ));
         };
@@ -467,13 +547,28 @@ impl Armed {
         Answer::Reply(reply.to_string())
     }
 
+    /// The issue a unit this plugin handed over under `key` holds, live or finished since,
+    /// as a read passed its handle needs it.
+    fn claimed(&self, key: &str) -> Option<Claimed> {
+        let issue = match self.live.get(key) {
+            Some(live) => live.unit.issue(),
+            None => &self.finished.iter().find(|(held, _)| held == key)?.1.issue,
+        };
+        Some(Claimed {
+            uuid: issue.id.clone(),
+            organization: self.units.organization()?,
+        })
+    }
+
     /// Do one action a slot called, on the issue of the unit its handle names — a live one,
     /// or one finished since. `{"ok":false}` with the sentence, diagnosed too, for an action
     /// afkd would not have bound, a handle naming no issue, a file that could not be read, a
     /// read that could not be written, or a Linear that refused it. A write Linear could not
     /// be reached for is taken for delivery and `ok`: the outbox retries it, and the slot's
     /// next write queues behind it. Its files are read here, at the call, so a retry sends
-    /// what the slot saw. A read is done now or refused, never queued.
+    /// what the slot saw. A read is done now or refused, never queued; a workspace read
+    /// ([`crate::reads`]) goes through the workspace it is passed, the issues this service
+    /// claimed among what it may be passed.
     fn call(
         &self,
         action: &str,
@@ -481,6 +576,17 @@ impl Armed {
         clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
+        if READS.contains(&action) {
+            let ctx = ReadContext {
+                state_dir: self.state_dir.as_deref(),
+                deadline: self
+                    .units
+                    .call_deadline()
+                    .unwrap_or_else(|| clock.now() + CALL_BUDGET),
+                claimed: &|key| self.claimed(key),
+            };
+            return Answer::Reply(reads::answer(action, args, &ctx, diag));
+        }
         let refuse = |error: String| {
             diag.err(&error);
             Answer::Reply(json!({"ok": false, "error": error}).to_string())
@@ -531,6 +637,7 @@ mod tests {
     use crate::common::{CaptureDiag, FakeClock, TempDir};
     use crate::outbox::RETRY_FOR;
     use crate::tracker::{Action, LinearError, MockTracker, SELF_ID};
+    use crate::wire::MAX_REPLY;
     use serde_json::Value;
     use std::time::{Duration, SystemTime};
 
@@ -1221,7 +1328,9 @@ mod tests {
         );
     }
 
-    /// An oversized brief is cut to fit one line, with one diagnostic naming the issue.
+    /// An oversized description is cut to fit one line, in the handle's field and, since the
+    /// brief alone is over the line, in the brief too: one diagnostic for each, naming the
+    /// issue.
     #[test]
     fn an_oversized_brief_is_cut_and_said_so() {
         let mut f = Fixture::armed(settings());
@@ -1235,10 +1344,66 @@ mod tests {
             "{}",
             &brief[brief.len() - 120..]
         );
+        let field = reply["unit"]["fields"]["description"].as_str().unwrap();
+        assert!(field.contains("this description was cut at"), "{field}");
         assert_eq!(
             f.diag.errs(),
-            ["the brief for ENG-1 was cut to fit afkd's 64 KiB plugin line"]
+            [
+                "the description field of ENG-1 was cut to fit afkd's 64 KiB plugin line",
+                "the brief for ENG-1 was cut to fit afkd's 64 KiB plugin line",
+            ]
         );
+    }
+
+    /// The one `call` a child afkd starts for it gets, with no `hello`: a read whose
+    /// workspace holds no credential is refused before any request, a call in another
+    /// protocol is refused naming both, and an issue action, which acts only on a claimed
+    /// issue, is refused saying so. The plugin arms nothing, and no tracker is reached.
+    #[test]
+    fn a_child_for_one_call_refuses_what_it_cannot_do_and_reaches_no_tracker() {
+        let mut f = Fixture::new();
+        let state = TempDir::new("once");
+        let once = |action: &str, proto: Value, args: Value| {
+            json!({"call": "call", "proto": proto, "action": action, "args": args,
+                   "settings": {}, "state_dir": state.path()})
+        };
+        for (request, error) in [
+            (
+                once(
+                    "teams",
+                    json!(2),
+                    json!({"ws": {"api_key": "", "base_url": "http://127.0.0.1:9"}}),
+                ),
+                "teams: the linear.Workspace sets no credential; set api_key, or client_id and \
+                 client_secret",
+            ),
+            (
+                once("issues", json!(1), json!({"ws": {"api_key": "lin_api_k"}})),
+                "afkd speaks plugin protocol 1, and this plugin speaks 2",
+            ),
+            (
+                once(
+                    "comment",
+                    json!(2),
+                    json!({"issue": {"id": "ENG-1", "key": "ENG-1#c1"}, "text": "done 🚀"}),
+                ),
+                "comment acts only on an issue a service(linear) claimed; call it from that \
+                 service's slots",
+            ),
+            (once("assign", json!(2), json!({})), "no action `assign`"),
+        ] {
+            assert_eq!(f.call(request), json!({"ok": false, "error": error}));
+        }
+        assert_eq!(f.diag.errs().len(), 4, "each refusal is diagnosed");
+        assert!(f.tracker.calls().is_empty(), "no tracker is reached");
+        assert!(
+            std::fs::read_dir(state.path()).unwrap().next().is_none(),
+            "nothing is kept"
+        );
+        assert!(matches!(
+            f.plugin.answer(Request::Poll),
+            Answer::Fatal(reason) if reason.contains("before a `hello`")
+        ));
     }
 
     /// afkd closing the pipe with writes still owed names each.

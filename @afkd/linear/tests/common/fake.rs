@@ -1,7 +1,8 @@
 //! A stateful fake Linear on a loopback socket: the GraphQL endpoint and the token endpoint
-//! the plugin's client calls, over a team's states, users, labels, issues, relations and
-//! comments the test seeds and then reads back. std and `serde_json` only, and nothing from
-//! the plugin crate, so another suite can `#[path]`-include it.
+//! the plugin's client calls, over one workspace's teams, states, users, labels, projects,
+//! cycles, issues, relations and comments the test seeds and then reads back. std and
+//! `serde_json` only, and nothing from the plugin crate, so another suite can
+//! `#[path]`-include it.
 //!
 //! **Every request is held to Linear's schema before it is answered.** A `POST /graphql` is
 //! checked by `sdl.rs` against `tests/schema.graphql` — its document, and its variables
@@ -10,20 +11,34 @@
 //! is answered as Linear answers an invalid request, a 400 with a `graphql error`, and is
 //! recorded in [`FakeLinear::invalid_requests`], which every leg holds empty. Past that,
 //! only the filter paths the plugin means are answered: an `Issues` filter on anything but
-//! the team's id, a state's id or the name of *some* label is refused the same way, even
-//! where the schema allows it.
+//! a team's id, a state's id or the name of *some* label, and an `IssueList` filter on
+//! anything but the paths its reads send, is refused the same way, even where the schema
+//! allows it.
 //!
 //! The rest is what Linear does that the plugin depends on: an API key is sent bare and an
 //! app's token as `Bearer`, from the `client_credentials` grant with the plugin's scope, and
-//! lasts as long as the fake says; anything else is a 401 `authentication error`. Ids are
-//! uuids minted in no order, and times come off the real clock to the millisecond (a claim's
-//! liveness is judged against the wall clock). A state's issues come back in their manual
-//! order, comments newest first, an issue's inverse relations 20 to the page `Issues` reads
-//! and 50 to the page after, an archived issue in no read, an edit stamps `editedAt`, a
-//! missing id is Linear's `Entity not found`. An issue filed with no state starts in the
-//! team's first backlog state, else its first unstarted one. Every request is recorded, and
-//! an operation can be rate limited with a `Retry-After`, made to answer a status, or the
-//! whole fake taken out of reach.
+//! lasts as long as the fake says; anything else is a 401 `authentication error`. Each fake is
+//! one workspace, with its own organization, url key and credentials, so two fakes stand for
+//! two workspaces ([`FakeLinear::start_as`]). Ids are uuids minted in no order, and times come
+//! off the real clock to the millisecond (a claim's liveness is judged against the wall
+//! clock). A state's issues come back in their manual order, comments newest first, an
+//! issue's nested lists 20 to the page an issue read reads and 50 to the page after, an
+//! archived issue in no read but one that asks for archived ones, an edit stamps `editedAt`,
+//! a missing id is Linear's `Entity not found`. An issue filed with no state starts in its
+//! team's first backlog state, else its first unstarted one. Issue numbers are one count
+//! from 101 across the teams, and an issue that moves team takes the next. Every request is
+//! recorded, and an operation can be rate limited with a `Retry-After`, made to answer a
+//! status, or the whole fake taken out of reach.
+//!
+//! **`IssueList` filters and sorts as Linear documents it.** Its filter is evaluated clause by
+//! clause (`and`, `or`, and each field a read sends), `hasBlockedByRelations` counting only a
+//! blocker that is not done. Its sort compares key by key, each breaking the ties of the one
+//! before: `manual` by the manual order, `team` by key, `workflowState` by the state's place,
+//! `priority` urgent first and none last, the names and numbers as they read, every `null`
+//! last and a `Descending` key reversed; what is still tied keeps the order it was seeded in.
+//! A `sort` of more than three elements, this operation's or any other's, is refused before
+//! anything is read, as Linear refuses one: an `Argument Validation Error` naming the limit,
+//! recorded in [`FakeLinear::invalid_requests`].
 //!
 //! **Files go up and come back as Linear's upload guide has them.** `FileUpload` mints a
 //! signed upload url on the fake itself (`/signed/…`), an asset url under `/uploads/…`, and
@@ -47,6 +62,7 @@
 #[path = "sdl.rs"]
 pub mod sdl;
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -58,17 +74,28 @@ use serde_json::{json, Value};
 
 use sdl::Sdl;
 
-/// The API key every request may carry as it is.
+/// The API key every request to the `acme` workspace may carry as it is.
 pub const API_KEY: &str = "lin_api_7f3aK9c1eQ2w";
 
-/// The OAuth app's credentials, which the token endpoint trades for a token.
+/// The OAuth app's credentials, which the `acme` workspace's token endpoint trades for a
+/// token.
 pub const CLIENT_ID: &str = "app-id-7f3a9c1e";
 pub const CLIENT_SECRET: &str = "app-secret-4b8d&=/2e";
+
+/// The url key of the workspace [`FakeLinear::start`] stands for.
+pub const ACME: &str = "acme";
+
+/// A second workspace, its url key and its credentials: what [`FakeLinear::start_globex`]
+/// stands for.
+pub const GLOBEX: &str = "globex";
+pub const GLOBEX_API_KEY: &str = "lin_api_gl0b3x-9d2c";
+pub const GLOBEX_CLIENT_ID: &str = "app-id-gl0b3x";
+pub const GLOBEX_CLIENT_SECRET: &str = "app-secret-gl0b3x/7&";
 
 /// The scope an app's token must be asked for.
 pub const SCOPE: &str = "read,write,app:assignable,app:mentionable";
 
-/// The team every issue is in, by key.
+/// The team every issue is in unless a test files it in another, by key.
 pub const TEAM: &str = "ENG";
 
 /// The schema every request is held to.
@@ -79,6 +106,9 @@ const OPERATIONS: &str = include_str!("../../src/operations.graphql");
 
 /// The operations the plugin's `linear` skill sends, as its scripts write them.
 const SKILL_OPERATIONS: &str = include_str!("../../skills/linear/lib/operations.graphql");
+
+/// The state categories an issue that blocks another is done in.
+const CLOSED_KINDS: &[&str] = &["completed", "canceled", "duplicate"];
 
 /// Who wrote a comment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +141,10 @@ pub struct Comment {
     pub created: u64,
     /// When it was last edited, once edited.
     pub edited: Option<u64>,
+    /// The comment it answers, if it is a reply.
+    pub parent: Option<String>,
+    /// When it was resolved, once resolved.
+    pub resolved: Option<u64>,
 }
 
 /// One request as the fake saw it.
@@ -128,19 +162,32 @@ pub struct Seen {
 }
 
 #[derive(Debug, Clone)]
+struct Team {
+    id: String,
+    key: String,
+    name: String,
+}
+
+#[derive(Debug, Clone)]
 struct User {
     id: String,
     name: String,
     display_name: String,
     email: String,
+    /// Whether it is an app's user.
+    app: bool,
+    /// Whether the account is enabled: Linear lists a disabled one in no read.
+    active: bool,
 }
 
 #[derive(Debug, Clone)]
 struct State {
     id: String,
+    /// Its team's id.
+    team: String,
     name: String,
     kind: String,
-    /// Its place in the team's workflow: the order it was seeded in.
+    /// Its place in its team's workflow: the order it was seeded in.
     position: f64,
 }
 
@@ -151,11 +198,15 @@ struct Label {
     color: String,
     /// `None` for a workspace label.
     team: Option<String>,
+    /// The label group it is in.
+    parent: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct Issue {
     id: String,
+    /// Its team's id.
+    team: String,
     number: u32,
     title: String,
     description: Option<String>,
@@ -165,8 +216,29 @@ struct Issue {
     delegate: Option<String>,
     parent: Option<String>,
     sort_order: f64,
-    /// Archived: in no read, as Linear leaves archived issues out unless asked.
+    /// Archived: in no read but one that asks for archived issues, as Linear leaves them out
+    /// unless asked.
     archived: bool,
+    /// In the trash, which archives it too.
+    trashed: bool,
+    /// Linear's 0 to 4.
+    priority: u8,
+    estimate: Option<f64>,
+    due: Option<String>,
+    /// The user who filed it; `None` for an integration.
+    creator: Option<String>,
+    project: Option<String>,
+    /// The name of its milestone in its project.
+    milestone: Option<String>,
+    cycle: Option<String>,
+    created: u64,
+    updated: u64,
+    completed: Option<u64>,
+    canceled: Option<u64>,
+    /// Its links, Linear's attachments: each one's id and url.
+    links: Vec<(String, String)>,
+    /// The ids of the users subscribed to it.
+    subscribers: Vec<String>,
 }
 
 /// A relation between two issues: `kind` relates `source` to `target`, so a `blocks` one
@@ -177,6 +249,35 @@ struct Relation {
     source: String,
     target: String,
     kind: String,
+}
+
+#[derive(Debug, Clone)]
+struct Milestone {
+    id: String,
+    name: String,
+    sort_order: f64,
+}
+
+#[derive(Debug, Clone)]
+struct Project {
+    id: String,
+    name: String,
+    /// Its teams' ids.
+    teams: Vec<String>,
+    /// Its milestones, in the order they were seeded, which need not be their order.
+    milestones: Vec<Milestone>,
+}
+
+#[derive(Debug, Clone)]
+struct Cycle {
+    id: String,
+    /// Its team's id.
+    team: String,
+    number: u32,
+    name: Option<String>,
+    starts: u64,
+    ends: u64,
+    active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -244,15 +345,26 @@ struct Store {
     /// The fake's own root, which its signed and asset urls are under.
     base: String,
     org_id: String,
-    team_id: String,
+    url_key: String,
+    api_key: String,
+    client_id: String,
+    client_secret: String,
+    /// What each token this workspace hands out starts with, after `lin_oauth_`.
+    token_prefix: String,
+    /// The teams, `ENG` first.
+    teams: Vec<Team>,
     key_user: String,
     app_user: String,
     users: Vec<User>,
     states: Vec<State>,
     labels: Vec<Label>,
     issues: Vec<Issue>,
+    /// The number the next issue filed, in any team, takes.
+    next_number: u32,
     relations: Vec<Relation>,
     comments: Vec<Comment>,
+    projects: Vec<Project>,
+    cycles: Vec<Cycle>,
     tokens: Vec<Token>,
     token_lifetime: u64,
     token_fetches: usize,
@@ -314,11 +426,37 @@ pub fn utc(ms: u64) -> String {
     stamp(ms - ms % 1000).replace(".000Z", "Z")
 }
 
+/// The epoch milliseconds of an RFC 3339 time in UTC, `Z` and to the second or the
+/// millisecond, as the plugin's filters write one: [`stamp`]'s inverse.
+pub fn ms_of(text: &str) -> Option<u64> {
+    let text = text.strip_suffix('Z')?;
+    let (date, time) = text.split_once('T')?;
+    let mut date = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (date.next()??, date.next()??, date.next()??);
+    let (time, millis) = match time.split_once('.') {
+        Some((time, fraction)) => (time, fraction.get(..3)?.parse::<u64>().ok()?),
+        None => (time, 0),
+    };
+    let mut time = time.splitn(3, ':').map(|p| p.parse::<u64>().ok());
+    let (h, min, s) = (time.next()??, time.next()??, time.next()??);
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = u64::try_from(era * 146_097 + doe - 719_468).ok()?;
+    Some((days * 86_400 + h * 3_600 + min * 60 + s) * 1000 + millis)
+}
+
 impl Store {
     /// A fresh uuid, its bits a hash of a counter, so ids carry no order.
     fn mint(&mut self) -> String {
         self.counter += 1;
-        let mut x = self.counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut x = self
+            .counter
+            .wrapping_add(u64::from(self.url_key.len() as u32) << 40)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let mut word = || {
             x ^= x >> 30;
             x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -346,6 +484,30 @@ impl Store {
         self.states.iter().find(|s| s.id == id)
     }
 
+    fn team(&self, id: &str) -> Option<&Team> {
+        self.teams.iter().find(|t| t.id == id)
+    }
+
+    /// The id of the team whose key is `key`.
+    fn team_id_of(&self, key: &str) -> Option<String> {
+        self.teams
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| t.id.clone())
+    }
+
+    fn team_key(&self, id: &str) -> String {
+        self.team(id).map(|t| t.key.clone()).unwrap_or_default()
+    }
+
+    /// The id of the state named `name` of the team `team`.
+    fn state_named(&self, team: &str, name: &str) -> Option<String> {
+        self.states
+            .iter()
+            .find(|s| s.team == team && s.name == name)
+            .map(|s| s.id.clone())
+    }
+
     /// Where the issue named by `id` sits, its id or its identifier.
     fn issue_at(&self, id: &str) -> Option<usize> {
         self.issues
@@ -358,8 +520,21 @@ impl Store {
         self.issue_at(id).map(|at| self.issues[at].id.clone())
     }
 
+    fn issue(&self, id: &str) -> Option<&Issue> {
+        self.issues.iter().find(|i| i.id == id)
+    }
+
     fn identifier(&self, issue: &Issue) -> String {
-        format!("{TEAM}-{}", issue.number)
+        format!("{}-{}", self.team_key(&issue.team), issue.number)
+    }
+
+    fn url(&self, issue: &Issue) -> String {
+        format!(
+            "https://linear.app/{}/issue/{}/{}",
+            self.url_key,
+            self.identifier(issue),
+            slug(&issue.title)
+        )
     }
 
     fn state_json(&self, id: &str) -> Value {
@@ -403,6 +578,67 @@ impl Store {
         json!({"nodes": nodes, "pageInfo": info})
     }
 
+    /// One page of the relations `source` holds, after the cursor `after`, as a `relations`
+    /// connection.
+    fn out_relations(&self, source: &str, after: Option<&str>, first: usize) -> Value {
+        let relations: Vec<&Relation> = self
+            .relations
+            .iter()
+            .filter(|r| r.source == source)
+            .collect();
+        let (kept, info) = page(relations, |r| r.id.clone(), after, first);
+        let nodes: Vec<Value> = kept
+            .iter()
+            .filter_map(|r| {
+                let target = self.issues.iter().find(|i| i.id == r.target)?;
+                Some(json!({"type": r.kind,
+                            "relatedIssue": {"identifier": self.identifier(target)}}))
+            })
+            .collect();
+        json!({"nodes": nodes, "pageInfo": info})
+    }
+
+    /// One page of an issue's labels, as a `labels` connection.
+    fn label_names(&self, issue: &Issue, after: Option<&str>, first: usize) -> Value {
+        let labels: Vec<&Label> = issue
+            .labels
+            .iter()
+            .filter_map(|id| self.labels.iter().find(|l| l.id == *id))
+            .collect();
+        let (kept, info) = page(labels, |l| l.id.clone(), after, first);
+        let nodes: Vec<Value> = kept.iter().map(|l| json!({"name": l.name})).collect();
+        json!({"nodes": nodes, "pageInfo": info})
+    }
+
+    /// One page of an issue's sub-issues, as a `children` connection.
+    fn children_page(&self, issue: &str, after: Option<&str>, first: usize) -> Value {
+        let (kept, info) = page(self.children(issue), |c| c.id.clone(), after, first);
+        let nodes: Vec<Value> = kept.iter().map(|c| self.child_json(c)).collect();
+        json!({"nodes": nodes, "pageInfo": info})
+    }
+
+    /// One page of an issue's links, as an `attachments` connection.
+    fn attachments(&self, issue: &Issue, after: Option<&str>, first: usize) -> Value {
+        let (kept, info) = page(issue.links.iter().collect(), |l| l.0.clone(), after, first);
+        let nodes: Vec<Value> = kept.iter().map(|(_, url)| json!({"url": url})).collect();
+        json!({"nodes": nodes, "pageInfo": info})
+    }
+
+    /// One page of an issue's subscribers, as a `subscribers` connection.
+    fn subscribers(&self, issue: &Issue, after: Option<&str>, first: usize) -> Value {
+        let (kept, info) = page(
+            issue.subscribers.iter().collect(),
+            |u| u.to_string(),
+            after,
+            first,
+        );
+        let nodes: Vec<Value> = kept
+            .iter()
+            .map(|id| json!({"displayName": self.user(id).map_or("", |u| u.display_name.as_str())}))
+            .collect();
+        json!({"nodes": nodes, "pageInfo": info})
+    }
+
     /// An issue node, every field the `Issues` document selects.
     fn issue_json(&self, issue: &Issue) -> Value {
         let labels: Vec<Value> = issue
@@ -423,13 +659,12 @@ impl Store {
             .as_deref()
             .and_then(|p| self.issues.iter().find(|i| i.id == p))
             .map(|p| json!({"identifier": self.identifier(p), "title": p.title}));
-        let identifier = self.identifier(issue);
         json!({
             "id": issue.id,
-            "identifier": identifier,
+            "identifier": self.identifier(issue),
             "title": issue.title,
             "description": issue.description,
-            "url": format!("https://linear.app/acme/issue/{identifier}/{}", slug(&issue.title)),
+            "url": self.url(issue),
             "sortOrder": issue.sort_order,
             "state": self.state_json(&issue.state),
             "labels": {"nodes": labels},
@@ -439,6 +674,72 @@ impl Store {
             "children": {"nodes": children},
             "inverseRelations": self.inverse_relations(&issue.id, None, 20),
         })
+    }
+
+    /// An issue node, every field the `IssueList` and `IssueFull` documents select: each
+    /// nested list cut at 20, its `pageInfo` saying whether more follow.
+    fn full_issue_json(&self, issue: &Issue) -> Value {
+        let mut node = self.issue_json(issue);
+        let user = |id: &Option<String>| {
+            id.as_deref()
+                .and_then(|id| self.user(id))
+                .map(|u| json!({"id": u.id, "displayName": u.display_name}))
+        };
+        let project = issue
+            .project
+            .as_deref()
+            .and_then(|id| self.projects.iter().find(|p| p.id == id));
+        let identifier = self.identifier(issue);
+        for (key, value) in [
+            (
+                "branchName",
+                json!(format!(
+                    "{}-{}",
+                    identifier.to_lowercase(),
+                    slug(&issue.title)
+                )),
+            ),
+            ("priority", json!(f64::from(issue.priority))),
+            ("estimate", json!(issue.estimate)),
+            ("dueDate", json!(issue.due)),
+            ("createdAt", json!(stamp(issue.created))),
+            ("updatedAt", json!(stamp(issue.updated))),
+            ("completedAt", json!(issue.completed.map(stamp))),
+            ("canceledAt", json!(issue.canceled.map(stamp))),
+            (
+                "archivedAt",
+                json!(issue.archived.then(|| stamp(issue.updated))),
+            ),
+            ("trashed", json!(issue.trashed)),
+            ("team", json!({"key": self.team_key(&issue.team)})),
+            ("assignee", json!(user(&issue.assignee))),
+            ("delegate", json!(user(&issue.delegate))),
+            (
+                "creator",
+                json!(user(&issue.creator).map(|u| json!({"displayName": u["displayName"]}))),
+            ),
+            ("project", json!(project.map(|p| json!({"name": p.name})))),
+            (
+                "projectMilestone",
+                json!(issue.milestone.as_ref().map(|name| json!({"name": name}))),
+            ),
+            (
+                "cycle",
+                json!(issue
+                    .cycle
+                    .as_deref()
+                    .and_then(|id| self.cycles.iter().find(|c| c.id == id))
+                    .map(|c| json!({"number": f64::from(c.number)}))),
+            ),
+            ("labels", self.label_names(issue, None, 20)),
+            ("children", self.children_page(&issue.id, None, 20)),
+            ("relations", self.out_relations(&issue.id, None, 20)),
+            ("attachments", self.attachments(issue, None, 20)),
+            ("subscribers", self.subscribers(issue, None, 20)),
+        ] {
+            node[key] = value;
+        }
+        node
     }
 
     fn comment_json(&self, c: &Comment) -> Value {
@@ -470,21 +771,30 @@ impl Store {
         })
     }
 
+    /// A comment node as `IssueThread` selects one, on the issue whose url is `issue_url`.
+    fn thread_comment_json(&self, c: &Comment, issue_url: &str) -> Value {
+        let mut node = self.comment_json(c);
+        node["resolvedAt"] = json!(c.resolved.map(stamp));
+        node["url"] = json!(format!("{issue_url}#comment-{}", &c.id[..8]));
+        node["parent"] = json!(c.parent.as_ref().map(|id| json!({"id": id})));
+        node
+    }
+
     /// A state's or a label's issues, as the `Issues` filter the plugin sends selects them:
     /// open, in the team, in manual order — ascending or descending.
     fn select(&self, filter: &Value, descending: bool) -> Result<Vec<&Issue>, String> {
         let filter = filter.as_object().cloned().unwrap_or_default();
+        let mut team = None;
         let mut state = None;
         let mut label = None;
         for (key, value) in &filter {
             match key.as_str() {
                 "team" if value.as_object().map(|o| o.len()) == Some(1) => {
-                    let id = value["id"]["eq"]
-                        .as_str()
-                        .ok_or("filter.team is not id.eq")?;
-                    if id != self.team_id {
-                        return Ok(Vec::new());
-                    }
+                    team = Some(
+                        value["id"]["eq"]
+                            .as_str()
+                            .ok_or("filter.team is not id.eq")?,
+                    );
                 }
                 "state" if value.as_object().map(|o| o.len()) == Some(1) => {
                     state = Some(
@@ -503,13 +813,13 @@ impl Store {
                 other => return Err(format!("the fake answers no Issues filter on `{other}`")),
             }
         }
-        if !filter.contains_key("team") {
+        let Some(team) = team else {
             return Err("the fake answers no Issues filter without the team".into());
-        }
+        };
         let mut issues: Vec<&Issue> = self
             .issues
             .iter()
-            .filter(|i| !i.archived)
+            .filter(|i| !i.archived && i.team == team)
             .filter(|i| state.is_none_or(|s| i.state == s))
             .filter(|i| {
                 label.is_none_or(|name| {
@@ -524,6 +834,301 @@ impl Store {
             issues.reverse();
         }
         Ok(issues)
+    }
+
+    /// Whether `issue` passes the `IssueList` filter `filter`, `viewer` the user `isMe`
+    /// names; a clause on a path the plugin's reads never send is refused.
+    fn keeps(&self, filter: &Value, issue: &Issue, viewer: &str) -> Result<bool, String> {
+        let Some(clauses) = filter.as_object() else {
+            return Err(format!("an IssueList filter that is no object: {filter}"));
+        };
+        for (key, value) in clauses {
+            let strings = |at: &Value| -> Vec<String> {
+                at.as_array()
+                    .map(|v| {
+                        v.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let any = |values: Vec<String>, value: &str| values.iter().any(|v| v == value);
+            let held = match key.as_str() {
+                "and" => {
+                    let mut all = true;
+                    for clause in value.as_array().ok_or("`and` is no list")? {
+                        all &= self.keeps(clause, issue, viewer)?;
+                    }
+                    all
+                }
+                "or" => {
+                    let mut one = false;
+                    for clause in value.as_array().ok_or("`or` is no list")? {
+                        one |= self.keeps(clause, issue, viewer)?;
+                    }
+                    one
+                }
+                "id" => any(strings(&value["in"]), &issue.id),
+                "number" => value["eq"].as_f64() == Some(f64::from(issue.number)),
+                "team" => {
+                    let key = self.team_key(&issue.team);
+                    match value["key"].as_object() {
+                        Some(o) if o.contains_key("in") => any(strings(&o["in"]), &key),
+                        Some(o) if o.contains_key("eq") => o["eq"].as_str() == Some(key.as_str()),
+                        _ => return Err(format!("the fake answers no team filter {value}")),
+                    }
+                }
+                "state" => {
+                    let state = self.state(&issue.state).ok_or("an issue in no state")?;
+                    match (value.get("name"), value.get("type")) {
+                        (Some(names), None) => any(strings(&names["in"]), &state.name),
+                        (None, Some(kinds)) => any(strings(&kinds["in"]), &state.kind),
+                        _ => return Err(format!("the fake answers no state filter {value}")),
+                    }
+                }
+                "priority" => value["in"]
+                    .as_array()
+                    .ok_or("priority is not `in`")?
+                    .iter()
+                    .any(|p| p.as_f64() == Some(f64::from(issue.priority))),
+                "labels" => {
+                    let names: Vec<String> = issue
+                        .labels
+                        .iter()
+                        .filter_map(|id| self.labels.iter().find(|l| l.id == *id))
+                        .map(|l| l.name.clone())
+                        .collect();
+                    if let Some(name) = value["some"]["name"]["eq"].as_str() {
+                        names.iter().any(|n| n == name)
+                    } else if let Some(nin) = value["every"]["name"]["nin"].as_array() {
+                        let denied: Vec<&str> = nin.iter().filter_map(Value::as_str).collect();
+                        names.iter().all(|n| !denied.contains(&n.as_str()))
+                    } else {
+                        return Err(format!("the fake answers no labels filter {value}"));
+                    }
+                }
+                "assignee" | "delegate" => {
+                    let holder = if key == "assignee" {
+                        &issue.assignee
+                    } else {
+                        &issue.delegate
+                    };
+                    self.holds(value, holder.as_deref(), viewer)?
+                }
+                "project" => {
+                    let name = issue
+                        .project
+                        .as_deref()
+                        .and_then(|id| self.projects.iter().find(|p| p.id == id))
+                        .map(|p| p.name.clone());
+                    name.is_some_and(|n| any(strings(&value["name"]["in"]), &n))
+                }
+                "projectMilestone" => issue
+                    .milestone
+                    .as_ref()
+                    .is_some_and(|n| any(strings(&value["name"]["in"]), n)),
+                "cycle" => {
+                    let number = issue
+                        .cycle
+                        .as_deref()
+                        .and_then(|id| self.cycles.iter().find(|c| c.id == id))
+                        .map(|c| f64::from(c.number));
+                    let wanted = value["number"]["in"]
+                        .as_array()
+                        .ok_or("cycle is not number.in")?;
+                    number.is_some_and(|n| wanted.iter().any(|w| w.as_f64() == Some(n)))
+                }
+                "parent" => match issue.parent.as_deref().and_then(|p| self.issue(p)) {
+                    Some(parent) => self.keeps(value, parent, viewer)?,
+                    None => false,
+                },
+                "hasBlockedByRelations" => {
+                    let open = self.relations.iter().any(|r| {
+                        r.kind == "blocks"
+                            && r.target == issue.id
+                            && self
+                                .issue(&r.source)
+                                .and_then(|b| self.state(&b.state))
+                                .is_some_and(|s| !CLOSED_KINDS.contains(&s.kind.as_str()))
+                    });
+                    Some(open) == value["eq"].as_bool()
+                }
+                "title" | "description" => {
+                    let text = if key == "title" {
+                        Some(issue.title.as_str())
+                    } else {
+                        issue.description.as_deref()
+                    };
+                    let needle = value["containsIgnoreCase"]
+                        .as_str()
+                        .ok_or("text is not containsIgnoreCase")?
+                        .to_lowercase();
+                    text.is_some_and(|t| t.to_lowercase().contains(&needle))
+                }
+                "createdAt" | "updatedAt" | "completedAt" | "canceledAt" => {
+                    let at = match key.as_str() {
+                        "createdAt" => Some(issue.created),
+                        "updatedAt" => Some(issue.updated),
+                        "completedAt" => issue.completed,
+                        _ => issue.canceled,
+                    };
+                    self.compares(value, at, |t| {
+                        ms_of(t).ok_or(format!("{key}: {t:?} is no time"))
+                    })?
+                }
+                "dueDate" => self.compares(value, issue.due.clone(), |t| {
+                    if t.len() == 10 {
+                        Ok(t.to_string())
+                    } else {
+                        Err(format!("dueDate: {t:?} is no date"))
+                    }
+                })?,
+                other => return Err(format!("the fake answers no IssueList filter on `{other}`")),
+            };
+            if !held {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Whether `at` passes the comparison `value` writes, `gt` or `lt`, each time it names
+    /// read by `read`; a `null` never does.
+    fn compares<T: PartialOrd>(
+        &self,
+        value: &Value,
+        at: Option<T>,
+        read: impl Fn(&str) -> Result<T, String>,
+    ) -> Result<bool, String> {
+        let Some(at) = at else {
+            return Ok(false);
+        };
+        let mut held = true;
+        for (compare, bound) in value.as_object().ok_or("a comparison that is no object")? {
+            let bound = read(bound.as_str().ok_or("a bound that is no string")?)?;
+            held &= match compare.as_str() {
+                "gt" => at > bound,
+                "lt" => at < bound,
+                other => return Err(format!("the fake answers no comparison `{other}`")),
+            };
+        }
+        Ok(held)
+    }
+
+    /// Whether the user `holder` passes the user filter `value`: any of its `or`, each `isMe`,
+    /// `null`, or a display name or an email.
+    fn holds(&self, value: &Value, holder: Option<&str>, viewer: &str) -> Result<bool, String> {
+        let user = holder.and_then(|id| self.user(id));
+        let mut one = false;
+        for clause in value["or"]
+            .as_array()
+            .ok_or("a user filter that is not `or`")?
+        {
+            one |= if clause["isMe"]["eq"] == true {
+                holder == Some(viewer)
+            } else if clause["null"] == true {
+                holder.is_none()
+            } else if let Some(name) = clause["displayName"]["eq"].as_str() {
+                user.is_some_and(|u| u.display_name == name)
+            } else if let Some(email) = clause["email"]["eq"].as_str() {
+                user.is_some_and(|u| u.email == email)
+            } else {
+                return Err(format!("the fake answers no user filter {clause}"));
+            };
+        }
+        Ok(one)
+    }
+
+    /// How `a` and `b` compare under the `IssueList` sort `sort`, key by key.
+    fn order(&self, sort: &[Value], a: &Issue, b: &Issue) -> Result<Ordering, String> {
+        /// One sort key's value of an issue: `None` sorts last.
+        #[derive(PartialEq, PartialOrd)]
+        enum Key {
+            Number(f64),
+            Text(String),
+        }
+        for element in sort {
+            let (field, how) = element
+                .as_object()
+                .and_then(|o| o.iter().next())
+                .ok_or("a sort element that is no one key")?;
+            let descending = how["order"] == "Descending";
+            let key = |i: &Issue| -> Result<Option<Key>, String> {
+                Ok(match field.as_str() {
+                    "manual" => Some(Key::Number(i.sort_order)),
+                    "team" => Some(Key::Text(self.team_key(&i.team))),
+                    "workflowState" => self.state(&i.state).map(|s| Key::Number(s.position)),
+                    // Urgent first, low after medium, and no priority after every other.
+                    "priority" => Some(Key::Number(match i.priority {
+                        0 => 5.0,
+                        p => f64::from(p),
+                    })),
+                    "assignee" => i
+                        .assignee
+                        .as_deref()
+                        .and_then(|id| self.user(id))
+                        .map(|u| Key::Text(u.display_name.clone())),
+                    "project" => i
+                        .project
+                        .as_deref()
+                        .and_then(|id| self.projects.iter().find(|p| p.id == id))
+                        .map(|p| Key::Text(p.name.clone())),
+                    "cycle" => i
+                        .cycle
+                        .as_deref()
+                        .and_then(|id| self.cycles.iter().find(|c| c.id == id))
+                        .map(|c| Key::Number(f64::from(c.number))),
+                    "estimate" => i.estimate.map(Key::Number),
+                    "title" => Some(Key::Text(i.title.clone())),
+                    "dueDate" => i.due.clone().map(Key::Text),
+                    "createdAt" => Some(Key::Number(i.created as f64)),
+                    "updatedAt" => Some(Key::Number(i.updated as f64)),
+                    "completedAt" => i.completed.map(|ms| Key::Number(ms as f64)),
+                    other => return Err(format!("the fake sorts by no `{other}`")),
+                })
+            };
+            let ordering = match (key(a)?, key(b)?) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(x), Some(y)) => {
+                    let ordering = x.partial_cmp(&y).unwrap_or(Ordering::Equal);
+                    if descending {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
+                }
+            };
+            if ordering != Ordering::Equal {
+                return Ok(ordering);
+            }
+        }
+        Ok(Ordering::Equal)
+    }
+
+    /// The issues an `IssueList` request keeps, in the order it sorts them.
+    fn list(&self, vars: &Value, viewer: &str) -> Result<Vec<&Issue>, String> {
+        let archived = vars["includeArchived"] == true;
+        let sort = vars["sort"].as_array().cloned().unwrap_or_default();
+        let mut kept = Vec::new();
+        for issue in &self.issues {
+            if (archived || !issue.archived) && self.keeps(&vars["filter"], issue, viewer)? {
+                kept.push(issue);
+            }
+        }
+        let mut failed = None;
+        kept.sort_by(|a, b| {
+            self.order(&sort, a, b).unwrap_or_else(|e| {
+                failed = Some(e);
+                Ordering::Equal
+            })
+        });
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(kept),
+        }
     }
 
     /// A new upload of `size` bytes, signed and with nothing put there yet.
@@ -549,6 +1154,85 @@ impl Store {
             name: name.to_string(),
             color: color.to_string(),
             team,
+            parent: None,
+        });
+        id
+    }
+
+    /// A new team; returns its id.
+    fn add_team(&mut self, key: &str, name: &str) -> String {
+        let id = self.mint();
+        self.teams.push(Team {
+            id: id.clone(),
+            key: key.to_string(),
+            name: name.to_string(),
+        });
+        id
+    }
+
+    /// A new user; returns its id.
+    fn add_user(&mut self, name: &str, display_name: &str, email: &str, app: bool) -> String {
+        let id = self.mint();
+        self.users.push(User {
+            id: id.clone(),
+            name: name.to_string(),
+            display_name: display_name.to_string(),
+            email: email.to_string(),
+            app,
+            active: true,
+        });
+        id
+    }
+
+    /// A new issue of team `team` in state `state`, at the bottom of every manual order;
+    /// returns its id.
+    fn add_issue(
+        &mut self,
+        team: String,
+        state: String,
+        title: &str,
+        description: Option<String>,
+        parent: Option<String>,
+        sort_order: Option<f64>,
+    ) -> String {
+        let id = self.mint();
+        let number = self.next_number;
+        self.next_number += 1;
+        let sort_order = sort_order.unwrap_or_else(|| {
+            self.issues
+                .iter()
+                .map(|i| i.sort_order)
+                .fold(-1000.0_f64, f64::max)
+                + 1000.0
+        });
+        let now = now_ms();
+        self.issues.push(Issue {
+            id: id.clone(),
+            team,
+            number,
+            title: title.to_string(),
+            description,
+            state,
+            labels: Vec::new(),
+            assignee: None,
+            delegate: None,
+            parent,
+            sort_order,
+            archived: false,
+            trashed: false,
+            priority: 0,
+            estimate: None,
+            due: None,
+            creator: None,
+            project: None,
+            milestone: None,
+            cycle: None,
+            created: now,
+            updated: now,
+            completed: None,
+            canceled: None,
+            links: Vec::new(),
+            subscribers: Vec::new(),
         });
         id
     }
@@ -556,7 +1240,7 @@ impl Store {
     /// Who the `Authorization` header authenticates as, if anyone.
     fn viewer(&self, authorization: Option<&str>) -> Option<String> {
         match authorization? {
-            key if key == API_KEY => Some(self.key_user.clone()),
+            key if key == self.api_key => Some(self.key_user.clone()),
             bearer => {
                 let token = bearer.strip_prefix("Bearer ")?;
                 self.tokens
@@ -662,13 +1346,40 @@ pub fn plugin_documents() -> HashMap<String, String> {
 }
 
 impl FakeLinear {
-    /// A fake with team `ENG`, its API key's user and its app's user, listening on
+    /// The `acme` workspace: team `ENG`, its API key's user and its app's user, listening on
     /// `127.0.0.1:0`.
     pub fn start() -> Self {
+        Self::start_as(ACME, API_KEY, CLIENT_ID, CLIENT_SECRET)
+    }
+
+    /// The `globex` workspace, another organization with credentials of its own, built as
+    /// [`start`](Self::start) builds `acme`.
+    pub fn start_globex() -> Self {
+        Self::start_as(
+            GLOBEX,
+            GLOBEX_API_KEY,
+            GLOBEX_CLIENT_ID,
+            GLOBEX_CLIENT_SECRET,
+        )
+    }
+
+    /// A workspace whose url key is `url_key`, reached with the API key `api_key` or the app
+    /// `client_id` and `client_secret`: team `ENG`, the key's user and the app's user.
+    pub fn start_as(url_key: &str, api_key: &str, client_id: &str, client_secret: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let base = format!("http://{}", listener.local_addr().expect("local addr"));
         let store = Arc::new(Mutex::new(Store {
             base: base.clone(),
+            url_key: url_key.to_string(),
+            api_key: api_key.to_string(),
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+            token_prefix: if url_key == ACME {
+                "tok-".to_string()
+            } else {
+                format!("{url_key}-tok-")
+            },
+            next_number: 101,
             token_lifetime: 2_591_999,
             comments_page: 100,
             ..Store::default()
@@ -676,23 +1387,9 @@ impl FakeLinear {
         {
             let mut s = lock(&store);
             s.org_id = s.mint();
-            s.team_id = s.mint();
-            let key_user = s.mint();
-            s.users.push(User {
-                id: key_user.clone(),
-                name: "afkd".into(),
-                display_name: "afkd".into(),
-                email: "afkd@acme.example".into(),
-            });
-            s.key_user = key_user;
-            let app_user = s.mint();
-            s.users.push(User {
-                id: app_user.clone(),
-                name: "afkd (app)".into(),
-                display_name: "afkd-app".into(),
-                email: "app@oauthapp.example".into(),
-            });
-            s.app_user = app_user;
+            s.add_team(TEAM, "Engineering");
+            s.key_user = s.add_user("afkd", "afkd", &format!("afkd@{url_key}.example"), false);
+            s.app_user = s.add_user("afkd (app)", "afkd-app", "app@oauthapp.example", true);
             s.bot_id = s.mint();
         }
         let schema = Arc::new(Sdl::parse(SCHEMA).expect("the excerpt parses"));
@@ -713,8 +1410,36 @@ impl FakeLinear {
         &self.base
     }
 
+    /// The workspace's organization's uuid, which a read's handle keys carry.
+    pub fn org_id(&self) -> String {
+        lock(&self.store).org_id.clone()
+    }
+
+    /// The workspace's url key.
+    pub fn url_key(&self) -> String {
+        lock(&self.store).url_key.clone()
+    }
+
+    /// The API key the workspace takes.
+    pub fn api_key(&self) -> String {
+        lock(&self.store).api_key.clone()
+    }
+
+    /// The client id and secret of the workspace's OAuth app.
+    pub fn app_credentials(&self) -> (String, String) {
+        let s = lock(&self.store);
+        (s.client_id.clone(), s.client_secret.clone())
+    }
+
+    /// The `ENG` team's id.
     pub fn team_id(&self) -> String {
-        lock(&self.store).team_id.clone()
+        let s = lock(&self.store);
+        s.team_id_of(TEAM).expect("the ENG team")
+    }
+
+    /// Add a team; returns its id.
+    pub fn team(&self, key: &str, name: &str) -> String {
+        lock(&self.store).add_team(key, name)
     }
 
     /// The API key's user: the viewer an API key reads as.
@@ -738,14 +1463,22 @@ impl FakeLinear {
         lock(&self.store).bot_comments = true;
     }
 
-    /// Add a workflow state of the category `kind`, after every state seeded before it;
-    /// returns its id.
+    /// Add a workflow state of the category `kind` to `ENG`, after every state seeded there
+    /// before it; returns its id.
     pub fn state(&self, name: &str, kind: &str) -> String {
+        self.team_state(TEAM, name, kind)
+    }
+
+    /// Add a workflow state of the category `kind` to the team `team`, by key, after every
+    /// state seeded there before it; returns its id.
+    pub fn team_state(&self, team: &str, name: &str, kind: &str) -> String {
         let mut s = lock(&self.store);
+        let team = s.team_id_of(team).expect("a seeded team");
         let id = s.mint();
-        let position = s.states.len() as f64;
+        let position = s.states.iter().filter(|st| st.team == team).count() as f64;
         s.states.push(State {
             id: id.clone(),
+            team,
             name: name.to_string(),
             kind: kind.to_string(),
             position,
@@ -753,11 +1486,31 @@ impl FakeLinear {
         id
     }
 
-    /// Add a label of the team's, named `name` in the hex colour `color`; returns its id.
+    /// Put a state at `position` in its team's workflow.
+    pub fn set_position(&self, state: &str, position: f64) {
+        let mut s = lock(&self.store);
+        if let Some(st) = s.states.iter_mut().find(|st| st.id == state) {
+            st.position = position;
+        }
+    }
+
+    /// Add a label of `ENG`'s, named `name` in the hex colour `color`; returns its id.
     pub fn team_label(&self, name: &str, color: &str) -> String {
         let mut s = lock(&self.store);
-        let team = s.team_id.clone();
-        s.add_label(name, color, Some(team))
+        let team = s.team_id_of(TEAM);
+        s.add_label(name, color, team)
+    }
+
+    /// Add a label of the team `team`'s, by key, in the group `group` when one is given;
+    /// returns its id.
+    pub fn label_of(&self, team: &str, name: &str, group: Option<&str>) -> String {
+        let mut s = lock(&self.store);
+        let team = s.team_id_of(team);
+        let id = s.add_label(name, "#bec2c8", team);
+        if let Some(label) = s.labels.iter_mut().find(|l| l.id == id) {
+            label.parent = group.map(str::to_string);
+        }
+        id
     }
 
     /// Add a workspace label, one no team holds, named `name` in the hex colour `color`;
@@ -784,48 +1537,35 @@ impl FakeLinear {
 
     /// Add a user; returns its id.
     pub fn user(&self, name: &str, display_name: &str, email: &str) -> String {
-        let mut s = lock(&self.store);
-        let id = s.mint();
-        s.users.push(User {
-            id: id.clone(),
-            name: name.to_string(),
-            display_name: display_name.to_string(),
-            email: email.to_string(),
-        });
-        id
+        lock(&self.store).add_user(name, display_name, email, false)
     }
 
-    /// Add an issue at the bottom of the state named `state`; returns its id.
-    pub fn issue(&self, state: &str, title: &str, description: &str) -> String {
+    /// Add an app's user; returns its id.
+    pub fn app(&self, name: &str, display_name: &str, email: &str) -> String {
+        lock(&self.store).add_user(name, display_name, email, true)
+    }
+
+    /// Disable a user's account, which Linear then lists in no read.
+    pub fn disable(&self, user: &str) {
         let mut s = lock(&self.store);
-        let state = s
-            .states
-            .iter()
-            .find(|st| st.name == state)
-            .map(|st| st.id.clone())
-            .expect("a seeded state");
-        let id = s.mint();
-        let number = s.issues.len() as u32 + 101;
-        let sort_order = s
-            .issues
-            .iter()
-            .map(|i| i.sort_order)
-            .fold(-1000.0_f64, f64::max)
-            + 1000.0;
-        s.issues.push(Issue {
-            id: id.clone(),
-            number,
-            title: title.to_string(),
-            description: (!description.is_empty()).then(|| description.to_string()),
-            state,
-            labels: Vec::new(),
-            assignee: None,
-            delegate: None,
-            parent: None,
-            sort_order,
-            archived: false,
-        });
-        id
+        if let Some(u) = s.users.iter_mut().find(|u| u.id == user) {
+            u.active = false;
+        }
+    }
+
+    /// Add an issue at the bottom of `ENG`'s state named `state`; returns its id.
+    pub fn issue(&self, state: &str, title: &str, description: &str) -> String {
+        self.team_issue(TEAM, state, title, description)
+    }
+
+    /// Add an issue at the bottom of the state named `state` of the team `team`, by key;
+    /// returns its id.
+    pub fn team_issue(&self, team: &str, state: &str, title: &str, description: &str) -> String {
+        let mut s = lock(&self.store);
+        let team = s.team_id_of(team).expect("a seeded team");
+        let state = s.state_named(&team, state).expect("a seeded state");
+        let description = (!description.is_empty()).then(|| description.to_string());
+        s.add_issue(team, state, title, description, None, None)
     }
 
     /// An issue's identifier (`ENG-101`).
@@ -839,7 +1579,14 @@ impl FakeLinear {
     pub fn url(&self, issue: &str) -> String {
         let s = lock(&self.store);
         let at = s.issue_at(issue).expect("a seeded issue");
-        s.issue_json(&s.issues[at])["url"]
+        s.url(&s.issues[at])
+    }
+
+    /// An issue's git branch name, as the fake serves it.
+    pub fn branch(&self, issue: &str) -> String {
+        let s = lock(&self.store);
+        let at = s.issue_at(issue).expect("a seeded issue");
+        s.full_issue_json(&s.issues[at])["branchName"]
             .as_str()
             .unwrap_or_default()
             .to_string()
@@ -863,6 +1610,122 @@ impl FakeLinear {
         self.edit(child, |i| i.parent = Some(parent.to_string()));
     }
 
+    /// Replace an issue's description, as a person does.
+    pub fn describe(&self, issue: &str, text: &str) {
+        self.edit(issue, |i| {
+            i.description = (!text.is_empty()).then(|| text.to_string())
+        });
+    }
+
+    /// Set an issue's priority, Linear's 0 to 4.
+    pub fn set_priority(&self, issue: &str, priority: u8) {
+        self.edit(issue, |i| i.priority = priority);
+    }
+
+    pub fn set_estimate(&self, issue: &str, estimate: f64) {
+        self.edit(issue, |i| i.estimate = Some(estimate));
+    }
+
+    /// Set an issue's due date, `YYYY-MM-DD`.
+    pub fn set_due(&self, issue: &str, due: &str) {
+        self.edit(issue, |i| i.due = Some(due.to_string()));
+    }
+
+    /// Set who filed an issue, a user by id.
+    pub fn set_creator(&self, issue: &str, user: &str) {
+        self.edit(issue, |i| i.creator = Some(user.to_string()));
+    }
+
+    /// Put an issue in a project, by id, and in its milestone named `milestone` when one is
+    /// given.
+    pub fn set_project(&self, issue: &str, project: &str, milestone: Option<&str>) {
+        self.edit(issue, |i| {
+            i.project = Some(project.to_string());
+            i.milestone = milestone.map(str::to_string);
+        });
+    }
+
+    /// Put an issue in a cycle, by id.
+    pub fn set_cycle(&self, issue: &str, cycle: &str) {
+        self.edit(issue, |i| i.cycle = Some(cycle.to_string()));
+    }
+
+    /// Set when an issue was filed and last changed, in epoch milliseconds.
+    pub fn set_times(&self, issue: &str, created: u64, updated: u64) {
+        self.edit(issue, |i| {
+            i.created = created;
+            i.updated = updated;
+        });
+    }
+
+    /// Mark an issue completed at `ms`.
+    pub fn complete_at(&self, issue: &str, ms: u64) {
+        self.edit(issue, |i| i.completed = Some(ms));
+    }
+
+    /// Mark an issue canceled at `ms`.
+    pub fn cancel_at(&self, issue: &str, ms: u64) {
+        self.edit(issue, |i| i.canceled = Some(ms));
+    }
+
+    /// Put an issue in the trash, which archives it too.
+    pub fn trash(&self, issue: &str) {
+        self.edit(issue, |i| {
+            i.trashed = true;
+            i.archived = true;
+        });
+    }
+
+    /// Archive an issue, as a person does.
+    pub fn archive(&self, issue: &str) {
+        self.edit(issue, |i| i.archived = true);
+    }
+
+    /// Put a link, Linear's attachment, on an issue.
+    pub fn link(&self, issue: &str, url: &str) {
+        let id = lock(&self.store).mint();
+        self.edit(issue, |i| i.links.push((id, url.to_string())));
+    }
+
+    /// Subscribe a user, by id, to an issue.
+    pub fn subscribe(&self, issue: &str, user: &str) {
+        self.edit(issue, |i| i.subscribers.push(user.to_string()));
+    }
+
+    /// Set an issue's place in its state's manual order.
+    pub fn set_sort_order(&self, issue: &str, sort_order: f64) {
+        self.edit(issue, |i| i.sort_order = sort_order);
+    }
+
+    /// Move an issue to the team `team`, by key, as a person does: it takes the next number
+    /// there, so its identifier changes and its uuid does not, and sits in that team's state
+    /// of the same name, else of the same category, else its first.
+    pub fn move_team(&self, issue: &str, team: &str) {
+        let mut s = lock(&self.store);
+        let team = s.team_id_of(team).expect("a seeded team");
+        let at = s.issue_at(issue).expect("a seeded issue");
+        let old = s.state(&s.issues[at].state).cloned().expect("a state");
+        let state = s
+            .states
+            .iter()
+            .filter(|st| st.team == team)
+            .find(|st| st.name == old.name)
+            .or_else(|| {
+                s.states
+                    .iter()
+                    .find(|st| st.team == team && st.kind == old.kind)
+            })
+            .or_else(|| s.states.iter().find(|st| st.team == team))
+            .map(|st| st.id.clone())
+            .expect("a state in the new team");
+        let number = s.next_number;
+        s.next_number += 1;
+        let moved = &mut s.issues[at];
+        moved.team = team;
+        moved.number = number;
+        moved.state = state;
+    }
+
     /// Relate `source` to `target` as `kind`: `blocks` makes `source` a blocker of `target`.
     pub fn relate(&self, source: &str, target: &str, kind: &str) {
         let mut s = lock(&self.store);
@@ -875,29 +1738,26 @@ impl FakeLinear {
         });
     }
 
-    /// Move an issue to the bottom of the state named `state`, as a person does.
+    /// Move an issue to the bottom of its team's state named `state`, as a person does.
     pub fn move_to(&self, issue: &str, state: &str) {
         let mut s = lock(&self.store);
-        let state = s
-            .states
-            .iter()
-            .find(|st| st.name == state)
-            .map(|st| st.id.clone())
-            .expect("a seeded state");
+        let at = s.issue_at(issue).expect("a seeded issue");
+        let team = s.issues[at].team.clone();
+        let state = s.state_named(&team, state).expect("a seeded state");
         let bottom = s
             .issues
             .iter()
             .map(|i| i.sort_order)
             .fold(0.0_f64, f64::max);
-        let at = s.issue_at(issue).expect("a seeded issue");
         s.issues[at].state = state;
         s.issues[at].sort_order = bottom + 1000.0;
     }
 
-    /// Put the team's label named `name` on an issue, creating it when need be.
+    /// Put its team's label named `name` on an issue, creating it when need be.
     pub fn label(&self, issue: &str, name: &str) {
         let mut s = lock(&self.store);
-        let team = s.team_id.clone();
+        let at = s.issue_at(issue).expect("a seeded issue");
+        let team = s.issues[at].team.clone();
         let label = match s
             .labels
             .iter()
@@ -906,7 +1766,6 @@ impl FakeLinear {
             Some(l) => l.id.clone(),
             None => s.add_label(name, "#bec2c8", Some(team)),
         };
-        let at = s.issue_at(issue).expect("a seeded issue");
         if !s.issues[at].labels.contains(&label) {
             s.issues[at].labels.push(label);
         }
@@ -925,8 +1784,72 @@ impl FakeLinear {
         s.issues[at].labels.retain(|l| !ids.contains(l));
     }
 
+    /// Add a project, its teams by key and its milestones with their sort orders, in the
+    /// order given; returns its id.
+    pub fn project(&self, name: &str, teams: &[&str], milestones: &[(&str, f64)]) -> String {
+        let mut s = lock(&self.store);
+        let id = s.mint();
+        let teams = teams
+            .iter()
+            .map(|key| s.team_id_of(key).expect("a seeded team"))
+            .collect();
+        let milestones = milestones
+            .iter()
+            .map(|(name, sort_order)| Milestone {
+                id: s.mint(),
+                name: name.to_string(),
+                sort_order: *sort_order,
+            })
+            .collect();
+        s.projects.push(Project {
+            id: id.clone(),
+            name: name.to_string(),
+            teams,
+            milestones,
+        });
+        id
+    }
+
+    /// Add a cycle of the team `team`, by key; returns its id.
+    pub fn cycle(
+        &self,
+        team: &str,
+        number: u32,
+        name: Option<&str>,
+        starts: u64,
+        ends: u64,
+        active: bool,
+    ) -> String {
+        let mut s = lock(&self.store);
+        let team = s.team_id_of(team).expect("a seeded team");
+        let id = s.mint();
+        s.cycles.push(Cycle {
+            id: id.clone(),
+            team,
+            number,
+            name: name.map(str::to_string),
+            starts,
+            ends,
+            active,
+        });
+        id
+    }
+
     /// Seed a comment by `author`, posted `ago` seconds before now; returns its id.
     pub fn comment(&self, issue: &str, author: Author, body: &str, ago: u64) -> String {
+        self.comment_at(issue, author, body, now_ms() - ago * 1000, None)
+    }
+
+    /// Seed a comment by `author` posted at `created`, in epoch milliseconds, answering the
+    /// comment `parent` when one is given; returns its id.
+    pub fn comment_at(
+        &self,
+        issue: &str,
+        author: Author,
+        body: &str,
+        created: u64,
+        parent: Option<&str>,
+    ) -> String {
         let mut s = lock(&self.store);
         let id = s.mint();
         s.comments.push(Comment {
@@ -934,8 +1857,10 @@ impl FakeLinear {
             issue: issue.to_string(),
             author,
             body: body.to_string(),
-            created: now_ms() - ago * 1000,
+            created,
             edited: None,
+            parent: parent.map(str::to_string),
+            resolved: None,
         });
         id
     }
@@ -945,6 +1870,14 @@ impl FakeLinear {
         let mut s = lock(&self.store);
         if let Some(c) = s.comments.iter_mut().find(|c| c.id == comment) {
             c.edited = Some(now_ms());
+        }
+    }
+
+    /// Mark a comment's thread resolved at `ms`.
+    pub fn resolve(&self, comment: &str, ms: u64) {
+        let mut s = lock(&self.store);
+        if let Some(c) = s.comments.iter_mut().find(|c| c.id == comment) {
+            c.resolved = Some(ms);
         }
     }
 
@@ -1026,13 +1959,16 @@ impl FakeLinear {
             .unwrap_or_default()
     }
 
-    /// The ids of the issues in the state named `state`, in manual order.
+    /// The ids of the issues in `ENG`'s state named `state`, in manual order.
     pub fn in_state(&self, state: &str) -> Vec<String> {
         let s = lock(&self.store);
-        let Some(state) = s.states.iter().find(|st| st.name == state) else {
+        let Some(team) = s.team_id_of(TEAM) else {
             return Vec::new();
         };
-        let mut issues: Vec<&Issue> = s.issues.iter().filter(|i| i.state == state.id).collect();
+        let Some(state) = s.state_named(&team, state) else {
+            return Vec::new();
+        };
+        let mut issues: Vec<&Issue> = s.issues.iter().filter(|i| i.state == state).collect();
         issues.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
         issues.into_iter().map(|i| i.id.clone()).collect()
     }
@@ -1200,9 +2136,10 @@ impl FakeLinear {
         let addr = self.base.trim_start_matches("http://");
         let mut stream = TcpStream::connect(addr).expect("connect to the fake");
         let body = body.to_string();
+        let key = lock(&self.store).api_key.clone();
         write!(
             stream,
-            "POST /graphql HTTP/1.1\r\nHost: {addr}\r\nAuthorization: {API_KEY}\r\n\
+            "POST /graphql HTTP/1.1\r\nHost: {addr}\r\nAuthorization: {key}\r\n\
              Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
@@ -1475,7 +2412,8 @@ fn asset(s: &mut Store, raw: &Raw) -> Served {
     }
 }
 
-/// The token endpoint: a token for the app's credentials, with the grant and the scope.
+/// The token endpoint: a token for the workspace's app's credentials, with the grant and the
+/// scope.
 fn token(s: &mut Store, form: &str) -> Reply {
     let pairs: HashMap<String, String> = form
         .split('&')
@@ -1493,7 +2431,9 @@ fn token(s: &mut Store, form: &str) -> Reply {
     if field("grant_type") != Some("client_credentials") {
         return refuse("unsupported_grant_type", "The grant type is not supported");
     }
-    if field("client_id") != Some(CLIENT_ID) || field("client_secret") != Some(CLIENT_SECRET) {
+    if field("client_id") != Some(s.client_id.as_str())
+        || field("client_secret") != Some(s.client_secret.as_str())
+    {
         return (
             401,
             Vec::new(),
@@ -1504,7 +2444,7 @@ fn token(s: &mut Store, form: &str) -> Reply {
         return refuse("invalid_scope", "The requested scope is invalid");
     }
     s.token_fetches += 1;
-    let value = format!("lin_oauth_tok-{}", s.token_fetches);
+    let value = format!("lin_oauth_{}{}", s.token_prefix, s.token_fetches);
     s.tokens.push(Token {
         value: value.clone(),
         expires: Instant::now() + Duration::from_secs(s.token_lifetime),
@@ -1612,6 +2552,17 @@ fn graphql(
             ),
         ),
         Err(Refusal::Invalid(sentence)) => invalid(s, sentence),
+        Err(Refusal::Argument(constraint)) => {
+            s.invalid.push(constraint.clone());
+            (
+                400,
+                Vec::new(),
+                json!({"errors": [{"message": "Argument Validation Error", "extensions": {
+                    "code": "INVALID_INPUT", "type": "invalid input",
+                    "validationErrors": [{"constraints": {"arrayMaxSize": constraint}}],
+                }}]}),
+            )
+        }
         Err(Refusal::Status(status)) => (
             status,
             Vec::new(),
@@ -1626,6 +2577,8 @@ enum Refusal {
     NotFound(&'static str),
     /// It asks for what the plugin never means.
     Invalid(String),
+    /// An argument breaks a constraint Linear holds it to, the one named.
+    Argument(String),
     /// A fault the test injected.
     Status(u16),
 }
@@ -1648,24 +2601,62 @@ fn page<T>(
     (kept, json!({"hasNextPage": more, "endCursor": end}))
 }
 
+/// The user node `Me` and `UserList` select.
+fn user_json(u: &User) -> Value {
+    json!({"id": u.id, "name": u.name, "displayName": u.display_name, "email": u.email,
+           "app": u.app})
+}
+
 fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Value, Refusal> {
+    if vars["sort"].as_array().is_some_and(|sort| sort.len() > 3) {
+        return Err(Refusal::Argument(
+            "sort must contain no more than 3 elements".into(),
+        ));
+    }
     let var = |key: &str| vars[key].as_str().unwrap_or_default().to_string();
+    let after = vars["after"].as_str();
     match name {
         "Viewer" => Ok(json!({"viewer": {"id": viewer}})),
+        "Organization" => Ok(json!({"organization": {"id": s.org_id, "urlKey": s.url_key}})),
+        "Me" => {
+            let me = s.user(viewer).ok_or(Refusal::NotFound("User"))?;
+            Ok(json!({"viewer": user_json(me)}))
+        }
         "TeamByKey" => {
             let key = vars["filter"]["key"]["eq"].as_str().unwrap_or_default();
-            let nodes = if key == TEAM {
-                vec![json!({"id": s.team_id, "key": TEAM})]
-            } else {
-                Vec::new()
-            };
+            let nodes: Vec<Value> = s
+                .teams
+                .iter()
+                .filter(|t| t.key == key)
+                .map(|t| json!({"id": t.id, "key": t.key}))
+                .collect();
             Ok(json!({"teams": {"nodes": nodes}}))
         }
+        "TeamList" => {
+            let (kept, info) = page(s.teams.iter().collect(), |t| t.id.clone(), after, 100);
+            let nodes: Vec<Value> = kept
+                .iter()
+                .map(|t| json!({"id": t.id, "key": t.key, "name": t.name}))
+                .collect();
+            Ok(json!({"teams": {"nodes": nodes, "pageInfo": info}}))
+        }
+        "UserList" => {
+            let active: Vec<&User> = s.users.iter().filter(|u| u.active).collect();
+            let (kept, info) = page(active, |u| u.id.clone(), after, 100);
+            let nodes: Vec<Value> = kept.iter().map(|u| user_json(u)).collect();
+            Ok(json!({"users": {"nodes": nodes, "pageInfo": info}}))
+        }
         "States" | "TeamStates" => {
-            if var("teamId") != s.team_id {
+            let team = var("teamId");
+            if s.team(&team).is_none() {
                 return Err(Refusal::NotFound("Team"));
             }
-            let nodes: Vec<Value> = s.states.iter().map(|st| s.state_json(&st.id)).collect();
+            let nodes: Vec<Value> = s
+                .states
+                .iter()
+                .filter(|st| st.team == team)
+                .map(|st| s.state_json(&st.id))
+                .collect();
             Ok(json!({"team": {"states": {"nodes": nodes}}}))
         }
         "Issues" | "StateIssues" => {
@@ -1674,14 +2665,41 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                 .select(&vars["filter"], descending)
                 .map_err(Refusal::Invalid)?;
             let first = vars["first"].as_u64().unwrap_or(50) as usize;
-            let (kept, info) = page(issues, |i| i.id.clone(), vars["after"].as_str(), first);
+            let (kept, info) = page(issues, |i| i.id.clone(), after, first);
             let nodes: Vec<Value> = kept.iter().map(|i| s.issue_json(i)).collect();
             Ok(json!({"issues": {"nodes": nodes, "pageInfo": info}}))
         }
+        "IssueList" => {
+            let issues = s.list(vars, viewer).map_err(Refusal::Invalid)?;
+            let first = vars["first"].as_u64().unwrap_or(50) as usize;
+            let (kept, info) = page(issues, |i| i.id.clone(), after, first);
+            let nodes: Vec<Value> = kept.iter().map(|i| s.full_issue_json(i)).collect();
+            Ok(json!({"issues": {"nodes": nodes, "pageInfo": info}}))
+        }
+        "IssueFull" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            Ok(json!({"issue": s.full_issue_json(&s.issues[at])}))
+        }
         "IssueRelations" => {
             let issue = s.issue_id(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
-            let connection = s.inverse_relations(&issue, vars["after"].as_str(), 50);
+            let connection = s.inverse_relations(&issue, after, 50);
             Ok(json!({"issue": {"inverseRelations": connection}}))
+        }
+        "IssueOutRelations" => {
+            let issue = s.issue_id(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            Ok(json!({"issue": {"relations": s.out_relations(&issue, after, 50)}}))
+        }
+        "IssueLabelNames" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            Ok(json!({"issue": {"labels": s.label_names(&s.issues[at], after, 50)}}))
+        }
+        "IssueAttachments" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            Ok(json!({"issue": {"attachments": s.attachments(&s.issues[at], after, 50)}}))
+        }
+        "IssueSubscribers" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            Ok(json!({"issue": {"subscribers": s.subscribers(&s.issues[at], after, 50)}}))
         }
         "IssueDescription" => {
             let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
@@ -1689,24 +2707,26 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
         }
         "IssueChildren" => {
             let issue = s.issue_id(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
-            let children = s.children(&issue);
-            let (kept, info) = page(children, |c| c.id.clone(), vars["after"].as_str(), 50);
-            let nodes: Vec<Value> = kept.iter().map(|c| s.child_json(c)).collect();
-            Ok(json!({"issue": {"children": {"nodes": nodes, "pageInfo": info}}}))
+            Ok(json!({"issue": {"children": s.children_page(&issue, after, 50)}}))
         }
-        "IssueComments" => {
-            let issue = s.issue_id(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+        "IssueComments" | "IssueThread" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            let issue = &s.issues[at];
             let mut thread: Vec<&Comment> =
-                s.comments.iter().filter(|c| c.issue == issue).collect();
+                s.comments.iter().filter(|c| c.issue == issue.id).collect();
             thread.sort_by(|a, b| b.created.cmp(&a.created).then(b.id.cmp(&a.id)));
-            let (kept, info) = page(
-                thread,
-                |c| c.id.clone(),
-                vars["after"].as_str(),
-                s.comments_page,
-            );
-            let nodes: Vec<Value> = kept.iter().map(|c| s.comment_json(c)).collect();
-            Ok(json!({"issue": {"comments": {"nodes": nodes, "pageInfo": info}}}))
+            let (kept, info) = page(thread, |c| c.id.clone(), after, s.comments_page);
+            if name == "IssueComments" {
+                let nodes: Vec<Value> = kept.iter().map(|c| s.comment_json(c)).collect();
+                return Ok(json!({"issue": {"comments": {"nodes": nodes, "pageInfo": info}}}));
+            }
+            let url = s.url(issue);
+            let nodes: Vec<Value> = kept
+                .iter()
+                .map(|c| s.thread_comment_json(c, &url))
+                .collect();
+            Ok(json!({"issue": {"identifier": s.identifier(issue),
+                                "comments": {"nodes": nodes, "pageInfo": info}}}))
         }
         "Users" => {
             let or = vars["filter"]["or"].as_array().cloned().unwrap_or_default();
@@ -1748,6 +2768,103 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                 .collect();
             Ok(json!({"issueLabels": {"nodes": nodes}}))
         }
+        "LabelList" => {
+            let workspace = json!({"team": {"null": true}});
+            let filter = &vars["filter"];
+            let team = if *filter == workspace {
+                None
+            } else {
+                let key = filter["or"][1]["team"]["key"]["eq"].as_str();
+                let wanted = key.map(|k| json!({"or": [workspace, {"team": {"key": {"eq": k}}}]}));
+                if wanted.as_ref() != Some(filter) {
+                    return Err(Refusal::Invalid(format!(
+                        "the fake answers LabelList for the workspace and one team only, \
+                         not {filter}"
+                    )));
+                }
+                key.and_then(|k| s.team_id_of(k))
+            };
+            let labels: Vec<&Label> = s
+                .labels
+                .iter()
+                .filter(|l| l.team.is_none() || (team.is_some() && l.team == team))
+                .collect();
+            let (kept, info) = page(labels, |l| l.id.clone(), after, 100);
+            let nodes: Vec<Value> = kept
+                .iter()
+                .map(|l| {
+                    let group = l
+                        .parent
+                        .as_deref()
+                        .and_then(|p| s.labels.iter().find(|g| g.id == p));
+                    json!({"id": l.id, "name": l.name,
+                           "team": l.team.as_deref().map(|t| json!({"key": s.team_key(t)})),
+                           "parent": group.map(|g| json!({"name": g.name}))})
+                })
+                .collect();
+            Ok(json!({"issueLabels": {"nodes": nodes, "pageInfo": info}}))
+        }
+        "ProjectList" => {
+            let filter = &vars["filter"];
+            let team = match filter["accessibleTeams"]["some"]["key"]["eq"].as_str() {
+                Some(key) if filter.as_object().map(|o| o.len()) == Some(1) => {
+                    Some(s.team_id_of(key).unwrap_or_default())
+                }
+                None if *filter == json!({}) => None,
+                _ => {
+                    return Err(Refusal::Invalid(format!(
+                        "the fake answers ProjectList for every project or one team's, not {filter}"
+                    )))
+                }
+            };
+            let projects: Vec<&Project> = s
+                .projects
+                .iter()
+                .filter(|p| team.as_ref().is_none_or(|t| p.teams.contains(t)))
+                .collect();
+            let (kept, info) = page(projects, |p| p.id.clone(), after, 25);
+            let nodes: Vec<Value> = kept
+                .iter()
+                .map(|p| {
+                    let mut node = json!({"id": p.id, "name": p.name,
+                                          "url": format!("https://linear.app/{}/project/{}-{}",
+                                                         s.url_key, slug(&p.name), &p.id[..8])});
+                    node["teams"] = project_teams(s, p, None, 50);
+                    node["projectMilestones"] = project_milestones(p, None, 50);
+                    node
+                })
+                .collect();
+            Ok(json!({"projects": {"nodes": nodes, "pageInfo": info}}))
+        }
+        "ProjectTeams" | "ProjectMilestones" => {
+            let id = var("id");
+            let project = s
+                .projects
+                .iter()
+                .find(|p| p.id == id)
+                .ok_or(Refusal::NotFound("Project"))?;
+            Ok(if name == "ProjectTeams" {
+                json!({"project": {"teams": project_teams(s, project, after, 50)}})
+            } else {
+                json!({"project": {"projectMilestones": project_milestones(project, after, 50)}})
+            })
+        }
+        "CycleList" => {
+            let team = vars["filter"]["team"]["id"]["eq"]
+                .as_str()
+                .unwrap_or_default();
+            let cycles: Vec<&Cycle> = s.cycles.iter().filter(|c| c.team == team).collect();
+            let (kept, info) = page(cycles, |c| c.id.clone(), after, 100);
+            let nodes: Vec<Value> = kept
+                .iter()
+                .map(|c| {
+                    json!({"id": c.id, "number": f64::from(c.number), "name": c.name,
+                           "startsAt": stamp(c.starts), "endsAt": stamp(c.ends),
+                           "isActive": c.active, "team": {"key": s.team_key(&c.team)}})
+                })
+                .collect();
+            Ok(json!({"cycles": {"nodes": nodes, "pageInfo": info}}))
+        }
         "CommentCreate" => {
             let issue = s
                 .issue_id(vars["input"]["issueId"].as_str().unwrap_or_default())
@@ -1777,6 +2894,8 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                         body: "[afkd-claim] owner=afkd-17".into(),
                         created: now - 1000,
                         edited: None,
+                        parent: None,
+                        resolved: None,
                     });
                 }
             }
@@ -1793,6 +2912,8 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                 body,
                 created: now,
                 edited: None,
+                parent: None,
+                resolved: None,
             };
             let node = s.comment_json(&comment);
             s.comments.push(comment);
@@ -1883,7 +3004,8 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
         }
         "IssueCreate" | "NewIssue" => {
             let input = &vars["input"];
-            if input["teamId"].as_str() != Some(s.team_id.as_str()) {
+            let team = input["teamId"].as_str().unwrap_or_default().to_string();
+            if s.team(&team).is_none() {
                 return Err(Refusal::NotFound("Team"));
             }
             let parent = match input["parentId"].as_str() {
@@ -1895,41 +3017,31 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                     return Err(Refusal::NotFound("WorkflowState"))
                 }
                 Some(state) => state.to_string(),
-                None => ["backlog", "unstarted"]
-                    .iter()
-                    .find_map(|kind| s.states.iter().find(|st| st.kind == *kind))
-                    .or(s.states.first())
-                    .map(|st| st.id.clone())
-                    .ok_or(Refusal::NotFound("WorkflowState"))?,
+                None => {
+                    let of_team: Vec<&State> =
+                        s.states.iter().filter(|st| st.team == team).collect();
+                    ["backlog", "unstarted"]
+                        .iter()
+                        .find_map(|kind| of_team.iter().find(|st| st.kind == *kind))
+                        .or(of_team.first())
+                        .map(|st| st.id.clone())
+                        .ok_or(Refusal::NotFound("WorkflowState"))?
+                }
             };
-            let id = s.mint();
-            let number = s.issues.len() as u32 + 101;
-            let sort_order = input["sortOrder"].as_f64().unwrap_or_else(|| {
-                s.issues
-                    .iter()
-                    .map(|i| i.sort_order)
-                    .fold(-1000.0_f64, f64::max)
-                    + 1000.0
-            });
-            let issue = Issue {
-                id,
-                number,
-                title: input["title"].as_str().unwrap_or_default().to_string(),
-                description: input["description"].as_str().map(str::to_string),
+            let id = s.add_issue(
+                team,
                 state,
-                labels: Vec::new(),
-                assignee: None,
-                delegate: None,
+                input["title"].as_str().unwrap_or_default(),
+                input["description"].as_str().map(str::to_string),
                 parent,
-                sort_order,
-                archived: false,
-            };
+                input["sortOrder"].as_f64(),
+            );
+            let issue = s.issue(&id).expect("the issue just filed");
             let node = json!({
                 "id": issue.id,
-                "identifier": s.identifier(&issue),
-                "url": format!("https://linear.app/acme/issue/{}/{}", s.identifier(&issue), slug(&issue.title)),
+                "identifier": s.identifier(issue),
+                "url": s.url(issue),
             });
-            s.issues.push(issue);
             Ok(json!({"issueCreate": {"success": true, "issue": node}}))
         }
         "IssueArchive" | "IssueUnarchive" => {
@@ -1943,20 +3055,24 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             Ok(json!({ field: {"success": true} }))
         }
         "TeamLabels" => {
-            let team = s.team_id.clone();
+            let team = vars["filter"]["or"][0]["team"]["id"]["eq"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
             let wanted = json!({"or": [{"team": {"id": {"eq": team}}}, {"team": {"null": true}}]});
-            if vars["filter"] != wanted {
+            if vars["filter"] != wanted || s.team(&team).is_none() {
                 return Err(Refusal::Invalid(format!(
-                    "the fake answers TeamLabels for the team and the workspace only, not {}",
+                    "the fake answers TeamLabels for a team and the workspace only, not {}",
                     vars["filter"]
                 )));
             }
-            let (kept, info) = page(
-                s.labels.clone(),
-                |l| l.id.clone(),
-                vars["after"].as_str(),
-                100,
-            );
+            let labels: Vec<Label> = s
+                .labels
+                .iter()
+                .filter(|l| l.team.is_none() || l.team.as_deref() == Some(&team))
+                .cloned()
+                .collect();
+            let (kept, info) = page(labels, |l| l.id.clone(), after, 100);
             let nodes: Vec<Value> = kept
                 .iter()
                 .map(|l| {
@@ -1993,6 +3109,34 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             "the fake answers no operation {other}"
         ))),
     }
+}
+
+/// One page of a project's teams, as a `teams` connection.
+fn project_teams(s: &Store, project: &Project, after: Option<&str>, first: usize) -> Value {
+    let (kept, info) = page(
+        project.teams.iter().collect(),
+        |t| t.to_string(),
+        after,
+        first,
+    );
+    let nodes: Vec<Value> = kept.iter().map(|t| json!({"key": s.team_key(t)})).collect();
+    json!({"nodes": nodes, "pageInfo": info})
+}
+
+/// One page of a project's milestones, as a `projectMilestones` connection, in the order they
+/// were seeded.
+fn project_milestones(project: &Project, after: Option<&str>, first: usize) -> Value {
+    let (kept, info) = page(
+        project.milestones.iter().collect(),
+        |m| m.id.clone(),
+        after,
+        first,
+    );
+    let nodes: Vec<Value> = kept
+        .iter()
+        .map(|m| json!({"name": m.name, "sortOrder": m.sort_order}))
+        .collect();
+    json!({"nodes": nodes, "pageInfo": info})
 }
 
 fn percent_decode(s: &str) -> String {

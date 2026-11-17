@@ -10,13 +10,19 @@
 //!
 //! The token is fetched on the first request that needs it, never at `hello`: an outage
 //! when the service arms is an idle beat, not a refused service.
+//!
+//! A read's credential keeps its token in the plugin's own directory too, by client id
+//! ([`Auth::cached`]), since a child afkd starts for one call ends with its reply: the next
+//! child, and every other child of the plugin, takes the token from there until it is due,
+//! rather than fetching one per call.
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::common::lock;
+use crate::common::{file_safe, lock, write_whole};
 use crate::http::{Http, Reply};
 use crate::settings::AuthConfig;
 use crate::tracker::LinearError;
@@ -43,11 +49,14 @@ pub(crate) enum Auth {
     App(AppAuth),
 }
 
-/// An OAuth app's credentials, and the token they last fetched.
+/// An OAuth app's credentials, the token they last fetched, and where it is kept.
 pub(crate) struct AppAuth {
     client_id: String,
     client_secret: String,
     token: Mutex<Option<Token>>,
+    /// The file the token is kept in for the plugin's other children
+    /// ([`token_file_name`]); `None` keeps it in this process alone.
+    cache: Option<PathBuf>,
 }
 
 /// A fetched app token, and the moment it is renewed at.
@@ -70,13 +79,21 @@ impl std::fmt::Debug for AppAuth {
         f.debug_struct("AppAuth")
             .field("client_id", &self.client_id)
             .field("holds_token", &lock(&self.token).is_some())
+            .field("cache", &self.cache)
             .finish_non_exhaustive()
     }
 }
 
 impl Auth {
-    /// The credential `cfg` writes, holding no token yet.
+    /// The credential `cfg` writes, holding no token yet, and keeping the one it fetches in
+    /// this process alone.
     pub(crate) fn new(cfg: &AuthConfig) -> Self {
+        Self::cached(cfg, None)
+    }
+
+    /// The credential `cfg` writes, an app's keeping its token in `state_dir` as well, the
+    /// plugin's own directory, when afkd sent one.
+    pub(crate) fn cached(cfg: &AuthConfig, state_dir: Option<&Path>) -> Self {
         match cfg {
             AuthConfig::ApiKey(key) => Auth::ApiKey(key.clone()),
             AuthConfig::App {
@@ -86,6 +103,7 @@ impl Auth {
                 client_id: client_id.clone(),
                 client_secret: client_secret.clone(),
                 token: Mutex::new(None),
+                cache: state_dir.map(|dir| dir.join(token_file_name(client_id))),
             }),
         }
     }
@@ -100,23 +118,41 @@ impl Auth {
         }
     }
 
-    /// Drop the app's token, after Linear refused it: whether a retry with a fresh one can
-    /// help, which an API key's refusal cannot.
+    /// Drop the app's token, after Linear refused it, from this process and from the
+    /// plugin's directory: whether a retry with a fresh one can help, which an API key's
+    /// refusal cannot.
     pub(crate) fn invalidate(&self) -> bool {
         match self {
             Auth::ApiKey(_) => false,
             Auth::App(app) => {
                 *lock(&app.token) = None;
+                if let Some(cache) = &app.cache {
+                    let _ = std::fs::remove_file(cache);
+                }
                 true
             }
         }
     }
 }
 
+/// The name of the file an app's token is kept in, by its client id: `token-<id>.json`, the
+/// id written [`file_safe`], so no id can name another path.
+pub(crate) fn token_file_name(client_id: &str) -> String {
+    format!("token-{}.json", file_safe(client_id))
+}
+
+/// The wall clock now, in unix milliseconds.
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
 impl AppAuth {
-    /// The token to send at `now`, fetching a new one when none is held or the one held is
-    /// due. The lock is not held across the fetch, so a request on another thread is never
-    /// parked behind it; two that race both fetch, and the later token is kept.
+    /// The token to send at `now`: the one held while it is not due, else the one the
+    /// plugin's directory keeps while that is not, else a new one fetched. The lock is not
+    /// held across the fetch, so a request on another thread is never parked behind it; two
+    /// that race both fetch, and the later token is kept.
     fn token(&self, http: &Http, now: Instant) -> Result<String, LinearError> {
         if let Some(token) = lock(&self.token)
             .as_ref()
@@ -124,12 +160,46 @@ impl AppAuth {
         {
             return Ok(token.value.clone());
         }
+        if let Some(kept) = self.kept(now) {
+            let value = kept.value.clone();
+            *lock(&self.token) = Some(kept);
+            return Ok(value);
+        }
         let (value, expires_in) = self.fetch(http)?;
+        let after = renew_after(expires_in);
         *lock(&self.token) = Some(Token {
             value: value.clone(),
-            renew_at: now + renew_after(expires_in),
+            renew_at: now + after,
         });
+        self.keep(&value, after);
         Ok(value)
+    }
+
+    /// The token the plugin's directory keeps, renewed at the moment it names on the wall
+    /// clock, measured from `now` on this process's; `None` when there is none, it cannot be
+    /// read, or it is due.
+    fn kept(&self, now: Instant) -> Option<Token> {
+        let text = std::fs::read_to_string(self.cache.as_ref()?).ok()?;
+        let kept: Value = serde_json::from_str(&text).ok()?;
+        let value = kept.get("token")?.as_str().filter(|t| !t.is_empty())?;
+        let left = kept.get("renew_at")?.as_u64()?.checked_sub(now_millis())?;
+        (left > 0).then(|| Token {
+            value: value.to_string(),
+            renew_at: now + Duration::from_millis(left),
+        })
+    }
+
+    /// Keep `value` in the plugin's directory, renewed `after` from now: the file holds the
+    /// token and the wall-clock moment, in unix milliseconds rounded down, and only its owner
+    /// may read it. A file that cannot be written costs the next child a fetch, and nothing
+    /// else.
+    fn keep(&self, value: &str, after: Duration) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        let after = u64::try_from(after.as_millis()).unwrap_or(u64::MAX);
+        let kept = json!({ "token": value, "renew_at": now_millis().saturating_add(after) });
+        let _ = write_whole(cache, kept.to_string().as_bytes(), 0o600);
     }
 
     /// Ask the token endpoint for a token with the `client_credentials` grant: the token,
@@ -225,14 +295,111 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{Clock, FakeClock};
+    use crate::common::{Clock, FakeClock, TempDir};
+    use std::os::unix::fs::PermissionsExt;
 
     fn app() -> AppAuth {
         AppAuth {
             client_id: "app-id-7f3a".into(),
             client_secret: "SECRET-app-9c1e".into(),
             token: Mutex::new(None),
+            cache: None,
         }
+    }
+
+    /// An app keeping its token in `dir`.
+    fn cached(dir: &Path) -> AppAuth {
+        let Auth::App(app) = Auth::cached(
+            &AuthConfig::App {
+                client_id: "app-id-7f3a".into(),
+                client_secret: "SECRET-app-9c1e".into(),
+            },
+            Some(dir),
+        ) else {
+            unreachable!()
+        };
+        app
+    }
+
+    /// Nothing listens there: a fetch fails, so a token answered is one held or kept.
+    fn unreachable_http() -> Http {
+        Http::new(
+            "http://127.0.0.1:9",
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        )
+    }
+
+    /// The file an app's token is kept in is named by its client id, every byte a path or a
+    /// shell could read otherwise escaped.
+    #[test]
+    fn the_token_file_is_named_by_the_escaped_client_id() {
+        assert_eq!(token_file_name("app-id_7f3a"), "token-app-id_7f3a.json");
+        assert_eq!(
+            token_file_name("app-id/7 é"),
+            "token-app-id%2F7%20%C3%A9.json"
+        );
+        assert_eq!(token_file_name("../x"), "token-%2E%2E%2Fx.json");
+        assert!(
+            !Auth::cached(&AuthConfig::ApiKey("k".into()), Some(Path::new("/s"))).invalidate(),
+            "a key keeps no file"
+        );
+    }
+
+    /// A token is kept whole in the plugin's directory, readable by its owner alone, with
+    /// its renewal moment to the millisecond; another child takes it from there without a
+    /// fetch while it is not due, and fetches once it is. `invalidate` removes the file.
+    #[test]
+    fn a_kept_token_is_used_until_due_and_invalidate_removes_it() {
+        let dir = TempDir::new("auth-cache");
+        let http = unreachable_http();
+        let first = cached(dir.path());
+        first.keep("lin_oauth_kept 🔑", Duration::from_secs(60));
+        let file = dir.path().join("token-app-id-7f3a.json");
+        let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(kept["token"], "lin_oauth_kept 🔑");
+        let renew_at = kept["renew_at"].as_u64().unwrap();
+        assert!(
+            renew_at.abs_diff(now_millis() + 60_000) < 5_000,
+            "{renew_at}"
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let second = cached(dir.path());
+        assert_eq!(
+            second.token(&http, Instant::now()).unwrap(),
+            "lin_oauth_kept 🔑",
+            "taken from the file, so no fetch was tried"
+        );
+        assert!(lock(&second.token).is_some(), "and held from then on");
+
+        std::fs::write(
+            &file,
+            json!({"token": "lin_oauth_due", "renew_at": now_millis() - 1}).to_string(),
+        )
+        .unwrap();
+        let third = cached(dir.path());
+        let e = third.token(&http, Instant::now()).unwrap_err();
+        assert_eq!(
+            e.stage(),
+            "fetch token",
+            "a due token is fetched again: {e}"
+        );
+
+        assert!(Auth::App(cached(dir.path())).invalidate());
+        assert!(!file.exists(), "invalidate removes the kept token");
+        std::fs::write(&file, "not json").unwrap();
+        assert_eq!(
+            cached(dir.path())
+                .token(&http, Instant::now())
+                .unwrap_err()
+                .stage(),
+            "fetch token",
+            "an unreadable file is no token"
+        );
     }
 
     fn reply(status: u16, body: &str) -> Reply {

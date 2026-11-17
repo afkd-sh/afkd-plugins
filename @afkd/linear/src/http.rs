@@ -135,6 +135,11 @@ impl Http {
         *lock(&self.deadline) = deadline;
     }
 
+    /// What is left of the current call's deadline now: `None` outside a call.
+    pub(crate) fn time_left(&self) -> Option<Duration> {
+        lock(&self.deadline).map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
     /// The global timeout the next request gets: `None` outside a call, else the request's
     /// own `connect + read` or what is left of the call, whichever is shorter. A call with
     /// nothing left sends nothing: that is a transport failure naming the budget.
@@ -363,7 +368,8 @@ mod tests {
         }
     }
 
-    /// A spent call deadline sends nothing, and says which budget ran out.
+    /// A spent call deadline sends nothing, and says which budget ran out. What is left of
+    /// the deadline is read off the real clock, and outside a call there is none.
     #[test]
     fn a_spent_call_deadline_sends_nothing() {
         let http = Http::new(
@@ -371,7 +377,12 @@ mod tests {
             DEFAULT_CONNECT_TIMEOUT,
             DEFAULT_READ_TIMEOUT,
         );
+        assert_eq!(http.time_left(), None);
+        http.set_deadline(Some(Instant::now() + Duration::from_secs(30)));
+        let left = http.time_left().expect("a call's deadline");
+        assert!(left <= Duration::from_secs(30) && left > Duration::from_secs(29));
         http.set_deadline(Some(Instant::now()));
+        assert_eq!(http.time_left(), Some(Duration::ZERO));
         let e = http
             .post("post comment", "/graphql", "application/json", None, b"{}")
             .unwrap_err();

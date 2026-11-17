@@ -14,9 +14,17 @@
 //! bytes are PUT there with the headers Linear returned and never the credential. A file
 //! comes back with the credential, from Linear's file host ([`UPLOADS_BASE`]) or the API
 //! root and from no other.
+//!
+//! The workspace reads ([`crate::reads`]) read whole: a list to its last page, and every list
+//! nested in what it holds — an issue's labels, sub-issues, relations both ways, links and
+//! subscribers, a project's teams and milestones — past its first page by the documents that
+//! read the pages after it ([`ISSUE_CONNECTIONS`]). A client made [`retrying`] tries a request
+//! Linear could not take again within the call's deadline.
+//!
+//! [`retrying`]: LinearClient::retrying
 
 use std::sync::{Arc, OnceLock};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -26,8 +34,10 @@ use crate::http::{Http, Reply, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT};
 use crate::rfc3339::parse_rfc3339_millis;
 use crate::settings::MemberRef;
 use crate::tracker::{
-    Blocker, Child, Comment, Issue, LinearError, Page, Related, State, Team, Tracker,
+    Blocker, Child, Comment, Issue, IssueDetail, LinearError, Organization, Page, Priority,
+    Related, State, StateType, Team, Tracker,
 };
+use crate::wire::{CommentFields, CycleFields, LabelFields, ProjectFields, TeamFields, UserFields};
 
 /// Linear's API root; GraphQL is at [`GRAPHQL_PATH`] under it.
 pub(crate) const LINEAR_BASE: &str = "https://api.linear.app";
@@ -44,6 +54,37 @@ const UPLOAD_CACHE_CONTROL: &str = "public, max-age=31536000";
 /// How many issues one `Issues` page holds: small, with its nested connections, to keep a
 /// query far under Linear's complexity cap.
 pub(crate) const ISSUES_PAGE: u32 = 25;
+
+/// How many issues one `IssueList` page holds at most. Each carries six nested connections of
+/// 20, so by Linear's documented scoring (an object 1, a field 0.1, a connection times its
+/// `first`) a page of 20 costs some 4 800 points against the 10 000 cap.
+pub(crate) const ISSUE_LIST_PAGE: usize = 20;
+
+/// Each connection nested in an issue node `IssueList` and `IssueFull` read 20 of, and the
+/// document that reads the pages after it.
+const ISSUE_CONNECTIONS: &[(&str, &str)] = &[
+    ("labels", "IssueLabelNames"),
+    ("children", "IssueChildren"),
+    ("relations", "IssueOutRelations"),
+    ("inverseRelations", "IssueRelations"),
+    ("attachments", "IssueAttachments"),
+    ("subscribers", "IssueSubscribers"),
+];
+
+/// Each connection nested in a project node `ProjectList` reads 50 of, and the document that
+/// reads the pages after it.
+const PROJECT_CONNECTIONS: &[(&str, &str)] = &[
+    ("teams", "ProjectTeams"),
+    ("projectMilestones", "ProjectMilestones"),
+];
+
+/// The first wait a [`retrying`](LinearClient::retrying) client takes before it tries again,
+/// when Linear named none; each wait after it is twice the one before.
+const FIRST_RETRY_WAIT: Duration = Duration::from_secs(1);
+
+/// What a retry's wait leaves of the call's deadline at the least: the request after it, and
+/// the reply, need some of it too.
+const RETRY_MARGIN: Duration = Duration::from_secs(2);
 
 /// The operations the plugin sends, as written.
 const OPERATIONS: &str = include_str!("operations.graphql");
@@ -133,9 +174,69 @@ pub(crate) fn last_in_state_vars(team_id: &str, state_id: &str) -> Value {
     })
 }
 
-/// `IssueRelations`: the page of an issue's inverse relations after the cursor `after`.
-pub(crate) fn relations_vars(issue_id: &str, after: &str) -> Value {
+/// The page after the cursor `after` of a connection nested in the issue or the project
+/// `id`: `IssueRelations`, `IssueOutRelations`, `IssueLabelNames`, `IssueAttachments`,
+/// `IssueSubscribers`, `IssueChildren`, `ProjectTeams` and `ProjectMilestones`.
+pub(crate) fn follow_up_vars(id: &str, after: &str) -> Value {
+    json!({ "id": id, "after": after })
+}
+
+/// `IssueFull`: the issue.
+pub(crate) fn issue_vars(issue_id: &str) -> Value {
+    json!({ "id": issue_id })
+}
+
+/// `IssueThread`: one page of an issue's comments, from `after`.
+pub(crate) fn thread_vars(issue_id: &str, after: Option<&str>) -> Value {
     json!({ "id": issue_id, "after": after })
+}
+
+/// `IssueList`: one page of `first` issues matching `filter` in the order `sort` gives, from
+/// `after`, archived and trashed ones too when `include_archived`.
+pub(crate) fn issue_list_vars(
+    filter: &Value,
+    sort: &Value,
+    include_archived: bool,
+    first: usize,
+    after: Option<&str>,
+) -> Value {
+    json!({
+        "filter": filter,
+        "sort": sort,
+        "first": first,
+        "after": after,
+        "includeArchived": include_archived,
+    })
+}
+
+/// `TeamList` and `UserList`: one page, from `after`.
+pub(crate) fn page_vars(after: Option<&str>) -> Value {
+    json!({ "after": after })
+}
+
+/// `LabelList`: one page of the workspace's labels and, with `team`, that team's, by key.
+pub(crate) fn label_list_vars(team: Option<&str>, after: Option<&str>) -> Value {
+    let workspace = json!({ "team": { "null": true } });
+    let filter = match team {
+        Some(key) => json!({ "or": [workspace, { "team": { "key": { "eq": key } } }] }),
+        None => workspace,
+    };
+    json!({ "filter": filter, "after": after })
+}
+
+/// `ProjectList`: one page of the projects, every one or, with `team`, those of that team, by
+/// key.
+pub(crate) fn project_list_vars(team: Option<&str>, after: Option<&str>) -> Value {
+    let filter = match team {
+        Some(key) => json!({ "accessibleTeams": { "some": { "key": { "eq": key } } } }),
+        None => json!({}),
+    };
+    json!({ "filter": filter, "after": after })
+}
+
+/// `CycleList`: one page of the team's cycles, by its id.
+pub(crate) fn cycle_list_vars(team_id: &str, after: Option<&str>) -> Value {
+    json!({ "filter": { "team": { "id": { "eq": team_id } } }, "after": after })
 }
 
 /// `IssueDescription`: the issue's description.
@@ -263,6 +364,10 @@ pub(crate) struct LinearClient {
     base: String,
     /// The viewer's id, fetched once: the credential is fixed for the client's life.
     viewer: OnceLock<String>,
+    /// The workspace the credential reaches, read once, for the same reason.
+    organization: OnceLock<Organization>,
+    /// Whether a request Linear could not take is tried again within the call's deadline.
+    retry: bool,
 }
 
 impl LinearClient {
@@ -274,6 +379,43 @@ impl LinearClient {
             auth,
             base: base.trim_end_matches('/').to_string(),
             viewer: OnceLock::new(),
+            organization: OnceLock::new(),
+            retry: false,
+        }
+    }
+
+    /// The same client, trying a request Linear could not take again: one it rate limited,
+    /// answered with a 5xx, or did not answer is sent again after the `Retry-After` it named,
+    /// else after a second, then two, doubling. A wait that would leave less than
+    /// [`RETRY_MARGIN`] of the call's deadline is not taken, and the last error is the
+    /// request's. Outside a call, with no deadline to bound the waits, nothing is retried.
+    #[must_use]
+    pub(crate) fn retrying(self) -> Self {
+        Self {
+            retry: true,
+            ..self
+        }
+    }
+
+    /// `attempt`, tried again as [`retrying`](Self::retrying) says when this client retries.
+    fn retried<T>(&self, attempt: impl Fn() -> Result<T, LinearError>) -> Result<T, LinearError> {
+        let mut wait = FIRST_RETRY_WAIT;
+        loop {
+            match attempt() {
+                Err(e) if self.retry && e.transient() => {
+                    let pause = e.retry_after().unwrap_or(wait);
+                    let room = self
+                        .http
+                        .time_left()
+                        .is_some_and(|left| left > pause + RETRY_MARGIN);
+                    if !room {
+                        return Err(e);
+                    }
+                    std::thread::sleep(pause);
+                    wait = wait.saturating_mul(2);
+                }
+                result => return result,
+            }
         }
     }
 
@@ -305,10 +447,53 @@ impl LinearClient {
             )?;
             graphql_data(stage, &reply)
         };
-        match send() {
+        self.retried(|| match send() {
             Err(e) if refused_credential(&e) && self.auth.invalidate() => send(),
             result => result,
+        })
+    }
+
+    /// Every node of the connection `field` of the `root` (`issue` or `project`) whose id is
+    /// `id`, past the cursor `after`: the pages after the one first read, each read with the
+    /// document `name` until the last. Nothing, and no request, for no cursor.
+    fn rest_of(
+        &self,
+        stage: &'static str,
+        name: &str,
+        root: &str,
+        field: &str,
+        id: &str,
+        mut after: Option<String>,
+    ) -> Result<Vec<Value>, LinearError> {
+        let mut rest = Vec::new();
+        while let Some(cursor) = after {
+            let data = self.post_graphql(stage, name, follow_up_vars(id, &cursor))?;
+            let connection = &data[root][field];
+            rest.extend(nodes(stage, connection)?.iter().cloned());
+            after = next_cursor(connection);
         }
+        Ok(rest)
+    }
+
+    /// Complete each of `connections` nested in `node`, a `root` read with its id: the nodes
+    /// [`rest_of`](Self::rest_of) reads appended to the first page's, so the node reads as
+    /// though each list came whole.
+    fn complete(
+        &self,
+        stage: &'static str,
+        root: &str,
+        node: &mut Value,
+        connections: &[(&str, &str)],
+    ) -> Result<(), LinearError> {
+        let id = str_at(stage, node, "id")?;
+        for (field, document) in connections {
+            let rest =
+                self.rest_of(stage, document, root, field, &id, next_cursor(&node[field]))?;
+            if let Some(nodes) = node[field].get_mut("nodes").and_then(Value::as_array_mut) {
+                nodes.extend(rest);
+            }
+        }
+        Ok(())
     }
 
     /// One page of an `Issues` read, each issue's blockers read whole: an issue whose inverse
@@ -320,14 +505,18 @@ impl LinearClient {
         let items = page
             .items
             .into_iter()
-            .map(|(mut issue, mut after)| {
-                while let Some(cursor) = after {
-                    let vars = relations_vars(&issue.id, &cursor);
-                    let data = self.post_graphql(stage, "IssueRelations", vars)?;
-                    let connection = &data["issue"]["inverseRelations"];
-                    issue.blockers.extend(blockers(stage, connection)?);
-                    after = next_cursor(connection);
-                }
+            .map(|(mut issue, after)| {
+                let rest = self.rest_of(
+                    stage,
+                    "IssueRelations",
+                    "issue",
+                    "inverseRelations",
+                    &issue.id,
+                    after,
+                )?;
+                issue
+                    .blockers
+                    .extend(blockers(stage, &json!({ "nodes": rest }))?);
                 Ok(issue)
             })
             .collect::<Result<_, LinearError>>()?;
@@ -335,6 +524,164 @@ impl LinearClient {
             items,
             next: page.next,
         })
+    }
+
+    /// Every node of a list `name` reads a page at a time, the connection at `field` of each
+    /// reply, its variables built by `vars` from a cursor.
+    fn all_nodes(
+        &self,
+        stage: &'static str,
+        name: &str,
+        field: &str,
+        vars: impl Fn(Option<&str>) -> Value,
+    ) -> Result<Vec<Value>, LinearError> {
+        let mut all = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let data = self.post_graphql(stage, name, vars(after.as_deref()))?;
+            let connection = &data[field];
+            all.extend(nodes(stage, connection)?.iter().cloned());
+            match next_cursor(connection) {
+                Some(next) => after = Some(next),
+                None => return Ok(all),
+            }
+        }
+    }
+
+    /// The first `limit` issues an `IssueList` read gives, its variables built by `vars` from
+    /// the page size and a cursor: read 20 to the page, or what is left of `limit`, each issue
+    /// read whole ([`ISSUE_CONNECTIONS`]).
+    pub(crate) fn issue_list(
+        &self,
+        vars: impl Fn(usize, Option<&str>) -> Value,
+        limit: usize,
+    ) -> Result<Vec<Issue>, LinearError> {
+        let stage = "read issues";
+        let mut issues = Vec::new();
+        let mut after: Option<String> = None;
+        while issues.len() < limit {
+            let first = (limit - issues.len()).min(ISSUE_LIST_PAGE);
+            let data = self.post_graphql(stage, "IssueList", vars(first, after.as_deref()))?;
+            let connection = &data["issues"];
+            for node in nodes(stage, connection)? {
+                let mut node = node.clone();
+                self.complete(stage, "issue", &mut node, ISSUE_CONNECTIONS)?;
+                issues.push(parse_full_issue(stage, &node)?);
+            }
+            match next_cursor(connection) {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        Ok(issues.into_iter().take(limit).collect())
+    }
+
+    /// The thread of issue `issue_id`: its identifier, and every comment on it, as Linear
+    /// pages them, each with its uuid.
+    pub(crate) fn thread(
+        &self,
+        issue_id: &str,
+    ) -> Result<(String, Vec<(String, CommentFields)>), LinearError> {
+        let stage = "read comments";
+        let mut identifier: Option<String> = None;
+        let mut comments = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let vars = thread_vars(issue_id, after.as_deref());
+            let data = self.post_graphql(stage, "IssueThread", vars)?;
+            let issue = &data["issue"];
+            let id = match &identifier {
+                Some(id) => id.clone(),
+                None => identifier
+                    .insert(str_at(stage, issue, "identifier")?)
+                    .clone(),
+            };
+            let connection = &issue["comments"];
+            for node in nodes(stage, connection)? {
+                comments.push(parse_thread_comment(stage, node, &id)?);
+            }
+            match next_cursor(connection) {
+                Some(next) => after = Some(next),
+                None => return Ok((id, comments)),
+            }
+        }
+    }
+
+    /// The user the credential acts as: its uuid and its handle's fields.
+    pub(crate) fn me(&self) -> Result<(String, UserFields), LinearError> {
+        let stage = "read viewer";
+        parse_user(stage, &self.post_graphql(stage, "Me", json!({}))?["viewer"])
+    }
+
+    /// Every user of the workspace Linear lists, apps among them and disabled accounts not.
+    pub(crate) fn user_list(&self) -> Result<Vec<(String, UserFields)>, LinearError> {
+        let stage = "read users";
+        self.all_nodes(stage, "UserList", "users", page_vars)?
+            .iter()
+            .map(|node| parse_user(stage, node))
+            .collect()
+    }
+
+    /// Every team the credential can reach: each one's uuid, key and fields.
+    pub(crate) fn team_list(&self) -> Result<Vec<(String, String, TeamFields)>, LinearError> {
+        let stage = "read teams";
+        self.all_nodes(stage, "TeamList", "teams", page_vars)?
+            .iter()
+            .map(|node| {
+                Ok((
+                    str_at(stage, node, "id")?,
+                    str_at(stage, node, "key")?,
+                    TeamFields {
+                        name: str_at(stage, node, "name")?,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// The workspace's labels and, with `team`, that team's, by key.
+    pub(crate) fn label_list(
+        &self,
+        team: Option<&str>,
+    ) -> Result<Vec<(String, LabelFields)>, LinearError> {
+        let stage = "read labels";
+        self.all_nodes(stage, "LabelList", "issueLabels", |after| {
+            label_list_vars(team, after)
+        })?
+        .iter()
+        .map(|node| parse_label(stage, node))
+        .collect()
+    }
+
+    /// Every project or, with `team`, every project of that team, by key: each read whole,
+    /// its milestones in their order.
+    pub(crate) fn project_list(
+        &self,
+        team: Option<&str>,
+    ) -> Result<Vec<(String, ProjectFields)>, LinearError> {
+        let stage = "read projects";
+        let mut projects = Vec::new();
+        for mut node in self.all_nodes(stage, "ProjectList", "projects", |after| {
+            project_list_vars(team, after)
+        })? {
+            self.complete(stage, "project", &mut node, PROJECT_CONNECTIONS)?;
+            projects.push(parse_project(stage, &node)?);
+        }
+        Ok(projects)
+    }
+
+    /// Every cycle of the team whose id is `team_id`.
+    pub(crate) fn cycle_list(
+        &self,
+        team_id: &str,
+    ) -> Result<Vec<(String, CycleFields)>, LinearError> {
+        let stage = "read cycles";
+        self.all_nodes(stage, "CycleList", "cycles", |after| {
+            cycle_list_vars(team_id, after)
+        })?
+        .iter()
+        .map(|node| parse_cycle(stage, node))
+        .collect()
     }
 
     /// Every page of an `Issues` read, its variables built by `vars` from a cursor.
@@ -398,6 +745,23 @@ impl Tracker for LinearClient {
         let data = self.post_graphql(stage, "Viewer", json!({}))?;
         let id = str_at(stage, &data["viewer"], "id")?;
         Ok(self.viewer.get_or_init(|| id).clone())
+    }
+
+    fn organization(&self) -> Result<Organization, LinearError> {
+        if let Some(organization) = self.organization.get() {
+            return Ok(organization.clone());
+        }
+        let stage = "read organization";
+        let organization =
+            parse_organization(stage, &self.post_graphql(stage, "Organization", json!({}))?)?;
+        Ok(self.organization.get_or_init(|| organization).clone())
+    }
+
+    fn issue_full(&self, issue_id: &str) -> Result<Issue, LinearError> {
+        let stage = "read issue";
+        let mut node = self.post_graphql(stage, "IssueFull", issue_vars(issue_id))?["issue"].take();
+        self.complete(stage, "issue", &mut node, ISSUE_CONNECTIONS)?;
+        parse_full_issue(stage, &node)
     }
 
     fn resolve_team(&self, key: &str) -> Result<Team, LinearError> {
@@ -674,10 +1038,10 @@ impl Tracker for LinearClient {
                 })
             }
         };
-        match send() {
+        self.retried(|| match send() {
             Err(e) if refused_credential(&e) && self.auth.invalidate() => send(),
             result => result,
-        }
+        })
     }
 
     fn is_linear_file(&self, url: &str) -> bool {
@@ -874,11 +1238,18 @@ pub(crate) fn parse_states(stage: &'static str, data: &Value) -> Result<Vec<Stat
         .collect()
 }
 
+/// One workflow state node: its `type` one of the seven Linear documents, and its `position`
+/// 0 where the read selects none.
 fn parse_state(stage: &'static str, s: &Value) -> Result<State, LinearError> {
+    let kind = str_at(stage, s, "type")?;
     Ok(State {
         id: str_at(stage, s, "id")?,
         name: str_at(stage, s, "name")?,
-        kind: str_at(stage, s, "type")?,
+        kind: StateType::from_linear(&kind).ok_or_else(|| LinearError::Decode {
+            stage,
+            reason: format!("a workflow state of a type Linear does not document: {kind:?}"),
+        })?,
+        position: s.get("position").and_then(Value::as_f64).unwrap_or(0.0),
     })
 }
 
@@ -962,13 +1333,254 @@ pub(crate) fn parse_issue(stage: &'static str, i: &Value) -> Result<Issue, Linea
         parent,
         children: parse_children(stage, &i["children"])?,
         blockers: blockers(stage, &i["inverseRelations"])?,
-        sort_order: i.get("sortOrder").and_then(Value::as_f64).ok_or_else(|| {
-            LinearError::Decode {
-                stage,
-                reason: "no number `sortOrder`".to_string(),
-            }
-        })?,
+        sort_order: number_at(stage, i, "sortOrder")?,
+        detail: IssueDetail::default(),
     })
+}
+
+/// The number at `key` of `value`, or a decode error naming the key.
+fn number_at(stage: &'static str, value: &Value, key: &str) -> Result<f64, LinearError> {
+    value
+        .get(key)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| LinearError::Decode {
+            stage,
+            reason: format!("no number `{key}`"),
+        })
+}
+
+/// The string at `key` of `value`, or `None` when it is `null` or not there.
+fn opt_str_at(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// The time at `key` of `value`, in unix milliseconds: `None` when it is `null` or not there,
+/// and a decode error when it is not a time.
+fn opt_millis_at(
+    stage: &'static str,
+    value: &Value,
+    key: &str,
+) -> Result<Option<u64>, LinearError> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(time) => time
+            .as_str()
+            .and_then(parse_rfc3339_millis)
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| Some(u64::try_from(d.as_millis()).unwrap_or(u64::MAX)))
+            .ok_or_else(|| LinearError::Decode {
+                stage,
+                reason: format!("no readable time `{key}`"),
+            }),
+    }
+}
+
+/// The time at `key` of `value`, in unix milliseconds, or a decode error naming the key.
+fn millis_at(stage: &'static str, value: &Value, key: &str) -> Result<u64, LinearError> {
+    opt_millis_at(stage, value, key)?.ok_or_else(|| LinearError::Decode {
+        stage,
+        reason: format!("no time `{key}`"),
+    })
+}
+
+/// A whole number Linear sends as a float: an estimate, or a cycle's number.
+fn whole(number: f64) -> i64 {
+    number.round() as i64
+}
+
+/// `items` with each one already among them left out.
+fn once_each(items: Vec<String>) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::with_capacity(items.len());
+    for item in items {
+        if !kept.contains(&item) {
+            kept.push(item);
+        }
+    }
+    kept
+}
+
+/// One issue node as `IssueList` and `IssueFull` select it, every nested connection read whole
+/// ([`LinearClient::complete`]): the issue, every field of its handle among it.
+///
+/// Its relations are read both ways. Those it holds give the issues it `blocks`, is related
+/// and similar to, and the one it is a duplicate of; those that name it give its blockers, the
+/// issues related and similar to it, and those that are duplicates of it. A related or similar
+/// issue is listed once, the issue's own relations first.
+pub(crate) fn parse_full_issue(stage: &'static str, i: &Value) -> Result<Issue, LinearError> {
+    let mut issue = parse_issue(stage, i)?;
+    let names = |connection: &Value, key: &str| -> Result<Vec<String>, LinearError> {
+        nodes(stage, connection)?
+            .iter()
+            .map(|n| str_at(stage, n, key))
+            .collect()
+    };
+    let display = |who: &Value| opt_str_at(who, "displayName");
+    let priority = number_at(stage, i, "priority")?;
+    let mut detail = IssueDetail {
+        team: str_at(stage, &i["team"], "key")?,
+        branch: str_at(stage, i, "branchName")?,
+        priority: Priority::from_linear(priority).ok_or_else(|| LinearError::Decode {
+            stage,
+            reason: format!("a priority Linear does not have: {priority}"),
+        })?,
+        estimate: i.get("estimate").and_then(Value::as_f64).map(whole),
+        due: opt_str_at(i, "dueDate"),
+        assignee_name: display(&i["assignee"]),
+        delegate_name: display(&i["delegate"]),
+        creator: display(&i["creator"]),
+        project: opt_str_at(&i["project"], "name"),
+        milestone: opt_str_at(&i["projectMilestone"], "name"),
+        cycle: i["cycle"].get("number").and_then(Value::as_f64).map(whole),
+        links: names(&i["attachments"], "url")?,
+        subscribers: names(&i["subscribers"], "displayName")?,
+        created_at: millis_at(stage, i, "createdAt")?,
+        updated_at: millis_at(stage, i, "updatedAt")?,
+        completed_at: opt_millis_at(stage, i, "completedAt")?,
+        canceled_at: opt_millis_at(stage, i, "canceledAt")?,
+        archived: opt_millis_at(stage, i, "archivedAt")?.is_some(),
+        trashed: i.get("trashed").and_then(Value::as_bool) == Some(true),
+        ..IssueDetail::default()
+    };
+    let (mut related, mut similar) = (Vec::new(), Vec::new());
+    for relation in nodes(stage, &i["relations"])? {
+        let other = str_at(stage, &relation["relatedIssue"], "identifier")?;
+        match relation.get("type").and_then(Value::as_str) {
+            Some("blocks") => detail.blocks.push(other),
+            Some("related") => related.push(other),
+            Some("similar") => similar.push(other),
+            Some("duplicate") => {
+                detail.duplicate_of.get_or_insert(other);
+            }
+            _ => {}
+        }
+    }
+    for relation in nodes(stage, &i["inverseRelations"])? {
+        let other = str_at(stage, &relation["issue"], "identifier")?;
+        match relation.get("type").and_then(Value::as_str) {
+            Some("related") => related.push(other),
+            Some("similar") => similar.push(other),
+            Some("duplicate") => detail.duplicates.push(other),
+            _ => {}
+        }
+    }
+    detail.related = once_each(related);
+    detail.similar = once_each(similar);
+    issue.detail = detail;
+    Ok(issue)
+}
+
+/// The workspace of an `Organization` reply.
+pub(crate) fn parse_organization(
+    stage: &'static str,
+    data: &Value,
+) -> Result<Organization, LinearError> {
+    let organization = &data["organization"];
+    Ok(Organization {
+        id: str_at(stage, organization, "id")?,
+        url_key: str_at(stage, organization, "urlKey")?,
+    })
+}
+
+/// One comment node as `IssueThread` selects it, on the issue whose identifier is `issue`:
+/// its uuid, and its handle's fields. Its author is the user's display name, else the name
+/// of the integration or the external user that wrote it, else no one.
+pub(crate) fn parse_thread_comment(
+    stage: &'static str,
+    c: &Value,
+    issue: &str,
+) -> Result<(String, CommentFields), LinearError> {
+    let author = opt_str_at(&c["user"], "displayName")
+        .or_else(|| opt_str_at(&c["botActor"], "name"))
+        .or_else(|| opt_str_at(&c["externalUser"], "name"));
+    Ok((
+        str_at(stage, c, "id")?,
+        CommentFields {
+            issue: issue.to_string(),
+            body: str_at(stage, c, "body")?,
+            url: str_at(stage, c, "url")?,
+            author,
+            reply_to: opt_str_at(&c["parent"], "id"),
+            resolved_at: opt_millis_at(stage, c, "resolvedAt")?,
+            created_at: millis_at(stage, c, "createdAt")?,
+            edited_at: opt_millis_at(stage, c, "editedAt")?,
+        },
+    ))
+}
+
+/// One user node as `Me` and `UserList` select it: its uuid, and its handle's fields.
+pub(crate) fn parse_user(
+    stage: &'static str,
+    u: &Value,
+) -> Result<(String, UserFields), LinearError> {
+    Ok((
+        str_at(stage, u, "id")?,
+        UserFields {
+            name: str_at(stage, u, "displayName")?,
+            full_name: str_at(stage, u, "name")?,
+            email: str_at(stage, u, "email")?,
+            app: u.get("app").and_then(Value::as_bool) == Some(true),
+        },
+    ))
+}
+
+/// One label node as `LabelList` selects it: its uuid, and its handle's fields, its group the
+/// label it sits under.
+pub(crate) fn parse_label(
+    stage: &'static str,
+    l: &Value,
+) -> Result<(String, LabelFields), LinearError> {
+    Ok((
+        str_at(stage, l, "id")?,
+        LabelFields {
+            name: str_at(stage, l, "name")?,
+            group: opt_str_at(&l["parent"], "name"),
+            team: opt_str_at(&l["team"], "key"),
+        },
+    ))
+}
+
+/// One project node as `ProjectList` selects it, its teams and milestones read whole: its
+/// uuid, and its handle's fields, the milestones in their order.
+pub(crate) fn parse_project(
+    stage: &'static str,
+    p: &Value,
+) -> Result<(String, ProjectFields), LinearError> {
+    let teams = nodes(stage, &p["teams"])?
+        .iter()
+        .map(|t| str_at(stage, t, "key"))
+        .collect::<Result<_, _>>()?;
+    let mut milestones = nodes(stage, &p["projectMilestones"])?
+        .iter()
+        .map(|m| Ok((number_at(stage, m, "sortOrder")?, str_at(stage, m, "name")?)))
+        .collect::<Result<Vec<_>, LinearError>>()?;
+    milestones.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok((
+        str_at(stage, p, "id")?,
+        ProjectFields {
+            name: str_at(stage, p, "name")?,
+            teams,
+            milestones: milestones.into_iter().map(|(_, name)| name).collect(),
+            url: str_at(stage, p, "url")?,
+        },
+    ))
+}
+
+/// One cycle node as `CycleList` selects it: its uuid, and its handle's fields.
+pub(crate) fn parse_cycle(
+    stage: &'static str,
+    c: &Value,
+) -> Result<(String, CycleFields), LinearError> {
+    Ok((
+        str_at(stage, c, "id")?,
+        CycleFields {
+            number: whole(number_at(stage, c, "number")?),
+            name: opt_str_at(c, "name"),
+            team: str_at(stage, &c["team"], "key")?,
+            starts_at: millis_at(stage, c, "startsAt")?,
+            ends_at: millis_at(stage, c, "endsAt")?,
+            active: c.get("isActive").and_then(Value::as_bool) == Some(true),
+        },
+    ))
 }
 
 /// One page of an `IssueComments` reply.
@@ -1083,6 +1695,22 @@ mod tests {
         "IssueComments",
         "Users",
         "Labels",
+        "Organization",
+        "Me",
+        "TeamList",
+        "UserList",
+        "LabelList",
+        "ProjectList",
+        "ProjectTeams",
+        "ProjectMilestones",
+        "CycleList",
+        "IssueList",
+        "IssueFull",
+        "IssueThread",
+        "IssueLabelNames",
+        "IssueOutRelations",
+        "IssueAttachments",
+        "IssueSubscribers",
         "CommentCreate",
         "CommentUpdate",
         "CommentDelete",
@@ -1132,7 +1760,27 @@ mod tests {
         let state = "1a2b3c4d-5e6f-4708-9a1b-2c3d4e5f6a7b";
         let issue = "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
         let cursor = Some("eyJpZCI6IjBmNmMxZDJlIn0=");
-        let rows: Vec<(&str, Value)> = vec![
+        // Every filter `issues` takes as the read sends them, and every key of its order, at
+        // most three to a request as Linear takes them.
+        let query = crate::reads::issue_query(
+            json!({
+                "id": ["ENG-12", issue], "team": ["ENG", "ÅÄÖ"], "state": ["Todo 🚦"],
+                "state_type": ["canceled", "started"], "priority": ["urgent", "none"],
+                "labels": ["afkd/ready", "見出し"], "without_labels": ["Hold"],
+                "assignee": ["me", "none", "chen@acme.example"], "delegate": ["陳大文"],
+                "project": ["Trackers"], "milestone": ["B"], "cycle": [3], "parent": ["ENG-1"],
+                "blocked": false, "text": "Retry \"storm\"",
+                "created_after": 1_793_000_000_000_i64, "created_before": 1_793_000_000_000_i64,
+                "updated_after": 0, "updated_before": 0, "completed_after": 0,
+                "completed_before": 0, "canceled_after": 0, "canceled_before": 0,
+                "due_after": "2026-01-01", "due_before": "2026-12-31",
+            })
+            .as_object()
+            .unwrap(),
+        )
+        .unwrap();
+        let every_filter = crate::reads::issue_filter(&query);
+        let mut rows: Vec<(&str, Value)> = vec![
             ("Viewer", json!({})),
             ("TeamByKey", team_by_key_vars("ENG")),
             ("TeamByKey", team_by_key_vars("ÅÄÖ")),
@@ -1142,7 +1790,31 @@ mod tests {
             ("Issues", parked_vars(team, "Needs Info", None)),
             ("Issues", parked_vars(team, "Väntar på svar 🚦", cursor)),
             ("Issues", last_in_state_vars(team, state)),
-            ("IssueRelations", relations_vars(issue, "eyJpZCI6InIyMCJ9")),
+            ("IssueRelations", follow_up_vars(issue, "eyJpZCI6InIyMCJ9")),
+            ("Organization", json!({})),
+            ("Me", json!({})),
+            ("TeamList", page_vars(None)),
+            ("TeamList", page_vars(cursor)),
+            ("UserList", page_vars(cursor)),
+            ("LabelList", label_list_vars(None, None)),
+            ("LabelList", label_list_vars(Some("ÅÄÖ"), cursor)),
+            ("ProjectList", project_list_vars(None, None)),
+            ("ProjectList", project_list_vars(Some("ENG"), cursor)),
+            ("ProjectTeams", follow_up_vars(issue, "p50")),
+            ("ProjectMilestones", follow_up_vars(issue, "p50")),
+            ("CycleList", cycle_list_vars(team, None)),
+            ("CycleList", cycle_list_vars(team, cursor)),
+            ("IssueFull", issue_vars(issue)),
+            ("IssueThread", thread_vars(issue, None)),
+            ("IssueThread", thread_vars(issue, cursor)),
+            ("IssueLabelNames", follow_up_vars(issue, "l20")),
+            ("IssueOutRelations", follow_up_vars(issue, "r20")),
+            ("IssueAttachments", follow_up_vars(issue, "a20")),
+            ("IssueSubscribers", follow_up_vars(issue, "s20")),
+            (
+                "IssueList",
+                issue_list_vars(&json!({}), &json!([]), false, 20, None),
+            ),
             ("IssueDescription", description_vars(issue)),
             ("IssueLabelIds", issue_label_ids_vars(issue)),
             ("IssueChildren", children_vars(issue, None)),
@@ -1209,6 +1881,13 @@ mod tests {
                 file_upload_vars("application/octet-stream", "Makefile", 0),
             ),
         ];
+        for keys in crate::reads::Sort::ALL.chunks(3) {
+            let order = crate::reads::issue_sort(keys);
+            rows.push((
+                "IssueList",
+                issue_list_vars(&every_filter, &order, true, 1, cursor),
+            ));
+        }
         for (name, vars) in &rows {
             let declared = sdl
                 .check_document(operation(name).expect("a known operation"))
@@ -1438,7 +2117,7 @@ mod tests {
         assert_eq!(*relations_after, None, "no relations page follows");
         assert_eq!(issue.title, "修复 the retry storm 🚨 — \"backoff\" resets");
         assert_eq!(issue.description, "");
-        assert_eq!(issue.state.kind, "unstarted");
+        assert_eq!(issue.state.kind, StateType::Unstarted);
         assert_eq!(issue.labels, ["afkd/ready", "Väntar på svar"]);
         assert_eq!(
             (issue.assignee.as_deref(), issue.delegate.as_deref()),
@@ -2022,8 +2701,491 @@ mod tests {
         assert_eq!(page.items[0].blockers[1].state_kind, "canceled");
         let seen = stub.captured(3);
         assert_eq!(seen[1].json()["operationName"], "IssueRelations");
-        assert_eq!(seen[1].json()["variables"], relations_vars("1", "r20"));
-        assert_eq!(seen[2].json()["variables"], relations_vars("1", "r22"));
+        assert_eq!(seen[1].json()["variables"], follow_up_vars("1", "r20"));
+        assert_eq!(seen[2].json()["variables"], follow_up_vars("1", "r22"));
+    }
+
+    /// An issue node as `IssueList` and `IssueFull` select it, every field set: wide text,
+    /// a float priority and estimate, Linear's times to the millisecond, each relation type
+    /// both ways, a trashed issue (archived too), and a bare one, every optional field
+    /// `null` and every list empty.
+    fn full_node(rich: bool) -> Value {
+        let connection = |nodes: Value| json!({"nodes": nodes, "pageInfo": {"hasNextPage": false, "endCursor": null}});
+        let user = |name: &str| json!({"id": format!("u-{name}"), "displayName": name});
+        let out =
+            |kind: &str, other: &str| json!({"type": kind, "relatedIssue": {"identifier": other}});
+        let inverse = |kind: &str, other: &str, state: &str| json!({"type": kind, "issue": {"identifier": other, "state": {"type": state}}});
+        let mut node = json!({
+            "id": "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5", "identifier": "ENG-421",
+            "title": "修复 the retry storm 🚨 — \"backoff\" resets",
+            "description": null, "url": "https://linear.app/acme/issue/ENG-421/retry-storm",
+            "branchName": "eng-421-retry-storm", "sortOrder": -12.5, "priority": 0.0,
+            "estimate": null, "dueDate": null, "createdAt": "2026-10-27T09:58:00.087Z",
+            "updatedAt": "2026-10-27T10:03:00.500Z", "completedAt": null, "canceledAt": null,
+            "archivedAt": null, "trashed": null, "team": {"key": "ENG"},
+            "state": {"id": "s1", "name": "Todo ✏️", "type": "unstarted"},
+            "assignee": null, "delegate": null, "creator": null, "project": null,
+            "projectMilestone": null, "cycle": null, "parent": null,
+            "labels": connection(json!([])), "children": connection(json!([])),
+            "relations": connection(json!([])), "inverseRelations": connection(json!([])),
+            "attachments": connection(json!([])), "subscribers": connection(json!([])),
+        });
+        if rich {
+            for (key, value) in [
+                ("description", json!("## 背景\n\nIt resets.")),
+                ("priority", json!(2.0)),
+                ("estimate", json!(3.0)),
+                ("dueDate", json!("2026-12-24")),
+                ("completedAt", json!("2026-11-01T08:00:00.000Z")),
+                ("canceledAt", json!("2026-11-02T08:00:00Z")),
+                ("archivedAt", json!("2026-11-03T08:00:00Z")),
+                ("trashed", json!(true)),
+                ("assignee", user("陳大文")),
+                ("delegate", user("vesper")),
+                ("creator", json!({"displayName": "phil"})),
+                ("project", json!({"name": "Trackers 🧭"})),
+                ("projectMilestone", json!({"name": "B — reads"})),
+                ("cycle", json!({"number": 12.0})),
+                ("parent", json!({"identifier": "ENG-400", "title": "Epic"})),
+                (
+                    "labels",
+                    connection(json!([{"name": "afkd/ready"}, {"name": "Väntar på svar"}])),
+                ),
+                (
+                    "relations",
+                    connection(json!([
+                        out("blocks", "ENG-500"),
+                        out("related", "ENG-12"),
+                        out("similar", "ENG-13"),
+                        out("duplicate", "ENG-14"),
+                        out("duplicate", "ENG-15"),
+                        out("related", "ENG-16"),
+                    ])),
+                ),
+                (
+                    "inverseRelations",
+                    connection(json!([
+                        inverse("blocks", "ENG-399", "started"),
+                        inverse("related", "ENG-12", "backlog"),
+                        inverse("related", "ENG-17", "backlog"),
+                        inverse("similar", "ENG-18", "completed"),
+                        inverse("duplicate", "ENG-19", "canceled"),
+                    ])),
+                ),
+                (
+                    "attachments",
+                    connection(json!([{"url": "https://github.com/acme/widgets/pull/42"}])),
+                ),
+                (
+                    "subscribers",
+                    connection(json!([{"displayName": "phil"}, {"displayName": "陳大文"}])),
+                ),
+            ] {
+                node[key] = value;
+            }
+        }
+        node
+    }
+
+    /// A full issue node reads every field of the handle: the detail, the family and each
+    /// relation both ways — its own relations first and each related or similar issue once —
+    /// and a bare one reads `None` and empty lists. A priority Linear does not have, a state
+    /// type it does not document and a time that is none are undecodable.
+    #[test]
+    fn a_full_issue_reads_every_field_and_every_relation_both_ways() {
+        let issue = parse_full_issue("read issues", &full_node(true)).unwrap();
+        assert_eq!(issue.description, "## 背景\n\nIt resets.");
+        assert_eq!(issue.labels, ["afkd/ready", "Väntar på svar"]);
+        assert_eq!(
+            issue.parent.as_ref().map(|p| p.identifier.as_str()),
+            Some("ENG-400")
+        );
+        assert_eq!(
+            issue.blockers,
+            [Blocker {
+                identifier: "ENG-399".into(),
+                state_kind: "started".into()
+            }]
+        );
+        let ms = |t: &str| {
+            parse_rfc3339_millis(t)
+                .unwrap()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        assert_eq!(
+            issue.detail,
+            IssueDetail {
+                team: "ENG".into(),
+                branch: "eng-421-retry-storm".into(),
+                priority: Priority::High,
+                estimate: Some(3),
+                due: Some("2026-12-24".into()),
+                assignee_name: Some("陳大文".into()),
+                delegate_name: Some("vesper".into()),
+                creator: Some("phil".into()),
+                project: Some("Trackers 🧭".into()),
+                milestone: Some("B — reads".into()),
+                cycle: Some(12),
+                blocks: vec!["ENG-500".into()],
+                related: vec!["ENG-12".into(), "ENG-16".into(), "ENG-17".into()],
+                similar: vec!["ENG-13".into(), "ENG-18".into()],
+                duplicates: vec!["ENG-19".into()],
+                duplicate_of: Some("ENG-14".into()),
+                links: vec!["https://github.com/acme/widgets/pull/42".into()],
+                subscribers: vec!["phil".into(), "陳大文".into()],
+                created_at: 1_793_095_080_087,
+                updated_at: 1_793_095_380_500,
+                completed_at: Some(ms("2026-11-01T08:00:00Z")),
+                canceled_at: Some(ms("2026-11-02T08:00:00Z")),
+                archived: true,
+                trashed: true,
+            }
+        );
+
+        let bare = parse_full_issue("read issues", &full_node(false)).unwrap();
+        assert_eq!(bare.description, "");
+        assert_eq!(bare.parent, None);
+        assert_eq!(
+            bare.detail,
+            IssueDetail {
+                team: "ENG".into(),
+                branch: "eng-421-retry-storm".into(),
+                created_at: 1_793_095_080_087,
+                updated_at: 1_793_095_380_500,
+                ..IssueDetail::default()
+            }
+        );
+
+        for (key, value, reason) in [
+            ("priority", json!(5.0), "a priority Linear does not have: 5"),
+            (
+                "priority",
+                json!(1.5),
+                "a priority Linear does not have: 1.5",
+            ),
+            (
+                "state",
+                json!({"id": "s", "name": "Paused", "type": "paused"}),
+                "a workflow state of a type Linear does not document: \"paused\"",
+            ),
+            (
+                "createdAt",
+                json!("yesterday"),
+                "no readable time `createdAt`",
+            ),
+            ("updatedAt", Value::Null, "no time `updatedAt`"),
+        ] {
+            let mut node = full_node(true);
+            node[key] = value;
+            assert_eq!(
+                parse_full_issue("read issues", &node).unwrap_err(),
+                LinearError::Decode {
+                    stage: "read issues",
+                    reason: reason.into()
+                },
+                "{key}"
+            );
+        }
+        let mut duplicate = full_node(false);
+        duplicate["state"] = json!({"id": "s", "name": "Duplicate", "type": "duplicate"});
+        assert_eq!(
+            parse_full_issue("read issues", &duplicate)
+                .unwrap()
+                .state
+                .kind,
+            StateType::Canceled,
+            "a duplicate state reads as canceled"
+        );
+    }
+
+    /// The other nodes a read selects read as their handles' fields: a comment by a user, an
+    /// integration and an external user, and one Linear names no author for; a user, an app;
+    /// a label in a group and a workspace one; a project, its milestones in their order; and
+    /// a cycle with no name.
+    #[test]
+    fn the_read_nodes_read_as_their_handles_fields() {
+        let comment = |who: Value| {
+            let mut c = json!({"id": "c1", "body": "看起来不对 🚨\n\n```\nx\n```",
+                               "url": "https://linear.app/acme/issue/ENG-7#comment-c1",
+                               "createdAt": "2026-10-27T09:58:00.087Z", "editedAt": null,
+                               "resolvedAt": "2026-10-27T10:00:00Z", "parent": {"id": "c0"},
+                               "user": null, "botActor": null, "externalUser": null});
+            for (k, v) in who.as_object().unwrap() {
+                c[k] = v.clone();
+            }
+            parse_thread_comment("read comments", &c, "ENG-7").unwrap()
+        };
+        let (id, fields) = comment(json!({"user": {"displayName": "chen"}}));
+        assert_eq!(id, "c1");
+        assert_eq!(
+            fields,
+            CommentFields {
+                issue: "ENG-7".into(),
+                body: "看起来不对 🚨\n\n```\nx\n```".into(),
+                url: "https://linear.app/acme/issue/ENG-7#comment-c1".into(),
+                author: Some("chen".into()),
+                reply_to: Some("c0".into()),
+                resolved_at: Some(1_793_095_200_000),
+                created_at: 1_793_095_080_087,
+                edited_at: None,
+            }
+        );
+        assert_eq!(
+            comment(json!({"botActor": {"name": "Zapier"}}))
+                .1
+                .author
+                .as_deref(),
+            Some("Zapier")
+        );
+        assert_eq!(
+            comment(json!({"externalUser": {"name": "Álvaro (Slack)"}}))
+                .1
+                .author
+                .as_deref(),
+            Some("Álvaro (Slack)")
+        );
+        assert_eq!(comment(json!({})).1.author, None);
+
+        assert_eq!(
+            parse_user(
+                "read users",
+                &json!({"id": "u1", "name": "陳大文", "displayName": "chen",
+                        "email": "chen@acme.example", "app": false})
+            )
+            .unwrap(),
+            (
+                "u1".to_string(),
+                UserFields {
+                    name: "chen".into(),
+                    full_name: "陳大文".into(),
+                    email: "chen@acme.example".into(),
+                    app: false
+                }
+            )
+        );
+        assert!(
+            parse_user(
+                "read users",
+                &json!({"id": "u2", "name": "afkd", "displayName": "afkd", "email": "a@o.example",
+                        "app": true})
+            )
+            .unwrap()
+            .1
+            .app
+        );
+        assert_eq!(
+            parse_label(
+                "read labels",
+                &json!({"id": "l1", "name": "Bug 🐛", "team": {"key": "ENG"},
+                        "parent": {"name": "Type"}})
+            )
+            .unwrap()
+            .1,
+            LabelFields {
+                name: "Bug 🐛".into(),
+                group: Some("Type".into()),
+                team: Some("ENG".into())
+            }
+        );
+        assert_eq!(
+            parse_label(
+                "read labels",
+                &json!({"id": "l2", "name": "afkd/ready", "team": null, "parent": null})
+            )
+            .unwrap()
+            .1,
+            LabelFields {
+                name: "afkd/ready".into(),
+                group: None,
+                team: None
+            }
+        );
+        let connection = |nodes: Value| json!({"nodes": nodes, "pageInfo": {"hasNextPage": false, "endCursor": null}});
+        assert_eq!(
+            parse_project(
+                "read projects",
+                &json!({"id": "p1", "name": "Trackers 🧭",
+                "url": "https://linear.app/acme/project/p1",
+                "teams": connection(json!([{"key": "ENG"}, {"key": "OPS"}])),
+                "projectMilestones": connection(json!([
+                    {"name": "C", "sortOrder": 30.0}, {"name": "A", "sortOrder": -1.5},
+                    {"name": "B", "sortOrder": 2.0},
+                ]))})
+            )
+            .unwrap()
+            .1,
+            ProjectFields {
+                name: "Trackers 🧭".into(),
+                teams: vec!["ENG".into(), "OPS".into()],
+                milestones: vec!["A".into(), "B".into(), "C".into()],
+                url: "https://linear.app/acme/project/p1".into(),
+            }
+        );
+        assert_eq!(
+            parse_cycle(
+                "read cycles",
+                &json!({"id": "y1", "number": 12.0, "name": null, "team": {"key": "ENG"},
+                        "startsAt": "2026-10-26T00:00:00.000Z", "endsAt": "2026-11-09T00:00:00Z",
+                        "isActive": true})
+            )
+            .unwrap()
+            .1,
+            CycleFields {
+                number: 12,
+                name: None,
+                team: "ENG".into(),
+                starts_at: 1_792_972_800_000,
+                ends_at: 1_794_182_400_000,
+                active: true,
+            }
+        );
+        assert_eq!(
+            parse_organization(
+                "read organization",
+                &json!({"organization": {"id": "o1", "urlKey": "acme"}})
+            )
+            .unwrap(),
+            Organization {
+                id: "o1".into(),
+                url_key: "acme".into()
+            }
+        );
+    }
+
+    /// A full issue whose nested lists run past the 20 its read selects has each read on from
+    /// its cursor to the last page, by the document that reads it, 50 to the page; a list
+    /// with no next page costs no read.
+    #[test]
+    fn a_full_issues_nested_lists_are_read_to_their_last_page() {
+        let page = |nodes: Value, next: Option<&str>| json!({"nodes": nodes, "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next}});
+        let mut node = full_node(false);
+        node["labels"] = page(json!([{"name": "l1"}]), Some("l20"));
+        node["subscribers"] = page(json!([{"displayName": "phil"}]), Some("s20"));
+        let reply = |root: &str, field: &str, connection: Value| {
+            http(
+                200,
+                "",
+                &json!({"data": {root: {field: connection}}}).to_string(),
+            )
+        };
+        let stub = Stub::serve(vec![
+            http(200, "", &json!({"data": {"issue": node}}).to_string()),
+            reply(
+                "issue",
+                "labels",
+                page(json!([{"name": "l2"}]), Some("l70")),
+            ),
+            reply("issue", "labels", page(json!([{"name": "l3 🏷"}]), None)),
+            reply(
+                "issue",
+                "subscribers",
+                page(json!([{"displayName": "陳大文"}]), None),
+            ),
+        ]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        let issue = client.issue_full("i-421").unwrap();
+        assert_eq!(issue.labels, ["l1", "l2", "l3 🏷"]);
+        assert_eq!(issue.detail.subscribers, ["phil", "陳大文"]);
+        let seen = stub.captured(4);
+        let sent: Vec<(String, Value)> = seen
+            .iter()
+            .map(|r| {
+                (
+                    r.json()["operationName"].as_str().unwrap().to_string(),
+                    r.json()["variables"].clone(),
+                )
+            })
+            .collect();
+        let id = "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+        assert_eq!(
+            sent,
+            [
+                ("IssueFull".to_string(), issue_vars("i-421")),
+                ("IssueLabelNames".to_string(), follow_up_vars(id, "l20")),
+                ("IssueLabelNames".to_string(), follow_up_vars(id, "l70")),
+                ("IssueSubscribers".to_string(), follow_up_vars(id, "s20")),
+            ]
+        );
+    }
+
+    /// A project whose milestones run past the 50 its list selects has the rest read before
+    /// its milestones are ordered.
+    #[test]
+    fn a_projects_milestones_are_read_to_their_last_page() {
+        let page = |nodes: Value, next: Option<&str>| json!({"nodes": nodes, "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next}});
+        let projects = json!({"data": {"projects": page(json!([{
+            "id": "p1", "name": "Trackers", "url": "https://linear.app/acme/project/p1",
+            "teams": page(json!([{"key": "ENG"}]), None),
+            "projectMilestones": page(json!([{"name": "B", "sortOrder": 2.0}]), Some("m50")),
+        }]), None)}});
+        let stub = Stub::serve(vec![
+            http(200, "", &projects.to_string()),
+            http(
+                200,
+                "",
+                &json!({"data": {"project": {"projectMilestones":
+                    page(json!([{"name": "A", "sortOrder": 1.0}]), None)}}})
+                .to_string(),
+            ),
+        ]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        let projects = client.project_list(Some("ENG")).unwrap();
+        assert_eq!(projects[0].1.milestones, ["A", "B"]);
+        let seen = stub.captured(2);
+        assert_eq!(
+            seen[0].json()["variables"],
+            project_list_vars(Some("ENG"), None)
+        );
+        assert_eq!(seen[1].json()["operationName"], "ProjectMilestones");
+        assert_eq!(seen[1].json()["variables"], follow_up_vars("p1", "m50"));
+    }
+
+    /// A retrying client sends a request Linear rate limited again after the `Retry-After` it
+    /// named, within the call's deadline, and answers; one whose wait would pass the deadline
+    /// is the request's error at once, unsent again. A client that does not retry, the
+    /// kind's own, sends once.
+    #[test]
+    fn a_retrying_client_waits_out_a_rate_limit_within_the_deadline() {
+        let limited = http(
+            429,
+            "Retry-After: 0\r\n",
+            r#"{"errors":[{"message":"Rate limit exceeded","extensions":{"code":"RATELIMITED"}}]}"#,
+        );
+        let org = http(
+            200,
+            "",
+            r#"{"data":{"organization":{"id":"o1","urlKey":"acme"}}}"#,
+        );
+        let stub = Stub::serve(vec![limited.clone(), limited.clone(), org]);
+        let client = stub.client(AuthConfig::ApiKey("k".into())).retrying();
+        client.set_call_deadline(Some(Instant::now() + Duration::from_secs(30)));
+        assert_eq!(client.organization().unwrap().url_key, "acme");
+        assert_eq!(stub.captured(3).len(), 3, "two refusals, then the answer");
+
+        let far = http(
+            429,
+            "Retry-After: 60\r\n",
+            r#"{"errors":[{"message":"Rate limit exceeded","extensions":{"code":"RATELIMITED"}}]}"#,
+        );
+        let stub = Stub::serve(vec![far]);
+        let client = stub.client(AuthConfig::ApiKey("k".into())).retrying();
+        client.set_call_deadline(Some(Instant::now() + Duration::from_secs(30)));
+        let started = Instant::now();
+        let e = client.organization().unwrap_err();
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(60)));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "no wait was taken"
+        );
+        assert_eq!(stub.captured(1).len(), 1);
+
+        let stub = Stub::serve(vec![limited]);
+        let client = stub.client(AuthConfig::ApiKey("k".into()));
+        client.set_call_deadline(Some(Instant::now() + Duration::from_secs(30)));
+        assert!(client.organization().unwrap_err().transient());
+        assert_eq!(stub.captured(1).len(), 1, "the kind's client sends once");
     }
 
     /// A description is read as Linear holds it, `""` for none; sub-issues are read to the

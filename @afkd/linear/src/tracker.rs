@@ -13,8 +13,18 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
+use serde::{Deserialize, Serialize};
+
 use crate::file::Upload;
 use crate::settings::MemberRef;
+
+/// The workspace a credential reaches: its organization's uuid, which a handle's key carries,
+/// and its url key (`acme` in `linear.app/acme`), which a person knows it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Organization {
+    pub(crate) id: String,
+    pub(crate) url_key: String,
+}
 
 /// A team, as `team` names it by key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,13 +34,96 @@ pub(crate) struct Team {
 }
 
 /// A workflow state of a team: what `pick_from` names, and what an issue sits in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct State {
     pub(crate) id: String,
     pub(crate) name: String,
-    /// Linear's category for it: `triage`, `backlog`, `unstarted`, `started`, `completed`,
-    /// `canceled` or `duplicate`.
-    pub(crate) kind: String,
+    /// Linear's category for it.
+    pub(crate) kind: StateType,
+    /// Its place in the team's workflow, as `States` reads it: 0 where a read selects none.
+    pub(crate) position: f64,
+}
+
+/// The category of a workflow state, as `linear.State_Type` names it. Linear's `duplicate`
+/// reads as [`Canceled`](Self::Canceled): an issue closed as a duplicate is closed unfinished,
+/// and the handle's enum has no member of its own for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum StateType {
+    Triage,
+    Backlog,
+    Unstarted,
+    Started,
+    Completed,
+    Canceled,
+}
+
+impl StateType {
+    /// The category Linear's `type` names, or `None` for one outside the seven it documents.
+    pub(crate) fn from_linear(kind: &str) -> Option<Self> {
+        Some(match kind {
+            "triage" => StateType::Triage,
+            "backlog" => StateType::Backlog,
+            "unstarted" => StateType::Unstarted,
+            "started" => StateType::Started,
+            "completed" => StateType::Completed,
+            "canceled" | "duplicate" => StateType::Canceled,
+            _ => return None,
+        })
+    }
+
+    /// The `type`s Linear writes for it: one each, and `canceled` with `duplicate`.
+    pub(crate) fn linear_types(self) -> &'static [&'static str] {
+        match self {
+            StateType::Triage => &["triage"],
+            StateType::Backlog => &["backlog"],
+            StateType::Unstarted => &["unstarted"],
+            StateType::Started => &["started"],
+            StateType::Completed => &["completed"],
+            StateType::Canceled => &["canceled", "duplicate"],
+        }
+    }
+}
+
+/// An issue's priority, as `linear.Priority` names it: Linear's 0 to 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Priority {
+    #[default]
+    None,
+    Urgent,
+    High,
+    Medium,
+    Low,
+}
+
+impl Priority {
+    /// Every priority, in Linear's order, 0 first.
+    const ALL: [Priority; 5] = [
+        Priority::None,
+        Priority::Urgent,
+        Priority::High,
+        Priority::Medium,
+        Priority::Low,
+    ];
+
+    /// The priority Linear's number names, or `None` for one that is not 0 to 4.
+    pub(crate) fn from_linear(value: f64) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|p| f64::from(p.linear()) == value)
+    }
+
+    /// Linear's number for it.
+    pub(crate) fn linear(self) -> u8 {
+        match self {
+            Priority::None => 0,
+            Priority::Urgent => 1,
+            Priority::High => 2,
+            Priority::Medium => 3,
+            Priority::Low => 4,
+        }
+    }
 }
 
 /// An issue: the unit of work the kind turns into a run.
@@ -64,6 +157,61 @@ pub(crate) struct Issue {
     pub(crate) blockers: Vec<Blocker>,
     /// Its place in its state's manual order: what a put-back to the bottom goes past.
     pub(crate) sort_order: f64,
+    /// What a full read of it knows beyond the claim's scan.
+    pub(crate) detail: IssueDetail,
+}
+
+/// What a full read of an issue ([`Tracker::issue_full`]) knows beyond the claim's scan: the
+/// fields of a `linear.Issue` handle the scan's `Issues` page does not select. Empty for an
+/// issue only the scan read.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct IssueDetail {
+    /// Its team's key.
+    pub(crate) team: String,
+    /// Linear's git branch name for it.
+    pub(crate) branch: String,
+    pub(crate) priority: Priority,
+    pub(crate) estimate: Option<i64>,
+    /// Its due date, `YYYY-MM-DD`.
+    pub(crate) due: Option<String>,
+    /// The display name of the user it is assigned to.
+    pub(crate) assignee_name: Option<String>,
+    /// The display name of the user it is delegated to.
+    pub(crate) delegate_name: Option<String>,
+    /// The display name of whoever filed it; `None` for an issue an integration filed.
+    pub(crate) creator: Option<String>,
+    /// Its project's name.
+    pub(crate) project: Option<String>,
+    /// Its project milestone's name.
+    pub(crate) milestone: Option<String>,
+    /// Its cycle's number.
+    pub(crate) cycle: Option<i64>,
+    /// The identifiers of the issues it blocks.
+    pub(crate) blocks: Vec<String>,
+    /// The identifiers of the issues related to it, either way.
+    pub(crate) related: Vec<String>,
+    /// The identifiers of the issues similar to it, either way.
+    pub(crate) similar: Vec<String>,
+    /// The identifiers of the issues marked duplicates of it.
+    pub(crate) duplicates: Vec<String>,
+    /// The identifier of the issue it is marked a duplicate of.
+    pub(crate) duplicate_of: Option<String>,
+    /// The urls of its links, Linear's attachments.
+    pub(crate) links: Vec<String>,
+    /// The display names of its subscribers.
+    pub(crate) subscribers: Vec<String>,
+    /// When it was filed, in unix milliseconds.
+    pub(crate) created_at: u64,
+    /// When it last changed, in unix milliseconds.
+    pub(crate) updated_at: u64,
+    /// When it was completed, in unix milliseconds.
+    pub(crate) completed_at: Option<u64>,
+    /// When it was canceled, in unix milliseconds.
+    pub(crate) canceled_at: Option<u64>,
+    /// Whether it is archived; a trashed issue is too.
+    pub(crate) archived: bool,
+    /// Whether it is in the trash.
+    pub(crate) trashed: bool,
 }
 
 /// An issue another one names: its identifier and title.
@@ -257,6 +405,12 @@ pub(crate) trait Tracker {
     /// The id of whoever the credential authenticates as: the API key's user, or the app.
     fn viewer(&self) -> Result<String, LinearError>;
 
+    /// The workspace the credential reaches.
+    fn organization(&self) -> Result<Organization, LinearError>;
+
+    /// Issue `issue_id` read whole: every field of its handle, each nested list to its end.
+    fn issue_full(&self, issue_id: &str) -> Result<Issue, LinearError>;
+
     /// The team whose key is `key`.
     fn resolve_team(&self, key: &str) -> Result<Team, LinearError>;
 
@@ -374,6 +528,12 @@ impl<T: Tracker + ?Sized> Tracker for std::sync::Arc<T> {
     fn viewer(&self) -> Result<String, LinearError> {
         (**self).viewer()
     }
+    fn organization(&self) -> Result<Organization, LinearError> {
+        (**self).organization()
+    }
+    fn issue_full(&self, issue_id: &str) -> Result<Issue, LinearError> {
+        (**self).issue_full(issue_id)
+    }
     fn resolve_team(&self, key: &str) -> Result<Team, LinearError> {
         (**self).resolve_team(key)
     }
@@ -469,7 +629,7 @@ impl<T: Tracker + ?Sized> Tracker for std::sync::Arc<T> {
 }
 
 #[cfg(test)]
-pub(crate) use mock::{Action, MockTracker, MOCK_UPLOADS, SELF_ID, TEAM_ID};
+pub(crate) use mock::{Action, MockTracker, FILED_AT, MOCK_UPLOADS, SELF_ID, TEAM_ID};
 
 #[cfg(test)]
 mod mock {
@@ -485,6 +645,15 @@ mod mock {
 
     /// The one team's id; its key is `ENG`.
     pub(crate) const TEAM_ID: &str = "team-eng";
+
+    /// The mock's workspace: its organization's id.
+    pub(crate) const MOCK_ORG_ID: &str = "mock-org";
+
+    /// The mock's workspace: its url key.
+    pub(crate) const MOCK_URL_KEY: &str = "acme";
+
+    /// When every issue the mock holds was filed and last changed, in unix milliseconds.
+    pub(crate) const FILED_AT: u64 = 1_793_000_000_000;
 
     /// Where the mock's files live: every asset url it hands out, and every one it fetches.
     pub(crate) const MOCK_UPLOADS: &str = "https://uploads.linear.app/";
@@ -573,12 +742,16 @@ mod mock {
             Self::default()
         }
 
-        /// Add a workflow state of the category `kind`; its name doubles as its id.
+        /// Add a workflow state of the category `kind`, after every state seeded before it;
+        /// its name doubles as its id.
         pub(crate) fn add_state(&self, name: &str, kind: &str) {
-            lock(&self.states).push(State {
+            let mut states = lock(&self.states);
+            let position = states.len() as f64;
+            states.push(State {
                 id: name.to_string(),
                 name: name.to_string(),
-                kind: kind.to_string(),
+                kind: StateType::from_linear(kind).expect("a Linear state type"),
+                position,
             });
         }
 
@@ -607,6 +780,13 @@ mod mock {
                     children: Vec::new(),
                     blockers: Vec::new(),
                     sort_order,
+                    detail: IssueDetail {
+                        team: "ENG".to_string(),
+                        branch: identifier.to_lowercase(),
+                        created_at: FILED_AT,
+                        updated_at: FILED_AT,
+                        ..IssueDetail::default()
+                    },
                 },
                 comments: Vec::new(),
                 archived: false,
@@ -800,6 +980,14 @@ mod mock {
         }
     }
 
+    /// `issue` as the claim's scan reads it: with no detail, which only a full read selects.
+    fn scanned(issue: &Issue) -> Issue {
+        Issue {
+            detail: IssueDetail::default(),
+            ..issue.clone()
+        }
+    }
+
     /// Linear's not-found error, for the entity `what`.
     fn not_found(stage: &'static str, what: &str) -> LinearError {
         LinearError::NotFound {
@@ -812,6 +1000,19 @@ mod mock {
         fn viewer(&self) -> Result<String, LinearError> {
             self.guard("viewer")?;
             Ok(SELF_ID.to_string())
+        }
+
+        fn organization(&self) -> Result<Organization, LinearError> {
+            self.guard("read organization")?;
+            Ok(Organization {
+                id: MOCK_ORG_ID.to_string(),
+                url_key: MOCK_URL_KEY.to_string(),
+            })
+        }
+
+        fn issue_full(&self, issue_id: &str) -> Result<Issue, LinearError> {
+            self.guard("read issue")?;
+            self.issue_mut(issue_id, "read issue", |s| s.issue.clone())
         }
 
         fn resolve_team(&self, key: &str) -> Result<Team, LinearError> {
@@ -843,7 +1044,7 @@ mod mock {
             let mut issues: Vec<Issue> = lock(&self.issues)
                 .iter()
                 .filter(|s| s.issue.state.id == state_id && !s.archived)
-                .map(|s| s.issue.clone())
+                .map(|s| scanned(&s.issue))
                 .collect();
             issues.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
             let from: usize = after.map_or(0, |a| a.parse().expect("a mock cursor"));
@@ -863,7 +1064,7 @@ mod mock {
             Ok(lock(&self.issues)
                 .iter()
                 .filter(|s| !s.archived && s.issue.labels.iter().any(|l| l == label))
-                .map(|s| s.issue.clone())
+                .map(|s| scanned(&s.issue))
                 .collect())
         }
 
@@ -1216,6 +1417,50 @@ mod mock {
             "linear resolve state: no workflow state named 'Doing' in team ENG"
         );
         assert_eq!(not_found("s", "Issue").retry_after(), None);
+    }
+
+    /// Linear's seven state types read as the handle's six, `duplicate` as `canceled`, and
+    /// `canceled` filters on both; an eighth reads as none. A priority is 0 to 4 and nothing
+    /// else, each back to its own number.
+    #[test]
+    fn a_state_type_and_a_priority_read_as_linear_writes_them() {
+        for (linear, read) in [
+            ("triage", StateType::Triage),
+            ("backlog", StateType::Backlog),
+            ("unstarted", StateType::Unstarted),
+            ("started", StateType::Started),
+            ("completed", StateType::Completed),
+            ("canceled", StateType::Canceled),
+            ("duplicate", StateType::Canceled),
+        ] {
+            assert_eq!(StateType::from_linear(linear), Some(read), "{linear}");
+            assert!(read.linear_types().contains(&linear), "{linear}");
+        }
+        assert_eq!(
+            StateType::Canceled.linear_types(),
+            ["canceled", "duplicate"]
+        );
+        for unknown in ["paused", "Started", ""] {
+            assert_eq!(StateType::from_linear(unknown), None, "{unknown}");
+        }
+        assert_eq!(
+            serde_json::to_value([StateType::Unstarted, StateType::Canceled]).unwrap(),
+            serde_json::json!(["unstarted", "canceled"])
+        );
+        for (number, priority, name) in [
+            (0.0, Priority::None, "none"),
+            (1.0, Priority::Urgent, "urgent"),
+            (2.0, Priority::High, "high"),
+            (3.0, Priority::Medium, "medium"),
+            (4.0, Priority::Low, "low"),
+        ] {
+            assert_eq!(Priority::from_linear(number), Some(priority));
+            assert_eq!(f64::from(priority.linear()), number);
+            assert_eq!(serde_json::to_value(priority).unwrap(), name);
+        }
+        for odd in [5.0, -1.0, 1.5, f64::NAN] {
+            assert_eq!(Priority::from_linear(odd), None, "{odd}");
+        }
     }
 
     /// The mock answers a state's issues a page at a time, in manual order.

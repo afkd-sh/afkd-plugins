@@ -12,8 +12,8 @@
 //! delegate taken off, a new issue, an archive — goes the way the kind's own writes go: in
 //! order behind the issue's earlier ones, and retried by the
 //! [`Outbox`](crate::outbox::Outbox) when Linear cannot take it.
-//! A read cannot hand a value back, since a plugin exposes none, so it writes what it read
-//! to the absolute path `to`: now or refused, never queued.
+//! These reads write what they read to the absolute path `to`, now or refused, never
+//! queued; the workspace reads in [`crate::reads`] hand theirs back.
 //!
 //! A comment or a description can carry files: `files` names them by absolute path, each is
 //! read when the slot calls and put up when the write lands, and the text goes out with each
@@ -23,7 +23,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::common::Diag;
+use crate::common::{write_whole, Diag};
 use crate::file::{self, Upload};
 use crate::issue::{is_control_marker, render_comments, sub_issue_line, SelfIds, ACTION_TAG};
 use crate::outbox::named;
@@ -174,20 +174,26 @@ pub(crate) fn from_call(action: &str, args: &Map<String, Value>) -> Result<Call,
     if !ACTIONS.contains(&action) {
         return Err(format!("no action `{action}`"));
     }
-    let key = match args.get(HANDLE) {
-        Some(Value::Object(handle)) => handle.get("key").and_then(Value::as_str),
-        Some(_) => None,
-        None => return Err(format!("{action}: parameter {HANDLE} is required")),
-    };
-    let Some(key) = key else {
-        return Err(format!(
-            "{action}: parameter {HANDLE} must be an item handle"
-        ));
-    };
     Ok(Call {
-        key: key.to_string(),
+        key: handle_key(action, args, HANDLE)?.to_string(),
         op: decode(action, args)?,
     })
+}
+
+/// The key the handle `action` was passed as its argument `param` carries, as afkd sends a
+/// handle, `{"id":…,"key":…}`, or the sentence refusing an argument that is missing or no
+/// handle.
+pub(crate) fn handle_key<'a>(
+    action: &str,
+    args: &'a Map<String, Value>,
+    param: &str,
+) -> Result<&'a str, String> {
+    match args.get(param) {
+        Some(Value::Object(handle)) => handle.get("key").and_then(Value::as_str),
+        Some(_) => None,
+        None => return Err(format!("{action}: parameter {param} is required")),
+    }
+    .ok_or_else(|| format!("{action}: parameter {param} must be an item handle"))
 }
 
 /// What `action` asks for with `args`, its handle aside.
@@ -247,7 +253,11 @@ fn decode(action: &str, args: &Map<String, Value>) -> Result<Op, String> {
 }
 
 /// The string argument `param` of `action`, or the sentence refusing its absence or type.
-fn string(action: &str, args: &Map<String, Value>, param: &str) -> Result<String, String> {
+pub(crate) fn string(
+    action: &str,
+    args: &Map<String, Value>,
+    param: &str,
+) -> Result<String, String> {
     match args.get(param) {
         Some(Value::String(value)) => Ok(value.clone()),
         Some(_) => Err(format!("{action}: parameter {param} must be a string")),
@@ -387,9 +397,9 @@ pub(crate) fn action_line(action: &IssueAction, team: &Team, issue: &Issue) -> S
 }
 
 /// Do `read` of `issue` now, and write what it read to the absolute path `to`, its comments
-/// rendered as the brief renders them for a reader whose own ids are `me`. The text goes to
-/// a temp file beside `to` and is renamed onto it, so `to` never holds part of it; a missing
-/// parent directory is an error, not created.
+/// rendered as the brief renders them for a reader whose own ids are `me`. The text is
+/// written whole ([`write_whole`]), so `to` never holds part of it; a missing parent
+/// directory is an error, not created.
 pub(crate) fn read(
     tracker: &dyn Tracker,
     issue: &Issue,
@@ -403,9 +413,9 @@ pub(crate) fn read(
     if !dest.is_absolute() {
         return Err(format!("{action}: to must be absolute, not {to:?}"));
     }
-    let Some(file) = dest.file_name() else {
+    if dest.file_name().is_none() {
         return Err(format!("{action}: to names no file: {to}"));
-    };
+    }
     let (text, what) = match read {
         Read::Comments => {
             let mut thread = tracker
@@ -442,17 +452,8 @@ pub(crate) fn read(
             )
         }
     };
-    let temp = dest.with_file_name(format!(
-        ".{}.afkd-linear-{}",
-        file.to_string_lossy(),
-        std::process::id()
-    ));
-    std::fs::write(&temp, &text)
-        .and_then(|()| std::fs::rename(&temp, dest))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&temp);
-            format!("{action}: cannot write {to}: {e}")
-        })?;
+    write_whole(dest, text.as_bytes(), 0o666)
+        .map_err(|e| format!("{action}: cannot write {to}: {e}"))?;
     diag.narrate(&format!("{ACTION_TAG} writing {what}"));
     Ok(())
 }

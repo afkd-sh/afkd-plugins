@@ -4,17 +4,23 @@
 //! ([`bin_path`]).
 //!
 //! - The **install** leg installs the tree the release holds and runs one issue through it
-//!   on a real daemon with an API key, its slots reading every field the issue's handle
-//!   declares, its run reading the description and moving the issue through the plugin's
-//!   actions, and its `on_done` commenting on the finished issue; the **app** leg does the
-//!   same as an OAuth app, on a token the plugin fetched, claiming the issue nobody holds
-//!   with `require_member "me", "none"` and delegating it to the app from `on_claim`.
+//!   on a real daemon with an API key, its slots reading the fields of the issue's handle,
+//!   its run reading the issue's comments through a `linear.Workspace`, reading the
+//!   description and moving the issue through the plugin's actions, and its `on_done`
+//!   commenting on the finished issue; the **app** leg does the same as an OAuth app, on a
+//!   token the plugin fetched, claiming the issue nobody holds with
+//!   `require_member "me", "none"` and delegating it to the app from `on_claim`.
+//! - The **reads** leg runs an interval service by hand whose run reads a workspace through
+//!   children afkd starts for each call — the viewer, the teams, a team's issues, an issue's
+//!   comments and files and a file downloaded — and reads the issue again once it has moved
+//!   team, the two handles `==`.
 //! - The **files** leg runs one issue whose run puts a PNG into its description and into a
 //!   comment through `files=`, and fetches both back with `fetch_files`, byte for byte.
 //! - The **validate** legs hold `afkd validate` to a `service(linear)` that writes every
 //!   setting in both credential forms, to one whose slots call every action the plugin
-//!   declares, to refusing one without `team` or `pick_from`, and to refusing a call of an
-//!   action the plugin does not declare.
+//!   declares, to services calling every read with every parameter, to refusing one without
+//!   `team` or `pick_from`, and to refusing a call of an action the plugin does not
+//!   declare.
 //! - The **README** leg validates every `conf` fence of the plugin's README, each a whole
 //!   entry file, against the installed release, with every variable the fences read set by
 //!   [`CONFIG_ENV`].
@@ -167,6 +173,8 @@ const ASK: &str = "看起来不对 🚨 — it resets on every 401:\n\n```\nPOST
 
 /// The files, under the service's work dir, its slots write the issue's handle to.
 const FIELDS: &str = "fields.txt";
+/// The file, under the reads leg's work dir, its run writes what it read to.
+const READS: &str = "reads.txt";
 const CLAIMED: &str = "claimed.txt";
 const DONE: &str = "done.txt";
 const AUTH: &str = "auth.txt";
@@ -221,19 +229,22 @@ fn seed() -> Seeded {
 }
 
 /// The service that drives the seeded issue, `home` its work dir, its credential and any gate
-/// written as `keys`. It writes no `every`, so the cadence is afkd's default and its first
-/// beat is at once. `on_claim` writes the state it claimed from, then runs the statements
-/// `claim` holds, a line each; the run holds until the test creates
-/// `release` — bounded, so a test that never does cannot wedge it — then writes every field
-/// of the issue's handle to [`FIELDS`], a line each, and the endpoint and credential its env
-/// carries, writes the description to [`DESCRIPTION`] and moves the issue to Done through
-/// the plugin's actions; `on_done` writes the title and comments on the finished issue. It
-/// keeps every run, because [`drive_one_issue`] counts the finished run's dir, where the
-/// default `keep_runs on_fail` leaves nothing of a clean run.
-fn service(home: &Path, base_url: &str, keys: &str, claim: &str) -> String {
+/// written as `keys`, and the same credential as a `linear.Workspace`'s fields as `ws`. It
+/// writes no `every`, so the cadence is afkd's default and its first beat is at once.
+/// `on_claim` writes the state it claimed from, then runs the statements `claim` holds, a
+/// line each; the run holds until the test creates `release` — bounded, so a test that never
+/// does cannot wedge it — then writes fields of the issue's handle to [`FIELDS`], a line each,
+/// and how many comments a read of it through the workspace finds, the endpoint and
+/// credential its env carries, writes the description to [`DESCRIPTION`] and moves the issue
+/// to Done through the plugin's actions; `on_done` writes the title and comments on the
+/// finished issue. It keeps every run, because [`drive_one_issue`] counts the finished run's
+/// dir, where the default `keep_runs on_fail` leaves nothing of a clean run.
+fn service(home: &Path, base_url: &str, keys: &str, ws: &str, claim: &str) -> String {
     format!(
         r#"import "afkd"
 import "@afkd/linear"
+
+WS :: linear.Workspace{{ {ws}, base_url: "{base_url}" }}
 
 widgets :: service(linear) {{
   team      "{TEAM}"
@@ -256,10 +267,13 @@ widgets :: service(linear) {{
   work_dir "{home}"
   on_run proc(run: afkd.Run, issue: linear.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    $ echo uuid #{{issue.uuid}} >> {FIELDS}
+    $ echo workspace #{{issue.workspace}} team #{{issue.team}} >> {FIELDS}
     $ echo title #{{issue.title}} >> {FIELDS}
     $ echo url #{{issue.url}} >> {FIELDS}
-    $ echo state #{{issue.state}} >> {FIELDS}
-    $ echo parent #{{issue.parent}} >> {FIELDS}
+    $ echo state #{{issue.state}} #{{issue.state_type}} >> {FIELDS}
+    $ echo priority #{{issue.priority}} >> {FIELDS}
+    $ echo parent #{{issue.parent ?? ""}} >> {FIELDS}
     for label in issue.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
@@ -268,6 +282,12 @@ widgets :: service(linear) {{
     }}
     for blocker in issue.blocked_by {{
       $ echo blocked_by #{{blocker}} >> {FIELDS}
+    }}
+    match linear.comments(WS, issue) {{
+      .ok(comments) => {{
+        $ echo comments #{{len(comments)}} >> {FIELDS}
+      }}
+      .err(e) => fail("linear.comments: #{{e.message}}")
     }}
     $ printenv LINEAR_AUTHORIZATION > {AUTH}
     $ printenv LINEAR_API_URL > {API_URL}
@@ -393,18 +413,19 @@ fn read(path: &Path) -> String {
 }
 
 /// Drive the seeded issue through the plugin, installed in `home`, on a real daemon, its
-/// service writing `keys` and its `on_claim` running `claim` (see [`service`]): it is
-/// **claimed** (the claim comment, and `on_claim` read its state), **run** (its run dir is named for the issue, its task carries
-/// the issue and its thread whole, and `on_run` read every field of its handle, the endpoint
-/// and the credential as the plugin sent them, read its description and moved it to Done
-/// through the plugin) and **finished** (the `[afkd-ran]` watermark posted, the claim
-/// released, and `on_done` read its title and commented on it through the plugin), and the
-/// daemon then drains clean.
+/// service writing `keys`, its workspace `ws` and its `on_claim` running `claim` (see
+/// [`service`]): it is **claimed** (the claim comment, and `on_claim` read its state),
+/// **run** (its run dir is named for the issue, its task carries the issue and its thread
+/// whole, and `on_run` read the fields of its handle, the endpoint and the credential as the
+/// plugin sent them, read its comments through the workspace and its description, and moved
+/// it to Done through the plugin) and **finished** (the `[afkd-ran]` watermark posted, the
+/// claim released, and `on_done` read its title and commented on it through the plugin), and
+/// the daemon then drains clean.
 /// Returns the seeded team, for the leg's own checks.
-fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
+fn drive_one_issue(home: &Path, keys: &str, ws: &str, claim: &str) -> Seeded {
     let seeded = seed();
     let (fake, issue) = (&seeded.fake, seeded.issue.as_str());
-    write_config(home, &service(home, fake.base_url(), keys, claim));
+    write_config(home, &service(home, fake.base_url(), keys, ws, claim));
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
 
@@ -471,12 +492,14 @@ fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
     assert_eq!(run_dirs(home).len(), 1, "one run, never claimed again");
     assert_eq!(read(&home.join(CLAIMED)), "claimed Todo\n");
     assert_eq!(read(&home.join(DONE)), format!("done {TITLE}\n"));
-    // Every field verbatim — the `$` lines shell-quote what they interpolate.
+    // Every field verbatim — the `$` lines shell-quote what they interpolate. The thread a
+    // read finds is Chen's question and the claim.
     assert_eq!(
         read(&home.join(FIELDS)),
         format!(
-            "title {TITLE}\nurl {}\nstate Todo\nparent {}\nlabel afkd/ready\nlabel Väntar på \
-             svar\nsub {}\nblocked_by {}\n",
+            "uuid {issue}\nworkspace acme team ENG\ntitle {TITLE}\nurl {}\n\
+             state Todo unstarted\npriority none\nparent {}\nlabel afkd/ready\n\
+             label Väntar på svar\nsub {}\nblocked_by {}\ncomments 2\n",
             fake.url(issue),
             fake.identifier(&seeded.epic),
             fake.identifier(&seeded.child),
@@ -535,7 +558,12 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
         .mode();
     assert!(mode & 0o111 != 0, "{} is executable", exec.display());
 
-    let seeded = drive_one_issue(home.path(), &format!("api_key   \"{API_KEY}\""), "");
+    let seeded = drive_one_issue(
+        home.path(),
+        &format!("api_key   \"{API_KEY}\""),
+        &format!("api_key: \"{API_KEY}\""),
+        "",
+    );
     assert_eq!(read(&home.path().join(AUTH)), format!("{API_KEY}\n"));
     assert_eq!(seeded.fake.token_fetches(), 0, "a key fetches no token");
 }
@@ -549,6 +577,7 @@ fn app_auth_leg_runs_one_issue_with_a_fetched_token() {
             "client_id      \"{CLIENT_ID}\"\n  client_secret  \"{CLIENT_SECRET}\"\n  \
              require_member \"me\", \"none\""
         ),
+        &format!("client_id: \"{CLIENT_ID}\", client_secret: \"{CLIENT_SECRET}\""),
         "    match linear.delegate(issue, \"me\") {\n      \
          .ok(_) => { }\n      \
          .err(e) => fail(\"linear.delegate: #{e.message}\")\n    \
@@ -621,7 +650,7 @@ develop :: service(linear) {{
     $ echo #{{issue.title}} #{{issue.state}}
   }}
   on_run proc(run: afkd.Run, issue: linear.Issue) {{
-    $ echo #{{issue.url}} #{{issue.parent}}
+    $ echo #{{issue.url}} #{{issue.parent ?? ""}}
     for sub in issue.sub_issues {{
       $ echo #{{sub}}
     }}
@@ -783,6 +812,391 @@ widgets :: service(linear) {{
     );
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "every action validates:\n{report}");
+}
+
+/// Services calling every read the plugin declares with every parameter it takes, each
+/// checked for its error, validate: an interval service reading a workspace by API key and
+/// as an app — every `issues` filter, its order and limit, an issue's comments and files and
+/// a file downloaded, the viewer, users, teams, each team's states and cycles, labels and
+/// projects with a team and without — and a `service(linear)`'s slot reading the issue it
+/// claimed and comparing handles. afkd types every argument, field and result against the
+/// manifest.
+#[test]
+fn every_read_validates() {
+    let home = installed();
+    write_config(
+        home.path(),
+        &format!(
+            r###"import "afkd"
+import "std:time"
+import "svc:interval"
+import "@afkd/linear"
+
+WS  :: linear.Workspace{{ api_key: "{API_KEY}" }}
+APP :: linear.Workspace{{
+  client_id: "{CLIENT_ID}",
+  client_secret: "{CLIENT_SECRET}",
+  base_url: "https://api.linear.app",
+}}
+
+nightly :: service(interval) {{
+  every    1h
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {{
+    match linear.issues(
+      WS,
+      id=[ "ENG-1", "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5" ],
+      team=[ "ENG", "OPS" ],
+      state=[ "Todo", "In Progress 🚧" ],
+      state_type=[ .unstarted, .started ],
+      priority=[ .urgent, .high, .none ],
+      labels=[ "afkd/ready" ],
+      without_labels=[ "Hold", "Blockerat / Väntar" ],
+      assignee=[ "me", "none", "chen@acme.example" ],
+      delegate=[ "陳大文" ],
+      project=[ "Trackers 🧭" ],
+      milestone=[ "B — reads" ],
+      cycle=[ 12, 13 ],
+      parent=[ "ENG-400" ],
+      blocked=false,
+      text="retry \"storm\"",
+      created_after=time.from_unix(1793000000),
+      created_before=time.now(),
+      updated_after=time.from_unix(1793000000),
+      updated_before=time.now(),
+      completed_after=time.from_unix(1793000000),
+      completed_before=time.now(),
+      canceled_after=time.from_unix(1793000000),
+      canceled_before=time.now(),
+      due_after="2026-01-01",
+      due_before="2026-12-31",
+      include_archived=true,
+      order=[ .priority, .created, .manual ],
+      limit=250,
+    ) {{
+      .ok(issues) => {{
+        for issue in issues {{
+          if issue.priority == .urgent && issue.state_type != .canceled && !issue.archived {{
+            $ echo #{{issue.id}} #{{issue.title}} #{{issue.due ?? "-"}} #{{issue.estimate ?? 0}}
+          }}
+          $ echo #{{issue.created_at}} #{{issue.completed_at ?? issue.updated_at}}
+          $ echo #{{issue.cycle ?? 0}}
+          match linear.comments(WS, issue) {{
+            .ok(comments) => {{
+              for comment in comments {{
+                $ echo #{{comment.author ?? "integration"}} #{{comment.body}}
+                $ echo #{{comment.created_at}}
+                if comment.reply_to != nil {{
+                  $ echo reply #{{comment.issue}} #{{comment.url}}
+                }}
+              }}
+            }}
+            .err(e) => fail("linear.comments: #{{e.message}}")
+          }}
+          match linear.files(WS, issue) {{
+            .ok(urls) => {{
+              for url in urls {{
+                match linear.download_file(WS, url, "/srv/acme/widgets/files/#{{issue.id}}.bin") {{
+                  .ok(_) => {{ }}
+                  .err(e) => fail("linear.download_file: #{{e.message}}")
+                }}
+              }}
+            }}
+            .err(e) => fail("linear.files: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+    match linear.issues(WS) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+    match linear.me(APP) {{
+      .ok(me) => {{
+        $ echo #{{me.name}} #{{me.full_name}} #{{me.email}} #{{me.app}}
+      }}
+      .err(e) => fail("linear.me: #{{e.message}}")
+    }}
+    match linear.users(WS) {{
+      .ok(users) => {{
+        for user in users {{
+          $ echo #{{user.id}} #{{user.name}}
+        }}
+      }}
+      .err(e) => fail("linear.users: #{{e.message}}")
+    }}
+    match linear.teams(WS) {{
+      .ok(teams) => {{
+        for team in teams {{
+          match linear.states(WS, team.id) {{
+            .ok(states) => {{
+              for state in states {{
+                if state.type == .completed {{
+                  $ echo #{{state.team}} #{{state.name}}
+                }}
+              }}
+            }}
+            .err(e) => fail("linear.states: #{{e.message}}")
+          }}
+          match linear.cycles(WS, team.id) {{
+            .ok(cycles) => {{
+              for cycle in cycles {{
+                if cycle.active {{
+                  $ echo #{{cycle.number}} #{{cycle.name ?? "-"}}
+                  $ echo #{{cycle.starts_at}} #{{cycle.ends_at}}
+                }}
+              }}
+            }}
+            .err(e) => fail("linear.cycles: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.teams: #{{e.message}}")
+    }}
+    match linear.labels(WS) {{
+      .ok(labels) => {{
+        for label in labels {{
+          $ echo #{{label.name}} #{{label.group ?? "-"}} #{{label.team ?? "workspace"}}
+        }}
+      }}
+      .err(e) => fail("linear.labels: #{{e.message}}")
+    }}
+    match linear.labels(WS, team="ENG") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.labels: #{{e.message}}")
+    }}
+    match linear.projects(WS) {{
+      .ok(projects) => {{
+        for project in projects {{
+          $ echo #{{project.name}} #{{project.url}}
+          for milestone in project.milestones {{
+            $ echo #{{milestone}}
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.projects: #{{e.message}}")
+    }}
+    match linear.projects(WS, team="OPS") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.projects: #{{e.message}}")
+    }}
+  }}
+}}
+
+widgets :: service(linear) {{
+  team      "{TEAM}"
+  api_key   "{API_KEY}"
+  pick_from "Todo"
+  work_dir  "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+    match linear.comments(WS, issue) {{
+      .ok(comments) => {{
+        $ echo #{{len(comments)}}
+      }}
+      .err(e) => fail("linear.comments: #{{e.message}}")
+    }}
+    match linear.files(WS, issue) {{
+      .ok(urls) => {{
+        $ echo #{{len(urls)}}
+      }}
+      .err(e) => fail("linear.files: #{{e.message}}")
+    }}
+    match linear.issues(WS, parent=[ issue.id ]) {{
+      .ok(subs) => {{
+        for sub in subs {{
+          if sub == issue {{
+            fail("an issue is its own sub-issue")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+  }}
+}}
+"###
+        ),
+    );
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "every read validates:\n{report}");
+}
+
+/// The reads leg's service: an interval service, run by hand, whose run reads the viewer,
+/// the teams, the `ENG` team's issues by when they were filed, each one's comments and
+/// files, and downloads each file; then, once the test has moved the issue to another team,
+/// reads it again by its uuid and writes `same` when the two handles are `==`. Every line
+/// goes to [`READS`].
+fn reads_service(home: &Path, base_url: &str) -> String {
+    format!(
+        r###"import "afkd"
+import "svc:interval"
+import "@afkd/linear"
+
+WS :: linear.Workspace{{ api_key: "{API_KEY}", base_url: "{base_url}" }}
+
+nightly :: service(interval) {{
+  every    24h
+  work_dir "{home}"
+
+  on_run proc(run: afkd.Run) {{
+    match linear.me(WS) {{
+      .ok(me) => {{
+        $ echo me #{{me.name}} #{{me.app}} >> {READS}
+      }}
+      .err(e) => fail("linear.me: #{{e.message}}")
+    }}
+    match linear.teams(WS) {{
+      .ok(teams) => {{
+        for team in teams {{
+          $ echo team #{{team.id}} #{{team.name}} >> {READS}
+        }}
+      }}
+      .err(e) => fail("linear.teams: #{{e.message}}")
+    }}
+    match linear.issues(WS, team=[ "{TEAM}" ], order=[ .created ]) {{
+      .ok(issues) => {{
+        for issue in issues {{
+          $ echo issue #{{issue.id}} #{{issue.title}} #{{issue.state_type}} >> {READS}
+          match linear.comments(WS, issue) {{
+            .ok(comments) => {{
+              for comment in comments {{
+                $ echo comment #{{comment.author ?? "-"}} #{{comment.body}} >> {READS}
+              }}
+            }}
+            .err(e) => fail("linear.comments: #{{e.message}}")
+          }}
+          match linear.files(WS, issue) {{
+            .ok(urls) => {{
+              for url in urls {{
+                $ echo file #{{url}} >> {READS}
+                match linear.download_file(WS, url, "{home}/downloaded.png") {{
+                  .ok(_) => {{ }}
+                  .err(e) => fail("linear.download_file: #{{e.message}}")
+                }}
+              }}
+            }}
+            .err(e) => fail("linear.files: #{{e.message}}")
+          }}
+          $ echo read > first.txt
+          $ i=0; until [ -f moved ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+          match linear.issues(WS, id=[ issue.uuid ]) {{
+            .ok(again) => {{
+              for moved in again {{
+                $ echo again #{{moved.id}} #{{moved.team}} >> {READS}
+                if moved == issue {{
+                  $ echo same >> {READS}
+                }}
+              }}
+            }}
+            .err(e) => fail("linear.issues: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+  }}
+}}
+"###,
+        home = home.display()
+    )
+}
+
+/// A service of another kind reads a workspace through a child afkd starts for each call:
+/// the viewer, the teams, a team's issues, an issue's comments and files and the file
+/// itself, byte for byte; and the issue read again after it moved team carries a new
+/// identifier and the same key, so the two handles are `==`.
+#[test]
+fn reads_leg_an_interval_service_reads_through_a_child_per_call() {
+    let home = installed();
+    let home = home.path();
+    let fake = FakeLinear::start();
+    fake.team("OPS", "Operations — 運用");
+    fake.state("Todo", "unstarted");
+    fake.team_state("OPS", "Todo", "unstarted");
+    let chen = fake.user("陳大文", "chen", "chen@acme.example");
+    let shot = fake.seed_file("screen shot — 修复.png", "image/png", &png());
+    let issue = fake.issue("Todo", TITLE, &format!("Before:\n\n![screen shot]({shot})"));
+    fake.comment(&issue, Author::User(chen), "看起来不对 🚨 — it resets", 60);
+    write_config(home, &reads_service(home, fake.base_url()));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let out = run_subcommand_args(home, &["run", "nightly"]);
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "`afkd run nightly` within {BUDGET:?}: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            dump(home, &fake, &issue, &daemon)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    wait_for(
+        home,
+        &fake,
+        &issue,
+        &daemon,
+        "the run read the issue",
+        || home.join("first.txt").exists(),
+    );
+    let before = fake.identifier(&issue);
+    fake.move_team(&issue, "OPS");
+    let after = fake.identifier(&issue);
+    std::fs::write(home.join("moved"), "").expect("say the issue moved");
+    wait_for(
+        home,
+        &fake,
+        &issue,
+        &daemon,
+        "the run read it again",
+        || std::fs::read_to_string(home.join(READS)).is_ok_and(|r| r.ends_with("same\n")),
+    );
+    assert_eq!(
+        read(&home.join(READS)),
+        format!(
+            "me afkd false\nteam ENG Engineering\nteam OPS Operations — 運用\n\
+             issue {before} {TITLE} unstarted\ncomment chen 看起来不对 🚨 — it resets\n\
+             file {shot}\nagain {after} OPS\nsame\n"
+        )
+    );
+    assert_ne!(before, after, "the identifier changed");
+    assert_eq!(
+        std::fs::read(home.join("downloaded.png")).expect("the downloaded file"),
+        png(),
+        "the file byte for byte"
+    );
+    let seen = fake.seen();
+    assert!(
+        seen.iter().any(|s| s.operation == "IssueList"),
+        "the issues were read"
+    );
+    assert!(
+        seen.iter()
+            .filter(|s| s.path == "/graphql")
+            .all(|s| s.authorization.as_deref() == Some(API_KEY)),
+        "every read went out with the workspace's key"
+    );
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fake.invalid_requests(),
+        Vec::<String>::new(),
+        "requests Linear's schema refuses"
+    );
 }
 
 /// The screenshot the files leg's run puts up: spaces, an em dash and wide CJK.
@@ -992,7 +1406,7 @@ widgets :: service(linear) {{
         "the refusal names the action and the plugin as the file imports it:\n{report}"
     );
     assert!(
-        report.contains("move_sub_issue"),
+        report.contains("its actions are add_label, archive, comment, comments,"),
         "and lists the actions it has:\n{report}"
     );
     write_config(home.path(), &config(r#"$ echo #{issue.title}"#));
