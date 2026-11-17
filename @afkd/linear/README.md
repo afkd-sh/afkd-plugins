@@ -11,7 +11,11 @@ it, file follow-up issues, and ask a question that parks the issue until a human
 Beside it, the plugin gives a config the reads of a whole workspace, each through the
 [`linear.Workspace`](#reading-linear-through-a-linearworkspace) it is passed: the issues any
 filters keep, an issue's comments and files, the viewer, users, teams, states, labels,
-projects and cycles.
+projects and cycles. Through the same workspace a config
+[writes](#writing-linear-through-a-linearworkspace) an issue's fields, moves it to another
+team and places it in its state, relates it to other issues, links urls and subscribes users
+on it, archives it, puts it in the trash or takes it back out, and writes, edits, resolves and
+deletes its comments.
 
 It does for a Linear team what [`@afkd/trello`](../trello) does for a board: the same
 claim, watermark, attempt and park comments on the issue, the same brief and the same run
@@ -685,6 +689,138 @@ with limit`.
 actions [above](#servicelinear-issues) take the issue a `service(linear)` claimed, and do it
 in that service's team. Called from anywhere else they are refused, `comment acts only on an
 issue a service(linear) claimed; call it from that service's slots`.
+
+## Writing Linear through a `linear.Workspace`
+
+A config changes an issue as it reads one: each write takes a `linear.Workspace` first and
+reaches Linear through nothing else, from any service's run or slots, or in a child afkd
+starts for the one call. A write is done now and gives back what it changed as Linear then
+holds it, the same handle `linear.issues` or `linear.comments` reads, or it is an `.err` with
+the reason. Nothing
+is queued: a request Linear rate limits, answers with a 5xx or does not answer is tried
+again within the call's deadline, as a read's is.
+
+```conf
+import "afkd"
+import "std:env"
+import "svc:interval"
+import "@afkd/linear"
+
+ACME :: linear.Workspace{ api_key: env.get("LINEAR_API_KEY") ?? fail("LINEAR_API_KEY is unset") }
+
+triage :: service(interval) {
+  every    1h
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {
+    match linear.issues(ACME, team=[ "ENG" ], state=[ "Triage" ], priority=[ .urgent ]) {
+      .ok(issues) => {
+        for issue in issues {
+          match linear.update_issue(ACME, issue, state="Todo", at=.top, assignee=nil) {
+            .ok(moved) => {
+              $ echo #{moved.id} is at the top of #{moved.state}
+            }
+            .err(e) => fail("linear.update_issue: #{e.message}")
+          }
+        }
+      }
+      .err(e) => fail("linear.issues: #{e.message}")
+    }
+  }
+}
+```
+
+### The writes
+
+| Call | Gives |
+|------|-------|
+| `linear.update_issue(ws, issue, ~title, ~description, ~files, ~state, ~team, ~at, ~after, ~priority, ~estimate, ~due, ~assignee, ~delegate, ~project, ~milestone, ~cycle, ~parent)` | the `linear.Issue` as Linear now holds it; `team` moves it to that team and needs a `state` of that team beside it, and Linear drops what the new team lacks — its old team's labels, its cycle, and a project the new team is not in; `at` and `after` place it in its state, the new one or the one it is in |
+| `linear.add_relation(ws, issue, relation, other)`, `linear.remove_relation(ws, issue, relation, other)` | the `linear.Issue`; afterwards `other`'s identifier is, or is no longer, in the issue's field named for `relation` |
+| `linear.add_link(ws, issue, url, ~title)`, `linear.remove_link(ws, issue, url)` | the `linear.Issue`; adding a url the issue already links titles that link `title` |
+| `linear.add_subscriber(ws, issue, user = "me")`, `linear.remove_subscriber(ws, issue, user = "me")` | the `linear.Issue` |
+| `linear.archive_issue(ws, issue)`, `linear.unarchive_issue(ws, issue)` | the `linear.Issue`, its sub-issues archived or taken back with it, as Linear does; `unarchive_issue` also takes back an issue `delete_issue` put in the trash, within Linear's 30 days |
+| `linear.delete_issue(ws, issue)` | the `linear.Issue`, `archived` and `trashed`; it goes to Linear's trash with its sub-issues, as Linear does |
+| `linear.create_comment(ws, issue, body, ~files, ~reply_to)` | the `linear.Comment`; `reply_to` files it in that comment's thread, and a reply to a reply goes in the thread both are in, since Linear keeps threads one level deep |
+| `linear.update_comment(ws, comment, body, ~files)` | the `linear.Comment`, its body rewritten and `edited_at` set |
+| `linear.resolve_comment(ws, comment)`, `linear.unresolve_comment(ws, comment)` | the first `linear.Comment` of the comment's thread, which carries `resolved_at`; a reply resolves its thread, as the reply that resolved it |
+| `linear.delete_comment(ws, comment)` | nil; a thread's first comment takes its replies with it, as Linear does |
+
+`update_issue`'s parameters after the handle, `add_link`'s `title`, and a comment write's
+`files` and `reply_to` are named-only. A parameter of `update_issue` left out leaves its field
+as it is, and `nil` clears it.
+
+| Parameter              | Type              | What it is |
+|------------------------|-------------------|------------|
+| `title`                | `str`             | |
+| `description`          | `str`             | markdown; `""` empties it |
+| `body`                 | `str`             | a comment's, markdown |
+| `files`                | `list[str]`       | absolute paths, each read when called and embedded after the description or the body, each on a paragraph of its own: an image shown, any other file linked; in `update_issue` only beside `description` |
+| `state`                | `str`             | a state of the issue's team, or of `team` |
+| `team`                 | `str`             | a team's key |
+| `at`                   | `.top`, `.bottom` | the place in the state |
+| `after`                | `linear.Issue`    | right below it in the state |
+| `priority`             | `linear.Priority` | |
+| `estimate`             | `int?`            | `0` only on a team that allows a zero estimate |
+| `due`                  | `str?`            | `YYYY-MM-DD` |
+| `assignee`, `delegate` | `str?`            | a user's display name or email, or `"me"` |
+| `project`              | `str?`            | |
+| `milestone`            | `str?`            | a milestone of the issue's project, or of `project` |
+| `cycle`                | `int?`            | a cycle's number, in the issue's team or in `team` |
+| `parent`               | `linear.Issue?`   | |
+| `relation`             | `.blocks`, `.blocked_by`, `.related`, `.similar`, `.duplicate_of`, `.duplicates` | the issue's field `other` goes in, or comes out of |
+| `other`                | `linear.Issue`    | another issue |
+| `url`                  | `str`             | |
+| `title`                | `str`             | the link's; with none, Linear titles it |
+| `user`                 | `str`             | a user's display name or email, or `"me"` |
+| `comment`              | `linear.Comment`  | a comment `linear.comments` or a comment write gave back |
+| `reply_to`             | `linear.Comment`  | a comment on the same issue |
+
+**Names.** A team is named by its key, a state, a project or a milestone by its name, a user
+by display name or email, or `"me"` for whoever the credential acts as, and a cycle by its
+number, each matched exactly. A state and a cycle are looked up in the issue's team, or with
+`team` in the new one, and a milestone in the issue's project, or in `project`.
+
+- A name that matches nothing is an `.err` naming what there is, `update_issue: no state
+  named "Doing" in team ENG; there are: Triage, Todo, In Progress, Done`.
+- A name that matches several is an `.err` listing their ids, `update_issue: 2 users are
+  named "sam": <id>, <id>; pass the id of the one you mean in place of the name`. A team,
+  a state, a user, a project or a milestone is taken by its id as well as by its name.
+
+**Relations.** Each `relation` is one of Linear's, held by one of the two issues, and shows
+in both: `add_relation(ws, a, .blocks, b)` puts `b` in `a.blocks` and `a` in `b.blocked_by`.
+
+| `relation`      | Linear's relation | held by   | `other`'s field |
+|-----------------|-------------------|-----------|-----------------|
+| `.blocks`       | blocks            | the issue | `blocked_by`    |
+| `.blocked_by`   | blocks            | `other`   | `blocks`        |
+| `.related`      | related           | either    | `related`       |
+| `.similar`      | similar           | either    | `similar`       |
+| `.duplicate_of` | duplicate         | the issue | `duplicates`    |
+| `.duplicates`   | duplicate         | `other`   | `duplicate_of`  |
+
+`related` and `similar` read the same from either end, so `remove_relation` takes one off
+whichever issue holds it. Adding a relation the issue already shows, removing one it does
+not, adding a url it already links without a `title`, and removing a url it does not link
+send Linear nothing: each is `.ok` with the issue as it is.
+
+**Placing an issue.** `at=.top` puts the issue above the first of its state's issues,
+`.bottom` below the last, and `after` right below that issue, halfway to the one below it.
+With neither, Linear places it. The issue `after` names must sit in the state the issue ends
+up in, `update_issue: after ENG-9 is in Done of ENG, not Todo of ENG`, and be another issue.
+
+**What is refused.** Before anything is sent: `team` without a `state`, `update_issue: team
+OPS needs a state of team OPS beside it`; `files` without `description`, `update_issue:
+files go only beside description`, and a file that is not absolute, not there or over
+10 MiB; `at` beside `after`, `update_issue: at and after cannot both be given`; a `due` that
+is no day of the calendar; and a `milestone` beside `project=nil`. Before anything is
+changed: a handle of another workspace, as the issue, `after`, `parent`, `other`, the comment
+or `reply_to`, named as a read names one; `other` the issue itself, `add_relation: other is
+ENG-5 itself`; a `reply_to` on another issue, `create_comment: reply_to <id> is on ENG-7, not
+ENG-5`; and every name that matches nothing or several, a `user` as an `assignee` is. An
+issue 30 days in the trash is gone for good, and `unarchive_issue` relays Linear's `Entity
+not found`, as `delete_comment` does for a comment already deleted. A value Linear itself
+refuses, such as an estimate of 0 on a team that does not allow one, is its `.err`, with
+Linear's reason.
 
 ## Where it differs from `@afkd/trello`
 

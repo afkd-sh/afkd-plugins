@@ -20,6 +20,10 @@
 //! downloaded — are [`reads`]'s. Each reaches Linear through the `linear.Workspace` it is
 //! passed ([`workspace`]), never a service's settings, so it answers alike in the trigger
 //! child and in a child afkd starts for that one call.
+//!
+//! The writes a config makes through a `linear.Workspace` — changing an issue's fields, its
+//! team or its place — are [`writes`]'s, the names they are passed turned into Linear's ids by
+//! [`lookup`]. Each is done now and gives back what Linear then holds, or is refused.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -32,6 +36,7 @@ mod common;
 mod file;
 mod http;
 mod issue;
+mod lookup;
 #[cfg(test)]
 mod manifest;
 mod outbox;
@@ -45,6 +50,7 @@ mod settings;
 mod tracker;
 mod wire;
 mod workspace;
+mod writes;
 
 use std::io::{BufRead, Write};
 

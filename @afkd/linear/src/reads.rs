@@ -183,7 +183,7 @@ pub(crate) struct IssueQuery {
 }
 
 /// A handle a read was passed: the id and the key it carries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct HandleArg {
     pub(crate) id: String,
     pub(crate) key: String,
@@ -213,7 +213,7 @@ pub(crate) struct Claimed {
     pub(crate) organization: Organization,
 }
 
-/// What a read needs of the child it runs in.
+/// What a read, or a write ([`crate::writes`]), needs of the child it runs in.
 pub(crate) struct ReadContext<'a> {
     /// The plugin's own directory, when afkd sent one.
     pub(crate) state_dir: Option<&'a Path>,
@@ -320,7 +320,11 @@ pub(crate) fn decode(
 }
 
 /// The handle `action` was passed as `param`.
-fn handle_arg(action: &str, args: &Map<String, Value>, param: &str) -> Result<HandleArg, String> {
+pub(crate) fn handle_arg(
+    action: &str,
+    args: &Map<String, Value>,
+    param: &str,
+) -> Result<HandleArg, String> {
     let key = handle_key(action, args, param)?;
     Ok(HandleArg {
         id: args[param]
@@ -334,7 +338,7 @@ fn handle_arg(action: &str, args: &Map<String, Value>, param: &str) -> Result<Ha
 
 /// The argument `param` of `action` read by `read`, `None` when it is left out, or the
 /// sentence refusing a value that is not `what`.
-fn optional<'a, T>(
+pub(crate) fn optional<'a, T>(
     action: &str,
     args: &'a Map<String, Value>,
     param: &str,
@@ -377,7 +381,7 @@ fn list<'a, T>(
 }
 
 /// A member of one of the plugin's enums, by its name.
-fn member<T: DeserializeOwned>(value: &Value) -> Option<T> {
+pub(crate) fn member<T: DeserializeOwned>(value: &Value) -> Option<T> {
     serde_json::from_value(value.clone()).ok()
 }
 
@@ -420,7 +424,7 @@ fn issue_ref(param: &str, text: &str) -> Result<IssueRef, String> {
 
 /// Whether `text` is a day of the calendar as `YYYY-MM-DD` writes one: a month that is one,
 /// and a day that month has, 29 February only in a leap year.
-fn is_date(text: &str) -> bool {
+pub(crate) fn is_date(text: &str) -> bool {
     let bytes = text.as_bytes();
     let digits = |range: std::ops::Range<usize>| bytes[range].iter().all(u8::is_ascii_digit);
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
@@ -680,19 +684,8 @@ pub(crate) fn resolve(
     organization: &Organization,
     ctx: &ReadContext<'_>,
 ) -> Result<String, String> {
-    if let Some((of, uuid)) = parse_read_key(&issue.key) {
-        if of != organization.id {
-            let recorded = ctx.state_dir.and_then(|dir| recorded_url_key(dir, of));
-            return Err(other_workspace(
-                action,
-                param,
-                &issue.id,
-                of,
-                recorded.as_deref(),
-                &organization.url_key,
-            ));
-        }
-        return Ok(uuid.to_string());
+    if let Some(uuid) = keyed(action, param, issue, organization, ctx) {
+        return uuid;
     }
     match (ctx.claimed)(&issue.key) {
         Some(claimed) if claimed.organization.id == organization.id => Ok(claimed.uuid),
@@ -711,6 +704,55 @@ pub(crate) fn resolve(
     }
 }
 
+/// The uuid the key of `handle`, `action`'s argument `param`, holds when it is a read's key
+/// of the workspace `organization`, the sentence refusing it when it is one of another
+/// workspace, naming both url keys, and `None` when it is no read's key.
+pub(crate) fn keyed(
+    action: &str,
+    param: &str,
+    handle: &HandleArg,
+    organization: &Organization,
+    ctx: &ReadContext<'_>,
+) -> Option<Result<String, String>> {
+    let (of, uuid) = parse_read_key(&handle.key)?;
+    if of != organization.id {
+        let recorded = ctx.state_dir.and_then(|dir| recorded_url_key(dir, of));
+        return Some(Err(other_workspace(
+            action,
+            param,
+            &handle.id,
+            of,
+            recorded.as_deref(),
+            &organization.url_key,
+        )));
+    }
+    Some(Ok(uuid.to_string()))
+}
+
+/// The workspace `client` reaches, its url key recorded in the plugin's directory when afkd
+/// sent one; a record that cannot be written is diagnosed, and the call goes on.
+///
+/// # Errors
+///
+/// Returns the sentence of the read Linear refused.
+pub(crate) fn reach(
+    client: &LinearClient,
+    ctx: &ReadContext<'_>,
+    diag: &dyn Diag,
+) -> Result<Organization, String> {
+    let organization = client.organization().map_err(|e| e.to_string())?;
+    if let Some(dir) = ctx.state_dir {
+        if let Err(e) = record_organization(dir, &organization) {
+            diag.err(&format_args!(
+                "cannot record the url key of workspace {} in {}: {e}",
+                organization.url_key,
+                dir.display()
+            ));
+        }
+    }
+    Ok(organization)
+}
+
 /// The ok reply carrying `handles`.
 fn handles_line<F: Serialize>(handles: &[WireHandle<F>]) -> String {
     json!({ "ok": true, "handles": handles }).to_string()
@@ -726,16 +768,7 @@ fn run(
     diag: &dyn Diag,
 ) -> Result<(String, String), String> {
     let linear = |e: LinearError| e.to_string();
-    let organization = client.organization().map_err(linear)?;
-    if let Some(dir) = ctx.state_dir {
-        if let Err(e) = record_organization(dir, &organization) {
-            diag.err(&format_args!(
-                "cannot record the url key of workspace {} in {}: {e}",
-                organization.url_key,
-                dir.display()
-            ));
-        }
-    }
+    let organization = reach(client, ctx, diag)?;
     let key = |uuid: &str| read_key(&organization.id, uuid);
     let handle = |id: &str, uuid: &str| (id.to_string(), key(uuid));
     let from = format!("from workspace {}", organization.url_key);

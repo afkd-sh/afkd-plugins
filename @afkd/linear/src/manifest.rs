@@ -21,6 +21,7 @@ use crate::wire::{
     CommentFields, CycleFields, IssueFields, LabelFields, ProjectFields, StateFields, TeamFields,
     UserFields,
 };
+use crate::writes::WRITES;
 
 /// The name every slot passes the claimed issue under.
 const HANDLE: &str = "issue";
@@ -506,7 +507,8 @@ fn action_params(tables: &[Table]) -> BTreeMap<String, Vec<BTreeMap<String, Stri
 }
 
 /// The `[[action]]`s are the issue actions [`from_call`](crate::action::from_call) decodes,
-/// then the reads [`crate::reads`] answers, each in its code's order. Each issue action takes
+/// then the reads [`crate::reads`] answers, then the writes [`crate::writes`] answers, each in
+/// its code's order. Each issue action takes
 /// the issue's handle first and then the parameters it reads: a new issue's description
 /// defaults to none, and its state is named only, left out for the team's default. None of
 /// them returns anything. A plugin exposes no values, so there is no `[[value]]`.
@@ -522,6 +524,7 @@ fn the_actions_are_the_ones_the_code_answers() {
         ACTIONS
             .iter()
             .chain(READS)
+            .chain(WRITES)
             .map(|a| quoted(a))
             .collect::<Vec<_>>()
     );
@@ -721,6 +724,165 @@ fn the_reads_take_a_workspace_and_return_what_they_read() {
     let mut params = action_params(&tables);
     params.retain(|action, _| READS.contains(&action.as_str()));
     assert_eq!(params, want);
+}
+
+/// Each write takes a `linear.Workspace` first and the handle of what it changes, and returns
+/// it, but `delete_comment`, which returns nothing: `update_issue` every field it sets
+/// named-only with no default, so one left out reaches the plugin as no key and leaves its
+/// field; a field that can hold nothing is optional, so `nil` clears it; `at` is one of two
+/// words and `after` and `parent` an issue's handle. A relation is one of six words and
+/// `other` an issue's handle, a link's url is required and its title named-only, and a
+/// subscriber is `"me"` unless named. A comment's body is required, its files and the comment
+/// it answers named-only.
+#[test]
+fn the_writes_take_a_workspace_and_return_what_they_change() {
+    let tables = tables(MANIFEST);
+    let returns: BTreeMap<String, String> = named(&tables, "action")
+        .into_iter()
+        .filter(|t| WRITES.contains(&t["name"].trim_matches('"')))
+        .map(|t| {
+            (
+                t["name"].trim_matches('"').to_string(),
+                t.get("returns").cloned().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        returns,
+        WRITES
+            .iter()
+            .map(|write| {
+                let returns = match *write {
+                    "delete_comment" => String::new(),
+                    w if w.ends_with("_comment") => quoted("Comment"),
+                    _ => quoted("Issue"),
+                };
+                (write.to_string(), returns)
+            })
+            .collect::<BTreeMap<_, _>>()
+    );
+    let param = |name: &str, ty: &str, extra: &[(&str, &str)]| {
+        let mut t = table(extra);
+        t.insert("name".into(), quoted(name));
+        t.insert("type".into(), quoted(ty));
+        t
+    };
+    let required = |name: &str, ty: &str| param(name, ty, &[("required", "true")]);
+    let named_only = |name: &str, ty: &str| param(name, ty, &[("named_only", "true")]);
+    let mut update_issue = vec![required("ws", "Workspace"), required("issue", "Issue")];
+    for (name, ty) in [
+        ("title", "str"),
+        ("description", "str"),
+        ("files", "list[str]"),
+        ("state", "str"),
+        ("team", "str"),
+    ] {
+        update_issue.push(named_only(name, ty));
+    }
+    update_issue.push(param(
+        "at",
+        "enum",
+        &[
+            ("values", &quoted_list(&["top", "bottom"])),
+            ("named_only", "true"),
+        ],
+    ));
+    for (name, ty) in [
+        ("after", "Issue"),
+        ("priority", "Priority"),
+        ("estimate", "int?"),
+        ("due", "str?"),
+        ("assignee", "str?"),
+        ("delegate", "str?"),
+        ("project", "str?"),
+        ("milestone", "str?"),
+        ("cycle", "int?"),
+        ("parent", "Issue?"),
+    ] {
+        update_issue.push(named_only(name, ty));
+    }
+    let issue = [required("ws", "Workspace"), required("issue", "Issue")];
+    let relations: Vec<&str> = crate::writes::Relation::ALL
+        .iter()
+        .map(|r| r.name())
+        .collect();
+    let relate = [
+        issue.to_vec(),
+        vec![
+            param(
+                "relation",
+                "enum",
+                &[("values", &quoted_list(&relations)), ("required", "true")],
+            ),
+            required("other", "Issue"),
+        ],
+    ]
+    .concat();
+    let url = required("url", "str");
+    let user = param("user", "str", &[("default", &quoted("me"))]);
+    let mut want = BTreeMap::from([("update_issue".to_string(), update_issue)]);
+    for (write, params) in [
+        ("add_relation", relate.clone()),
+        ("remove_relation", relate),
+        (
+            "add_link",
+            [
+                issue.to_vec(),
+                vec![url.clone(), named_only("title", "str")],
+            ]
+            .concat(),
+        ),
+        ("remove_link", [issue.to_vec(), vec![url]].concat()),
+        (
+            "add_subscriber",
+            [issue.to_vec(), vec![user.clone()]].concat(),
+        ),
+        ("remove_subscriber", [issue.to_vec(), vec![user]].concat()),
+        ("archive_issue", issue.to_vec()),
+        ("unarchive_issue", issue.to_vec()),
+        ("delete_issue", issue.to_vec()),
+    ] {
+        want.insert(write.to_string(), params);
+    }
+    let comment = [required("ws", "Workspace"), required("comment", "Comment")];
+    let body = required("body", "str");
+    let files = named_only("files", "list[str]");
+    for (write, params) in [
+        (
+            "create_comment",
+            [
+                issue.to_vec(),
+                vec![
+                    body.clone(),
+                    files.clone(),
+                    named_only("reply_to", "Comment"),
+                ],
+            ]
+            .concat(),
+        ),
+        (
+            "update_comment",
+            [comment.to_vec(), vec![body, files]].concat(),
+        ),
+        ("resolve_comment", comment.to_vec()),
+        ("unresolve_comment", comment.to_vec()),
+        ("delete_comment", comment.to_vec()),
+    ] {
+        want.insert(write.to_string(), params);
+    }
+    let mut params = action_params(&tables);
+    params.retain(|action, _| WRITES.contains(&action.as_str()));
+    assert_eq!(params, want);
+    let words: Vec<Value> = crate::writes::Relation::ALL
+        .iter()
+        .map(|r| serde_json::to_value(r).unwrap())
+        .collect();
+    assert_eq!(words, relations, "the words `relation` decodes");
+    let at: Vec<Value> = [crate::writes::At::Top, crate::writes::At::Bottom]
+        .iter()
+        .map(|at| serde_json::to_value(at).unwrap())
+        .collect();
+    assert_eq!(at, ["top", "bottom"], "the words `at` decodes");
 }
 
 /// A plugin's kinds, actions, withables, handle types, enums and structs share one namespace

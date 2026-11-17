@@ -778,3 +778,197 @@ mutation FileUpload($contentType: String!, $filename: String!, $size: Int!) {
     }
   }
 }
+
+query IssuePlace($id: String!) {
+  issue(id: $id) {
+    identifier
+    sortOrder
+    team {
+      id
+      key
+    }
+    state {
+      id
+      name
+      type
+    }
+    project {
+      id
+    }
+  }
+}
+
+query MilestoneList($id: String!, $after: String) {
+  project(id: $id) {
+    projectMilestones(first: 50, after: $after) {
+      nodes {
+        id
+        name
+        sortOrder
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+mutation IssueWrite($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) {
+    success
+  }
+}
+
+query RelationsOut($id: String!, $after: String) {
+  issue(id: $id) {
+    relations(first: 50, after: $after) {
+      nodes {
+        id
+        type
+        relatedIssue {
+          id
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query RelationsIn($id: String!, $after: String) {
+  issue(id: $id) {
+    inverseRelations(first: 50, after: $after) {
+      nodes {
+        id
+        type
+        issue {
+          id
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+mutation RelationCreate($input: IssueRelationCreateInput!) {
+  issueRelationCreate(input: $input) {
+    success
+  }
+}
+
+mutation RelationDelete($id: String!) {
+  issueRelationDelete(id: $id) {
+    success
+  }
+}
+
+query IssueLinks($id: String!, $after: String) {
+  issue(id: $id) {
+    attachments(first: 50, after: $after) {
+      nodes {
+        id
+        url
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+mutation LinkUrl($issueId: String!, $url: String!, $title: String) {
+  attachmentLinkURL(issueId: $issueId, url: $url, title: $title) {
+    success
+  }
+}
+
+mutation LinkUpdate($id: String!, $input: AttachmentUpdateInput!) {
+  attachmentUpdate(id: $id, input: $input) {
+    success
+  }
+}
+
+mutation LinkDelete($id: String!) {
+  attachmentDelete(id: $id) {
+    success
+  }
+}
+
+mutation IssueSubscribe($id: String!, $userId: String!) {
+  issueSubscribe(id: $id, userId: $userId) {
+    success
+  }
+}
+
+mutation IssueUnsubscribe($id: String!, $userId: String!) {
+  issueUnsubscribe(id: $id, userId: $userId) {
+    success
+  }
+}
+
+mutation IssueUnarchive($id: String!) {
+  issueUnarchive(id: $id) {
+    success
+  }
+}
+
+mutation IssueDelete($id: String!) {
+  issueDelete(id: $id) {
+    success
+  }
+}
+
+query CommentOne($id: String!) {
+  comment(id: $id) {
+    id
+    body
+    createdAt
+    editedAt
+    resolvedAt
+    url
+    parent {
+      id
+    }
+    user {
+      displayName
+    }
+    botActor {
+      name
+    }
+    externalUser {
+      name
+    }
+    issue {
+      id
+      identifier
+    }
+  }
+}
+
+mutation CommentPost($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment {
+      id
+    }
+  }
+}
+
+mutation CommentResolve($id: String!, $resolvingCommentId: String) {
+  commentResolve(id: $id, resolvingCommentId: $resolvingCommentId) {
+    success
+  }
+}
+
+mutation CommentUnresolve($id: String!) {
+  commentUnresolve(id: $id) {
+    success
+  }
+}

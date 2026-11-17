@@ -51,6 +51,7 @@ use crate::tracker::{Issue, Tracker};
 use crate::wire::{
     fit_comments, fit_poll, Facts, Fitted, Request, UnitOutcome, WireComment, PROTO,
 };
+use crate::writes::{self, WRITES};
 
 /// The one kind this plugin provides, its main one: `service(linear)` in a config.
 pub(crate) const LINEAR_KIND: &str = "issue";
@@ -256,8 +257,8 @@ fn on_armed(
     }
 }
 
-/// Answer the one `call` a child afkd started for it gets, with no `hello` before it: a read,
-/// with the plugin's directory the call names and the call's own budget. The issue actions
+/// Answer the one `call` a child afkd started for it gets, with no `hello` before it: a read or
+/// a write, with the plugin's directory the call names and the call's own budget. The issue actions
 /// ([`ACTIONS`]) act only on an issue a `service(linear)` claimed, which this child holds
 /// none of, so each is refused saying so, as is an action no one declared and a protocol
 /// this plugin does not speak. A call with no `proto` at all is no such call: afkd is out of
@@ -282,13 +283,17 @@ fn once(
             "afkd speaks plugin protocol {proto}, and this plugin speaks {PROTO}"
         ));
     }
-    if READS.contains(&action) {
+    if READS.contains(&action) || WRITES.contains(&action) {
         let ctx = ReadContext {
             state_dir: state_dir.map(Path::new),
             deadline: clock.now() + CALL_BUDGET,
             claimed: &|_| None,
         };
-        return Answer::Reply(reads::answer(action, args, &ctx, diag));
+        return Answer::Reply(if READS.contains(&action) {
+            reads::answer(action, args, &ctx, diag)
+        } else {
+            writes::answer(action, args, &ctx, diag)
+        });
     }
     if ACTIONS.contains(&action) {
         return refuse(format!(
@@ -567,8 +572,8 @@ impl Armed {
     /// be reached for is taken for delivery and `ok`: the outbox retries it, and the slot's
     /// next write queues behind it. Its files are read here, at the call, so a retry sends
     /// what the slot saw. A read is done now or refused, never queued; a workspace read
-    /// ([`crate::reads`]) goes through the workspace it is passed, the issues this service
-    /// claimed among what it may be passed.
+    /// ([`crate::reads`]) or write ([`crate::writes`]) goes through the workspace it is passed,
+    /// the issues this service claimed among what it may be passed.
     fn call(
         &self,
         action: &str,
@@ -576,7 +581,7 @@ impl Armed {
         clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
-        if READS.contains(&action) {
+        if READS.contains(&action) || WRITES.contains(&action) {
             let ctx = ReadContext {
                 state_dir: self.state_dir.as_deref(),
                 deadline: self
@@ -585,7 +590,11 @@ impl Armed {
                     .unwrap_or_else(|| clock.now() + CALL_BUDGET),
                 claimed: &|key| self.claimed(key),
             };
-            return Answer::Reply(reads::answer(action, args, &ctx, diag));
+            return Answer::Reply(if READS.contains(&action) {
+                reads::answer(action, args, &ctx, diag)
+            } else {
+                writes::answer(action, args, &ctx, diag)
+            });
         }
         let refuse = |error: String| {
             diag.err(&error);

@@ -19,14 +19,18 @@
 //! nested in what it holds — an issue's labels, sub-issues, relations both ways, links and
 //! subscribers, a project's teams and milestones — past its first page by the documents that
 //! read the pages after it ([`ISSUE_CONNECTIONS`]). A client made [`retrying`] tries a request
-//! Linear could not take again within the call's deadline.
+//! Linear could not take again within the call's deadline. A workspace write
+//! ([`crate::writes`]) reads where an issue sits ([`LinearClient::issue_place`]), changes it
+//! with one `IssueWrite`, kept apart from the `IssueUpdate` the skill shares, and reads it back
+//! as the reads do. A relation or a link it removes is found by its id, which the reads leave
+//! out ([`LinearClient::relations`], [`LinearClient::links`]).
 //!
 //! [`retrying`]: LinearClient::retrying
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::auth::Auth;
 use crate::file::{Upload, MAX_FILE_BYTES};
@@ -181,7 +185,9 @@ pub(crate) fn follow_up_vars(id: &str, after: &str) -> Value {
     json!({ "id": id, "after": after })
 }
 
-/// `IssueFull`: the issue.
+/// `IssueFull`, `IssuePlace`, `IssueUnarchive` and `IssueDelete`: the issue; `RelationDelete`
+/// and `LinkDelete`: the relation or the link; `CommentOne` and `CommentUnresolve`: the
+/// comment.
 pub(crate) fn issue_vars(issue_id: &str) -> Value {
     json!({ "id": issue_id })
 }
@@ -237,6 +243,61 @@ pub(crate) fn project_list_vars(team: Option<&str>, after: Option<&str>) -> Valu
 /// `CycleList`: one page of the team's cycles, by its id.
 pub(crate) fn cycle_list_vars(team_id: &str, after: Option<&str>) -> Value {
     json!({ "filter": { "team": { "id": { "eq": team_id } } }, "after": after })
+}
+
+/// `MilestoneList`: one page of the project's milestones, by its id, from `after`.
+pub(crate) fn milestone_list_vars(project_id: &str, after: Option<&str>) -> Value {
+    json!({ "id": project_id, "after": after })
+}
+
+/// `IssueWrite`: the issue changed as `input`, an `IssueUpdateInput`, says: each key it holds
+/// set, a `null` one cleared, and every field it leaves out left as it is.
+pub(crate) fn issue_write_vars(issue_id: &str, input: &Map<String, Value>) -> Value {
+    json!({ "id": issue_id, "input": input })
+}
+
+/// `RelationsOut`, `RelationsIn` and `IssueLinks`: one page of the relations the issue holds,
+/// of those that name it, or of its links, from `after`.
+pub(crate) fn issue_page_vars(issue_id: &str, after: Option<&str>) -> Value {
+    json!({ "id": issue_id, "after": after })
+}
+
+/// `RelationCreate`: `issue_id` related to `related_id` as Linear's relation `kind`, so a
+/// `blocks` one makes the issue `issue_id` a blocker of `related_id`.
+pub(crate) fn relation_create_vars(issue_id: &str, related_id: &str, kind: &str) -> Value {
+    json!({ "input": { "issueId": issue_id, "relatedIssueId": related_id, "type": kind } })
+}
+
+/// `LinkUrl`: `url` linked on the issue, titled `title` when one is given.
+pub(crate) fn link_url_vars(issue_id: &str, url: &str, title: Option<&str>) -> Value {
+    json!({ "issueId": issue_id, "url": url, "title": title })
+}
+
+/// `LinkUpdate`: the link `link_id` titled `title`.
+pub(crate) fn link_update_vars(link_id: &str, title: &str) -> Value {
+    json!({ "id": link_id, "input": { "title": title } })
+}
+
+/// `IssueSubscribe` and `IssueUnsubscribe`: the user `user_id` subscribed to the issue, or no
+/// longer.
+pub(crate) fn subscribe_vars(issue_id: &str, user_id: &str) -> Value {
+    json!({ "id": issue_id, "userId": user_id })
+}
+
+/// `CommentPost`: `body` as a new comment on the issue, in the thread of the comment
+/// `parent_id` when one is given.
+pub(crate) fn comment_post_vars(issue_id: &str, body: &str, parent_id: Option<&str>) -> Value {
+    let mut input = json!({ "issueId": issue_id, "body": body });
+    if let Some(parent_id) = parent_id {
+        input["parentId"] = json!(parent_id);
+    }
+    json!({ "input": input })
+}
+
+/// `CommentResolve`: the thread the comment `comment_id` opens resolved, by the reply
+/// `resolving_id` when one is given.
+pub(crate) fn comment_resolve_vars(comment_id: &str, resolving_id: Option<&str>) -> Value {
+    json!({ "id": comment_id, "resolvingCommentId": resolving_id })
 }
 
 /// `IssueDescription`: the issue's description.
@@ -682,6 +743,239 @@ impl LinearClient {
         .iter()
         .map(|node| parse_cycle(stage, node))
         .collect()
+    }
+
+    /// Where the issue `issue_id` sits: what a write that moves it, places it in its state or
+    /// names a milestone of its project starts from.
+    pub(crate) fn issue_place(&self, issue_id: &str) -> Result<IssuePlace, LinearError> {
+        let stage = "read issue";
+        let data = self.post_graphql(stage, "IssuePlace", issue_vars(issue_id))?;
+        parse_place(stage, &data["issue"])
+    }
+
+    /// The milestones of the project whose id is `project_id`, each one's id and name, in
+    /// their order.
+    pub(crate) fn milestone_list(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(String, String)>, LinearError> {
+        let stage = "read milestones";
+        let mut milestones = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let vars = milestone_list_vars(project_id, after.as_deref());
+            let data = self.post_graphql(stage, "MilestoneList", vars)?;
+            let connection = &data["project"]["projectMilestones"];
+            for m in nodes(stage, connection)? {
+                milestones.push((
+                    number_at(stage, m, "sortOrder")?,
+                    str_at(stage, m, "id")?,
+                    str_at(stage, m, "name")?,
+                ));
+            }
+            match next_cursor(connection) {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        milestones.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Ok(milestones
+            .into_iter()
+            .map(|(_, id, name)| (id, name))
+            .collect())
+    }
+
+    /// Change the issue `issue_id` as `input`, an `IssueUpdateInput`, says.
+    pub(crate) fn issue_write(
+        &self,
+        issue_id: &str,
+        input: &Map<String, Value>,
+    ) -> Result<(), LinearError> {
+        let vars = issue_write_vars(issue_id, input);
+        self.post_graphql("update issue", "IssueWrite", vars)
+            .map(drop)
+    }
+
+    /// Every node of the connection `field` of the issue `issue_id`, read a page at a time by
+    /// the document `name`.
+    fn issue_nodes(
+        &self,
+        stage: &'static str,
+        name: &str,
+        field: &str,
+        issue_id: &str,
+    ) -> Result<Vec<Value>, LinearError> {
+        let mut all = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let vars = issue_page_vars(issue_id, after.as_deref());
+            let data = self.post_graphql(stage, name, vars)?;
+            let connection = &data["issue"][field];
+            all.extend(nodes(stage, connection)?.iter().cloned());
+            match next_cursor(connection) {
+                Some(next) => after = Some(next),
+                None => return Ok(all),
+            }
+        }
+    }
+
+    /// The relations of the issue `issue_id`, the ones it holds when `held`, else the ones
+    /// that name it, each with the other issue's id.
+    pub(crate) fn relations(
+        &self,
+        issue_id: &str,
+        held: bool,
+    ) -> Result<Vec<RelationRow>, LinearError> {
+        let stage = "read relations";
+        let (name, field, other) = if held {
+            ("RelationsOut", "relations", "relatedIssue")
+        } else {
+            ("RelationsIn", "inverseRelations", "issue")
+        };
+        self.issue_nodes(stage, name, field, issue_id)?
+            .iter()
+            .map(|r| {
+                Ok(RelationRow {
+                    id: str_at(stage, r, "id")?,
+                    kind: str_at(stage, r, "type")?,
+                    other: str_at(stage, &r[other], "id")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Relate the issue `issue_id` to `related_id` as Linear's relation `kind`.
+    pub(crate) fn relation_create(
+        &self,
+        issue_id: &str,
+        related_id: &str,
+        kind: &str,
+    ) -> Result<(), LinearError> {
+        let vars = relation_create_vars(issue_id, related_id, kind);
+        self.post_graphql("relate issues", "RelationCreate", vars)
+            .map(drop)
+    }
+
+    /// Remove the relation `relation_id`.
+    pub(crate) fn relation_delete(&self, relation_id: &str) -> Result<(), LinearError> {
+        self.post_graphql("unrelate issues", "RelationDelete", issue_vars(relation_id))
+            .map(drop)
+    }
+
+    /// The links of the issue `issue_id`, Linear's attachments.
+    pub(crate) fn links(&self, issue_id: &str) -> Result<Vec<Link>, LinearError> {
+        let stage = "read links";
+        self.issue_nodes(stage, "IssueLinks", "attachments", issue_id)?
+            .iter()
+            .map(|l| {
+                Ok(Link {
+                    id: str_at(stage, l, "id")?,
+                    url: str_at(stage, l, "url")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Link `url` on the issue `issue_id`, titled `title` when one is given.
+    pub(crate) fn link_url(
+        &self,
+        issue_id: &str,
+        url: &str,
+        title: Option<&str>,
+    ) -> Result<(), LinearError> {
+        let vars = link_url_vars(issue_id, url, title);
+        self.post_graphql("link url", "LinkUrl", vars).map(drop)
+    }
+
+    /// Title the link `link_id` `title`.
+    pub(crate) fn link_update(&self, link_id: &str, title: &str) -> Result<(), LinearError> {
+        let vars = link_update_vars(link_id, title);
+        self.post_graphql("update link", "LinkUpdate", vars)
+            .map(drop)
+    }
+
+    /// Remove the link `link_id`.
+    pub(crate) fn link_delete(&self, link_id: &str) -> Result<(), LinearError> {
+        self.post_graphql("remove link", "LinkDelete", issue_vars(link_id))
+            .map(drop)
+    }
+
+    /// Subscribe the user `user_id` to the issue `issue_id`, or, when not `on`, no longer.
+    pub(crate) fn subscribe(
+        &self,
+        issue_id: &str,
+        user_id: &str,
+        on: bool,
+    ) -> Result<(), LinearError> {
+        let (stage, name) = if on {
+            ("subscribe user", "IssueSubscribe")
+        } else {
+            ("unsubscribe user", "IssueUnsubscribe")
+        };
+        self.post_graphql(stage, name, subscribe_vars(issue_id, user_id))
+            .map(drop)
+    }
+
+    /// Take the issue `issue_id` back out of the archive, or out of the trash.
+    pub(crate) fn unarchive_issue(&self, issue_id: &str) -> Result<(), LinearError> {
+        self.post_graphql("unarchive issue", "IssueUnarchive", issue_vars(issue_id))
+            .map(drop)
+    }
+
+    /// Put the issue `issue_id` in the trash.
+    pub(crate) fn delete_issue(&self, issue_id: &str) -> Result<(), LinearError> {
+        self.post_graphql("delete issue", "IssueDelete", issue_vars(issue_id))
+            .map(drop)
+    }
+
+    /// The comment `comment_id`, read as `comments` reads it.
+    pub(crate) fn comment(&self, comment_id: &str) -> Result<OneComment, LinearError> {
+        let stage = "read comment";
+        let data = self.post_graphql(stage, "CommentOne", issue_vars(comment_id))?;
+        let node = &data["comment"];
+        let issue = &node["issue"];
+        let (uuid, fields) =
+            parse_thread_comment(stage, node, &str_at(stage, issue, "identifier")?)?;
+        Ok(OneComment {
+            uuid,
+            issue: str_at(stage, issue, "id")?,
+            fields,
+        })
+    }
+
+    /// Post `body` as a comment on the issue `issue_id`, in the thread of the comment
+    /// `parent_id` when one is given: the new comment's id.
+    pub(crate) fn comment_post(
+        &self,
+        issue_id: &str,
+        body: &str,
+        parent_id: Option<&str>,
+    ) -> Result<String, LinearError> {
+        let stage = "post comment";
+        let vars = comment_post_vars(issue_id, body, parent_id);
+        let data = self.post_graphql(stage, "CommentPost", vars)?;
+        str_at(stage, &data["commentCreate"]["comment"], "id")
+    }
+
+    /// Resolve the thread the comment `comment_id` opens, by the reply `resolving_id` when one
+    /// is given, or, when not `on`, unresolve it.
+    pub(crate) fn resolve_comment(
+        &self,
+        comment_id: &str,
+        resolving_id: Option<&str>,
+        on: bool,
+    ) -> Result<(), LinearError> {
+        if on {
+            let vars = comment_resolve_vars(comment_id, resolving_id);
+            self.post_graphql("resolve comment", "CommentResolve", vars)
+        } else {
+            self.post_graphql(
+                "unresolve comment",
+                "CommentUnresolve",
+                issue_vars(comment_id),
+            )
+        }
+        .map(drop)
     }
 
     /// Every page of an `Issues` read, its variables built by `vars` from a cursor.
@@ -1469,6 +1763,57 @@ pub(crate) fn parse_full_issue(stage: &'static str, i: &Value) -> Result<Issue, 
     Ok(issue)
 }
 
+/// Where an issue sits, as `IssuePlace` reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct IssuePlace {
+    pub(crate) identifier: String,
+    /// Its place in its state's manual order.
+    pub(crate) sort_order: f64,
+    pub(crate) team: Team,
+    pub(crate) state: State,
+    /// Its project's id, when it is in one.
+    pub(crate) project: Option<String>,
+}
+
+/// One relation between two issues, as `RelationsOut` and `RelationsIn` read it: its id,
+/// Linear's relation, and the id of the issue at its other end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelationRow {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) other: String,
+}
+
+/// One comment as `CommentOne` reads it: its uuid, the uuid of the issue it is on, and its
+/// handle's fields.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OneComment {
+    pub(crate) uuid: String,
+    pub(crate) issue: String,
+    pub(crate) fields: CommentFields,
+}
+
+/// One link on an issue, Linear's attachment, as `IssueLinks` reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Link {
+    pub(crate) id: String,
+    pub(crate) url: String,
+}
+
+/// The issue node of an `IssuePlace` reply.
+pub(crate) fn parse_place(stage: &'static str, i: &Value) -> Result<IssuePlace, LinearError> {
+    Ok(IssuePlace {
+        identifier: str_at(stage, i, "identifier")?,
+        sort_order: number_at(stage, i, "sortOrder")?,
+        team: Team {
+            id: str_at(stage, &i["team"], "id")?,
+            key: str_at(stage, &i["team"], "key")?,
+        },
+        state: parse_state(stage, &i["state"])?,
+        project: opt_str_at(&i["project"], "id"),
+    })
+}
+
 /// The workspace of an `Organization` reply.
 pub(crate) fn parse_organization(
     stage: &'static str,
@@ -1721,6 +2066,25 @@ mod tests {
         "IssueCreate",
         "IssueArchive",
         "FileUpload",
+        "IssuePlace",
+        "MilestoneList",
+        "IssueWrite",
+        "RelationsOut",
+        "RelationsIn",
+        "RelationCreate",
+        "RelationDelete",
+        "IssueLinks",
+        "LinkUrl",
+        "LinkUpdate",
+        "LinkDelete",
+        "IssueSubscribe",
+        "IssueUnsubscribe",
+        "IssueUnarchive",
+        "IssueDelete",
+        "CommentOne",
+        "CommentPost",
+        "CommentResolve",
+        "CommentUnresolve",
     ];
 
     /// Every document conforms to Linear's schema — its selection, its variable types and
@@ -1805,6 +2169,9 @@ mod tests {
             ("CycleList", cycle_list_vars(team, None)),
             ("CycleList", cycle_list_vars(team, cursor)),
             ("IssueFull", issue_vars(issue)),
+            ("IssuePlace", issue_vars(issue)),
+            ("MilestoneList", milestone_list_vars(team, None)),
+            ("MilestoneList", milestone_list_vars(team, cursor)),
             ("IssueThread", thread_vars(issue, None)),
             ("IssueThread", thread_vars(issue, cursor)),
             ("IssueLabelNames", follow_up_vars(issue, "l20")),
@@ -1881,6 +2248,71 @@ mod tests {
                 file_upload_vars("application/octet-stream", "Makefile", 0),
             ),
         ];
+        // `update_issue` with every field set, and with every one it can clear cleared.
+        let every = crate::writes::IssueInput {
+            team: Some(team.into()),
+            state: Some(state.into()),
+            sort_order: Some(1e15),
+            title: Some("修复 the retry storm 🚨 — \"backoff\" resets".into()),
+            description: Some("## 完了 ✅\n\n![shot.png](https://uploads.linear.app/x)".into()),
+            priority: Some(crate::tracker::Priority::Urgent),
+            estimate: crate::writes::Change::Set(0),
+            due: crate::writes::Change::Set("2026-12-24".into()),
+            assignee: crate::writes::Change::Set(issue.into()),
+            delegate: crate::writes::Change::Set(issue.into()),
+            project: crate::writes::Change::Set(issue.into()),
+            milestone: crate::writes::Change::Set(issue.into()),
+            cycle: crate::writes::Change::Set(issue.into()),
+            parent: crate::writes::Change::Set(issue.into()),
+        };
+        let cleared = crate::writes::IssueInput {
+            estimate: crate::writes::Change::Clear,
+            due: crate::writes::Change::Clear,
+            assignee: crate::writes::Change::Clear,
+            delegate: crate::writes::Change::Clear,
+            project: crate::writes::Change::Clear,
+            milestone: crate::writes::Change::Clear,
+            cycle: crate::writes::Change::Clear,
+            parent: crate::writes::Change::Clear,
+            ..crate::writes::IssueInput::default()
+        };
+        rows.push(("IssueWrite", issue_write_vars(issue, &every.input())));
+        rows.push(("IssueWrite", issue_write_vars(issue, &cleared.input())));
+        for name in ["RelationsOut", "RelationsIn", "IssueLinks"] {
+            rows.push((name, issue_page_vars(issue, None)));
+            rows.push((name, issue_page_vars(issue, cursor)));
+        }
+        for kind in ["blocks", "duplicate", "related", "similar"] {
+            rows.push(("RelationCreate", relation_create_vars(issue, state, kind)));
+        }
+        let url = "https://github.com/acme/widgets/pull/42?tab=files#diff-修复";
+        rows.extend([
+            ("RelationDelete", issue_vars(state)),
+            (
+                "LinkUrl",
+                link_url_vars(issue, url, Some("PR #42 — \"backoff\" 🚦")),
+            ),
+            ("LinkUrl", link_url_vars(issue, url, None)),
+            ("LinkUpdate", link_update_vars(state, "")),
+            ("LinkDelete", issue_vars(state)),
+            ("IssueSubscribe", subscribe_vars(issue, team)),
+            ("IssueUnsubscribe", subscribe_vars(issue, team)),
+            ("IssueUnarchive", issue_vars(issue)),
+            ("IssueDelete", issue_vars(issue)),
+            ("CommentOne", issue_vars(state)),
+            (
+                "CommentPost",
+                comment_post_vars(
+                    issue,
+                    "看起来不对 🚨\n\n![shot.png](https://uploads.linear.app/x)",
+                    None,
+                ),
+            ),
+            ("CommentPost", comment_post_vars(issue, "", Some(state))),
+            ("CommentResolve", comment_resolve_vars(state, None)),
+            ("CommentResolve", comment_resolve_vars(state, Some(team))),
+            ("CommentUnresolve", issue_vars(state)),
+        ]);
         for keys in crate::reads::Sort::ALL.chunks(3) {
             let order = crate::reads::issue_sort(keys);
             rows.push((

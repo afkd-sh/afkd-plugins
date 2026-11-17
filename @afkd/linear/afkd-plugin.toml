@@ -1,5 +1,5 @@
 name = "@afkd/linear"
-version = "0.10.0"
+version = "0.11.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -1069,4 +1069,413 @@ name = "download_file"
   [[action.param]]
   name = "to"
   type = "str"
+  required = true
+
+# The writes. Each takes a `linear.Workspace` first and reaches Linear only through it, as a
+# read does, and gives back what it changed as Linear then holds it. A write is done now or
+# refused, never queued. A team, a state, a user, a project or a milestone is named as Linear
+# shows it and matched exactly, its id taken in its place: a name that matches nothing is
+# refused naming what there is, and one that matches several listing their ids.
+
+# Change an issue's fields: each one given is set, `nil` clears it, and one left out is left as
+# it is. `team` moves the issue to that team, and needs a `state` of that team beside it; Linear
+# drops what the new team lacks. `at` or `after` places it in its state, the new one or the one
+# it is in; with neither, Linear places it.
+[[action]]
+name = "update_issue"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "title"
+  type = "str"
+  named_only = true
+
+  # Markdown; "" empties it.
+  [[action.param]]
+  name = "description"
+  type = "str"
+  named_only = true
+
+  # Absolute paths, each read when called and embedded after the description: an image shown,
+  # any other file linked. Only beside `description`.
+  [[action.param]]
+  name = "files"
+  type = "list[str]"
+  named_only = true
+
+  # A state of the issue's team, or of `team`.
+  [[action.param]]
+  name = "state"
+  type = "str"
+  named_only = true
+
+  # A team's key.
+  [[action.param]]
+  name = "team"
+  type = "str"
+  named_only = true
+
+  # The place in the state.
+  [[action.param]]
+  name = "at"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+
+  # Right below this issue in the state.
+  [[action.param]]
+  name = "after"
+  type = "Issue"
+  named_only = true
+
+  [[action.param]]
+  name = "priority"
+  type = "Priority"
+  named_only = true
+
+  [[action.param]]
+  name = "estimate"
+  type = "int?"
+  named_only = true
+
+  # YYYY-MM-DD.
+  [[action.param]]
+  name = "due"
+  type = "str?"
+  named_only = true
+
+  # A user's display name or email, or "me".
+  [[action.param]]
+  name = "assignee"
+  type = "str?"
+  named_only = true
+
+  [[action.param]]
+  name = "delegate"
+  type = "str?"
+  named_only = true
+
+  [[action.param]]
+  name = "project"
+  type = "str?"
+  named_only = true
+
+  # A milestone of the issue's project, or of `project`.
+  [[action.param]]
+  name = "milestone"
+  type = "str?"
+  named_only = true
+
+  # A cycle's number, of the issue's team or of `team`.
+  [[action.param]]
+  name = "cycle"
+  type = "int?"
+  named_only = true
+
+  [[action.param]]
+  name = "parent"
+  type = "Issue?"
+  named_only = true
+
+# Relate the issue to `other`: afterwards `other`'s identifier is in the issue's field named
+# for `relation`, and the issue's in `other`'s matching one. A relation the issue already holds
+# is left as it is.
+[[action]]
+name = "add_relation"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  # The issue's field `other` goes in.
+  [[action.param]]
+  name = "relation"
+  type = "enum"
+  values = ["blocks", "blocked_by", "related", "similar", "duplicate_of", "duplicates"]
+  required = true
+
+  [[action.param]]
+  name = "other"
+  type = "Issue"
+  required = true
+
+# Take the relation off: afterwards `other`'s identifier is no longer in the issue's field
+# named for `relation`. A relation the issue does not hold is left as it is.
+[[action]]
+name = "remove_relation"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "relation"
+  type = "enum"
+  values = ["blocks", "blocked_by", "related", "similar", "duplicate_of", "duplicates"]
+  required = true
+
+  [[action.param]]
+  name = "other"
+  type = "Issue"
+  required = true
+
+# Link `url` on the issue, Linear's attachment. Adding a url the issue already links titles
+# that link `title`, when one is given.
+[[action]]
+name = "add_link"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "url"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "title"
+  type = "str"
+  named_only = true
+
+# Take the link to `url` off the issue. A url it does not link is left as it is.
+[[action]]
+name = "remove_link"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "url"
+  type = "str"
+  required = true
+
+# Subscribe a user to the issue: a display name or email, or "me".
+[[action]]
+name = "add_subscriber"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "user"
+  type = "str"
+  default = "me"
+
+# Unsubscribe a user from the issue: a display name or email, or "me".
+[[action]]
+name = "remove_subscriber"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "user"
+  type = "str"
+  default = "me"
+
+# Archive the issue, its sub-issues with it, as Linear does.
+[[action]]
+name = "archive_issue"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+# Take the issue back out of the archive, its sub-issues with it, or out of the trash within
+# Linear's 30 days.
+[[action]]
+name = "unarchive_issue"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+# Put the issue in Linear's trash, its sub-issues with it, as Linear does. `unarchive_issue`
+# takes it back within 30 days.
+[[action]]
+name = "delete_issue"
+returns = "Issue"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+# Post `body` as a comment on the issue, markdown, each of `files` embedded after it: an image
+# shown, any other file linked. With `reply_to` it goes in that comment's thread, a comment on
+# the same issue; a reply to a reply goes in the thread both are in.
+[[action]]
+name = "create_comment"
+returns = "Comment"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "issue"
+  type = "Issue"
+  required = true
+
+  [[action.param]]
+  name = "body"
+  type = "str"
+  required = true
+
+  # Absolute paths, each read when called.
+  [[action.param]]
+  name = "files"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "reply_to"
+  type = "Comment"
+  named_only = true
+
+# Rewrite the comment's body, each of `files` embedded after it.
+[[action]]
+name = "update_comment"
+returns = "Comment"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "comment"
+  type = "Comment"
+  required = true
+
+  [[action.param]]
+  name = "body"
+  type = "str"
+  required = true
+
+  # Absolute paths, each read when called.
+  [[action.param]]
+  name = "files"
+  type = "list[str]"
+  named_only = true
+
+# Resolve the thread the comment is in, and give back the thread's first comment, which
+# carries `resolved_at`. A reply resolves its thread, as the reply that resolved it.
+[[action]]
+name = "resolve_comment"
+returns = "Comment"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "comment"
+  type = "Comment"
+  required = true
+
+# Unresolve the thread the comment is in, and give back the thread's first comment.
+[[action]]
+name = "unresolve_comment"
+returns = "Comment"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "comment"
+  type = "Comment"
+  required = true
+
+# Delete the comment. A thread's first comment takes its replies with it, as Linear does.
+[[action]]
+name = "delete_comment"
+
+  [[action.param]]
+  name = "ws"
+  type = "Workspace"
+  required = true
+
+  [[action.param]]
+  name = "comment"
+  type = "Comment"
   required = true

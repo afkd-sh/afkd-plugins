@@ -14,13 +14,17 @@
 //!   children afkd starts for each call — the viewer, the teams, a team's issues, an issue's
 //!   comments and files and a file downloaded — and reads the issue again once it has moved
 //!   team, the two handles `==`.
+//! - The **writes** leg runs an interval service by hand whose run writes a workspace through
+//!   children afkd starts for each call: it moves an issue to the top of another state,
+//!   relates it to a blocker, comments on it with a screenshot, resolves the comment, and
+//!   replies to it and deletes the reply.
 //! - The **files** leg runs one issue whose run puts a PNG into its description and into a
 //!   comment through `files=`, and fetches both back with `fetch_files`, byte for byte.
 //! - The **validate** legs hold `afkd validate` to a `service(linear)` that writes every
 //!   setting in both credential forms, to one whose slots call every action the plugin
-//!   declares, to services calling every read with every parameter, to refusing one without
-//!   `team` or `pick_from`, and to refusing a call of an action the plugin does not
-//!   declare.
+//!   declares, to services calling every read and every write with every parameter, to
+//!   refusing one without `team` or `pick_from`, and to refusing a call of an action the
+//!   plugin does not declare.
 //! - The **README** leg validates every `conf` fence of the plugin's README, each a whole
 //!   entry file, against the installed release, with every variable the fences read set by
 //!   [`CONFIG_ENV`].
@@ -1023,6 +1027,289 @@ widgets :: service(linear) {{
     assert_eq!(code, Some(0), "every read validates:\n{report}");
 }
 
+/// Services calling every write the plugin declares with every parameter it takes, each
+/// checked for its error, validate: an interval service updating the issues it read with every
+/// field set — a team and a state, `at=.top`, files beside a description, a user by email and
+/// as `"me"`, a parent — then every field that can hold nothing cleared with `nil`, and
+/// placing one issue `after` another or `at=.bottom`; relating each to every other it read by
+/// every member of `relation` and taking it off again, linking a url with a title and without and
+/// unlinking it, subscribing and unsubscribing a user named and the one left out, archiving,
+/// putting in the trash and taking back, commenting with a file, replying, editing the reply
+/// with a file, resolving and unresolving the thread and deleting the reply; and a
+/// `service(linear)`'s slot updating, subscribing to, relating and commenting on the issue it
+/// claimed. afkd types every argument and result against the manifest.
+#[test]
+fn every_write_validates() {
+    let home = installed();
+    write_config(
+        home.path(),
+        &format!(
+            r###"import "afkd"
+import "svc:interval"
+import "@afkd/linear"
+
+WS :: linear.Workspace{{ api_key: "{API_KEY}" }}
+
+nightly :: service(interval) {{
+  every    1h
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {{
+    match linear.issues(WS, team=[ "ENG" ], state=[ "Triage" ], limit=2) {{
+      .ok(issues) => {{
+        for issue in issues {{
+          match linear.update_issue(
+            WS,
+            issue,
+            title="修复 the retry storm 🚨 — \"backoff\" resets",
+            description="## 背景\n\nIt resets on every 401.",
+            files=[ "/srv/acme/widgets/screen shot — 修复.png", "/srv/acme/widgets/run.log" ],
+            state="Todo",
+            team="OPS",
+            at=.top,
+            priority=.high,
+            estimate=0,
+            due="2026-12-24",
+            assignee="chen@acme.example",
+            delegate="me",
+            project="Trackers 🧭",
+            milestone="C — writes",
+            cycle=13,
+            parent=issue,
+          ) {{
+            .ok(updated) => {{
+              $ echo #{{updated.id}} #{{updated.team}} #{{updated.state}} #{{updated.estimate ?? 0}}
+            }}
+            .err(e) => fail("linear.update_issue: #{{e.message}}")
+          }}
+          match linear.update_issue(
+            WS,
+            issue,
+            estimate=nil,
+            due=nil,
+            assignee=nil,
+            delegate=nil,
+            project=nil,
+            milestone=nil,
+            cycle=nil,
+            parent=nil,
+            at=.bottom,
+          ) {{
+            .ok(cleared) => {{
+              if cleared.assignee != nil || cleared.parent != nil {{
+                fail("nil cleared nothing")
+              }}
+            }}
+            .err(e) => fail("linear.update_issue: #{{e.message}}")
+          }}
+          match linear.update_issue(WS, issue, after=issue, priority=.none) {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.update_issue: #{{e.message}}")
+          }}
+          for other in issues {{
+            if other.id == issue.id {{
+              continue
+            }}
+            match linear.add_relation(WS, issue, .blocks, other) {{
+              .ok(related) => {{
+                $ echo #{{related.id}} #{{related.duplicate_of ?? "none"}}
+              }}
+              .err(e) => fail("linear.add_relation: #{{e.message}}")
+            }}
+            match linear.remove_relation(WS, issue, .blocks, other) {{
+              .ok(_) => {{ }}
+              .err(e) => fail("linear.remove_relation: #{{e.message}}")
+            }}
+            match linear.add_relation(WS, issue, .blocked_by, other) {{
+              .ok(related) => {{
+                $ echo #{{related.id}} #{{related.duplicate_of ?? "none"}}
+              }}
+              .err(e) => fail("linear.add_relation: #{{e.message}}")
+            }}
+            match linear.remove_relation(WS, issue, .blocked_by, other) {{
+              .ok(_) => {{ }}
+              .err(e) => fail("linear.remove_relation: #{{e.message}}")
+            }}
+            match linear.add_relation(WS, issue, .related, other) {{
+              .ok(related) => {{
+                $ echo #{{related.id}} #{{related.duplicate_of ?? "none"}}
+              }}
+              .err(e) => fail("linear.add_relation: #{{e.message}}")
+            }}
+            match linear.remove_relation(WS, issue, .related, other) {{
+              .ok(_) => {{ }}
+              .err(e) => fail("linear.remove_relation: #{{e.message}}")
+            }}
+            match linear.add_relation(WS, issue, .similar, other) {{
+              .ok(related) => {{
+                $ echo #{{related.id}} #{{related.duplicate_of ?? "none"}}
+              }}
+              .err(e) => fail("linear.add_relation: #{{e.message}}")
+            }}
+            match linear.remove_relation(WS, issue, .similar, other) {{
+              .ok(_) => {{ }}
+              .err(e) => fail("linear.remove_relation: #{{e.message}}")
+            }}
+            match linear.add_relation(WS, issue, .duplicate_of, other) {{
+              .ok(related) => {{
+                $ echo #{{related.id}} #{{related.duplicate_of ?? "none"}}
+              }}
+              .err(e) => fail("linear.add_relation: #{{e.message}}")
+            }}
+            match linear.remove_relation(WS, issue, .duplicate_of, other) {{
+              .ok(_) => {{ }}
+              .err(e) => fail("linear.remove_relation: #{{e.message}}")
+            }}
+            match linear.add_relation(WS, issue, .duplicates, other) {{
+              .ok(related) => {{
+                $ echo #{{related.id}} #{{related.duplicate_of ?? "none"}}
+              }}
+              .err(e) => fail("linear.add_relation: #{{e.message}}")
+            }}
+            match linear.remove_relation(WS, issue, .duplicates, other) {{
+              .ok(_) => {{ }}
+              .err(e) => fail("linear.remove_relation: #{{e.message}}")
+            }}
+          }}
+          match linear.add_link(WS, issue, "https://github.com/acme/widgets/pull/42?tab=files#修复", title="PR #42 — \"backoff\" 🚦") {{
+            .ok(linked) => {{
+              for url in linked.links {{
+                $ echo #{{url}}
+              }}
+            }}
+            .err(e) => fail("linear.add_link: #{{e.message}}")
+          }}
+          match linear.add_link(WS, issue, "https://ci.acme.example/runs/9001/log.txt") {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.add_link: #{{e.message}}")
+          }}
+          match linear.remove_link(WS, issue, "https://ci.acme.example/runs/9001/log.txt") {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.remove_link: #{{e.message}}")
+          }}
+          match linear.add_subscriber(WS, issue, "chen@acme.example") {{
+            .ok(subscribed) => {{
+              for name in subscribed.subscribers {{
+                $ echo #{{name}}
+              }}
+            }}
+            .err(e) => fail("linear.add_subscriber: #{{e.message}}")
+          }}
+          match linear.remove_subscriber(WS, issue, "陳大文") {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.remove_subscriber: #{{e.message}}")
+          }}
+          match linear.remove_subscriber(WS, issue) {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.remove_subscriber: #{{e.message}}")
+          }}
+          match linear.archive_issue(WS, issue) {{
+            .ok(archived) => {{
+              if !archived.archived {{
+                fail("archive_issue archived nothing")
+              }}
+            }}
+            .err(e) => fail("linear.archive_issue: #{{e.message}}")
+          }}
+          match linear.delete_issue(WS, issue) {{
+            .ok(trashed) => {{
+              if !trashed.trashed {{
+                fail("delete_issue trashed nothing")
+              }}
+            }}
+            .err(e) => fail("linear.delete_issue: #{{e.message}}")
+          }}
+          match linear.unarchive_issue(WS, issue) {{
+            .ok(back) => {{
+              $ echo #{{back.id}} #{{back.archived}} #{{back.trashed}}
+            }}
+            .err(e) => fail("linear.unarchive_issue: #{{e.message}}")
+          }}
+          match linear.create_comment(WS, issue, "看起来不对 🚨 — it resets on every 401:\n\n```\nPOST /graphql 401\n```", files=[ "/srv/acme/widgets/run.log" ]) {{
+            .ok(comment) => {{
+              $ echo #{{comment.issue}} #{{comment.author ?? "-"}} #{{comment.reply_to ?? "none"}}
+              match linear.create_comment(WS, issue, "Which header?", reply_to=comment) {{
+                .ok(reply) => {{
+                  match linear.update_comment(WS, reply, "Which header — \"Retry-After\"?", files=[ "/srv/acme/widgets/screen shot — 修复.png" ]) {{
+                    .ok(edited) => {{
+                      if edited.edited_at == nil {{
+                        fail("update_comment edited nothing")
+                      }}
+                    }}
+                    .err(e) => fail("linear.update_comment: #{{e.message}}")
+                  }}
+                  match linear.resolve_comment(WS, reply) {{
+                    .ok(first) => {{
+                      if first.resolved_at == nil {{
+                        fail("resolve_comment resolved nothing")
+                      }}
+                    }}
+                    .err(e) => fail("linear.resolve_comment: #{{e.message}}")
+                  }}
+                  match linear.unresolve_comment(WS, comment) {{
+                    .ok(_) => {{ }}
+                    .err(e) => fail("linear.unresolve_comment: #{{e.message}}")
+                  }}
+                  match linear.delete_comment(WS, reply) {{
+                    .ok(_) => {{ }}
+                    .err(e) => fail("linear.delete_comment: #{{e.message}}")
+                  }}
+                }}
+                .err(e) => fail("linear.create_comment: #{{e.message}}")
+              }}
+            }}
+            .err(e) => fail("linear.create_comment: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+  }}
+}}
+
+widgets :: service(linear) {{
+  team      "{TEAM}"
+  api_key   "{API_KEY}"
+  pick_from "Todo"
+  work_dir  "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+    match linear.update_issue(WS, issue, state="In Progress", at=.top, assignee="me") {{
+      .ok(started) => {{
+        $ echo #{{started.id}} #{{started.state}}
+      }}
+      .err(e) => fail("linear.update_issue: #{{e.message}}")
+    }}
+    match linear.add_subscriber(WS, issue) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.add_subscriber: #{{e.message}}")
+    }}
+    match linear.issues(WS, id=[ "ENG-1" ]) {{
+      .ok(found) => {{
+        for blocker in found {{
+          match linear.add_relation(WS, issue, .blocked_by, blocker) {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.add_relation: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+    match linear.create_comment(WS, issue, "Started on #{{issue.id}} 🚦") {{
+      .ok(posted) => {{
+        $ echo #{{posted.url}}
+      }}
+      .err(e) => fail("linear.create_comment: #{{e.message}}")
+    }}
+  }}
+}}
+"###
+        ),
+    );
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "every write validates:\n{report}");
+}
+
 /// The reads leg's service: an interval service, run by hand, whose run reads the viewer,
 /// the teams, the `ENG` team's issues by when they were filed, each one's comments and
 /// files, and downloads each file; then, once the test has moved the issue to another team,
@@ -1199,7 +1486,215 @@ fn reads_leg_an_interval_service_reads_through_a_child_per_call() {
     );
 }
 
-/// The screenshot the files leg's run puts up: spaces, an em dash and wide CJK.
+/// The file, under the writes leg's work dir, its run writes what each write gave back to.
+const WRITES: &str = "writes.txt";
+
+/// The writes leg's service: an interval service, run by hand, whose run reads the issues
+/// `blocker` and `issue` by identifier and hands both to a proc that moves the issue to the
+/// top of Todo, relates it as blocked by the blocker, comments [`NOTE`] on it with the
+/// screenshot at [`SHOT`] under `home`, resolves that comment, replies to it and deletes the
+/// reply. Each write's result goes to [`WRITES`] under `home`, a line each.
+fn writes_service(home: &Path, base_url: &str, issue: &str, blocker: &str) -> String {
+    format!(
+        r###"import "afkd"
+import "svc:interval"
+import "@afkd/linear"
+
+WS :: linear.Workspace{{ api_key: "{API_KEY}", base_url: "{base_url}" }}
+
+nightly :: service(interval) {{
+  every    24h
+  work_dir "{home}"
+
+  on_run proc(run: afkd.Run) {{
+    match linear.issues(WS, id=[ "{blocker}" ]) {{
+      .ok(blockers) => {{
+        for blocker in blockers {{
+          match linear.issues(WS, id=[ "{issue}" ]) {{
+            .ok(issues) => {{
+              for issue in issues {{
+                sweep(issue, blocker)
+              }}
+            }}
+            .err(e) => fail("linear.issues: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+  }}
+}}
+
+sweep :: proc(issue: linear.Issue, blocker: linear.Issue) {{
+  match linear.update_issue(WS, issue, state="Todo", at=.top) {{
+    .ok(moved) => {{
+      $ echo moved #{{moved.id}} #{{moved.state}} >> "{home}/{WRITES}"
+    }}
+    .err(e) => fail("linear.update_issue: #{{e.message}}")
+  }}
+  match linear.add_relation(WS, issue, .blocked_by, blocker) {{
+    .ok(related) => {{
+      for id in related.blocked_by {{
+        $ echo blocked_by #{{id}} >> "{home}/{WRITES}"
+      }}
+    }}
+    .err(e) => fail("linear.add_relation: #{{e.message}}")
+  }}
+  match linear.create_comment(WS, issue, "{note}", files=[ "{home}/{SHOT}" ]) {{
+    .ok(comment) => {{
+      $ echo commented #{{comment.issue}} >> "{home}/{WRITES}"
+      match linear.resolve_comment(WS, comment) {{
+        .ok(resolved) => {{
+          if resolved.resolved_at != nil {{
+            $ echo resolved >> "{home}/{WRITES}"
+          }}
+        }}
+        .err(e) => fail("linear.resolve_comment: #{{e.message}}")
+      }}
+      match linear.create_comment(WS, issue, "Resolved by the nightly sweep.", reply_to=comment) {{
+        .ok(reply) => {{
+          match linear.delete_comment(WS, reply) {{
+            .ok(_) => {{
+              $ echo deleted >> "{home}/{WRITES}"
+            }}
+            .err(e) => fail("linear.delete_comment: #{{e.message}}")
+          }}
+        }}
+        .err(e) => fail("linear.create_comment: #{{e.message}}")
+      }}
+    }}
+    .err(e) => fail("linear.create_comment: #{{e.message}}")
+  }}
+}}
+"###,
+        home = home.display(),
+        note = literal(NOTE),
+    )
+}
+
+/// A service of another kind writes a workspace through a child afkd starts for each call:
+/// the issue moved to the top of another state, blocked by another issue, commented on with
+/// a screenshot shown after the text, the comment resolved, and a reply to it posted and
+/// deleted; the fake holds each change afterwards, and every write went out with the
+/// workspace's key.
+#[test]
+fn writes_leg_an_interval_service_writes_through_a_child_per_call() {
+    let home = installed();
+    let home = home.path();
+    let fake = FakeLinear::start();
+    fake.state("Todo", "unstarted");
+    fake.state("In Progress", "started");
+    let top = fake.issue("Todo", "Read Retry-After", "");
+    let issue = fake.issue("In Progress", TITLE, BODY);
+    let blocker = fake.issue("Todo", "Upgrade the client", "");
+    let (id, blocker_id) = (fake.identifier(&issue), fake.identifier(&blocker));
+    std::fs::write(home.join(SHOT), png()).expect("write the screenshot");
+    write_config(
+        home,
+        &writes_service(home, fake.base_url(), &id, &blocker_id),
+    );
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let out = run_subcommand_args(home, &["run", "nightly"]);
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "`afkd run nightly` within {BUDGET:?}: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            dump(home, &fake, &issue, &daemon)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    wait_for(
+        home,
+        &fake,
+        &issue,
+        &daemon,
+        "the run wrote every change",
+        || std::fs::read_to_string(home.join(WRITES)).is_ok_and(|w| w.ends_with("deleted\n")),
+    );
+    assert_eq!(
+        read(&home.join(WRITES)),
+        format!("moved {id} Todo\nblocked_by {blocker_id}\ncommented {id}\nresolved\ndeleted\n")
+    );
+    assert_eq!(fake.state_of(&issue), "Todo");
+    assert_eq!(
+        fake.in_state("Todo"),
+        [issue.clone(), top, blocker],
+        "at the top of Todo"
+    );
+    assert_eq!(fake.relation_count(), 1);
+    let uploads = fake.uploads();
+    assert_eq!(uploads.len(), 1);
+    assert!(uploads[0].landed, "the screenshot went up");
+    assert_eq!(
+        fake.file(&uploads[0].asset_url),
+        Some(png()),
+        "byte for byte"
+    );
+    let comments = fake.comments(&issue);
+    assert_eq!(comments.len(), 1, "the reply is gone: {comments:?}");
+    assert_eq!(
+        comments[0].body,
+        format!("{NOTE}\n\n![{SHOT}]({})", uploads[0].asset_url)
+    );
+    assert!(comments[0].resolved.is_some(), "the thread is resolved");
+    let seen = fake.seen();
+    let sent: Vec<&str> = seen
+        .iter()
+        .map(|s| s.operation.as_str())
+        .filter(|op| {
+            [
+                "IssueWrite",
+                "RelationCreate",
+                "CommentPost",
+                "CommentResolve",
+                "CommentDelete",
+            ]
+            .contains(op)
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            "IssueWrite",
+            "RelationCreate",
+            "CommentPost",
+            "CommentResolve",
+            "CommentPost",
+            "CommentDelete"
+        ]
+    );
+    assert!(
+        seen.iter()
+            .filter(|s| s.path == "/graphql")
+            .all(|s| s.authorization.as_deref() == Some(API_KEY)),
+        "every write went out with the workspace's key"
+    );
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fake.invalid_requests(),
+        Vec::<String>::new(),
+        "requests Linear's schema refuses"
+    );
+}
+
+/// The screenshot the files and the writes legs' runs put up: spaces, an em dash and wide
+/// CJK.
 const SHOT: &str = "screen shot — 修复.png";
 
 /// The marker the files leg's run writes once it has fetched its files.
@@ -1406,7 +1901,10 @@ widgets :: service(linear) {{
         "the refusal names the action and the plugin as the file imports it:\n{report}"
     );
     assert!(
-        report.contains("its actions are add_label, archive, comment, comments,"),
+        report.contains(
+            "its actions are add_label, add_link, add_relation, add_subscriber, archive, \
+             archive_issue, comment, comments,"
+        ),
         "and lists the actions it has:\n{report}"
     );
     write_config(home.path(), &config(r#"$ echo #{issue.title}"#));
@@ -1502,8 +2000,9 @@ fn every_readme_conf_fence_validates() {
     }
 }
 
-/// What the skill leg's run posts through `post_comment.py`, and then asks through `ask.py`:
-/// wide CJK, an emoji, quotes, a fence and several lines.
+/// What the skill leg's run posts through `post_comment.py`, and then asks through `ask.py`,
+/// and the comment the writes leg's run posts: wide CJK, an emoji, quotes, a fence and several
+/// lines.
 const NOTE: &str = "计划 ✅ — \"backoff\" capped at 30s:\n\n```\nlet backoff = 30;\n```";
 const QUESTION: &str = "看起来不对 🚨 — should a 401 reset the backoff?\n\nIt does today.";
 

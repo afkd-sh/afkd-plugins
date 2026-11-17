@@ -14,6 +14,10 @@
 # curl -sL https://raw.githubusercontent.com/linear/linear/618a737a4e6aa279b7853c650f79f209a5142bbc/packages/sdk/src/schema.graphql | awk 'NR == FNR { if (/^(type|input|enum|scalar) /) t = $2; else if (/^}/) t = ""; else have[t, $0] = 1; next } /^#/ || /^$/ { next } /^(type|input|enum|scalar) / { t = $2; next } /^}/ { next } !((t, $0) in have) { print t ": " $0 }' - tests/schema.graphql
 
 type Query {
+  comment(
+    hash: String
+    id: String
+  ): Comment!
   cycles(
     after: String
     before: String
@@ -84,12 +88,34 @@ type Query {
 }
 
 type Mutation {
+  attachmentDelete(
+    id: String!
+  ): DeletePayload!
+  attachmentLinkURL(
+    createAsUser: String
+    displayIconUrl: String
+    id: String
+    issueId: String!
+    title: String
+    url: String!
+  ): AttachmentPayload!
+  attachmentUpdate(
+    id: String!
+    input: AttachmentUpdateInput!
+  ): AttachmentPayload!
   commentCreate(
     input: CommentCreateInput!
   ): CommentPayload!
   commentDelete(
     id: String!
   ): DeletePayload!
+  commentResolve(
+    id: String!
+    resolvingCommentId: String
+  ): CommentPayload!
+  commentUnresolve(
+    id: String!
+  ): CommentPayload!
   commentUpdate(
     id: String!
     input: CommentUpdateInput!
@@ -113,17 +139,38 @@ type Mutation {
   issueCreate(
     input: IssueCreateInput!
   ): IssuePayload!
+  issueDelete(
+    id: String!
+    permanentlyDelete: Boolean
+  ): IssueArchivePayload!
   issueLabelCreate(
     input: IssueLabelCreateInput!
     replaceTeamLabels: Boolean
   ): IssueLabelPayload!
+  issueRelationCreate(
+    input: IssueRelationCreateInput!
+    overrideCreatedAt: DateTime
+  ): IssueRelationPayload!
+  issueRelationDelete(
+    id: String!
+  ): DeletePayload!
   issueRemoveLabel(
     id: String!
     labelId: String!
   ): IssuePayload!
+  issueSubscribe(
+    id: String!
+    userEmail: String
+    userId: String
+  ): IssuePayload!
   issueUnarchive(
     id: String!
   ): IssueArchivePayload!
+  issueUnsubscribe(
+    id: String!
+    userEmail: String
+    userId: String
+  ): IssuePayload!
   issueUpdate(
     id: String!
     input: IssueUpdateInput!
@@ -137,12 +184,17 @@ type ActorBot {
 }
 
 type Attachment {
+  id: ID!
   url: String!
 }
 
 type AttachmentConnection {
   nodes: [Attachment!]!
   pageInfo: PageInfo!
+}
+
+type AttachmentPayload {
+  success: Boolean!
 }
 
 type Comment {
@@ -152,6 +204,7 @@ type Comment {
   editedAt: DateTime
   externalUser: ExternalUser
   id: ID!
+  issue: Issue
   parent: Comment
   resolvedAt: DateTime
   url: String!
@@ -315,6 +368,7 @@ type IssuePayload {
 }
 
 type IssueRelation {
+  id: ID!
   issue: Issue!
   relatedIssue: Issue!
   type: String!
@@ -323,6 +377,10 @@ type IssueRelation {
 type IssueRelationConnection {
   nodes: [IssueRelation!]!
   pageInfo: PageInfo!
+}
+
+type IssueRelationPayload {
+  success: Boolean!
 }
 
 type Organization {
@@ -365,6 +423,7 @@ type ProjectConnection {
 }
 
 type ProjectMilestone {
+  id: ID!
   name: String!
   sortOrder: Float!
 }
@@ -439,6 +498,10 @@ input AssigneeSort {
   order: PaginationSortOrder
 }
 
+input AttachmentUpdateInput {
+  title: String!
+}
+
 input BooleanComparator {
   eq: Boolean
 }
@@ -446,6 +509,7 @@ input BooleanComparator {
 input CommentCreateInput {
   body: String
   issueId: String
+  parentId: String
 }
 
 input CommentUpdateInput {
@@ -545,6 +609,12 @@ input IssueLabelFilter {
   team: NullableTeamFilter
 }
 
+input IssueRelationCreateInput {
+  issueId: String!
+  relatedIssueId: String!
+  type: IssueRelationType!
+}
+
 input IssueSortInput {
   assignee: AssigneeSort
   completedAt: CompletedAtSort
@@ -562,10 +632,19 @@ input IssueSortInput {
 }
 
 input IssueUpdateInput {
+  assigneeId: String
+  cycleId: String
   delegateId: String
   description: String
+  dueDate: TimelessDate
+  estimate: Int
+  parentId: String
+  priority: Int
+  projectId: String
+  projectMilestoneId: String
   sortOrder: Float
   stateId: String
+  teamId: String
   title: String
 }
 
@@ -695,6 +774,13 @@ input WorkflowStateFilter {
 input WorkflowStateSort {
   nulls: PaginationNulls = last
   order: PaginationSortOrder
+}
+
+enum IssueRelationType {
+  blocks
+  duplicate
+  related
+  similar
 }
 
 enum PaginationNulls {
