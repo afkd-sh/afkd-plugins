@@ -39,10 +39,11 @@ jobs:
       - uses: actions/checkout@v4
 
       # A red suite must not publish, so the plugin's own suite — its unit tests, the wire
-      # contract suite against the loopback fake Linear and the skill suite, which runs the
-      # skill's scripts against that same fake — runs here, `--locked` as the release build
-      # below is. The drift gate under `drift/` needs an afkd on PATH, so it runs on a host
-      # that has one, not here.
+      # contract suite against the loopback fake Linear, the skill suite, which runs the
+      # skill's scripts against that same fake, and the check that the release notes name the
+      # afkd the README requires — runs here, `--locked` as the release build below is. The
+      # drift gate under `drift/` needs an afkd on PATH, so it runs on a host that has one,
+      # not here.
       - name: The plugin's own suite
         working-directory: '@afkd/linear'
         run: cargo test --locked
@@ -137,8 +138,11 @@ jobs:
           assets="assets/afkd-linear-x86_64-linux.tar.gz assets/afkd-linear-aarch64-linux.tar.gz"
           ls -l $assets
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
-          # the notes name the afkd it needs: 0.2.414 is the first that fills in `{platform}`
-          # and refuses a `build` line (0.2.241 brought the handle fields a claim carries).
-          printf '`afkd install @afkd/linear`, or `afkd update @afkd/linear` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.414 or newer (the platform archive, no build step; the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          # the notes name the afkd it needs, the floor the README's "Install it" states:
+          # 0.2.693 is the first whose manifests declare a `list[str]` an action returns, and
+          # this manifest's actions return structs and lists of them. Every older floor (the
+          # platform archive, no build step, the handle fields a claim carries) comes with it.
+          # `@afkd/linear/tests/release_notes.rs` fails when the notes and the README differ.
+          printf '`afkd install @afkd/linear`, or `afkd update @afkd/linear` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.693 or newer, the first whose manifests declare a `list[str]` an action returns; an older afkd refuses this manifest.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete linear --yes --cleanup-tag || true
           gh release create linear --target "$GITHUB_SHA" --title "@afkd/linear $version" --notes-file notes.md $assets
