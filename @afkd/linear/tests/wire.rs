@@ -19,7 +19,6 @@ use serde_json::{json, Value};
 
 use common::fake::{
     now_ms, png, utc, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, SCOPE, TEAM,
-    UPLOAD_CACHE_CONTROL, UPLOAD_HEADER,
 };
 use common::{ws, Plugin, TempDir, DEVELOP, DISCUSS, MAX_LINE, OWNER};
 
@@ -72,27 +71,29 @@ fn team() -> Team {
     }
 }
 
-/// The service's settings, lowered to JSON as afkd lowers them: every value a string —
-/// afkd's own two keys along for the ride — and no slot, since afkd runs those.
+/// The service's settings, lowered to JSON as afkd lowers them: every value a string, a
+/// list an array of them, an unset `str?` `null` — afkd's own two keys along for the ride —
+/// and no slot, since afkd runs those.
 fn settings(fake: &FakeLinear) -> Value {
     json!({
-        "team": TEAM,
-        "base_url": fake.base_url(),
         "api_key": API_KEY,
-        "pick_from": "Todo",
+        "client_id": null,
+        "client_secret": null,
+        "base_url": fake.base_url(),
+        "team": [TEAM],
+        "claim_from": ["Todo"],
         "every": "30s",
         "max_attempts": "2",
     })
 }
 
-/// The same service, authenticating as the OAuth app.
+/// The same service, authenticating as the OAuth app, its API key written `""` as a config
+/// reading an unset variable writes it.
 fn app_settings(fake: &FakeLinear) -> Value {
-    let mut s = settings(fake);
-    let s_obj = s.as_object_mut().unwrap();
-    s_obj.remove("api_key");
-    s_obj.insert("client_id".into(), json!(CLIENT_ID));
-    s_obj.insert("client_secret".into(), json!(CLIENT_SECRET));
-    s
+    with(
+        settings(fake),
+        json!({"api_key": "", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET}),
+    )
 }
 
 /// `settings` with `extra` on top.
@@ -107,7 +108,7 @@ fn with(mut settings: Value, extra: Value) -> Value {
 fn discuss_settings(fake: &FakeLinear, who: Value) -> Value {
     with(
         settings(fake),
-        json!({"pick_from": "Triage", "discuss_with": who}),
+        json!({"claim_from": ["Triage"], "discuss_with": who}),
     )
 }
 
@@ -158,18 +159,6 @@ fn operations(fake: &FakeLinear) -> Vec<String> {
     fake.seen().into_iter().map(|s| s.operation).collect()
 }
 
-/// Poll `done` for up to `budget`, every 50 ms.
-fn within(budget: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + budget;
-    while Instant::now() < deadline {
-        if done() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    done()
-}
-
 /// Park `unit`: classify it parked, have afkd's question on the issue, and finish it parked.
 fn park(plugin: &mut Plugin, fake: &FakeLinear, issue: &str, unit: &Value, as_author: Author) {
     let scratch = TempDir::new("park");
@@ -216,7 +205,8 @@ fn hello_arms_and_lists_every_call_it_answers() {
 
 /// Each credential afkd let through that is not exactly one of an API key or an app's id
 /// and secret is refused at `hello`, naming the setting; so are a block without `team` or
-/// `pick_from` (which afkd refuses first), and another kind.
+/// `claim_from` (which afkd refuses first), an `only_*` filter `issues` would refuse, and
+/// another kind.
 #[test]
 fn hello_refuses_each_wrong_auth_combination() {
     let t = team();
@@ -230,39 +220,50 @@ fn hello_refuses_each_wrong_auth_combination() {
     };
     for (kind, block, sentence) in [
         (
-            "issue",
+            "intake",
             with(
                 base.clone(),
                 json!({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET}),
             ),
-            "trigger issue: setting `api_key`: write api_key or client_id and client_secret, not \
-             both",
+            "trigger intake: setting `api_key`: write api_key or client_id and client_secret, \
+             not both",
         ),
         (
-            "issue",
-            without(&["api_key"], json!({})),
-            "trigger issue: setting `api_key`: needs api_key, or client_id and client_secret",
+            "intake",
+            with(base.clone(), json!({"api_key": null})),
+            "trigger intake: setting `api_key`: needs api_key, or client_id and client_secret",
         ),
         (
-            "issue",
-            without(&["api_key"], json!({"client_id": CLIENT_ID})),
-            "trigger issue: setting `client_id`: client_id needs client_secret",
+            "intake",
+            with(base.clone(), json!({"api_key": "", "client_id": CLIENT_ID})),
+            "trigger intake: setting `client_id`: client_id needs client_secret",
         ),
         (
-            "issue",
+            "intake",
             without(&["api_key"], json!({"client_secret": CLIENT_SECRET})),
-            "trigger issue: setting `client_secret`: client_secret needs client_id",
+            "trigger intake: setting `client_secret`: client_secret needs client_id",
         ),
         (
-            "issue",
+            "intake",
             without(&["team"], json!({})),
-            "trigger issue: setting `team`: `team` is required: name the team by its key",
+            "trigger intake: setting `team`: `team` is required: name each team by its key",
         ),
         (
-            "issue",
-            without(&["pick_from"], json!({})),
-            "trigger issue: setting `pick_from`: `pick_from` is required: name the workflow \
-             state or states new issues are claimed from",
+            "intake",
+            without(&["claim_from"], json!({})),
+            "trigger intake: setting `claim_from`: `claim_from` is required: name the \
+             workflow state or states new issues are claimed from",
+        ),
+        (
+            "intake",
+            with(base.clone(), json!({"only_parent": ["the epic 🧭"]})),
+            "trigger intake: setting `only_parent`: only_parent \"the epic 🧭\" is neither an \
+             identifier (ENG-123) nor a uuid",
+        ),
+        (
+            "card",
+            base.clone(),
+            "kind `card` is not provided by @afkd/linear",
         ),
         (
             "card",
@@ -337,8 +338,9 @@ fn a_won_race_hands_over_the_unit() {
                 "LINEAR_AUTHORIZATION": API_KEY,
                 "LINEAR_ISSUE": "ENG-101",
                 "LINEAR_ISSUE_ID": t.issue,
-                "LINEAR_TEAM_ID": t.fake.team_id(),
             },
+            "args": {"workspace": {"api_key": API_KEY, "client_id": null, "client_secret": null,
+                                   "base_url": t.fake.base_url()}},
             "files": [{"path": "task.md", "text": format!(
                 "{TITLE}\n\n{BODY}\n\n## New comments\n\n**Phil Ek:** {PHIL}\n\n**陳大文:** {CHEN}\n"
             )}],
@@ -363,7 +365,7 @@ fn a_won_race_hands_over_the_unit() {
 /// With nothing claimable in the first state — its one issue under a live claim — the poll
 /// claims from the second, and the key names the state the issue came from.
 #[test]
-fn pick_from_names_two_states_and_claims_from_the_second() {
+fn claim_from_names_two_states_and_claims_from_the_second() {
     let t = team();
     let rival = t.fake.user("Rival Two", "rival-two", "rival2@acme.example");
     t.fake.comment(
@@ -379,7 +381,7 @@ fn pick_from_names_two_states_and_claims_from_the_second() {
     );
     let mut plugin = Plugin::armed(with(
         settings(&t.fake),
-        json!({"pick_from": [["Todo", "Backlog"]]}),
+        json!({"claim_from": ["Todo", "Backlog"]}),
     ));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(unit["id"], t.fake.identifier(&second));
@@ -416,197 +418,303 @@ fn pick_from_names_two_states_and_claims_from_the_second() {
     end(plugin, &t.fake);
 }
 
-/// `require_member me` claims the issue assigned to the API key's user, past one assigned
-/// to someone else.
+/// Two teams, two states each: the scan reads team by team and state by state in the order
+/// written, a key keeps every state but the first team's first, a unit's handle names its own
+/// team, and a crashed claim goes back to the bottom of the state of its own team it came from.
 #[test]
-fn require_member_me_matches_the_assignee() {
+fn claim_from_scans_team_by_team_and_state_by_state() {
     let t = team();
-    t.fake.assign(&t.issue, &t.phil);
-    let mine = t.fake.issue("Todo", "Mine", "");
-    t.fake.assign(&mine, &t.fake.key_user());
-    let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"require_member": ["me"]})));
-    assert_eq!(plugin.poll()["unit"]["thread"], mine);
-    assert!(claims(&t.fake, &t.issue).is_empty());
-    end(plugin, &t.fake);
-}
-
-/// `require_member me`, for an app, holds for an issue delegated to the app — what
-/// `app:assignable` makes it — even with a human assignee.
-#[test]
-fn require_member_me_matches_the_delegate() {
-    let t = team();
-    t.fake.assign(&t.issue, &t.phil);
-    let handed = t.fake.issue("Todo", "Handed to the app 🤖", "");
-    t.fake.assign(&handed, &t.phil);
-    t.fake.delegate(&handed, &t.fake.app_user());
+    t.fake.team("WEB", "Webb & Öppen källkod 🌐");
+    let web_todo = t.fake.team_state("WEB", "Todo", "unstarted");
+    t.fake.team_state("WEB", "Backlog", "backlog");
+    let eng_backlog = t
+        .fake
+        .issue("Backlog", "Bakgrund: stadsvy i skymning 🌆", "");
+    let web_todo_issue = t
+        .fake
+        .team_issue("WEB", "Todo", "Hjälpvideo — steg för steg 🎬", "");
+    let web_waiting = t.fake.team_issue("WEB", "Todo", "Väntar på svar", "");
+    let web_backlog = t.fake.team_issue("WEB", "Backlog", "Pris: 1 299 kr", "");
     let mut plugin = Plugin::armed(with(
-        app_settings(&t.fake),
-        json!({"require_member": ["me"]}),
+        settings(&t.fake),
+        json!({"team": [TEAM, "WEB"], "claim_from": ["Todo", "Backlog"]}),
     ));
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(unit["thread"], handed);
-    assert_eq!(unit["self"], t.fake.app_user());
+    let mut units = Vec::new();
+    for want in [
+        &t.issue,
+        &eng_backlog,
+        &web_todo_issue,
+        &web_waiting,
+        &web_backlog,
+    ] {
+        let unit = plugin.poll()["unit"].clone();
+        assert_eq!(&unit["thread"], want, "{}", plugin.stderr());
+        units.push(unit);
+    }
+    assert_eq!(plugin.poll(), json!({"fire": false}), "every issue is held");
+    let key = |n: usize| units[n]["key"].as_str().unwrap().to_string();
+    assert_eq!(
+        key(0).matches('#').count(),
+        1,
+        "the first team's first state"
+    );
+    assert_eq!(key(2).matches('#').count(), 2, "another team's first state");
+    assert!(key(2).ends_with(&format!("#{web_todo}")), "{}", key(2));
+    assert_eq!(units[0]["fields"]["team"], TEAM);
+    assert_eq!(units[2]["fields"]["team"], "WEB");
+
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": key(2)})),
+        json!({"released": true})
+    );
+    assert_eq!(
+        t.fake.in_team_state("WEB", "Todo"),
+        [web_waiting.clone(), web_todo_issue.clone()],
+        "to the bottom of its own team's state"
+    );
+    assert!(claims(&t.fake, &web_todo_issue).is_empty());
     end(plugin, &t.fake);
 }
 
-/// A user is named by display name or by email, either way the same user.
+/// A `claim_from` state one of the teams lacks fails the poll naming the state and the team,
+/// before any issue is read or written.
 #[test]
-fn require_member_names_a_user_by_display_name_and_by_email() {
-    for name in ["chen", "chen@acme.example"] {
+fn a_claim_from_state_a_team_lacks_is_an_idle_beat_naming_both() {
+    let t = team();
+    t.fake.team("WEB", "Web");
+    t.fake.team_state("WEB", "Todo", "unstarted");
+    let mut plugin = Plugin::armed(with(
+        settings(&t.fake),
+        json!({"team": [TEAM, "WEB"], "claim_from": ["Todo", "Backlog"]}),
+    ));
+    assert_eq!(plugin.poll(), json!({"fire": false}));
+    assert_eq!(
+        plugin.stderr_soon("Backlog"),
+        "afkd-linear: linear resolve state: no workflow state named 'Backlog' in team WEB\n"
+    );
+    assert!(
+        !operations(&t.fake).contains(&"CommentCreate".to_string()),
+        "nothing is posted"
+    );
+    end(plugin, &t.fake);
+}
+
+/// Each `only_*` setting and `skip_labels` claims only what the `issues` filter of its name
+/// keeps: the team's first Todo issue, which the filter drops, is passed over without a word
+/// on it, and the one it keeps is claimed.
+#[test]
+fn each_only_setting_claims_only_what_its_filter_keeps() {
+    type Seed = fn(&Team) -> String;
+    let cases: [(&str, Value, bool, Seed); 13] = [
+        (
+            "only_state_type",
+            json!({"claim_from": ["Todo", "Backlog"],
+                                   "only_state_type": ["backlog"]}),
+            false,
+            |t| t.fake.issue("Backlog", "Bakgrund 🌆", ""),
+        ),
+        (
+            "only_priority",
+            json!({"only_priority": ["urgent", "high"]}),
+            false,
+            |t| {
+                let kept = t.fake.issue("Todo", "Brådskande 🚨", "");
+                t.fake.set_priority(&kept, 2);
+                kept
+            },
+        ),
+        (
+            "only_labels",
+            json!({"only_labels": ["afkd/ready", "Väntar på svar"]}),
+            false,
+            |t| {
+                let kept = t.fake.issue("Todo", "Ready ✅", "");
+                t.fake.label(&kept, "afkd/ready");
+                t.fake.label(&kept, "Väntar på svar");
+                t.fake.label(&t.issue, "afkd/ready");
+                kept
+            },
+        ),
+        (
+            "only_assignee me, none",
+            json!({"only_assignee": ["me", "none"]}),
+            false,
+            |t| {
+                t.fake.assign(&t.issue, &t.phil);
+                t.fake.issue("Todo", "Nobody's — 自由", "")
+            },
+        ),
+        (
+            "only_assignee by name",
+            json!({"only_assignee": ["chen"]}),
+            false,
+            |t| {
+                let kept = t.fake.issue("Todo", "Chen's", "");
+                t.fake.assign(&kept, &t.chen);
+                kept
+            },
+        ),
+        (
+            "only_assignee by email",
+            json!({"only_assignee": ["chen@acme.example"]}),
+            false,
+            |t| {
+                let kept = t.fake.issue("Todo", "Chen's", "");
+                t.fake.assign(&kept, &t.chen);
+                kept
+            },
+        ),
+        (
+            "only_delegate me, as the app",
+            json!({"only_delegate": ["me"]}),
+            true,
+            |t| {
+                t.fake.assign(&t.issue, &t.phil);
+                let kept = t.fake.issue("Todo", "Handed to the app 🤖", "");
+                t.fake.assign(&kept, &t.phil);
+                t.fake.delegate(&kept, &t.fake.app_user());
+                kept
+            },
+        ),
+        (
+            "only_project",
+            json!({"only_project": ["Trackers 🧭"]}),
+            false,
+            |t| {
+                let project = t.fake.project("Trackers 🧭", &[TEAM], &[]);
+                let kept = t.fake.issue("Todo", "In the project", "");
+                t.fake.set_project(&kept, &project, None);
+                kept
+            },
+        ),
+        (
+            "only_milestone",
+            json!({"only_milestone": ["Beta — 2"]}),
+            false,
+            |t| {
+                let project = t.fake.project("Trackers 🧭", &[TEAM], &[("Beta — 2", 1.0)]);
+                t.fake.set_project(&t.issue, &project, None);
+                let kept = t.fake.issue("Todo", "In the milestone", "");
+                t.fake.set_project(&kept, &project, Some("Beta — 2"));
+                kept
+            },
+        ),
+        ("only_cycle", json!({"only_cycle": ["12"]}), false, |t| {
+            let now = now_ms();
+            let past = t
+                .fake
+                .cycle(TEAM, 11, None, now - 9_000_000, now - 1_000, false);
+            let cycle = t
+                .fake
+                .cycle(TEAM, 12, Some("Höst"), now - 1_000, now + 9_000_000, true);
+            t.fake.set_cycle(&t.issue, &past);
+            let kept = t.fake.issue("Todo", "In cycle 12", "");
+            t.fake.set_cycle(&kept, &cycle);
+            kept
+        }),
+        (
+            "only_parent",
+            json!({"only_parent": ["ENG-102"]}),
+            false,
+            |t| {
+                let epic = t.fake.issue("Backlog", "Epic: 重试 that works", "");
+                assert_eq!(t.fake.identifier(&epic), "ENG-102");
+                let kept = t.fake.issue("Todo", "Cap the backoff", "");
+                t.fake.set_parent(&kept, &epic);
+                kept
+            },
+        ),
+        ("only_text", json!({"only_text": "AT 30S"}), false, |t| {
+            t.fake.issue("Todo", "Cap the backoff at 30s", "")
+        }),
+        (
+            "skip_labels",
+            json!({"skip_labels": ["Blockerat / Väntar", "Hold"]}),
+            false,
+            |t| {
+                t.fake.label(&t.issue, "Blockerat / Väntar");
+                t.fake.issue("Todo", "Free", "")
+            },
+        ),
+    ];
+    for (case, extra, app, seed) in cases {
         let t = team();
-        t.fake.assign(&t.issue, &t.phil);
-        let chens = t.fake.issue("Todo", "Chen's", "");
-        t.fake.assign(&chens, &t.chen);
-        let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"require_member": [name]})));
-        assert_eq!(plugin.poll()["unit"]["thread"], chens, "{name}");
+        let kept = seed(&t);
+        let base = if app {
+            app_settings(&t.fake)
+        } else {
+            settings(&t.fake)
+        };
+        let mut plugin = Plugin::armed(with(base, extra));
+        assert_eq!(
+            plugin.poll()["unit"]["thread"],
+            kept,
+            "{case}: {}",
+            plugin.stderr()
+        );
+        assert!(
+            claims(&t.fake, &t.issue).is_empty(),
+            "{case}: the dropped issue is not touched"
+        );
+        assert_eq!(
+            plugin.poll(),
+            json!({"fire": false}),
+            "{case}: nothing else passes"
+        );
         end(plugin, &t.fake);
     }
 }
 
-/// A `require_member` naming no user is an idle beat that says so, and posts nothing.
+/// Every slot is passed the workspace the service's credential settings build, and a slot's
+/// write through it reaches Linear with the service's credential: the API key as it is, or
+/// the app's token fetched with its id and secret. The issue the service claimed is the
+/// handle it passes.
 #[test]
-fn require_member_unknown_user_is_an_idle_beat_naming_it() {
-    let t = team();
-    let mut plugin = Plugin::armed(with(
-        settings(&t.fake),
-        json!({"require_member": ["ghost@acme.example"]}),
-    ));
-    assert_eq!(plugin.poll(), json!({"fire": false}));
-    assert_eq!(
-        plugin.stderr_soon("ghost"),
-        "afkd-linear: linear resolve user: no user whose display name or email is \
-         'ghost@acme.example'\n"
-    );
-    assert!(claims(&t.fake, &t.issue).is_empty());
-    end(plugin, &t.fake);
-}
-
-/// `require_member "me", "none"`, for an app, over four Todo issues — one assigned to a
-/// person, one delegated to another app, one nobody holds, one delegated to this app —
-/// claims the free one and then the app's, and never touches the other two.
-#[test]
-fn require_member_me_or_none_claims_a_free_issue_and_the_apps_own_and_skips_the_rest() {
-    let t = team();
-    let vesper = t
-        .fake
-        .user("Vesper (app)", "vesper", "vesper@oauthapp.example");
-    t.fake.assign(&t.issue, &t.phil);
-    let vespers = t.fake.issue("Todo", "Vesper's 🌑", "");
-    t.fake.delegate(&vespers, &vesper);
-    let free = t.fake.issue("Todo", "Nobody's — 自由", "");
-    let mine = t.fake.issue("Todo", "Handed to the app 🤖", "");
-    t.fake.delegate(&mine, &t.fake.app_user());
-    let mut plugin = Plugin::armed(with(
-        app_settings(&t.fake),
-        json!({"require_member": [["me", "none"]]}),
-    ));
-    assert_eq!(plugin.poll()["unit"]["thread"], free);
-    assert_eq!(plugin.poll()["unit"]["thread"], mine);
-    assert_eq!(plugin.poll(), json!({"fire": false}));
-    for held in [&t.issue, &vespers] {
-        assert!(claims(&t.fake, held).is_empty(), "{held} is not touched");
+fn a_slots_write_reaches_linear_with_the_services_credential() {
+    for app in [false, true] {
+        let t = team();
+        let base = if app {
+            app_settings(&t.fake)
+        } else {
+            settings(&t.fake)
+        };
+        let mut plugin = Plugin::armed(base);
+        let unit = plugin.poll()["unit"].clone();
+        let workspace = unit["args"]["workspace"].clone();
+        let (client_id, client_secret) = t.fake.app_credentials();
+        assert_eq!(
+            workspace,
+            if app {
+                json!({"api_key": null, "client_id": client_id, "client_secret": client_secret,
+                       "base_url": t.fake.base_url()})
+            } else {
+                json!({"api_key": API_KEY, "client_id": null, "client_secret": null,
+                       "base_url": t.fake.base_url()})
+            }
+        );
+        let issue = json!({"id": unit["id"], "key": unit["key"]});
+        let moved = plugin.read_call(
+            "update_issue",
+            json!({"ws": workspace, "issue": issue, "state": "In Progress", "at": "top"}),
+        );
+        assert_eq!(moved["ok"], true, "{moved}");
+        assert_eq!(moved["handle"]["fields"]["state"], "In Progress");
+        assert_eq!(t.fake.state_of(&t.issue), "In Progress");
+        let write = t
+            .fake
+            .seen()
+            .into_iter()
+            .rfind(|s| s.operation == "IssueWrite")
+            .expect("the update went out");
+        let authorization = write.authorization.unwrap_or_default();
+        if app {
+            assert!(authorization.starts_with("Bearer "), "{authorization}");
+            assert!(t.fake.token_fetches() >= 1);
+        } else {
+            assert_eq!(authorization, API_KEY);
+        }
+        end(plugin, &t.fake);
     }
-    end(plugin, &t.fake);
-}
-
-/// `on_claim` delegating the free issue to `me` makes it the app's: the issue's delegate is
-/// the viewer, the request sends just that, and once the claim is released the next poll
-/// claims the same issue again, now held by the app.
-#[test]
-fn delegate_me_hands_the_issue_to_the_app_and_the_next_poll_still_passes_it() {
-    let t = team();
-    t.fake.assign(&t.issue, &t.phil);
-    let free = t.fake.issue("Todo", "Nobody's — 自由", "");
-    let mut plugin = Plugin::armed(with(
-        app_settings(&t.fake),
-        json!({"require_member": [["me", "none"]]}),
-    ));
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(unit["thread"], free);
-    assert_eq!(
-        act(&mut plugin, &unit, "delegate", json!({"to": "me"})),
-        json!({"ok": true})
-    );
-    assert_eq!(t.fake.delegate_of(&free), Some(t.fake.app_user()));
-    let update = t
-        .fake
-        .seen()
-        .into_iter()
-        .rfind(|s| s.operation == "IssueUpdate")
-        .expect("the delegate request");
-    assert_eq!(
-        update.variables,
-        json!({"id": free, "input": {"delegateId": t.fake.app_user()}})
-    );
-    let line = format!(
-        "[linear] delegating issue {} \"Nobody's — 自由\" to \"me\"\n",
-        unit["id"].as_str().unwrap()
-    );
-    let stderr = plugin.stderr_soon("delegating");
-    assert!(stderr.contains(&line), "{stderr}");
-
-    assert_eq!(
-        plugin.call(json!({"call": "release", "key": unit["key"]})),
-        json!({"released": true})
-    );
-    assert!(claims(&t.fake, &free).is_empty());
-    assert_eq!(plugin.poll()["unit"]["thread"], free);
-    assert!(
-        claims(&t.fake, &t.issue).is_empty(),
-        "Phil's is not touched"
-    );
-    end(plugin, &t.fake);
-}
-
-/// An unknown name in a `require_member` list fails the poll as a lone one does, even
-/// beside `me` and `none`, and posts nothing.
-#[test]
-fn require_member_list_with_an_unknown_name_is_an_idle_beat_naming_it() {
-    let t = team();
-    let mut plugin = Plugin::armed(with(
-        settings(&t.fake),
-        json!({"require_member": [["me", "none", "ghost@acme.example"]]}),
-    ));
-    assert_eq!(plugin.poll(), json!({"fire": false}));
-    assert_eq!(
-        plugin.stderr_soon("ghost"),
-        "afkd-linear: linear resolve user: no user whose display name or email is \
-         'ghost@acme.example'\n"
-    );
-    assert!(claims(&t.fake, &t.issue).is_empty());
-    end(plugin, &t.fake);
-}
-
-#[test]
-fn require_label_claims_only_the_labelled_issue() {
-    let t = team();
-    let ready = t.fake.issue("Todo", "Ready ✅", "");
-    t.fake.label(&ready, "afkd/ready");
-    let mut plugin = Plugin::armed(with(
-        settings(&t.fake),
-        json!({"require_label": "afkd/ready"}),
-    ));
-    assert_eq!(plugin.poll()["unit"]["thread"], ready);
-    assert!(claims(&t.fake, &t.issue).is_empty());
-    end(plugin, &t.fake);
-}
-
-/// An issue carrying a denied label is never claimed, whatever required label it carries
-/// too.
-#[test]
-fn without_label_wins_over_require_label() {
-    let t = team();
-    t.fake.label(&t.issue, "afkd/ready");
-    t.fake.label(&t.issue, "Blockerat / Väntar");
-    let ready = t.fake.issue("Todo", "Ready", "");
-    t.fake.label(&ready, "afkd/ready");
-    let mut plugin = Plugin::armed(with(
-        settings(&t.fake),
-        json!({"require_label": "afkd/ready", "without_label": [["Hold", "Blockerat / Väntar"]]}),
-    ));
-    assert_eq!(plugin.poll()["unit"]["thread"], ready);
-    assert!(claims(&t.fake, &t.issue).is_empty());
-    end(plugin, &t.fake);
 }
 
 /// `discuss_with anyone`: an issue fires on first sight; a turn that spoke leaves afkd the
@@ -785,9 +893,10 @@ fn a_related_issue_is_not_blocked() {
     end(plugin, &t.fake);
 }
 
-/// A blocker behind twenty other relations still holds the issue back: `Issues` reads an
-/// issue's inverse relations twenty to the page, and the rest are read too. Once the blocker
-/// is done the issue is claimed, naming it.
+/// A blocker behind twenty other relations still holds the issue back, in the gate Linear
+/// applies to the state's read. Once the blocker is done the issue is claimed, and its handle
+/// names it: the full read takes an issue's inverse relations twenty to the page, and reads
+/// the rest too.
 #[test]
 fn a_blocker_behind_twenty_other_relations_still_holds_the_issue_back() {
     let t = team();
@@ -806,7 +915,6 @@ fn a_blocker_behind_twenty_other_relations_still_holds_the_issue_back() {
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(unit["thread"], next, "the blocked issue is passed over");
     assert!(claims(&t.fake, &t.issue).is_empty());
-    assert!(operations(&t.fake).contains(&"IssueRelations".to_string()));
     assert_eq!(
         finish(&mut plugin, &unit, "clean", facts("proceed", None)),
         json!({"ok": true})
@@ -820,6 +928,7 @@ fn a_blocker_behind_twenty_other_relations_still_holds_the_issue_back() {
         unit["fields"]["blocked_by"],
         json!([t.fake.identifier(&blocker)])
     );
+    assert!(operations(&t.fake).contains(&"IssueRelations".to_string()));
     end(plugin, &t.fake);
 }
 
@@ -913,7 +1022,7 @@ fn the_claimed_issue_carries_every_field_of_the_handle() {
     let r = rich();
     let (t, f) = (&r.t, &r.t.fake);
     let id = |issue: &str| f.identifier(issue);
-    let mut plugin = Plugin::armed(with(settings(f), json!({"without_label": "afkd/hold"})));
+    let mut plugin = Plugin::armed(with(settings(f), json!({"skip_labels": ["afkd/hold"]})));
     let unit = plugin.poll()["unit"].clone();
     assert_eq!(unit["thread"], t.issue);
     assert_eq!(
@@ -952,7 +1061,7 @@ fn the_claimed_issue_carries_every_field_of_the_handle() {
 fn a_claimed_issue_and_the_same_issue_read_carry_the_same_fields() {
     let r = rich();
     let (t, f) = (&r.t, &r.t.fake);
-    let mut plugin = Plugin::armed(with(settings(f), json!({"without_label": "afkd/hold"})));
+    let mut plugin = Plugin::armed(with(settings(f), json!({"skip_labels": ["afkd/hold"]})));
     let unit = plugin.poll()["unit"].clone();
     let read = plugin.read_call("issues", json!({"ws": ws(f), "id": [t.issue]}));
     assert_eq!(read["handles"][0]["fields"], unit["fields"]);
@@ -1122,7 +1231,7 @@ fn an_app_token_is_fetched_again_before_it_expires() {
     t.fake.token_lifetime(2);
     let mut plugin = Plugin::armed(with(
         app_settings(&t.fake),
-        json!({"require_label": "none-yet"}),
+        json!({"only_labels": ["none-yet"]}),
     ));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     assert_eq!(t.fake.token_fetches(), 1);
@@ -1158,7 +1267,7 @@ fn a_revoked_token_is_fetched_again_and_the_request_retried_once() {
     let t = team();
     let mut plugin = Plugin::armed(with(
         app_settings(&t.fake),
-        json!({"require_label": "later"}),
+        json!({"only_labels": ["later"]}),
     ));
     assert_eq!(plugin.poll(), json!({"fire": false}));
     t.fake.revoke_tokens();
@@ -1194,12 +1303,12 @@ fn a_revoked_token_is_fetched_again_and_the_request_retried_once() {
     end(plugin, &t.fake);
 }
 
-// --- rate limits, through the outbox ---
+// --- the kind's own notes ---
 
-/// An attempt note Linear rate limits is queued, `attempt_failed` answers `ok` at once, and
-/// the plugin's worker lands it — no sooner than the `Retry-After` Linear named.
+/// An attempt note Linear rate limits is said and lost: `attempt_failed` answers `ok` at
+/// once, and the note is tried once.
 #[test]
-fn a_rate_limited_attempt_note_is_queued_and_lands_from_the_outbox() {
+fn a_rate_limited_attempt_note_is_said_and_lost() {
     let t = team();
     let mut plugin = Plugin::armed(settings(&t.fake));
     let unit = plugin.poll()["unit"].clone();
@@ -1215,27 +1324,17 @@ fn a_rate_limited_attempt_note_is_queued_and_lands_from_the_outbox() {
         json!({"ok": true})
     );
     assert!(asked.elapsed() < Duration::from_secs(5), "answered at once");
-    let stderr = plugin.stderr_soon("is queued");
+    let stderr = plugin.stderr_soon("is lost");
     assert!(
-        stderr.contains("linear could not take a write for issue ENG-101 \"") &&
-        stderr.contains("Linear refused it (429): Rate limit exceeded; the comment \"[afkd-attempt] 1/2: run_cmd `cargo test` failed: 101…\" is queued and retried for up to 1h"),
+        stderr.contains(&format!(
+            "afkd-linear: issue ENG-101 \"{TITLE}\": the comment \"[afkd-attempt] 1/2: run_cmd \
+             `cargo test` failed: 101…\" is lost — linear post comment: Linear refused it (429): \
+             Rate limit exceeded"
+        )),
         "{stderr}"
     );
-    assert!(
-        within(Duration::from_secs(20), || !said(
-            &t.fake,
-            &t.issue,
-            "[afkd-attempt]"
-        )
-        .is_empty()),
-        "the outbox never delivered; stderr: {}",
-        plugin.stderr()
-    );
-    assert_eq!(
-        said(&t.fake, &t.issue, "[afkd-attempt]"),
-        [format!("[afkd-attempt] 1/2: {reason}")]
-    );
-    let posts: Vec<Instant> = t
+    assert!(said(&t.fake, &t.issue, "[afkd-attempt]").is_empty());
+    let tries = t
         .fake
         .seen()
         .into_iter()
@@ -1245,17 +1344,8 @@ fn a_rate_limited_attempt_note_is_queued_and_lands_from_the_outbox() {
                     .as_str()
                     .is_some_and(|b| b.starts_with("[afkd-attempt]"))
         })
-        .map(|s| s.at)
-        .collect();
-    assert_eq!(posts.len(), 2, "the refused try, and the one that landed");
-    assert!(
-        posts[1] - posts[0] >= Duration::from_secs(7),
-        "retried after {:?}, before the Retry-After",
-        posts[1] - posts[0]
-    );
-    assert!(plugin.stderr_soon("posting the comment").contains(
-        "[linear] posting the comment \"[afkd-attempt] 1/2: run_cmd `cargo test` failed: 101…\" on issue ENG-101"
-    ));
+        .count();
+    assert_eq!(tries, 1, "tried once, never again");
     end(plugin, &t.fake);
 }
 
@@ -1568,7 +1658,7 @@ fn a_park_finish_labels_marks_and_releases() {
 
 /// A park on a team that already has its `Needs Info` label badges the issue with that label,
 /// creating none beside it. The parked issue waits, its question unanswered, in the state it
-/// sat in; a human's reply re-arms it ahead of `pick_from`, the badge and owner marker coming
+/// sat in; a human's reply re-arms it ahead of `claim_from`, the badge and owner marker coming
 /// off.
 #[test]
 fn a_parked_issue_answered_is_reclaimed_and_unbadged() {
@@ -1736,60 +1826,6 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
     end(plugin, &t.fake);
 }
 
-/// Linear out of reach while afkd reports a failed attempt: the call still answers `ok`,
-/// the note is said queued, and once Linear is back the worker lands it.
-#[test]
-fn a_call_during_an_outage_answers_ok_and_lands_when_linear_returns() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    t.fake.outage();
-    assert_eq!(
-        plugin.call(
-            json!({"call": "attempt_failed", "key": unit["key"], "n": 1, "max": 2,
-                           "reason": "git fetch: could not resolve host 🚨"})
-        ),
-        json!({"ok": true})
-    );
-    assert!(!t.fake.dropped().is_empty(), "the note tried Linear");
-    assert!(plugin
-        .stderr_soon("is queued")
-        .contains("the comment \"[afkd-attempt] 1/2: git fetch: could not resolve host 🚨\" is queued and retried for up to 1h"));
-    t.fake.restore();
-    assert!(
-        within(Duration::from_secs(15), || !said(
-            &t.fake,
-            &t.issue,
-            "[afkd-attempt]"
-        )
-        .is_empty()),
-        "the outbox never delivered; stderr: {}",
-        plugin.stderr()
-    );
-    end(plugin, &t.fake);
-}
-
-/// afkd closing the pipe with writes still owed ends the process cleanly, and names each.
-#[test]
-fn closing_stdin_with_writes_owed_names_them() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    t.fake.outage();
-    plugin.call(
-        json!({"call": "attempt_failed", "key": unit["key"], "n": 1, "max": 1,
-                       "reason": "ran out of time"}),
-    );
-    let stderr = end(plugin, &t.fake);
-    assert!(
-        stderr.contains(&format!(
-            "afkd-linear: afkd ended the plugin with the comment \"[afkd-attempt] 1/1: ran out \
-             of time\" for issue ENG-101 \"{TITLE}\" still owed\n"
-        )),
-        "{stderr}"
-    );
-}
-
 /// A brief over afkd's line is cut to fit, and the unit still decodes, its key whole.
 #[test]
 fn an_oversized_brief_is_cut_to_fit_one_line() {
@@ -1799,7 +1835,7 @@ fn an_oversized_brief_is_cut_to_fit_one_line() {
         TITLE,
         &"看起来不对 🚨 — the retry path.\n".repeat(2_600),
     );
-    let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"pick_from": "Backlog"})));
+    let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"claim_from": ["Backlog"]})));
     let line = plugin.call_raw(json!({"call": "poll"}));
     assert!(line.len() <= MAX_LINE, "{}", line.len());
     let reply: Value = serde_json::from_str(&line).unwrap();
@@ -1824,7 +1860,7 @@ fn an_oversized_description_is_cut_in_the_handle_before_the_brief() {
     let t = team();
     let description = "看起来不对 🚨 — the retry path.\n".repeat(1_000);
     let big = t.fake.issue("Backlog", TITLE, &description);
-    let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"pick_from": "Backlog"})));
+    let mut plugin = Plugin::armed(with(settings(&t.fake), json!({"claim_from": ["Backlog"]})));
     let line = plugin.call_raw(json!({"call": "poll"}));
     assert!(line.len() <= MAX_LINE, "{}", line.len());
     let reply: Value = serde_json::from_str(&line).unwrap();
@@ -1853,1037 +1889,7 @@ fn an_oversized_description_is_cut_in_the_handle_before_the_brief() {
     end(plugin, &t.fake);
 }
 
-// --- the actions ---
-
-/// Call `action` on the issue `unit` names, its handle first and `args` after, as afkd binds
-/// them.
-fn act(plugin: &mut Plugin, unit: &Value, action: &str, args: Value) -> Value {
-    let mut bound = json!({"issue": {"id": unit["id"], "key": unit["key"]}});
-    for (k, v) in args.as_object().unwrap() {
-        bound[k] = v.clone();
-    }
-    plugin.call(json!({"call": "call", "action": action, "args": bound}))
-}
-
-/// How the success lines name the seeded issue.
-fn named() -> String {
-    format!("issue ENG-101 \"{TITLE}\"")
-}
-
-/// A comment lands byte for byte — multi-line markdown, wide CJK, an emoji, and a literal
-/// `@{run:x}` afkd did not interpolate — authored by the credential, and is narrated.
-#[test]
-fn comment_posts_the_text_byte_for_byte() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let text = "## 完了 ✅\n\n- took 3m\n- log: @{run:x}\n\n```rust\nlet backoff = 30;\n```";
-    assert_eq!(
-        act(&mut plugin, &unit, "comment", json!({"text": text})),
-        json!({"ok": true})
-    );
-    let posted = t.fake.comments(&t.issue).pop().expect("the comment");
-    assert_eq!(posted.body, text);
-    assert_eq!(posted.author, Author::User(t.fake.key_user()));
-    assert!(plugin
-        .stderr_soon("commenting on")
-        .contains(&format!("[linear] commenting on {}\n", named())));
-    end(plugin, &t.fake);
-}
-
-/// The description is replaced whole, with a wide multi-line one and then with none.
-#[test]
-fn describe_replaces_the_description() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let text = "## 背景\n\nThe backoff resets on every 401.\n\n- [ ] cap it at 30s 🚦";
-    assert_eq!(
-        act(&mut plugin, &unit, "describe", json!({"text": text})),
-        json!({"ok": true})
-    );
-    assert_eq!(t.fake.description_of(&t.issue), text);
-    assert_eq!(
-        act(&mut plugin, &unit, "describe", json!({"text": ""})),
-        json!({"ok": true})
-    );
-    assert_eq!(t.fake.description_of(&t.issue), "");
-    assert!(plugin
-        .stderr_lines_soon(3)
-        .contains(&format!("[linear] describing {}\n", named())));
-    end(plugin, &t.fake);
-}
-
-/// The title is replaced, and the line names the new one.
-#[test]
-fn rename_retitles_the_issue() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let title = "修复: cap the backoff at 30s — \"Retry-After\" 🚦";
-    assert_eq!(
-        act(&mut plugin, &unit, "rename", json!({"title": title})),
-        json!({"ok": true})
-    );
-    assert_eq!(t.fake.title_of(&t.issue), title);
-    assert!(plugin
-        .stderr_soon("renaming")
-        .contains(&format!("[linear] renaming {} to \"{title}\"\n", named())));
-    end(plugin, &t.fake);
-}
-
-/// The issue lands in the team's state of the name; a name the team lacks is refused naming
-/// it and the team, and the issue stays where it was.
-#[test]
-fn move_to_moves_the_issue_into_the_named_state() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let refusal = "linear resolve state: no workflow state named 'Nirgendwo 🚫' in team ENG";
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "move_to",
-            json!({"state": "Nirgendwo 🚫"})
-        ),
-        json!({"ok": false, "error": refusal})
-    );
-    assert_eq!(t.fake.state_of(&t.issue), "Todo");
-    assert_eq!(
-        act(&mut plugin, &unit, "move_to", json!({"state": "Done"})),
-        json!({"ok": true})
-    );
-    assert_eq!(t.fake.state_of(&t.issue), "Done");
-    let stderr = plugin.stderr_soon("moving");
-    assert!(stderr.contains(&format!("{refusal}\n")), "{stderr}");
-    assert!(
-        stderr.contains(&format!("[linear] moving {} to state \"Done\"\n", named())),
-        "{stderr}"
-    );
-    end(plugin, &t.fake);
-}
-
-/// A delegate to a user nobody is named is refused with the sentence the `require_member`
-/// gate uses, nothing is sent, and the issue stays with nobody.
-#[test]
-fn delegate_to_an_unknown_user_is_refused_with_its_sentence() {
-    let t = team();
-    let mut plugin = Plugin::armed(app_settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let refusal =
-        "linear resolve user: no user whose display name or email is 'ghost@acme.example'";
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "delegate",
-            json!({"to": "ghost@acme.example"})
-        ),
-        json!({"ok": false, "error": refusal})
-    );
-    assert!(!operations(&t.fake).contains(&"IssueUpdate".to_string()));
-    assert_eq!(t.fake.delegate_of(&t.issue), None);
-    let stderr = plugin.stderr_soon("ghost");
-    assert!(stderr.contains(&format!("{refusal}\n")), "{stderr}");
-    end(plugin, &t.fake);
-}
-
-/// `undelegate` takes the app's delegate off an issue: the request sends `delegateId: null`
-/// and nothing else, and the issue is held by nobody. A second, on an issue with no
-/// delegate, succeeds and leaves it so.
-#[test]
-fn undelegate_takes_the_delegate_off_and_a_second_is_a_no_op() {
-    let t = team();
-    t.fake.delegate(&t.issue, &t.fake.app_user());
-    let mut plugin = Plugin::armed(app_settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(unit["thread"], t.issue);
-    assert_eq!(t.fake.delegate_of(&t.issue), Some(t.fake.app_user()));
-    for _ in 0..2 {
-        assert_eq!(
-            act(&mut plugin, &unit, "undelegate", json!({})),
-            json!({"ok": true})
-        );
-        assert_eq!(t.fake.delegate_of(&t.issue), None);
-        let update = t
-            .fake
-            .seen()
-            .into_iter()
-            .rfind(|s| s.operation == "IssueUpdate")
-            .expect("the undelegate request");
-        assert_eq!(
-            update.variables,
-            json!({"id": t.issue, "input": {"delegateId": null}})
-        );
-    }
-    let line = format!(
-        "[linear] undelegating issue {} \"{TITLE}\"\n",
-        unit["id"].as_str().unwrap()
-    );
-    let stderr = end(plugin, &t.fake);
-    assert_eq!(stderr.matches(&line).count(), 2, "{stderr}");
-}
-
-/// A label the team has is put on as it is; one it lacks is created for the team first.
-#[test]
-fn add_label_puts_a_label_on_creating_it_when_the_team_lacks_it() {
-    let t = team();
-    let other = t.fake.issue("Backlog", "Elsewhere", "");
-    t.fake.label(&other, "afkd/ready");
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "add_label",
-            json!({"label": "afkd/ready"})
-        ),
-        json!({"ok": true})
-    );
-    assert!(
-        !operations(&t.fake).contains(&"IssueLabelCreate".to_string()),
-        "the team's label is reused"
-    );
-    let wide = "needs review 👀 レビュー";
-    assert_eq!(
-        act(&mut plugin, &unit, "add_label", json!({"label": wide})),
-        json!({"ok": true})
-    );
-    assert!(operations(&t.fake).contains(&"IssueLabelCreate".to_string()));
-    assert_eq!(t.fake.labels(&t.issue), ["afkd/ready", wide]);
-    assert!(plugin.stderr_lines_soon(3).contains(&format!(
-        "[linear] adding label \"{wide}\" to {}\n",
-        named()
-    )));
-    end(plugin, &t.fake);
-}
-
-/// A label comes off; a name no label has, and a label the issue does not carry, are no-ops
-/// that answer `ok` and send no removal, since Linear refuses to take off a label that is not
-/// there.
-#[test]
-fn remove_label_takes_it_off_and_an_unknown_name_is_a_no_op() {
-    let t = team();
-    for label in ["afkd/ready", "Väntar på svar"] {
-        t.fake.label(&t.issue, label);
-    }
-    t.fake.team_label("Build Failed", "#eb5757");
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "remove_label",
-            json!({"label": "Väntar på svar"})
-        ),
-        json!({"ok": true})
-    );
-    assert_eq!(t.fake.labels(&t.issue), ["afkd/ready"]);
-    let removals = |fake: &FakeLinear| {
-        operations(fake)
-            .iter()
-            .filter(|o| *o == "IssueRemoveLabel")
-            .count()
-    };
-    assert_eq!(removals(&t.fake), 1);
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "remove_label",
-            json!({"label": "Nirgendwo"})
-        ),
-        json!({"ok": true})
-    );
-    assert_eq!(removals(&t.fake), 1, "nothing to take off");
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "remove_label",
-            json!({"label": "Build Failed"})
-        ),
-        json!({"ok": true})
-    );
-    assert_eq!(removals(&t.fake), 1, "the issue does not carry it");
-    assert_eq!(t.fake.labels(&t.issue), ["afkd/ready"]);
-    assert!(plugin.stderr_lines_soon(3).contains(&format!(
-        "[linear] removing label \"Väntar på svar\" from {}\n",
-        named()
-    )));
-    end(plugin, &t.fake);
-}
-
-/// A new issue is filed in the service's team under no parent: in the team's default state
-/// when the slot names none, and in the named one when it does, with its title and its
-/// description.
-#[test]
-fn create_issue_files_one_in_the_team() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let body = "Found while fixing ENG-101.\n\n```\nRetry-After: 30\n```";
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "create_issue",
-            json!({"title": "Read Retry-After 🚦", "description": body})
-        ),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "create_issue",
-            json!({"title": "子任务: log the 401s", "description": "", "state": "In Progress"})
-        ),
-        json!({"ok": true})
-    );
-    let first = t.fake.find_by_title("Read Retry-After 🚦").expect("filed");
-    assert_eq!(t.fake.state_of(&first), "Backlog", "the team's default");
-    assert_eq!(t.fake.description_of(&first), body);
-    assert_eq!(t.fake.parent_of(&first), None);
-    let second = t.fake.find_by_title("子任务: log the 401s").expect("filed");
-    assert_eq!(t.fake.state_of(&second), "In Progress");
-    assert_eq!(t.fake.description_of(&second), "");
-    let sent: Vec<Value> = t
-        .fake
-        .seen()
-        .into_iter()
-        .filter(|s| s.operation == "IssueCreate")
-        .map(|s| s.variables["input"].clone())
-        .collect();
-    assert_eq!(sent[0]["teamId"], t.fake.team_id());
-    assert!(
-        sent[1].get("description").is_none(),
-        "none for an empty one"
-    );
-    assert!(plugin.stderr_lines_soon(3).contains(&format!(
-        "[linear] creating issue \"Read Retry-After 🚦\" in team ENG from {}\n",
-        named()
-    )));
-    end(plugin, &t.fake);
-}
-
-/// A sub-issue is filed under the claimed issue, and the next claim of it lists it.
-#[test]
-fn create_sub_issue_files_one_under_the_issue() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "create_sub_issue",
-            json!({"title": "Cap the backoff at 30s", "description": "split off 🚧"})
-        ),
-        json!({"ok": true})
-    );
-    let child = t
-        .fake
-        .find_by_title("Cap the backoff at 30s")
-        .expect("filed");
-    assert_eq!(t.fake.parent_of(&child).as_deref(), Some(t.issue.as_str()));
-    assert_eq!(t.fake.state_of(&child), "Backlog");
-    assert_eq!(
-        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
-        json!({"ok": true})
-    );
-    let again = plugin.poll()["unit"].clone();
-    assert_eq!(again["thread"], t.issue);
-    assert_eq!(
-        again["fields"]["sub_issues"],
-        json!([t.fake.identifier(&child)])
-    );
-    assert!(plugin.stderr().contains(&format!(
-        "[linear] creating sub-issue \"Cap the backoff at 30s\" under {}\n",
-        named()
-    )));
-    end(plugin, &t.fake);
-}
-
-/// An archived issue is out of every scan: once its run is done it is never claimed again.
-#[test]
-fn archive_takes_the_issue_out_of_every_scan() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(
-        act(&mut plugin, &unit, "archive", json!({})),
-        json!({"ok": true})
-    );
-    assert!(t.fake.archived(&t.issue));
-    assert_eq!(
-        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        plugin.poll(),
-        json!({"fire": false}),
-        "archived, so never claimed"
-    );
-    assert!(plugin
-        .stderr()
-        .contains(&format!("[linear] archiving {}\n", named())));
-    end(plugin, &t.fake);
-}
-
-/// The thread is written oldest first, each comment as the brief renders it and markers
-/// dropped: before afkd says anything it is the brief's own new-comments section, and
-/// afkd's comment after it is afkd's. A relative `to` is refused and nothing is written.
-#[test]
-fn list_comments_writes_the_thread_oldest_first_as_the_brief_renders_it() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let brief = unit["files"][0]["text"].as_str().unwrap();
-    let (_, section) = brief
-        .split_once("## New comments\n\n")
-        .expect("the brief's thread");
-    let dir = TempDir::new("thread");
-    let to = dir.path().join("thread 計画.md");
-    assert_eq!(
-        act(&mut plugin, &unit, "list_comments", json!({"to": to})),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        std::fs::read_to_string(&to).unwrap(),
-        section,
-        "the brief's rendering"
-    );
-    assert_eq!(
-        section,
-        format!("**Phil Ek:** {PHIL}\n\n**陳大文:** {CHEN}\n")
-    );
-
-    act(
-        &mut plugin,
-        &unit,
-        "comment",
-        json!({"text": "Which header? 🤔"}),
-    );
-    assert_eq!(
-        act(&mut plugin, &unit, "list_comments", json!({"to": to})),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        std::fs::read_to_string(&to).unwrap(),
-        format!("{section}\n**afkd:** Which header? 🤔\n")
-    );
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "list_comments",
-            json!({"to": "thread.md"})
-        ),
-        json!({"ok": false, "error": "list_comments: to must be absolute, not \"thread.md\""})
-    );
-    assert!(!std::path::Path::new("thread.md").exists());
-    assert!(plugin.stderr_lines_soon(5).contains(&format!(
-        "[linear] writing the comments on {} to {} (3 comments)\n",
-        named(),
-        to.display()
-    )));
-    end(plugin, &t.fake);
-}
-
-/// The description is read fresh, not off the claim: after a `describe` the file holds the
-/// new text, and after one that empties it, nothing.
-#[test]
-fn read_description_writes_the_description_linear_holds_now() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let dir = TempDir::new("description");
-    let to = dir.path().join("description.md");
-    assert_eq!(
-        act(&mut plugin, &unit, "read_description", json!({"to": to})),
-        json!({"ok": true})
-    );
-    assert_eq!(std::fs::read_to_string(&to).unwrap(), BODY);
-    let text = "## 背景\n\nCapped at 30s now. ✅\n";
-    act(&mut plugin, &unit, "describe", json!({"text": text}));
-    act(&mut plugin, &unit, "read_description", json!({"to": to}));
-    assert_eq!(std::fs::read_to_string(&to).unwrap(), text, "a fresh read");
-    act(&mut plugin, &unit, "describe", json!({"text": ""}));
-    act(&mut plugin, &unit, "read_description", json!({"to": to}));
-    assert_eq!(std::fs::read_to_string(&to).unwrap(), "");
-    assert!(plugin.stderr_lines_soon(6).contains(&format!(
-        "[linear] writing the description of {} to {}\n",
-        named(),
-        to.display()
-    )));
-    end(plugin, &t.fake);
-}
-
-/// Every sub-issue is written a line each with its state, past a page of them, and the lines
-/// the brief lists are the file's own.
-#[test]
-fn list_sub_issues_writes_each_with_its_state() {
-    let t = team();
-    let mut children = vec![
-        t.fake.issue("In Progress", "Cap the backoff at 30s", ""),
-        t.fake
-            .issue("Done", "子任务: read Retry-After 🚦 — \"seconds\"", ""),
-    ];
-    for n in 0..51 {
-        children.push(t.fake.issue("Backlog", &format!("Step {n} 🧱"), ""));
-    }
-    for child in &children {
-        t.fake.set_parent(child, &t.issue);
-    }
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let dir = TempDir::new("subs");
-    let to = dir.path().join("subs.md");
-    assert_eq!(
-        act(&mut plugin, &unit, "list_sub_issues", json!({"to": to})),
-        json!({"ok": true})
-    );
-    let written = std::fs::read_to_string(&to).unwrap();
-    let lines: Vec<&str> = written.lines().collect();
-    assert_eq!(lines.len(), 53, "every page");
-    assert!(written.ends_with('\n'));
-    assert_eq!(
-        lines[..2],
-        [
-            format!(
-                "- {} (In Progress) Cap the backoff at 30s",
-                t.fake.identifier(&children[0])
-            ),
-            format!(
-                "- {} (Done) 子任务: read Retry-After 🚦 — \"seconds\"",
-                t.fake.identifier(&children[1])
-            ),
-        ]
-    );
-    assert_eq!(
-        lines[52],
-        format!(
-            "- {} (Backlog) Step 50 🧱",
-            t.fake.identifier(&children[52])
-        )
-    );
-    let brief = unit["files"][0]["text"].as_str().unwrap();
-    let listed: Vec<&str> = brief
-        .split_once("## Sub-issues\n\n")
-        .and_then(|(_, rest)| rest.split_once("\n\n"))
-        .expect("the brief's sub-issues")
-        .0
-        .lines()
-        .collect();
-    assert_eq!(listed, lines[..listed.len()], "the brief's own lines");
-    assert!(plugin
-        .stderr_soon("writing the sub-issues")
-        .contains(&format!(
-            "[linear] writing the sub-issues of {} to {} (53 sub-issues)\n",
-            named(),
-            to.display()
-        )));
-    end(plugin, &t.fake);
-}
-
-/// A sub-issue named by its identifier lands in the state; an issue that is not one of this
-/// issue's sub-issues is refused naming both, and stays where it is.
-#[test]
-fn move_sub_issue_moves_a_sub_issue_and_refuses_an_issue_that_is_none() {
-    let t = team();
-    let child = t.fake.issue("In Progress", "Cap the backoff at 30s", "");
-    t.fake.set_parent(&child, &t.issue);
-    let stranger = t.fake.issue("Backlog", "Someone else's", "");
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let sub = t.fake.identifier(&child);
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "move_sub_issue",
-            json!({"sub_issue": sub, "state": "Done"})
-        ),
-        json!({"ok": true})
-    );
-    assert_eq!(t.fake.state_of(&child), "Done");
-    let other = t.fake.identifier(&stranger);
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "move_sub_issue",
-            json!({"sub_issue": other, "state": "Done"})
-        ),
-        json!({"ok": false, "error": format!("linear move issue: no sub-issue {other} of ENG-101")})
-    );
-    assert_eq!(t.fake.state_of(&stranger), "Backlog");
-    assert!(plugin.stderr_lines_soon(3).contains(&format!(
-        "[linear] moving sub-issue {sub} of {} to state \"Done\"\n",
-        named()
-    )));
-    end(plugin, &t.fake);
-}
-
-/// The post-run slot's calls, which afkd sends after `finish`, reach the finished issue its
-/// handle names — after the next issue is claimed too — and never the live one.
-#[test]
-fn a_post_run_call_acts_on_the_finished_issue_its_handle_names() {
-    let t = team();
-    let next = t.fake.issue("Todo", "Next 🚧", "");
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    assert_eq!(
-        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        act(&mut plugin, &unit, "move_to", json!({"state": "Done"})),
-        json!({"ok": true})
-    );
-    assert_eq!(t.fake.state_of(&t.issue), "Done");
-    let live = plugin.poll()["unit"].clone();
-    assert_eq!(live["thread"], next);
-    assert_eq!(
-        act(&mut plugin, &unit, "comment", json!({"text": "landed ✅"})),
-        json!({"ok": true})
-    );
-    assert_eq!(said(&t.fake, &t.issue, "landed"), ["landed ✅"]);
-    assert!(
-        said(&t.fake, &next, "landed").is_empty(),
-        "the live issue is untouched"
-    );
-    assert_eq!(t.fake.state_of(&next), "Todo");
-    end(plugin, &t.fake);
-}
-
-/// With Linear out of reach, a slot's writes answer `ok` at once and are queued, the second
-/// behind the first; once Linear is back they land in the order they were asked for, each
-/// narrated.
-#[test]
-fn an_action_during_an_outage_answers_ok_and_lands_in_order() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    t.fake.outage();
-    let asked = Instant::now();
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "comment",
-            json!({"text": "landed ✅\n\nsee the log"})
-        ),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        act(&mut plugin, &unit, "move_to", json!({"state": "Done"})),
-        json!({"ok": true})
-    );
-    assert!(
-        asked.elapsed() < Duration::from_secs(10),
-        "answered at once"
-    );
-    let stderr = plugin.stderr_soon("queued behind");
-    assert!(
-        stderr.contains("the comment \"landed ✅…\" is queued and retried for up to 1h"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!(
-            "linear still owes {} earlier writes; moving it to state \"Done\" is queued behind \
-             them",
-            named()
-        )),
-        "{stderr}"
-    );
-    t.fake.restore();
-    assert!(
-        within(Duration::from_secs(20), || t.fake.state_of(&t.issue)
-            == "Done"),
-        "the outbox never delivered; stderr: {}",
-        plugin.stderr()
-    );
-    assert_eq!(
-        said(&t.fake, &t.issue, "landed"),
-        ["landed ✅\n\nsee the log"]
-    );
-    let writes: Vec<String> = operations(&t.fake)
-        .into_iter()
-        .filter(|o| o == "CommentCreate" || o == "IssueUpdate")
-        .collect();
-    assert_eq!(
-        writes[writes.len() - 2..],
-        ["CommentCreate", "IssueUpdate"],
-        "the comment first"
-    );
-    let stderr = plugin.stderr_soon("moving issue");
-    assert!(
-        stderr.contains(&format!("[linear] commenting on {}\n", named())),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!("[linear] moving {} to state \"Done\"\n", named())),
-        "{stderr}"
-    );
-    end(plugin, &t.fake);
-}
-
-/// A call the plugin cannot do answers its sentence: an action it does not declare, a
-/// string where the handle goes, and a key it holds no issue for. It answers on after.
-#[test]
-fn an_unknown_action_or_a_bad_handle_is_refused_with_its_sentence() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    for (action, args, error) in [
-        (
-            "assign",
-            json!({"issue": {"id": unit["id"], "key": unit["key"]}, "who": "me"}),
-            "no action `assign`".to_string(),
-        ),
-        (
-            "comment",
-            json!({"issue": "ENG-101", "text": "done 🚀"}),
-            "comment: parameter issue must be an item handle".to_string(),
-        ),
-        (
-            "comment",
-            json!({"issue": {"id": "ENG-999", "key": "nope#c9"}, "text": "done 🚀"}),
-            "comment for nope#c9, which this plugin holds no issue for".to_string(),
-        ),
-    ] {
-        assert_eq!(
-            plugin.call(json!({"call": "call", "action": action, "args": args})),
-            json!({"ok": false, "error": error})
-        );
-    }
-    assert_eq!(
-        plugin.call(json!({"call": "renew", "key": unit["key"], "renewal": 1})),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        said(&t.fake, &t.issue, "done"),
-        Vec::<String>::new(),
-        "nothing posted"
-    );
-    end(plugin, &t.fake);
-}
-
-// --- files ---
-
-/// The screenshot's file name: spaces, an em dash and wide CJK.
-const SHOT: &str = "screen shot — 修复.png";
-
-/// Write [`png`] into `dir` as [`SHOT`], and return its path.
-fn shot_in(dir: &TempDir) -> std::path::PathBuf {
-    let path = dir.path().join(SHOT);
-    std::fs::write(&path, png()).unwrap();
-    path
-}
-
-/// The names in `dir`, sorted.
-fn names_in(dir: &std::path::Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
-}
-
-/// A PNG goes up into the description and into a comment — `FileUpload` asked for its name,
-/// type and size, then its bytes PUT with the signed header, its type and the cache header
-/// and no credential — and each embeds it at its own asset url, after the text. Fetched
-/// back, the description's comes first and the comment's second, both byte for byte.
-#[test]
-fn a_png_is_uploaded_into_a_comment_and_the_description_and_fetched_back_byte_for_byte() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let dir = TempDir::new("shot");
-    let shot = shot_in(&dir);
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "describe",
-            json!({"text": "## 背景\n\nBefore:", "files": [shot]})
-        ),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "comment",
-            json!({"text": "After the fix ✅", "files": [shot]})
-        ),
-        json!({"ok": true})
-    );
-
-    let uploads = t.fake.uploads();
-    assert_eq!(uploads.len(), 2);
-    for upload in &uploads {
-        assert_eq!(
-            (
-                upload.filename.as_str(),
-                upload.content_type.as_str(),
-                upload.size
-            ),
-            (SHOT, "image/png", png().len())
-        );
-        assert_eq!(t.fake.file(&upload.asset_url), Some(png()), "byte for byte");
-    }
-    let asked: Vec<Value> = t
-        .fake
-        .seen()
-        .into_iter()
-        .filter(|s| s.operation == "FileUpload")
-        .map(|s| s.variables)
-        .collect();
-    assert_eq!(
-        asked,
-        vec![json!({"contentType": "image/png", "filename": SHOT, "size": png().len()}); 2]
-    );
-    let puts = t.fake.puts();
-    assert_eq!(puts.len(), 2);
-    for put in &puts {
-        assert_eq!((put.status, put.len), (200, png().len()));
-        assert_eq!(put.header("content-type"), Some("image/png"));
-        assert_eq!(put.header("cache-control"), Some(UPLOAD_CACHE_CONTROL));
-        assert!(put.header(UPLOAD_HEADER).is_some(), "{put:?}");
-        assert_eq!(
-            put.header("authorization"),
-            None,
-            "no credential to storage"
-        );
-    }
-    let asset = |n: usize| uploads[n].asset_url.clone();
-    assert_eq!(
-        t.fake.description_of(&t.issue),
-        format!("## 背景\n\nBefore:\n\n![{SHOT}]({})", asset(0))
-    );
-    assert_eq!(
-        said(&t.fake, &t.issue, "After the fix"),
-        [format!("After the fix ✅\n\n![{SHOT}]({})", asset(1))]
-    );
-
-    let fetched = dir.path().join("fetched 計画");
-    std::fs::create_dir(&fetched).unwrap();
-    assert_eq!(
-        act(&mut plugin, &unit, "fetch_files", json!({"to": fetched})),
-        json!({"ok": true})
-    );
-    let first = format!("1-{SHOT}");
-    let second = format!("2-{SHOT}");
-    assert_eq!(names_in(&fetched), [first.clone(), second.clone()]);
-    for name in [&first, &second] {
-        assert_eq!(std::fs::read(fetched.join(name)).unwrap(), png(), "{name}");
-    }
-    let gets: Vec<_> = t
-        .fake
-        .seen()
-        .into_iter()
-        .filter(|s| s.method == "GET")
-        .collect();
-    assert_eq!(
-        gets.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
-        [
-            asset(0).trim_start_matches(t.fake.base_url()),
-            asset(1).trim_start_matches(t.fake.base_url())
-        ]
-    );
-    assert!(gets
-        .iter()
-        .all(|s| s.authorization.as_deref() == Some(API_KEY)));
-    let stderr = plugin.stderr_lines_soon(4);
-    for line in [
-        format!("[linear] describing {} with {SHOT}\n", named()),
-        format!("[linear] commenting on {} with {SHOT}\n", named()),
-        format!(
-            "[linear] writing 2 files from {} to {}: {first}, {second}\n",
-            named(),
-            fetched.display()
-        ),
-    ] {
-        assert!(stderr.contains(&line), "{line:?} in:\n{stderr}");
-    }
-    end(plugin, &t.fake);
-}
-
-/// What a person pasted is fetched too, its link's text naming it: an image and a log in a
-/// comment, each fetched with the credential. An image hosted elsewhere and a bare url are
-/// not fetched, and nothing is asked of any other host.
-#[test]
-fn fetch_files_writes_a_pasted_image_and_skips_links_off_linear() {
-    let t = team();
-    let image = t.fake.seed_file("image.png", "image/png", &png());
-    let log = "POST /graphql 401\r\n看起来不对 🚨\n".repeat(3);
-    let text = t.fake.seed_file("log.txt", "text/plain", log.as_bytes());
-    t.fake.comment(
-        &t.issue,
-        Author::User(t.chen.clone()),
-        &format!(
-            "Here it is:\n\n![image.png]({image})\n\n[log.txt]({text}) and \
-             ![x](https://example.com/x.png), also https://uploads.linear.app/o/1/bare"
-        ),
-        60,
-    );
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let dir = TempDir::new("pasted");
-    assert_eq!(
-        act(&mut plugin, &unit, "fetch_files", json!({"to": dir.path()})),
-        json!({"ok": true})
-    );
-    assert_eq!(names_in(dir.path()), ["1-image.png", "2-log.txt"]);
-    assert_eq!(
-        std::fs::read(dir.path().join("1-image.png")).unwrap(),
-        png()
-    );
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("2-log.txt")).unwrap(),
-        log
-    );
-    let gets: Vec<_> = t
-        .fake
-        .seen()
-        .into_iter()
-        .filter(|s| s.method == "GET")
-        .collect();
-    assert_eq!(gets.len(), 2, "only the two Linear files");
-    assert!(gets
-        .iter()
-        .all(|s| s.authorization.as_deref() == Some(API_KEY)));
-    end(plugin, &t.fake);
-}
-
-/// A PUT the storage cannot take queues the comment like any write Linear cannot take, and
-/// the call answers `ok`. The file is read at the call, so with it deleted the retry still
-/// puts its bytes up, and the comment lands embedding them: two PUTs in all, the failed one
-/// and the one that landed.
-#[test]
-fn an_upload_linear_cannot_take_is_queued_and_lands_with_the_bytes_read_at_the_call() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let dir = TempDir::new("queued");
-    let shot = shot_in(&dir);
-    t.fake.fail_uploads(1, 503);
-    assert_eq!(
-        act(
-            &mut plugin,
-            &unit,
-            "comment",
-            json!({"text": "After the fix ✅", "files": [shot]})
-        ),
-        json!({"ok": true})
-    );
-    std::fs::remove_file(&shot).unwrap();
-    assert!(plugin.stderr_soon("is queued").contains(&format!(
-        "linear could not take a write for {}: linear upload file: Linear returned status 503; \
-         the comment \"After the fix ✅\" with {SHOT} is queued and retried for up to 1h\n",
-        named()
-    )));
-    assert!(
-        within(Duration::from_secs(20), || !said(
-            &t.fake,
-            &t.issue,
-            "After the fix"
-        )
-        .is_empty()),
-        "the outbox never delivered; stderr: {}",
-        plugin.stderr()
-    );
-    let posted = said(&t.fake, &t.issue, "After the fix");
-    let assets = t.fake.asset_urls_of(&posted[0]);
-    assert_eq!(assets.len(), 1, "{posted:?}");
-    assert_eq!(t.fake.file(&assets[0]), Some(png()));
-    let statuses: Vec<u16> = t.fake.puts().iter().map(|p| p.status).collect();
-    assert_eq!(statuses, [503, 200]);
-    assert!(plugin
-        .stderr_soon("commenting on")
-        .contains(&format!("[linear] commenting on {} with {SHOT}\n", named())));
-    end(plugin, &t.fake);
-}
-
-/// An issue with no file writes nothing and says so. A `to` that is relative, a file or
-/// missing is refused, and so is a file that is relative or missing — before anything is
-/// asked of Linear, and with nothing posted.
-#[test]
-fn fetch_files_with_no_file_writes_nothing_and_a_bad_to_or_path_is_refused() {
-    let t = team();
-    let mut plugin = Plugin::armed(settings(&t.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let dir = TempDir::new("none");
-    let to = dir.path().join("files");
-    std::fs::create_dir(&to).unwrap();
-    assert_eq!(
-        act(&mut plugin, &unit, "fetch_files", json!({"to": to})),
-        json!({"ok": true})
-    );
-    assert!(names_in(&to).is_empty());
-    assert!(plugin.stderr_soon("nothing written").contains(&format!(
-        "[linear] no files on {}; nothing written to {}\n",
-        named(),
-        to.display()
-    )));
-
-    let file = dir.path().join("a file.txt");
-    std::fs::write(&file, "x").unwrap();
-    let missing = dir.path().join("nowhere");
-    for (to, error) in [
-        (
-            json!("files"),
-            "fetch_files: to must be absolute, not \"files\"".to_string(),
-        ),
-        (
-            json!(file),
-            format!("fetch_files: {} is not a directory", file.display()),
-        ),
-        (
-            json!(missing),
-            format!("fetch_files: no directory at {}", missing.display()),
-        ),
-    ] {
-        assert_eq!(
-            act(&mut plugin, &unit, "fetch_files", json!({ "to": to })),
-            json!({"ok": false, "error": error})
-        );
-    }
-    let gone = dir.path().join(SHOT);
-    for (files, error) in [
-        (
-            json!(["shot.png"]),
-            "comment: files must be absolute, not \"shot.png\"".to_string(),
-        ),
-        (
-            json!([gone]),
-            format!("comment: no file at {}", gone.display()),
-        ),
-    ] {
-        assert_eq!(
-            act(
-                &mut plugin,
-                &unit,
-                "comment",
-                json!({"text": "After the fix ✅", "files": files})
-            ),
-            json!({"ok": false, "error": error})
-        );
-    }
-    assert!(!operations(&t.fake).iter().any(|o| o == "FileUpload"));
-    assert!(t.fake.puts().is_empty());
-    assert!(said(&t.fake, &t.issue, "After the fix").is_empty());
-    end(plugin, &t.fake);
-}
-
-// --- request conformance ---
+// --- the fake ---
 
 /// The fake refuses what Linear's schema refuses, so every other leg's empty
 /// `invalid_requests` means something: the real `Issues` document, sent with a label filter

@@ -1,5 +1,5 @@
-//! The **workspace reads** a config calls with a `linear.Workspace` first: the issues a set
-//! of filters keeps, an issue's thread and the files it links, the viewer, the users, teams,
+//! The **workspace reads** a config calls with a `linear.Workspace` first: one issue by its
+//! identifier or its uuid, the issues a set of filters keeps, an issue's thread and the files it links, the viewer, the users, teams,
 //! states, labels, projects and cycles, and one file downloaded.
 //!
 //! A read reaches Linear only through the workspace it is passed ([`Workspace`]): it reads no
@@ -25,7 +25,6 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::action::{handle_key, string};
 use crate::client::{issue_list_vars, LinearClient};
 use crate::common::{write_whole, Diag};
 use crate::file::linked_issue_files;
@@ -38,9 +37,10 @@ use crate::workspace::{
     other_workspace, parse_read_key, read_key, record_organization, recorded_url_key, Workspace,
 };
 
-/// The reads, in the order the manifest declares them, after the issue actions
-/// ([`ACTIONS`](crate::action::ACTIONS)).
+/// The reads, in the order the manifest declares them, before the writes
+/// ([`WRITES`](crate::writes::WRITES)).
 pub(crate) const READS: &[&str] = &[
+    "issue",
     "issues",
     "comments",
     "me",
@@ -192,17 +192,32 @@ pub(crate) struct HandleArg {
 /// One read, decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReadCall {
+    /// `issue`: the issue whose identifier or uuid `id` is.
+    Issue {
+        id: String,
+    },
     Issues(Box<IssueQuery>),
     Comments(HandleArg),
     Me,
     Users,
     Teams,
-    States { team: String },
-    Labels { team: Option<String> },
-    Projects { team: Option<String> },
-    Cycles { team: String },
+    States {
+        team: String,
+    },
+    Labels {
+        team: Option<String>,
+    },
+    Projects {
+        team: Option<String>,
+    },
+    Cycles {
+        team: String,
+    },
     Files(HandleArg),
-    DownloadFile { url: String, to: String },
+    DownloadFile {
+        url: String,
+        to: String,
+    },
 }
 
 /// An issue a `service(linear)` claimed, which a slot of that service may pass a read: its
@@ -289,6 +304,9 @@ pub(crate) fn decode(
     let ws = Workspace::from_arg(action, args.get("ws"))?;
     let team = || optional(action, args, "team", Value::as_str, "a string");
     let call = match action {
+        "issue" => ReadCall::Issue {
+            id: string(action, args, "id")?,
+        },
         "issues" => ReadCall::Issues(Box::new(issue_query(args)?)),
         "comments" => ReadCall::Comments(handle_arg(action, args, "issue")?),
         "me" => ReadCall::Me,
@@ -317,6 +335,35 @@ pub(crate) fn decode(
         _ => return Err(format!("no action `{action}`")),
     };
     Ok((ws, call))
+}
+
+/// The key the handle `action` was passed as its argument `param` carries, as afkd sends a
+/// handle, `{"id":…,"key":…}`, or the sentence refusing an argument that is missing or no
+/// handle.
+pub(crate) fn handle_key<'a>(
+    action: &str,
+    args: &'a Map<String, Value>,
+    param: &str,
+) -> Result<&'a str, String> {
+    match args.get(param) {
+        Some(Value::Object(handle)) => handle.get("key").and_then(Value::as_str),
+        Some(_) => None,
+        None => return Err(format!("{action}: parameter {param} is required")),
+    }
+    .ok_or_else(|| format!("{action}: parameter {param} must be an item handle"))
+}
+
+/// The string argument `param` of `action`, or the sentence refusing its absence or type.
+pub(crate) fn string(
+    action: &str,
+    args: &Map<String, Value>,
+    param: &str,
+) -> Result<String, String> {
+    match args.get(param) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(_) => Err(format!("{action}: parameter {param} must be a string")),
+        None => Err(format!("{action}: parameter {param} is required")),
+    }
 }
 
 /// The handle `action` was passed as `param`.
@@ -774,6 +821,24 @@ fn run(
     let from = format!("from workspace {}", organization.url_key);
     let read = |what: String| format!("{ACTION_TAG} read {what} {from}");
     Ok(match call {
+        ReadCall::Issue { id } => {
+            let issue = client.issue_full(id).map_err(|e| match e {
+                LinearError::NotFound { .. } => format!(
+                    "{action}: no issue {id} in workspace {}: {e}",
+                    organization.url_key
+                ),
+                e => e.to_string(),
+            })?;
+            let handle = WireHandle {
+                id: issue.identifier.clone(),
+                key: key(&issue.id),
+                fields: IssueFields::of(&issue, &organization.url_key),
+            };
+            (
+                json!({ "ok": true, "handle": handle }).to_string(),
+                read(format!("issue {}", issue.identifier)),
+            )
+        }
         ReadCall::Issues(q) => {
             let (filter, sort) = (issue_filter(q), issue_sort(&q.order));
             let issues = client
@@ -1333,6 +1398,12 @@ mod tests {
             }))
         );
         assert_eq!(ok("me", json!({})), Ok(ReadCall::Me));
+        for id in ["ENG-7", "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5"] {
+            assert_eq!(
+                ok("issue", json!({"id": id})),
+                Ok(ReadCall::Issue { id: id.into() })
+            );
+        }
         assert_eq!(
             ok("states", json!({"team": "ENG"})),
             Ok(ReadCall::States { team: "ENG".into() })
@@ -1355,6 +1426,12 @@ mod tests {
             })
         );
         for (action, extra, refusal) in [
+            ("issue", json!({}), "issue: parameter id is required"),
+            (
+                "issue",
+                json!({"id": handle}),
+                "issue: parameter id must be a string",
+            ),
             (
                 "comments",
                 json!({}),

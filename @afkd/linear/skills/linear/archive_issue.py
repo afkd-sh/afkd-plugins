@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-# archive_issue.py — archive the active Linear issue, or with --unarchive restore one.
+# archive_issue.py — `linear.archive_issue`: an issue archived.
 #
-# The archive verb of the bundled `linear` skill: an issue that has resolved to nothing leaves
-# every list and every claim. An archived issue appears in no read this skill makes, so
-# restoring one takes its identifier or id, passed with --issue. It reads LINEAR_API_URL,
-# LINEAR_AUTHORIZATION and LINEAR_ISSUE_ID, the issue overridable with --issue, and exits 1
-# naming any failure.
+# It archives the issue, its sub-issues with it, as Linear does, and prints its `linear.Issue`
+# handle as Linear then holds it, `archived` true, as the plugin's `archive_issue` gives it
+# back. An archived issue leaves every read but `issues.py --include_archived`. It reads
+# LINEAR_API_URL and LINEAR_AUTHORIZATION.
 
 import argparse
 import os
@@ -18,18 +17,10 @@ import linear_api as linear  # noqa: E402
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Archive the issue, or restore it.")
-    parser.add_argument("--unarchive", action="store_true", help="restore it instead")
-    linear.add_issue_arg(parser)
+    parser = argparse.ArgumentParser(description="Archive an issue.")
+    parser.add_argument("issue", help="the issue's identifier (ENG-123) or its uuid")
     args = parser.parse_args()
-
-    issue = linear.issue_ref(args)
-    if args.unarchive:
-        linear.call("unarchive issue", "IssueUnarchive", {"id": issue})
-        print(f"archive_issue.py: restored {linear.issue_name(args)}")
-    else:
-        linear.call("archive issue", "IssueArchive", {"id": issue})
-        print(f"archive_issue.py: archived {linear.issue_name(args)}")
+    linear.emit(linear.archive_issue(args.issue))
 
 
 if __name__ == "__main__":

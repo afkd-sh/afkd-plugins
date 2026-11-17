@@ -11,9 +11,9 @@
 //! is answered as Linear answers an invalid request, a 400 with a `graphql error`, and is
 //! recorded in [`FakeLinear::invalid_requests`], which every leg holds empty. Past that,
 //! only the filter paths the plugin means are answered: an `Issues` filter on anything but
-//! a team's id, a state's id or the name of *some* label, and an `IssueList` filter on
-//! anything but the paths its reads send, is refused the same way, even where the schema
-//! allows it.
+//! a team's id, a state's id, the name of *some* label and the `and` of a claim's gate, and an
+//! `IssueList` filter on anything but the paths its reads send, is refused the same way, even
+//! where the schema allows it. A gate's clauses are evaluated as an `IssueList` filter's are.
 //!
 //! The rest is what Linear does that the plugin depends on: an API key is sent bare and an
 //! app's token as `Bearer`, from the `client_credentials` grant with the plugin's scope, and
@@ -501,6 +501,17 @@ impl Store {
         self.teams.iter().find(|t| t.id == id)
     }
 
+    /// The state an issue filed in the team `team` without one lands in: its first backlog
+    /// state, else its first unstarted one, else its first; none for a team with no state.
+    fn default_state(&self, team: &str) -> Option<String> {
+        let of_team: Vec<&State> = self.states.iter().filter(|st| st.team == team).collect();
+        ["backlog", "unstarted"]
+            .iter()
+            .find_map(|kind| of_team.iter().find(|st| st.kind == *kind))
+            .or(of_team.first())
+            .map(|st| st.id.clone())
+    }
+
     /// The id of the team whose key is `key`.
     fn team_id_of(&self, key: &str) -> Option<String> {
         self.teams
@@ -797,14 +808,22 @@ impl Store {
     }
 
     /// A state's or a label's issues, as the `Issues` filter the plugin sends selects them:
-    /// open, in the team, in manual order — ascending or descending.
-    fn select(&self, filter: &Value, descending: bool) -> Result<Vec<&Issue>, String> {
+    /// open, in the team, kept by the gate when one is sent, `viewer` the user its `isMe`
+    /// names, in manual order — ascending or descending.
+    fn select(
+        &self,
+        filter: &Value,
+        descending: bool,
+        viewer: &str,
+    ) -> Result<Vec<&Issue>, String> {
         let filter = filter.as_object().cloned().unwrap_or_default();
         let mut team = None;
         let mut state = None;
         let mut label = None;
+        let mut gate = None;
         for (key, value) in &filter {
             match key.as_str() {
+                "and" => gate = Some(json!({ "and": value })),
                 "team" if value.as_object().map(|o| o.len()) == Some(1) => {
                     team = Some(
                         value["id"]["eq"]
@@ -845,6 +864,15 @@ impl Store {
                 })
             })
             .collect();
+        if let Some(gate) = gate {
+            let mut kept = Vec::with_capacity(issues.len());
+            for issue in issues {
+                if self.keeps(&gate, issue, viewer)? {
+                    kept.push(issue);
+                }
+            }
+            issues = kept;
+        }
         issues.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
         if descending {
             issues.reverse();
@@ -2928,7 +2956,7 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             let nodes: Vec<Value> = kept.iter().map(|u| user_json(u)).collect();
             Ok(json!({"users": {"nodes": nodes, "pageInfo": info}}))
         }
-        "States" | "TeamStates" => {
+        "States" => {
             let team = var("teamId");
             if s.team(&team).is_none() {
                 return Err(Refusal::NotFound("Team"));
@@ -2941,10 +2969,10 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                 .collect();
             Ok(json!({"team": {"states": {"nodes": nodes}}}))
         }
-        "Issues" | "StateIssues" => {
+        "Issues" => {
             let descending = vars["sort"][0]["manual"]["order"] == "Descending";
             let issues = s
-                .select(&vars["filter"], descending)
+                .select(&vars["filter"], descending, viewer)
                 .map_err(Refusal::Invalid)?;
             let first = vars["first"].as_u64().unwrap_or(50) as usize;
             let (kept, info) = page(issues, |i| i.id.clone(), after, first);
@@ -2961,6 +2989,11 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
         "IssueFull" => {
             let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
             Ok(json!({"issue": s.full_issue_json(&s.issues[at])}))
+        }
+        "IssueRef" => {
+            let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
+            let issue = &s.issues[at];
+            Ok(json!({"issue": {"id": issue.id, "identifier": s.identifier(issue)}}))
         }
         "IssuePlace" => {
             let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;
@@ -3336,7 +3369,7 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             s.issues[at] = issue;
             Ok(json!({"issueUpdate": {"success": true}}))
         }
-        "IssueCreate" | "NewIssue" => {
+        "IssueCreate" => {
             let input = &vars["input"];
             let team = input["teamId"].as_str().unwrap_or_default().to_string();
             if s.team(&team).is_none() {
@@ -3351,16 +3384,9 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                     return Err(Refusal::NotFound("WorkflowState"))
                 }
                 Some(state) => state.to_string(),
-                None => {
-                    let of_team: Vec<&State> =
-                        s.states.iter().filter(|st| st.team == team).collect();
-                    ["backlog", "unstarted"]
-                        .iter()
-                        .find_map(|kind| of_team.iter().find(|st| st.kind == *kind))
-                        .or(of_team.first())
-                        .map(|st| st.id.clone())
-                        .ok_or(Refusal::NotFound("WorkflowState"))?
-                }
+                None => s
+                    .default_state(&team)
+                    .ok_or(Refusal::NotFound("WorkflowState"))?,
             };
             let id = s.add_issue(
                 team,
@@ -3370,6 +3396,39 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
                 parent,
                 input["sortOrder"].as_f64(),
             );
+            // Set the rest of the input as an update sets it, and file nothing it refuses.
+            let mut issue = s.issues.pop().expect("the issue just filed");
+            let mut rest = input.as_object().cloned().unwrap_or_default();
+            for key in [
+                "teamId",
+                "stateId",
+                "title",
+                "description",
+                "parentId",
+                "sortOrder",
+            ] {
+                rest.remove(key);
+            }
+            let labels = rest.remove("labelIds").unwrap_or_default();
+            s.update(&mut issue, &Value::Object(rest))?;
+            for label in labels.as_array().into_iter().flatten() {
+                let label = label.as_str().unwrap_or_default();
+                let of = s
+                    .labels
+                    .iter()
+                    .find(|l| l.id == label)
+                    .ok_or(Refusal::NotFound("IssueLabel"))?;
+                if of.team.as_ref().is_some_and(|team| *team != issue.team) {
+                    return Err(Refusal::Input(
+                        "The label is not one of the issue's team".into(),
+                    ));
+                }
+                if !issue.labels.iter().any(|l| l == label) {
+                    issue.labels.push(label.to_string());
+                }
+            }
+            issue.creator = Some(viewer.to_string());
+            s.issues.push(issue);
             let issue = s.issue(&id).expect("the issue just filed");
             let node = json!({
                 "id": issue.id,
@@ -3518,33 +3577,16 @@ fn dispatch(s: &mut Store, name: &str, vars: &Value, viewer: &str) -> Result<Val
             subscribers.retain(|u| *u != user);
             Ok(json!({"issueUnsubscribe": {"success": true}}))
         }
-        "TeamLabels" => {
-            let team = vars["filter"]["or"][0]["team"]["id"]["eq"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            let wanted = json!({"or": [{"team": {"id": {"eq": team}}}, {"team": {"null": true}}]});
-            if vars["filter"] != wanted || s.team(&team).is_none() {
-                return Err(Refusal::Invalid(format!(
-                    "the fake answers TeamLabels for a team and the workspace only, not {}",
-                    vars["filter"]
-                )));
+        "TeamDefaultState" => {
+            let team = var("id");
+            if s.team(&team).is_none() {
+                return Err(Refusal::NotFound("Team"));
             }
-            let labels: Vec<Label> = s
-                .labels
-                .iter()
-                .filter(|l| l.team.is_none() || l.team.as_deref() == Some(&team))
-                .cloned()
-                .collect();
-            let (kept, info) = page(labels, |l| l.id.clone(), after, 100);
-            let nodes: Vec<Value> = kept
-                .iter()
-                .map(|l| {
-                    json!({"id": l.id, "name": l.name, "color": l.color,
-                           "team": l.team.as_ref().map(|t| json!({"id": t}))})
-                })
-                .collect();
-            Ok(json!({"issueLabels": {"nodes": nodes, "pageInfo": info}}))
+            let state = s.default_state(&team).map(|id| {
+                let state = s.state(&id).expect("a state of the team");
+                json!({"id": state.id, "name": state.name})
+            });
+            Ok(json!({"team": {"defaultIssueState": state}}))
         }
         "IssueLabelIds" => {
             let at = s.issue_at(&var("id")).ok_or(Refusal::NotFound("Issue"))?;

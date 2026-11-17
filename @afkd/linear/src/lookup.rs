@@ -1,6 +1,6 @@
 //! Turning the names a write is passed into Linear's ids: a team by its key, a state, a
-//! project or a milestone by its name, a user by display name or email (or `"me"`), a cycle
-//! by its number.
+//! label, a project or a milestone by its name, a user by display name or email (or `"me"`),
+//! a cycle by its number.
 //!
 //! A name is matched exactly, and an object's own id is taken in its place, so the ids an
 //! ambiguous name is refused with can be passed back. A name that matches nothing is refused
@@ -11,6 +11,7 @@
 use crate::client::LinearClient;
 use crate::settings::ME;
 use crate::tracker::{LinearError, Team, Tracker};
+use crate::wire::LabelFields;
 
 /// One object a name may name: its id, its name, which a refusal shows, and the other name it
 /// answers to, a user's email.
@@ -145,6 +146,78 @@ pub(crate) fn state(
         scope: &scope,
     };
     pick(action, among, name, &candidates).cloned()
+}
+
+/// The id of the label named `name`, or whose id it is, for an issue of the team `team`: the
+/// team's label of that name, else the workspace's, so a team's label wins over a
+/// workspace's of the same name.
+///
+/// # Errors
+///
+/// Returns the sentence refusing a name neither the team nor the workspace has a label of,
+/// which lists the labels there are, the team's first; one several labels of the team, or
+/// else of the workspace, answer to, which lists their ids; or of the read Linear refused.
+pub(crate) fn label(
+    client: &LinearClient,
+    action: &str,
+    team: &Team,
+    name: &str,
+) -> Result<String, String> {
+    let (of_team, of_workspace): (Vec<_>, Vec<_>) = client
+        .label_list(Some(&team.key))
+        .map_err(linear)?
+        .into_iter()
+        .partition(|(_, label)| label.team.is_some());
+    let candidates = |labels: Vec<(String, LabelFields)>| -> Vec<Candidate> {
+        labels
+            .into_iter()
+            .map(|(id, label)| Candidate::named(id, label.name))
+            .collect()
+    };
+    label_in(
+        action,
+        team,
+        name,
+        &candidates(of_team),
+        &candidates(of_workspace),
+    )
+}
+
+/// The id of the one of `of_team`, the labels of the team `team`, or else of `of_workspace`,
+/// that `name` names, as [`label`] picks it.
+fn label_in(
+    action: &str,
+    team: &Team,
+    name: &str,
+    of_team: &[Candidate],
+    of_workspace: &[Candidate],
+) -> Result<String, String> {
+    if let Some(by_id) = of_team.iter().chain(of_workspace).find(|c| c.id == name) {
+        return Ok(by_id.id.clone());
+    }
+    let in_team = format!(" in team {}", team.key);
+    for (candidates, scope) in [
+        (of_team, in_team.as_str()),
+        (of_workspace, " in the workspace"),
+    ] {
+        if candidates.iter().any(|c| c.answers_to(name)) {
+            let among = Among {
+                what: "label",
+                scope,
+            };
+            return Ok(pick(action, among, name, candidates)?.id.clone());
+        }
+    }
+    let there: Vec<&str> = of_team
+        .iter()
+        .chain(of_workspace)
+        .map(|c| c.name.as_str())
+        .collect();
+    Err(format!(
+        "{action}: no label named {name:?} in team {} or the workspace; {}",
+        team.key,
+        there_are(&there)
+    ))
 }
 
 /// The id of the user `name` names: `"me"` whoever the credential acts as, else the user whose
@@ -315,6 +388,75 @@ mod tests {
             super::pick("update_issue", in_project, "B", &[]).map(|c| c.id.clone()),
             Err(
                 "update_issue: no milestone named \"B\" in project Trackers 🧭; there are none"
+                    .into()
+            )
+        );
+    }
+
+    /// A label is the team's of that name, else the workspace's, or the one whose id is
+    /// given: a team's label wins over a workspace's of the same name, several of one scope
+    /// are refused listing their ids, and none is refused naming the team and every label
+    /// there is, the team's first.
+    #[test]
+    fn a_label_is_the_teams_else_the_workspaces() {
+        let eng = Team {
+            id: "t-eng".into(),
+            key: "ENG".into(),
+        };
+        let of_team = [
+            candidate("l-bug", "Bug 🐛", None),
+            candidate("l-dup-1", "Hold", None),
+            candidate("l-dup-2", "Hold", None),
+            candidate("l-eng-ni", "Needs Info", None),
+        ];
+        let of_workspace = [
+            candidate("l-ws-ni", "Needs Info", None),
+            candidate("l-ws-ready", "afkd/ready", None),
+            candidate("l-ws-x1", "見出し", None),
+            candidate("l-ws-x2", "見出し", None),
+        ];
+        let label = |name: &str| label_in("add_label", &eng, name, &of_team, &of_workspace);
+        assert_eq!(label("Bug 🐛"), Ok("l-bug".into()));
+        assert_eq!(
+            label("afkd/ready"),
+            Ok("l-ws-ready".into()),
+            "the workspace's"
+        );
+        assert_eq!(
+            label("Needs Info"),
+            Ok("l-eng-ni".into()),
+            "the team's wins"
+        );
+        assert_eq!(label("l-ws-ni"), Ok("l-ws-ni".into()), "by its id");
+        assert_eq!(
+            label("Hold"),
+            Err(
+                "add_label: 2 labels are named \"Hold\" in team ENG: l-dup-1, l-dup-2; pass the \
+                 id of the one you mean in place of the name"
+                    .into()
+            )
+        );
+        assert_eq!(
+            label("見出し"),
+            Err(
+                "add_label: 2 labels are named \"見出し\" in the workspace: l-ws-x1, l-ws-x2; \
+                 pass the id of the one you mean in place of the name"
+                    .into()
+            )
+        );
+        assert_eq!(
+            label("bug 🐛"),
+            Err(
+                "add_label: no label named \"bug 🐛\" in team ENG or the workspace; there are: \
+                 Bug 🐛, Hold, Hold, Needs Info, Needs Info, afkd/ready, 見出し, 見出し"
+                    .into()
+            )
+        );
+        assert_eq!(
+            label_in("remove_label", &eng, "Bug", &[], &[]),
+            Err(
+                "remove_label: no label named \"Bug\" in team ENG or the workspace; there are \
+                 none"
                     .into()
             )
         );

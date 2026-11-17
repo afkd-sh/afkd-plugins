@@ -222,6 +222,57 @@ fn end(fake: &FakeLinear) {
     );
 }
 
+// --- issue ---
+
+/// `issue` reads one issue by its identifier and by its uuid, each the handle `issues` hands
+/// back of it, field for field and under the same key; by its uuid it is read anew after it
+/// moved team, under the same key and its new identifier, while its old identifier names
+/// nothing. An id that names no issue is refused naming it and the workspace.
+#[test]
+fn issue_reads_one_by_identifier_or_uuid() {
+    let w = world();
+    let f = &w.fake;
+    let state = TempDir::new("reads-issue");
+    let e1 = w.issue(101);
+    let listed = read("issues", with_ws(f, json!({"id": [e1]})), &state)["handles"][0].clone();
+    let (by_identifier, stderr) = once("issue", with_ws(f, json!({"id": "ENG-101"})), state.path());
+    assert_eq!(by_identifier, json!({"ok": true, "handle": listed}));
+    assert_eq!(stderr, "[linear] read issue ENG-101 from workspace acme\n");
+    let by_uuid = read("issue", with_ws(f, json!({"id": e1})), &state);
+    assert_eq!(by_uuid, by_identifier);
+    let archived = read("issue", with_ws(f, json!({"id": "ENG-110"})), &state);
+    assert_eq!(
+        archived["handle"]["fields"]["archived"], true,
+        "an archived issue is read too: {archived}"
+    );
+
+    f.move_team(e1, "OPS");
+    let moved = f.identifier(e1);
+    let after = read("issue", with_ws(f, json!({"id": e1})), &state);
+    assert_eq!(after["handle"]["id"], moved.as_str());
+    assert_eq!(after["handle"]["key"], listed["key"], "the key holds");
+    assert_eq!(after["handle"]["fields"]["team"], "OPS");
+    assert_eq!(after["handle"]["fields"]["uuid"], e1);
+    assert_eq!(
+        read("issue", with_ws(f, json!({"id": moved})), &state),
+        after
+    );
+    for id in [
+        "ENG-101",
+        "ENG-999",
+        "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5",
+        "",
+    ] {
+        let (reply, stderr) = once("issue", with_ws(f, json!({"id": id})), state.path());
+        let error = format!(
+            "issue: no issue {id} in workspace acme: linear read issue: Entity not found: Issue"
+        );
+        assert_eq!(reply, json!({"ok": false, "error": error}), "{id}");
+        assert!(stderr.contains(&error), "{stderr}");
+    }
+    end(f);
+}
+
 // --- issues ---
 
 /// `issues` hands back each issue with every field of its handle, as Linear holds it: the
@@ -1239,6 +1290,7 @@ fn every_read_refuses_a_workspace_without_one_credential() {
     let base = fake.base_url();
     let issue = json!({"id": "ENG-1", "key": "linear:org/uuid"});
     let args = [
+        ("issue", json!({"id": "ENG-1"})),
         ("issues", json!({})),
         ("comments", json!({"issue": issue})),
         ("me", json!({})),
@@ -1488,8 +1540,8 @@ fn two_workspaces_are_read_side_by_side() {
         );
     }
     let mut plugin = common::Plugin::armed(json!({
-        "team": "ENG", "base_url": w.fake.base_url(), "api_key": API_KEY,
-        "pick_from": "Todo",
+        "team": ["ENG"], "base_url": w.fake.base_url(), "api_key": API_KEY,
+        "claim_from": ["Todo"],
     }));
     let acme = plugin.read_call("teams", json!({"ws": ws(&w.fake)}));
     let other = plugin.read_call("teams", json!({"ws": ws(&globex)}));

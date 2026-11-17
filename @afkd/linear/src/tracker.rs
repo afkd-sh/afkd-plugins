@@ -1,4 +1,4 @@
-//! The mockable issue-tracker seam the `issue` kind drives, plus an in-memory mock tracker
+//! The mockable issue-tracker seam the `intake` kind drives, plus an in-memory mock tracker
 //! (`MockTracker`, test-only) for offline tests.
 //!
 //! The kind does network I/O, but its *logic* — the comment-based claim lock, the gates,
@@ -7,13 +7,14 @@
 //! trait, the plain value types it exchanges, the typed [`LinearError`], and the mock.
 //!
 //! The trait carries only what the kind needs, **by meaning** — resolve a team or a user,
-//! read a state's issues, read/post/edit/delete comments, badge an issue, put it back, the
-//! reads and writes a slot's actions make, and the files they put up and fetch — so the
-//! GraphQL mapping stays confined to the real adapter.
+//! read a state's issues, read/post/edit/delete comments, badge an issue, put it back, and
+//! the files a write puts up and a read fetches — so the GraphQL mapping stays confined to
+//! the real adapter.
 
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::file::Upload;
 use crate::settings::MemberRef;
@@ -33,7 +34,7 @@ pub(crate) struct Team {
     pub(crate) key: String,
 }
 
-/// A workflow state of a team: what `pick_from` names, and what an issue sits in.
+/// A workflow state of a team: what `claim_from` names, and what an issue sits in.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct State {
     pub(crate) id: String,
@@ -417,12 +418,13 @@ pub(crate) trait Tracker {
     /// The team's workflow states.
     fn states(&self, team_id: &str) -> Result<Vec<State>, LinearError>;
 
-    /// One page of the issues in state `state_id`, in the team's manual order, from the
-    /// cursor `after`.
+    /// One page of the issues in state `state_id` that the `IssueFilter` `gate` keeps, `{}`
+    /// keeping every one, in the team's manual order, from the cursor `after`.
     fn issues_in_state(
         &self,
         team_id: &str,
         state_id: &str,
+        gate: &Value,
         after: Option<&str>,
     ) -> Result<Page<Issue>, LinearError>;
 
@@ -468,34 +470,6 @@ pub(crate) trait Tracker {
 
     /// Issue `issue_id`'s description as Linear holds it now, `""` when it has none.
     fn issue_description(&self, issue_id: &str) -> Result<String, LinearError>;
-
-    /// Every sub-issue of issue `issue_id`, in Linear's order.
-    fn sub_issues(&self, issue_id: &str) -> Result<Vec<Child>, LinearError>;
-
-    /// Retitle issue `issue_id` to `title`.
-    fn set_title(&self, issue_id: &str, title: &str) -> Result<(), LinearError>;
-
-    /// Replace issue `issue_id`'s description with `text`.
-    fn set_description(&self, issue_id: &str, text: &str) -> Result<(), LinearError>;
-
-    /// Move issue `issue_id` to state `state_id`, wherever Linear places it there.
-    fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError>;
-
-    /// Delegate issue `issue_id` to user `user_id`, or take its delegate off for `None`.
-    /// Linear takes an agent here, an app's user.
-    fn set_delegate(&self, issue_id: &str, user_id: Option<&str>) -> Result<(), LinearError>;
-
-    /// File a new issue in team `team_id` titled `title`, described `description` (none when
-    /// empty), under the issue `parent_id` when there is one, in state `state_id` or else
-    /// the team's default; its identifier comes back.
-    fn create_issue(
-        &self,
-        team_id: &str,
-        parent_id: Option<&str>,
-        title: &str,
-        description: &str,
-        state_id: Option<&str>,
-    ) -> Result<String, LinearError>;
 
     /// Archive issue `issue_id`.
     fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError>;
@@ -544,9 +518,10 @@ impl<T: Tracker + ?Sized> Tracker for std::sync::Arc<T> {
         &self,
         team_id: &str,
         state_id: &str,
+        gate: &Value,
         after: Option<&str>,
     ) -> Result<Page<Issue>, LinearError> {
-        (**self).issues_in_state(team_id, state_id, after)
+        (**self).issues_in_state(team_id, state_id, gate, after)
     }
     fn parked_issues(&self, team_id: &str, label: &str) -> Result<Vec<Issue>, LinearError> {
         (**self).parked_issues(team_id, label)
@@ -582,31 +557,6 @@ impl<T: Tracker + ?Sized> Tracker for std::sync::Arc<T> {
     }
     fn issue_description(&self, issue_id: &str) -> Result<String, LinearError> {
         (**self).issue_description(issue_id)
-    }
-    fn sub_issues(&self, issue_id: &str) -> Result<Vec<Child>, LinearError> {
-        (**self).sub_issues(issue_id)
-    }
-    fn set_title(&self, issue_id: &str, title: &str) -> Result<(), LinearError> {
-        (**self).set_title(issue_id, title)
-    }
-    fn set_description(&self, issue_id: &str, text: &str) -> Result<(), LinearError> {
-        (**self).set_description(issue_id, text)
-    }
-    fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError> {
-        (**self).set_state(issue_id, state_id)
-    }
-    fn set_delegate(&self, issue_id: &str, user_id: Option<&str>) -> Result<(), LinearError> {
-        (**self).set_delegate(issue_id, user_id)
-    }
-    fn create_issue(
-        &self,
-        team_id: &str,
-        parent_id: Option<&str>,
-        title: &str,
-        description: &str,
-        state_id: Option<&str>,
-    ) -> Result<String, LinearError> {
-        (**self).create_issue(team_id, parent_id, title, description, state_id)
     }
     fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError> {
         (**self).archive_issue(issue_id)
@@ -671,22 +621,6 @@ mod mock {
         AddLabel { issue: String, label: String },
         /// A named label was taken off an issue.
         RemoveLabel { issue: String, label: String },
-        /// An issue was retitled.
-        SetTitle { issue: String, title: String },
-        /// An issue's description was replaced.
-        SetDescription { issue: String, text: String },
-        /// An issue was moved to a state, placed where Linear places it.
-        SetState { issue: String, state: String },
-        /// An issue was delegated to a user, or had its delegate taken off (`None`).
-        SetDelegate { issue: String, user: Option<String> },
-        /// An issue was filed.
-        Create {
-            team: String,
-            parent: Option<String>,
-            title: String,
-            description: String,
-            state: Option<String>,
-        },
         /// An issue was archived.
         Archive(String),
         /// A file was put up.
@@ -730,10 +664,12 @@ mod mock {
         call_deadlines: Mutex<Vec<Option<Instant>>>,
         /// The page size `issues_in_state` answers with; zero is "all of them".
         page: AtomicU64,
+        /// Every gate `issues_in_state` was sent, in order.
+        gates: Mutex<Vec<Value>>,
         /// Who a posted comment is authored by, when not [`SELF_ID`]: an app whose comments
         /// come back under its bot actor.
         post_author: Mutex<Option<String>>,
-        /// The files the mock holds, by asset url: those put up and those seeded.
+        /// The files the mock holds, by asset url: those put up.
         files: Mutex<Vec<(String, Vec<u8>)>>,
     }
 
@@ -891,11 +827,6 @@ mod mock {
             *lock(&self.post_author) = Some(author.to_string());
         }
 
-        /// Hold `bytes` at `url`, as a file a person pasted.
-        pub(crate) fn seed_file(&self, url: &str, bytes: &[u8]) {
-            lock(&self.files).push((url.to_string(), bytes.to_vec()));
-        }
-
         /// The bytes the mock holds at `url`.
         pub(crate) fn file(&self, url: &str) -> Option<Vec<u8>> {
             lock(&self.files)
@@ -916,6 +847,11 @@ mod mock {
             lock(&self.call_deadlines).clone()
         }
 
+        /// Every gate a state's scan was sent, in order.
+        pub(crate) fn gates(&self) -> Vec<Value> {
+            lock(&self.gates).clone()
+        }
+
         /// The comments on an issue now, in the order posted.
         pub(crate) fn comments_on(&self, id: &str) -> Vec<Comment> {
             lock(&self.issues)
@@ -923,13 +859,6 @@ mod mock {
                 .find(|s| s.issue.id == id)
                 .map(|s| s.comments.clone())
                 .unwrap_or_default()
-        }
-
-        /// Whether an issue is archived.
-        pub(crate) fn archived(&self, id: &str) -> bool {
-            lock(&self.issues)
-                .iter()
-                .any(|s| s.issue.id == id && s.archived)
         }
 
         /// An issue as it stands.
@@ -978,6 +907,32 @@ mod mock {
                 None => Err(not_found(stage, "Issue")),
             }
         }
+    }
+
+    /// Whether `issue` passes the gate `gate`, as Linear reads it: the gate's skipped labels
+    /// and its blocked-by clause, the two the mock evaluates. Any other clause panics, so no
+    /// test leans on one the mock would let through; the fake Linear evaluates them all.
+    fn keeps(gate: &Value, issue: &Issue) -> bool {
+        let clauses = match gate.get("and") {
+            Some(Value::Array(clauses)) => clauses.as_slice(),
+            _ if gate.as_object().is_some_and(serde_json::Map::is_empty) => &[],
+            _ => panic!("the mock evaluates no gate {gate}"),
+        };
+        clauses.iter().all(|clause| {
+            if let Some(denied) = clause["labels"]["every"]["name"]["nin"].as_array() {
+                return !issue
+                    .labels
+                    .iter()
+                    .any(|l| denied.iter().any(|d| d.as_str() == Some(l.as_str())));
+            }
+            if let Some(blocked) = clause["hasBlockedByRelations"]["eq"].as_bool() {
+                let open = issue.blockers.iter().any(|b| {
+                    !["completed", "canceled", "duplicate"].contains(&b.state_kind.as_str())
+                });
+                return open == blocked;
+            }
+            panic!("the mock evaluates no gate clause {clause}")
+        })
     }
 
     /// `issue` as the claim's scan reads it: with no detail, which only a full read selects.
@@ -1038,12 +993,14 @@ mod mock {
             &self,
             _team_id: &str,
             state_id: &str,
+            gate: &Value,
             after: Option<&str>,
         ) -> Result<Page<Issue>, LinearError> {
             self.guard("read issues")?;
+            lock(&self.gates).push(gate.clone());
             let mut issues: Vec<Issue> = lock(&self.issues)
                 .iter()
-                .filter(|s| s.issue.state.id == state_id && !s.archived)
+                .filter(|s| s.issue.state.id == state_id && !s.archived && keeps(gate, &s.issue))
                 .map(|s| scanned(&s.issue))
                 .collect();
             issues.sort_by(|a, b| a.sort_order.total_cmp(&b.sort_order));
@@ -1208,87 +1165,6 @@ mod mock {
             self.issue_mut(issue_id, "read description", |s| {
                 s.issue.description.clone()
             })
-        }
-
-        fn sub_issues(&self, issue_id: &str) -> Result<Vec<Child>, LinearError> {
-            self.guard("read sub-issues")?;
-            self.issue_mut(issue_id, "read sub-issues", |s| s.issue.children.clone())
-        }
-
-        fn set_title(&self, issue_id: &str, title: &str) -> Result<(), LinearError> {
-            self.guard("rename issue")?;
-            self.issue_mut(issue_id, "rename issue", |s| {
-                s.issue.title = title.to_string()
-            })?;
-            lock(&self.actions).push(Action::SetTitle {
-                issue: issue_id.to_string(),
-                title: title.to_string(),
-            });
-            Ok(())
-        }
-
-        fn set_description(&self, issue_id: &str, text: &str) -> Result<(), LinearError> {
-            self.guard("describe issue")?;
-            self.issue_mut(issue_id, "describe issue", |s| {
-                s.issue.description = text.to_string()
-            })?;
-            lock(&self.actions).push(Action::SetDescription {
-                issue: issue_id.to_string(),
-                text: text.to_string(),
-            });
-            Ok(())
-        }
-
-        fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError> {
-            self.guard("move issue")?;
-            let state = lock(&self.states)
-                .iter()
-                .find(|s| s.id == state_id)
-                .cloned()
-                .ok_or_else(|| not_found("move issue", "WorkflowState"))?;
-            self.issue_mut(issue_id, "move issue", |s| s.issue.state = state)?;
-            lock(&self.actions).push(Action::SetState {
-                issue: issue_id.to_string(),
-                state: state_id.to_string(),
-            });
-            Ok(())
-        }
-
-        fn set_delegate(&self, issue_id: &str, user_id: Option<&str>) -> Result<(), LinearError> {
-            let stage = if user_id.is_some() {
-                "delegate issue"
-            } else {
-                "undelegate issue"
-            };
-            self.guard(stage)?;
-            self.issue_mut(issue_id, stage, |s| {
-                s.issue.delegate = user_id.map(str::to_string);
-            })?;
-            lock(&self.actions).push(Action::SetDelegate {
-                issue: issue_id.to_string(),
-                user: user_id.map(str::to_string),
-            });
-            Ok(())
-        }
-
-        fn create_issue(
-            &self,
-            team_id: &str,
-            parent_id: Option<&str>,
-            title: &str,
-            description: &str,
-            state_id: Option<&str>,
-        ) -> Result<String, LinearError> {
-            self.guard("create issue")?;
-            let identifier = format!("ENG-{}", 900 + lock(&self.issues).len());
-            lock(&self.actions).push(Action::Create {
-                team: team_id.to_string(),
-                parent: parent_id.map(str::to_string),
-                title: title.to_string(),
-                description: description.to_string(),
-                state: state_id.map(str::to_string),
-            });
-            Ok(identifier)
         }
 
         fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError> {
@@ -1476,7 +1352,7 @@ mod mock {
         let mut after = None;
         loop {
             let page = t
-                .issues_in_state(TEAM_ID, "Todo", after.as_deref())
+                .issues_in_state(TEAM_ID, "Todo", &serde_json::json!({}), after.as_deref())
                 .unwrap();
             seen.extend(page.items.into_iter().map(|i| i.identifier));
             match page.next {

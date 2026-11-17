@@ -1,48 +1,53 @@
-//! Read the `issue` kind's settings block — as afkd lowers it to JSON in `hello` — into a
-//! typed [`IssueConfig`].
+//! Read the `intake` kind's settings block — as afkd lowers it to JSON in `hello` — into a
+//! typed [`IntakeConfig`].
 //!
 //! afkd has already typed the block against the manifest before this plugin is spawned:
-//! every key is one the kind declares, `team` and `pick_from` are present, and each value is
+//! every key is one the kind declares, `team` and `claim_from` are present, and each value is
 //! of its declared type. What is left here is the part a manifest cannot say: a list that
-//! names nothing, and which credential is written, since exactly one of an API key or an
-//! app's `client_id` and `client_secret` is. The cadence and the attempt bound (`every`,
-//! `max_attempts`) are afkd's and are not read here, and the slots never arrive here at all.
+//! names nothing, which credential is written, since exactly one of an API key or an app's
+//! `client_id` and `client_secret` is, and an `only_*` filter `linear.issues` would refuse.
+//! The cadence and the attempt bound (`every`, `max_attempts`) are afkd's and are not read
+//! here, and the slots never arrive here at all.
 //!
-//! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a duration its
-//! largest whole unit, a range `lo..hi`), and a `list[…]` is always an array — of the one
-//! item, or holding the array of several.
+//! The lowering (afkd's `plugintrigger::settings_json`): a value is a string (an enum member
+//! its name, a number its digits), `nil` is `null`, and a `list[…]` is always an array of
+//! its items.
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::client::LINEAR_BASE;
+use crate::reads::{issue_query, IssueQuery};
 
 /// The member operand naming whoever the credential authenticates as: the API key's user, or
 /// the app itself. No display name or email can collide with it in practice, and Linear has
 /// no reserved word of its own, so this is the plugin's.
 pub(crate) const ME: &str = "me";
 
-/// The `require_member` operand for an issue nobody holds: one with neither an assignee nor a
-/// delegate. It is reserved there only, so `discuss_with` and `delegate` still read it as a
-/// name.
+/// The `assignee` and `delegate` filter operand for an issue nobody holds that way. It is
+/// reserved there only, so `discuss_with` and a write's `delegate` still read it as a name.
 pub(crate) const NONE: &str = "none";
 
-/// Who a `require_member` gate or a `discuss_with` entry names: [`ME`], or a workspace user
-/// by display name or email.
+/// Each `only_*` setting, and the `linear.issues` filter it is.
+const ONLY: &[(&str, &str)] = &[
+    ("only_state_type", "state_type"),
+    ("only_priority", "priority"),
+    ("only_labels", "labels"),
+    ("only_assignee", "assignee"),
+    ("only_delegate", "delegate"),
+    ("only_project", "project"),
+    ("only_milestone", "milestone"),
+    ("only_cycle", "cycle"),
+    ("only_parent", "parent"),
+    ("only_text", "text"),
+];
+
+/// Who a `discuss_with` entry names: [`ME`], or a workspace user by display name or email.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MemberRef {
     /// Whoever the credential authenticates as, the `viewer`.
     Me,
     /// A user named by their display name or their email, whichever matches.
     Named(String),
-}
-
-/// One `require_member` entry: a member who holds the issue, or nobody holding it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Holder {
-    /// The issue is assigned or delegated to this member.
-    Member(MemberRef),
-    /// The issue has neither an assignee nor a delegate.
-    Nobody,
 }
 
 /// Whose comment drives a `discuss_with` grooming issue: any non-afkd author, or a named
@@ -86,32 +91,51 @@ impl std::fmt::Debug for AuthConfig {
     }
 }
 
-/// A validated `issue` trigger configuration.
+/// A validated `intake` trigger configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct IssueConfig {
-    /// The team's key (`ENG`), which every identifier it holds starts with.
-    pub(crate) team_key: String,
+pub(crate) struct IntakeConfig {
+    /// The keys of the teams issues are claimed from (`ENG`), in the order written; never
+    /// empty, since the setting is required.
+    pub(crate) teams: Vec<String>,
     /// API root the client is pointed at; defaults to Linear's. A testability seam, not a
     /// user-facing knob.
     pub(crate) base_url: String,
     /// The credential.
     pub(crate) auth: AuthConfig,
-    /// The workflow states new issues are drawn from, by name, in the order written; never
-    /// empty, since the setting is required.
-    pub(crate) pick_from: Vec<String>,
-    /// The intake gate: when set, only issues one of these entries holds are claimed, an issue
-    /// passing if any entry matches; never empty.
-    pub(crate) require_member: Option<Vec<Holder>>,
-    /// The label intake gate: when set, only issues carrying a label of this exact name are
-    /// eligible to claim.
-    pub(crate) require_label: Option<String>,
-    /// The negative label intake gate: an issue carrying any of these labels is never
-    /// claimed, and deny wins over `require_label`.
-    pub(crate) without_label: Vec<String>,
+    /// The workflow states new issues are drawn from, by name, in the order written, in each
+    /// team; never empty, since the setting is required.
+    pub(crate) claim_from: Vec<String>,
+    /// What an issue must pass to be claimed: the `linear.issues` filters the `only_*`
+    /// settings and `skip_labels` name, and no open blocker.
+    pub(crate) gate: IssueQuery,
+    /// The labels no claimed issue carries, which the parked sweep holds a badged issue to
+    /// as well.
+    pub(crate) skip_labels: Vec<String>,
     /// The comment-driven grooming gate: when set, an issue is claimed only if its tail —
     /// the comments after afkd's own last comment — carries a comment from an allowed
     /// author.
     pub(crate) discuss_with: Option<DiscussWith>,
+}
+
+impl IntakeConfig {
+    /// The `linear.Workspace` the service's credential settings build, as the slots are
+    /// passed it: the credential the service reaches Linear with, every other credential
+    /// field `nil`, and the API root.
+    pub(crate) fn workspace(&self) -> Value {
+        let (api_key, client_id, client_secret) = match &self.auth {
+            AuthConfig::ApiKey(key) => (Some(key.as_str()), None, None),
+            AuthConfig::App {
+                client_id,
+                client_secret,
+            } => (None, Some(client_id.as_str()), Some(client_secret.as_str())),
+        };
+        json!({
+            "api_key": api_key,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "base_url": self.base_url,
+        })
+    }
 }
 
 /// A setting afkd let through that this kind cannot use: the key it is about, and the
@@ -148,64 +172,69 @@ pub(crate) type Declared = (
     &'static [(&'static str, &'static str)],
 );
 
-/// The `issue` kind's settings as the manifest declares them, in its order: each name, its
+/// The `intake` kind's settings as the manifest declares them, in its order: each name, its
 /// `type`, and its other keys spelled as the manifest spells their values. afkd reads the
 /// manifest, never this: it is what `manifest.rs`'s test holds `afkd-plugin.toml` to, so the
 /// two cannot drift apart. afkd's own claim keys are not among them.
 #[cfg(test)]
 pub(crate) const SETTINGS: &[Declared] = &[
-    ("team", "str", &[("required", "true")]),
-    ("base_url", "str", &[]),
-    ("api_key", "str", &[]),
-    ("client_id", "str", &[]),
-    ("client_secret", "str", &[]),
-    ("pick_from", "list[str]", &[("required", "true")]),
-    ("require_member", "list[str]", &[]),
-    ("require_label", "str", &[]),
-    ("without_label", "list[str]", &[]),
+    ("api_key", "str?", &[]),
+    ("client_id", "str?", &[]),
+    ("client_secret", "str?", &[]),
+    (
+        "base_url",
+        "str",
+        &[("default", "\"https://api.linear.app\"")],
+    ),
+    ("team", "list[str]", &[("required", "true")]),
+    ("claim_from", "list[str]", &[("required", "true")]),
+    ("only_state_type", "list[State_Type]", &[]),
+    ("only_priority", "list[Priority]", &[]),
+    ("only_labels", "list[str]", &[]),
+    ("only_assignee", "list[str]", &[]),
+    ("only_delegate", "list[str]", &[]),
+    ("only_project", "list[str]", &[]),
+    ("only_milestone", "list[str]", &[]),
+    ("only_cycle", "list[int]", &[]),
+    ("only_parent", "list[str]", &[]),
+    ("only_text", "str", &[]),
+    ("skip_labels", "list[str]", &[]),
     ("discuss_with", "list[str]", &[]),
 ];
 
-/// Read the lowered `settings` into an [`IssueConfig`], or report the first setting it
+/// Read the lowered `settings` into an [`IntakeConfig`], or report the first setting it
 /// cannot use.
-pub(crate) fn issue_config(settings: &Value) -> Result<IssueConfig, SettingsError> {
+pub(crate) fn intake_config(settings: &Value) -> Result<IntakeConfig, SettingsError> {
     let empty = Map::new();
     let settings = settings.as_object().unwrap_or(&empty);
-    Ok(IssueConfig {
+    let skip_labels = nonempty_list(
+        settings,
+        "skip_labels",
+        "`skip_labels` expects one or more label names",
+    )?;
+    Ok(IntakeConfig {
         // afkd refuses a service without either before any `hello`; these refuse a `hello`
         // that arrives without them anyway, so no armed service scans nothing.
-        team_key: opt_scalar(settings, "team")
-            .filter(|key| !key.is_empty())
+        teams: nonempty_list(settings, "team", "`team` expects one or more team keys")?
             .ok_or_else(|| {
-                SettingsError::new("team", "`team` is required: name the team by its key")
+                SettingsError::new("team", "`team` is required: name each team by its key")
             })?,
         base_url: opt_scalar(settings, "base_url").unwrap_or_else(|| LINEAR_BASE.to_string()),
         auth: auth_config(settings)?,
-        pick_from: nonempty_list(
+        claim_from: nonempty_list(
             settings,
-            "pick_from",
-            "`pick_from` expects one or more workflow state names",
+            "claim_from",
+            "`claim_from` expects one or more workflow state names",
         )?
         .ok_or_else(|| {
             SettingsError::new(
-                "pick_from",
-                "`pick_from` is required: name the workflow state or states new issues are \
+                "claim_from",
+                "`claim_from` is required: name the workflow state or states new issues are \
                  claimed from",
             )
         })?,
-        require_member: nonempty_list(
-            settings,
-            "require_member",
-            "`require_member` expects one or more members",
-        )?
-        .map(|entries| entries.iter().map(|s| holder(s)).collect()),
-        require_label: required_scalar(settings, "require_label")?,
-        without_label: nonempty_list(
-            settings,
-            "without_label",
-            "`without_label` expects one or more label names",
-        )?
-        .unwrap_or_default(),
+        gate: gate(settings, skip_labels.as_deref())?,
+        skip_labels: skip_labels.unwrap_or_default(),
         discuss_with: nonempty_list(
             settings,
             "discuss_with",
@@ -219,6 +248,71 @@ pub(crate) fn issue_config(settings: &Value) -> Result<IssueConfig, SettingsErro
             }
         }),
     })
+}
+
+/// What an issue must pass to be claimed: each `only_*` setting as the `linear.issues`
+/// filter it names, `skip_labels` as `without_labels`, and no open blocker. Each setting is
+/// held to its filter on its own first, so a refusal names the setting it is about.
+fn gate(
+    settings: &Map<String, Value>,
+    skip_labels: Option<&[String]>,
+) -> Result<IssueQuery, SettingsError> {
+    let mut args = Map::new();
+    for (setting, filter) in ONLY {
+        let Some(value) = only_value(settings, setting)? else {
+            continue;
+        };
+        let alone = Map::from_iter([(filter.to_string(), value.clone())]);
+        issue_query(&alone).map_err(|problem| {
+            let problem = problem.strip_prefix("issues: ").unwrap_or(&problem);
+            SettingsError::new(setting, problem.replacen(filter, setting, 1))
+        })?;
+        args.insert(filter.to_string(), value);
+    }
+    if let Some(labels) = skip_labels {
+        args.insert("without_labels".into(), json!(labels));
+    }
+    args.insert("blocked".into(), json!(false));
+    // Every filter passed on its own, and `skip_labels` names one label or more, so only a
+    // label list `without_labels` refuses is left to name.
+    issue_query(&args).map_err(|problem| SettingsError::new("skip_labels", problem))
+}
+
+/// The `only_*` setting `key` as the argument its filter takes, `None` when it is absent:
+/// `only_text` one string, `only_cycle` a list of ints, and every other a list of strings,
+/// an enum member by its name.
+fn only_value(settings: &Map<String, Value>, key: &str) -> Result<Option<Value>, SettingsError> {
+    if key == "only_text" {
+        return Ok(required_scalar(settings, key)?.map(Value::String));
+    }
+    let what = match key {
+        "only_state_type" => "state types",
+        "only_priority" => "priorities",
+        "only_labels" | "only_project" | "only_milestone" => "names",
+        "only_cycle" => "cycle numbers",
+        "only_parent" => "issues",
+        _ => "users",
+    };
+    let Some(items) = nonempty_list(
+        settings,
+        key,
+        &format!("`{key}` expects one or more {what}"),
+    )?
+    else {
+        return Ok(None);
+    };
+    if key != "only_cycle" {
+        return Ok(Some(json!(items)));
+    }
+    let numbers = items
+        .iter()
+        .map(|item| {
+            item.parse::<i64>().map_err(|_| {
+                SettingsError::new(key, format!("`{key}` expects cycle numbers, not {item:?}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(json!(numbers)))
 }
 
 /// What is wrong with a credential that is not exactly one of an API key or an app's
@@ -266,11 +360,15 @@ pub(crate) fn credential(
 }
 
 /// The credential the block writes: an `api_key`, or a `client_id` with its
-/// `client_secret`, and never both forms. Each refusal names the setting it is about.
+/// `client_secret`, and never both forms; one written `nil` or `""` is not written, as a
+/// `linear.Workspace` reads it. Each refusal names the setting it is about.
 fn auth_config(settings: &Map<String, Value>) -> Result<AuthConfig, SettingsError> {
-    let key = required_scalar(settings, "api_key")?;
-    let id = required_scalar(settings, "client_id")?;
-    let secret = required_scalar(settings, "client_secret")?;
+    let field = |key: &str| {
+        required_scalar(settings, key).map(|value| value.filter(|text| !text.is_empty()))
+    };
+    let key = field("api_key")?;
+    let id = field("client_id")?;
+    let secret = field("client_secret")?;
     credential(key, id, secret).map_err(|problem| match problem {
         CredentialProblem::Doubled { .. } => SettingsError::new(
             "api_key",
@@ -298,15 +396,6 @@ pub(crate) fn member_ref(who: &str) -> MemberRef {
     }
 }
 
-/// One `require_member` entry: [`NONE`] (case-sensitively) is nobody holding the issue, and
-/// any other text is a member, read by [`member_ref`].
-fn holder(who: &str) -> Holder {
-    match who {
-        NONE => Holder::Nobody,
-        who => Holder::Member(member_ref(who)),
-    }
-}
-
 /// A lowered entry's **value** — the entry itself, or the `@value` beside a block — read
 /// regardless of any block written with it.
 fn inline(entry: &Value) -> Option<&Value> {
@@ -324,14 +413,14 @@ fn opt_scalar(settings: &Map<String, Value>, key: &str) -> Option<String> {
     }
 }
 
-/// An optional setting that, once written, must carry one value: `None` when absent, and a
-/// fault when it is a flag, a block or a list — reading it as absent would silently claim
-/// what the operator asked to filter.
+/// An optional setting that, once written, must carry one value: `None` when absent or
+/// written `nil`, and a fault when it is a flag, a block or a list — reading it as absent
+/// would silently claim what the operator asked to filter.
 fn required_scalar(
     settings: &Map<String, Value>,
     key: &str,
 ) -> Result<Option<String>, SettingsError> {
-    if !settings.contains_key(key) {
+    if matches!(settings.get(key), None | Some(Value::Null)) {
         return Ok(None);
     }
     opt_scalar(settings, key)
@@ -340,14 +429,14 @@ fn required_scalar(
 }
 
 /// A repeatable list setting: every value its entries carry, flattened in order (afkd's
-/// `SettingsTree::list`), `None` when the key is absent, and `problem` when it was written
-/// but names nothing.
+/// `SettingsTree::list`), `None` when the key is absent or written `nil`, and `problem` when
+/// it was written but names nothing.
 fn nonempty_list(
     settings: &Map<String, Value>,
     key: &str,
     problem: &str,
 ) -> Result<Option<Vec<String>>, SettingsError> {
-    let Some(entries) = settings.get(key) else {
+    let Some(entries) = settings.get(key).filter(|value| !value.is_null()) else {
         return Ok(None);
     };
     let entries = match entries {
@@ -374,15 +463,17 @@ fn nonempty_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reads::{issue_filter, IssueRef};
+    use crate::tracker::{Priority, StateType};
     use serde_json::json;
 
     /// The required settings and an API key, plus `extra`, as afkd lowers a block: the
     /// minimal block afkd would let through.
     fn block(extra: Value) -> Value {
         let mut settings = json!({
-            "team": "ENG",
+            "team": ["ENG"],
             "api_key": "lin_api_k",
-            "pick_from": "Todo",
+            "claim_from": ["Todo"],
         });
         for (k, v) in extra.as_object().unwrap() {
             settings[k] = v.clone();
@@ -390,56 +481,73 @@ mod tests {
         settings
     }
 
-    fn cfg(extra: Value) -> IssueConfig {
-        issue_config(&block(extra)).expect("valid")
+    fn cfg(extra: Value) -> IntakeConfig {
+        intake_config(&block(extra)).expect("valid")
     }
 
     fn err(extra: Value) -> SettingsError {
-        issue_config(&block(extra)).unwrap_err()
+        intake_config(&block(extra)).unwrap_err()
     }
 
     /// The same block with its credential replaced by `auth`'s keys.
-    fn with_auth(auth: Value) -> Result<IssueConfig, SettingsError> {
+    fn with_auth(auth: Value) -> Result<IntakeConfig, SettingsError> {
         let mut settings = block(json!({}));
         settings.as_object_mut().unwrap().remove("api_key");
         for (k, v) in auth.as_object().unwrap() {
             settings[k] = v.clone();
         }
-        issue_config(&settings)
+        intake_config(&settings)
     }
 
     #[test]
-    fn reads_the_team_and_defaults() {
+    fn reads_the_teams_and_defaults() {
         // afkd's own two keys ride along and are not read here.
-        let cfg = cfg(json!({"every": "30s", "max_attempts": "2"}));
-        assert_eq!(cfg.team_key, "ENG");
-        assert_eq!(cfg.base_url, LINEAR_BASE);
-        assert_eq!(cfg.auth, AuthConfig::ApiKey("lin_api_k".into()));
-        assert_eq!(cfg.pick_from, ["Todo"]);
-        assert_eq!(cfg.require_member, None);
-        assert_eq!(cfg.require_label, None);
-        assert!(cfg.without_label.is_empty());
-        assert_eq!(cfg.discuss_with, None);
+        let read = cfg(json!({"every": "30s", "max_attempts": "2"}));
+        assert_eq!(read.teams, ["ENG"]);
+        assert_eq!(read.base_url, LINEAR_BASE);
+        assert_eq!(read.auth, AuthConfig::ApiKey("lin_api_k".into()));
+        assert_eq!(read.claim_from, ["Todo"]);
+        assert!(read.skip_labels.is_empty());
+        assert_eq!(read.discuss_with, None);
         assert_eq!(
-            super::issue_config(&block(json!({"base_url": "http://127.0.0.1:9"})))
+            issue_filter(&read.gate),
+            json!({"and": [{"hasBlockedByRelations": {"eq": false}}]}),
+            "with no filter set, the gate holds back only a blocked issue"
+        );
+        assert_eq!(
+            intake_config(&block(json!({"base_url": "http://127.0.0.1:9"})))
                 .unwrap()
                 .base_url,
             "http://127.0.0.1:9"
         );
+        assert_eq!(
+            cfg(json!({"team": ["ENG", "WEB 🌐"], "claim_from": ["Todo", "Väntar på svar"]})).teams,
+            ["ENG", "WEB 🌐"]
+        );
     }
 
-    /// Exactly one credential: an API key alone, or an app's id with its secret. Every other
-    /// combination is refused in its own sentence, on the setting it is about.
+    /// Exactly one credential: an API key alone, or an app's id with its secret, a field
+    /// written `nil` or `""` unwritten. Every other combination is refused in its own
+    /// sentence, on the setting it is about.
     #[test]
     fn the_credential_is_an_api_key_or_an_apps_id_and_secret() {
         assert_eq!(
-            with_auth(json!({"client_id": "app-id-7f3a", "client_secret": "app-secret-9c1e"}))
-                .unwrap()
-                .auth,
+            with_auth(
+                json!({"client_id": "app-id-7f3a", "client_secret": "app-secret-9c1e",
+                             "api_key": ""})
+            )
+            .unwrap()
+            .auth,
             AuthConfig::App {
                 client_id: "app-id-7f3a".into(),
                 client_secret: "app-secret-9c1e".into()
             }
+        );
+        assert_eq!(
+            with_auth(json!({"api_key": "k", "client_id": null, "client_secret": ""}))
+                .unwrap()
+                .auth,
+            AuthConfig::ApiKey("k".into())
         );
         for (auth, key, problem) in [
             (
@@ -463,6 +571,11 @@ mod tests {
                 "needs api_key, or client_id and client_secret",
             ),
             (
+                json!({"api_key": ""}),
+                "api_key",
+                "needs api_key, or client_id and client_secret",
+            ),
+            (
                 json!({"client_id": "i"}),
                 "client_id",
                 "client_id needs client_secret",
@@ -482,21 +595,40 @@ mod tests {
         }
     }
 
-    /// A block without `team` or `pick_from` names nothing to claim from, so it is refused
+    /// The slots are passed the workspace the credential settings build: the credential the
+    /// service reaches Linear with, the other fields `nil`, and the API root.
+    #[test]
+    fn the_workspace_is_the_credential_and_the_api_root() {
+        assert_eq!(
+            cfg(json!({"client_id": null})).workspace(),
+            json!({"api_key": "lin_api_k", "client_id": null, "client_secret": null,
+                   "base_url": "https://api.linear.app"})
+        );
+        assert_eq!(
+            with_auth(json!({"client_id": "app-id-7f3a", "client_secret": "s/&=",
+                             "base_url": "http://127.0.0.1:9"}))
+            .unwrap()
+            .workspace(),
+            json!({"api_key": null, "client_id": "app-id-7f3a", "client_secret": "s/&=",
+                   "base_url": "http://127.0.0.1:9"})
+        );
+    }
+
+    /// A block without `team` or `claim_from` names nothing to claim from, so it is refused
     /// naming the setting rather than armed to scan nothing.
     #[test]
-    fn a_block_without_team_or_pick_from_is_refused_naming_it() {
+    fn a_block_without_team_or_claim_from_is_refused_naming_it() {
         for (key, problem) in [
-            ("team", "`team` is required: name the team by its key"),
+            ("team", "`team` is required: name each team by its key"),
             (
-                "pick_from",
-                "`pick_from` is required: name the workflow state or states new issues are \
+                "claim_from",
+                "`claim_from` is required: name the workflow state or states new issues are \
                  claimed from",
             ),
         ] {
             let mut settings = block(json!({}));
             settings.as_object_mut().unwrap().remove(key);
-            let e = issue_config(&settings).unwrap_err();
+            let e = intake_config(&settings).unwrap_err();
             assert_eq!((e.key.as_str(), e.problem.as_str()), (key, problem));
         }
     }
@@ -504,79 +636,126 @@ mod tests {
     /// A value beside a block rides as `@value`, and is read as the value.
     #[test]
     fn a_value_beside_a_block_is_read_as_the_value() {
-        let cfg = issue_config(&json!({
+        let cfg = intake_config(&json!({
             "team": {"@value": "ENG"},
             "api_key": "k",
-            "pick_from": {"@value": "Todo"},
+            "claim_from": {"@value": "Todo"},
         }))
         .expect("valid");
-        assert_eq!(cfg.team_key, "ENG");
-        assert_eq!(cfg.pick_from, ["Todo"]);
+        assert_eq!(cfg.teams, ["ENG"]);
+        assert_eq!(cfg.claim_from, ["Todo"]);
     }
 
-    /// `me` is the viewer; anything else is a user by display name or email, wide text and
-    /// all, and a differently-cased `Me` is a name.
+    /// Each `only_*` setting is the `linear.issues` filter of the name after `only_`, in the
+    /// gate beside `skip_labels` as `without_labels` and no open blocker: an enum member by
+    /// its name, a cycle number as an int, `me` and `none` as the filters read them, and wide
+    /// text as it is.
     #[test]
-    fn require_member_reads_me_a_display_name_and_an_email() {
-        for (written, want) in [
-            ("me", MemberRef::Me),
-            ("björn.öst", MemberRef::Named("björn.öst".into())),
-            (
-                "chen@acme.example",
-                MemberRef::Named("chen@acme.example".into()),
-            ),
-            ("陳大文", MemberRef::Named("陳大文".into())),
-            ("Me", MemberRef::Named("Me".into())),
-        ] {
-            assert_eq!(
-                cfg(json!({ "require_member": [written] })).require_member,
-                Some(vec![Holder::Member(want)])
-            );
-        }
+    fn each_only_setting_is_the_filter_it_names() {
+        let gate = cfg(json!({
+            "only_state_type": ["unstarted", "started"],
+            "only_priority": ["urgent", "high"],
+            "only_labels": ["afkd/ready", "Väntar på svar"],
+            "only_assignee": ["me", "none"],
+            "only_delegate": ["陳大文", "none"],
+            "only_project": ["Trackers 🧭"],
+            "only_milestone": ["Beta"],
+            "only_cycle": ["12", "13"],
+            "only_parent": ["ENG-7"],
+            "only_text": "retry \"storm\"",
+            "skip_labels": ["Blocked", "WIP 🚧"],
+        }))
+        .gate;
+        assert_eq!(
+            gate.state_type,
+            Some(vec![StateType::Unstarted, StateType::Started])
+        );
+        assert_eq!(gate.priority, Some(vec![Priority::Urgent, Priority::High]));
+        assert_eq!(
+            gate.labels,
+            Some(vec!["afkd/ready".into(), "Väntar på svar".into()])
+        );
+        assert_eq!(gate.assignee, Some(vec!["me".into(), "none".into()]));
+        assert_eq!(gate.delegate, Some(vec!["陳大文".into(), "none".into()]));
+        assert_eq!(gate.project, Some(vec!["Trackers 🧭".into()]));
+        assert_eq!(gate.milestone, Some(vec!["Beta".into()]));
+        assert_eq!(gate.cycle, Some(vec![12, 13]));
+        assert_eq!(
+            gate.parent,
+            Some(vec![IssueRef::Identifier {
+                team: "ENG".into(),
+                number: 7
+            }])
+        );
+        assert_eq!(gate.text.as_deref(), Some("retry \"storm\""));
+        assert_eq!(
+            gate.without_labels,
+            Some(vec!["Blocked".into(), "WIP 🚧".into()])
+        );
+        assert_eq!(gate.blocked, Some(false));
+        assert_eq!(gate.team, None, "the scan names the team itself");
+        assert_eq!(gate.state, None, "the scan names the state itself");
+        assert_eq!(
+            cfg(json!({"skip_labels": ["Blocked"]})).skip_labels,
+            ["Blocked"]
+        );
     }
 
-    /// `none` is nobody holding the issue, alone or beside members, in the order written; a
-    /// differently-cased `None` is a name, and a valueless list faults.
+    /// A filter `linear.issues` would refuse is refused naming the setting, and one written
+    /// with no value names nothing, so it is refused rather than read as absent.
     #[test]
-    fn require_member_reads_none_beside_members() {
-        for (value, want) in [
+    fn an_only_setting_its_filter_refuses_is_refused_naming_it() {
+        for (setting, value, problem) in [
             (
-                json!([["me", "none"]]),
-                vec![Holder::Member(MemberRef::Me), Holder::Nobody],
+                "only_cycle",
+                json!(["12", "zwölf"]),
+                "`only_cycle` expects cycle numbers, not \"zwölf\"",
             ),
-            (json!(["none"]), vec![Holder::Nobody]),
             (
-                json!([["none", "陳大文", "None"]]),
-                vec![
-                    Holder::Nobody,
-                    Holder::Member(MemberRef::Named("陳大文".into())),
-                    Holder::Member(MemberRef::Named("None".into())),
-                ],
+                "only_parent",
+                json!(["the epic"]),
+                "only_parent \"the epic\" is neither an identifier (ENG-123) nor a uuid",
+            ),
+            (
+                "only_labels",
+                json!([true]),
+                "`only_labels` expects one or more names",
+            ),
+            (
+                "only_assignee",
+                json!([{}]),
+                "`only_assignee` expects one or more users",
+            ),
+            (
+                "only_text",
+                json!(["a", "b"]),
+                "setting `only_text` expects a single value",
+            ),
+            (
+                "skip_labels",
+                json!([true]),
+                "`skip_labels` expects one or more label names",
             ),
         ] {
-            assert_eq!(
-                cfg(json!({ "require_member": value })).require_member,
-                Some(want),
-                "{value}"
-            );
-        }
-        for value in [json!(true), json!([true]), json!([{}])] {
-            let e = err(json!({ "require_member": value }));
+            let e = err(json!({ setting: value }));
             assert_eq!(
                 (e.key.as_str(), e.problem.as_str()),
-                (
-                    "require_member",
-                    "`require_member` expects one or more members"
-                )
+                (setting, problem),
+                "{setting}"
             );
         }
+        assert_eq!(
+            cfg(json!({"only_labels": null, "skip_labels": null})).gate,
+            cfg(json!({})).gate,
+            "a list written nil is not written"
+        );
     }
 
-    /// A valueless gate names nothing. It must fault on its own key rather than read as
+    /// A valueless scalar names nothing. It must fault on its own key rather than read as
     /// absent, which would silently claim any issue.
     #[test]
-    fn a_single_valued_gate_without_one_value_faults() {
-        for key in ["require_label", "api_key"] {
+    fn a_single_valued_setting_without_one_value_faults() {
+        for key in ["only_text", "api_key"] {
             for value in [json!(true), json!({}), json!(["a", "b"])] {
                 let e = err(json!({ key: value }));
                 assert_eq!(e.key, key);
@@ -585,46 +764,30 @@ mod tests {
         }
     }
 
-    /// `pick_from` is a list setting: one name or several, in the shapes afkd lowers, kept
+    /// `claim_from` is a list setting: one name or several, in the shapes afkd lowers, kept
     /// in the order written; written with no value it names nothing.
     #[test]
-    fn pick_from_reads_one_state_or_several_in_the_shapes_afkd_lowers() {
+    fn claim_from_reads_one_state_or_several_in_the_shapes_afkd_lowers() {
         for value in [
             json!("Todo"),
             json!(["Todo"]),
             json!([["Todo"]]),
             json!({"@value": "Todo"}),
         ] {
-            assert_eq!(cfg(json!({ "pick_from": value })).pick_from, ["Todo"]);
+            assert_eq!(cfg(json!({ "claim_from": value })).claim_from, ["Todo"]);
         }
         assert_eq!(
-            cfg(json!({"pick_from": ["Triage 🛎️", ["Todo", "Väntar på svar"]]})).pick_from,
+            cfg(json!({"claim_from": ["Triage 🛎️", ["Todo", "Väntar på svar"]]})).claim_from,
             ["Triage 🛎️", "Todo", "Väntar på svar"]
         );
         for value in [json!(true), json!([true]), json!([{}])] {
-            let e = err(json!({ "pick_from": value }));
-            assert_eq!(e.key, "pick_from");
+            let e = err(json!({ "claim_from": value }));
+            assert_eq!(e.key, "claim_from");
             assert_eq!(
                 e.problem,
-                "`pick_from` expects one or more workflow state names"
+                "`claim_from` expects one or more workflow state names"
             );
         }
-    }
-
-    #[test]
-    fn without_label_reads_one_or_many_and_faults_when_valueless() {
-        assert_eq!(
-            cfg(json!({"without_label": [["Hold", "WIP"], "Blockerat / Väntar"]})).without_label,
-            ["Hold", "WIP", "Blockerat / Väntar"]
-        );
-        let e = err(json!({"without_label": [true]}));
-        assert_eq!(
-            (e.key.as_str(), e.problem.as_str()),
-            (
-                "without_label",
-                "`without_label` expects one or more label names"
-            )
-        );
     }
 
     /// `anyone` as the sole operand is anyone; beside a name it is a name; `me` is the

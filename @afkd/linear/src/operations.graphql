@@ -750,15 +750,6 @@ mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
   }
 }
 
-mutation IssueCreate($input: IssueCreateInput!) {
-  issueCreate(input: $input) {
-    success
-    issue {
-      identifier
-    }
-  }
-}
-
 mutation IssueArchive($id: String!) {
   issueArchive(id: $id) {
     success
@@ -817,6 +808,24 @@ query MilestoneList($id: String!, $after: String) {
 mutation IssueWrite($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) {
     success
+  }
+}
+
+mutation IssueCreate($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    success
+    issue {
+      id
+    }
+  }
+}
+
+query TeamDefaultState($id: String!) {
+  team(id: $id) {
+    defaultIssueState {
+      id
+      name
+    }
   }
 }
 

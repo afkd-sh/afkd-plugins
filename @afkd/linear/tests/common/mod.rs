@@ -113,7 +113,7 @@ impl Plugin {
     /// `state_dir`, asserting it arms.
     pub fn armed_in(settings: Value, state_dir: &Path) -> Self {
         let mut plugin = Self::spawn();
-        let reply = plugin.call(json!({"call": "hello", "proto": 2, "kind": "issue",
+        let reply = plugin.call(json!({"call": "hello", "proto": 2, "kind": "intake",
                                        "service": DEVELOP, "roster": [DEVELOP, DISCUSS],
                                        "owner": OWNER, "settings": settings,
                                        "state_dir": state_dir}));
@@ -129,7 +129,7 @@ impl Plugin {
     /// Greet as afkd does: the kind and its settings, and the service's name, the daemon's
     /// roster (both services this team runs) and the claim owner beside them.
     pub fn hello_as(&mut self, service: &str, settings: Value) -> Value {
-        self.call(json!({"call": "hello", "proto": 2, "kind": "issue",
+        self.call(json!({"call": "hello", "proto": 2, "kind": "intake",
                          "service": service, "roster": [DEVELOP, DISCUSS],
                          "owner": OWNER, "settings": settings}))
     }

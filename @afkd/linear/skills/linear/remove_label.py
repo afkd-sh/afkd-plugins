@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-# remove_label.py — take a label off the active Linear issue.
+# remove_label.py — `linear.remove_label`: a label taken off an issue.
 #
-# A write half of the bundled `linear` skill's labels (its read half is list_labels.py): it takes
-# the label its argument names off the issue, by id or by exact name, read against the team's and
-# the workspace's labels. A name no label carries, or one two labels carry, exits 1 and writes
-# nothing; the ids it prints tell them apart. A label the issue does not carry is a no-op success
-# with no write. It reads LINEAR_API_URL, LINEAR_AUTHORIZATION, LINEAR_TEAM_ID and
-# LINEAR_ISSUE_ID, overridable with --team and --issue, and exits 1 naming any failure.
+# The label is named as add_label.py names it. A label the issue does not carry is left as it
+# is. It prints the issue's `linear.Issue` handle as Linear then holds it, as the plugin's
+# `remove_label` gives it back. A name neither the team nor the workspace has exits 1 naming
+# the labels there are. It reads LINEAR_API_URL and LINEAR_AUTHORIZATION.
 
 import argparse
 import os
@@ -19,20 +17,11 @@ import linear_api as linear  # noqa: E402
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Take a label off the issue.")
-    parser.add_argument("label", help="the label, by id or exact name")
-    linear.add_issue_arg(parser)
-    linear.add_team_arg(parser)
+    parser = argparse.ArgumentParser(description="Take a label off an issue.")
+    parser.add_argument("issue", help="the issue's identifier (ENG-123) or its uuid")
+    parser.add_argument("label", help="the label's name, or its id")
     args = parser.parse_args()
-
-    issue, team = linear.issue_ref(args), linear.team_ref(args)
-    label = linear.resolve("label", linear.labels(team), args.label, team)
-    name = linear.issue_name(args)
-    if label["id"] not in linear.issue_label_ids(issue):
-        print(f"remove_label.py: {name} does not carry {label['name']}; nothing to do")
-        return
-    linear.call("remove label", "IssueRemoveLabel", {"id": issue, "labelId": label["id"]})
-    print(f"remove_label.py: took {label['name']} off {name}")
+    linear.emit(linear.change_label(args.issue, args.label, False))
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::action::{ACTIONS, HANDLE as ACTION_HANDLE};
 use crate::client::LINEAR_BASE;
 use crate::plugin::LINEAR_KIND;
 use crate::reads::{Sort, READS};
@@ -426,7 +425,7 @@ fn every_declared_handle_field_is_sent_with_its_declared_type() {
 
 /// The one `[[kind]]` is the main trigger, claiming one issue per run, and declares the
 /// settings the code reads, key for key and in order — never afkd's own claim keys — and
-/// the five slots afkd runs.
+/// the five slots afkd runs, each passed the workspace beside the issue.
 #[test]
 fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
     let tables = tables(MANIFEST);
@@ -460,7 +459,8 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
         );
     }
     // `on_run` first and without `when`; each slot passed the run, except `on_claim`, run
-    // before any run exists; the issue; and after the run the outcome, in that order.
+    // before any run exists; the workspace; the issue; and after the run the outcome, in that
+    // order.
     let param = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
     let slot = |name: &str, when: Option<&str>| {
         let mut t = table(&[("name", &quoted(name))]);
@@ -468,6 +468,7 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
         if when != Some("pre") {
             params.push(param("run", "afkd.Run"));
         }
+        params.push(param("workspace", "Workspace"));
         params.push(param(HANDLE, "Issue"));
         if let Some(when) = when {
             t.insert("when".into(), quoted(when));
@@ -506,14 +507,11 @@ fn action_params(tables: &[Table]) -> BTreeMap<String, Vec<BTreeMap<String, Stri
     params
 }
 
-/// The `[[action]]`s are the issue actions [`from_call`](crate::action::from_call) decodes,
-/// then the reads [`crate::reads`] answers, then the writes [`crate::writes`] answers, each in
-/// its code's order. Each issue action takes
-/// the issue's handle first and then the parameters it reads: a new issue's description
-/// defaults to none, and its state is named only, left out for the team's default. None of
-/// them returns anything. A plugin exposes no values, so there is no `[[value]]`.
+/// The `[[action]]`s are the reads [`crate::reads`] answers, then the writes
+/// [`crate::writes`] answers, each in its code's order, and nothing else. A plugin exposes no
+/// values, so there is no `[[value]]`.
 #[test]
-fn the_actions_are_the_ones_the_code_answers() {
+fn the_actions_are_the_reads_and_the_writes_the_code_answers() {
     let tables = tables(MANIFEST);
     let actions: Vec<String> = named(&tables, "action")
         .iter()
@@ -521,85 +519,12 @@ fn the_actions_are_the_ones_the_code_answers() {
         .collect();
     assert_eq!(
         actions,
-        ACTIONS
+        READS
             .iter()
-            .chain(READS)
             .chain(WRITES)
             .map(|a| quoted(a))
             .collect::<Vec<_>>()
     );
-    for action in named(&tables, "action") {
-        if ACTIONS.contains(&action["name"].trim_matches('"')) {
-            assert!(!action.contains_key("returns"), "{action:?}");
-        }
-    }
-
-    let mut params = action_params(&tables);
-    params.retain(|action, _| ACTIONS.contains(&action.as_str()));
-    let required = |name: &str| {
-        table(&[
-            ("name", &quoted(name)),
-            ("type", "\"str\""),
-            ("required", "true"),
-        ])
-    };
-    let new_issue = vec![
-        required("title"),
-        table(&[
-            ("name", "\"description\""),
-            ("type", "\"str\""),
-            ("default", "\"\""),
-        ]),
-        table(&[
-            ("name", "\"state\""),
-            ("type", "\"str\""),
-            ("named_only", "true"),
-        ]),
-    ];
-    let issue = table(&[
-        ("name", &quoted(ACTION_HANDLE)),
-        ("type", "\"Issue\""),
-        ("required", "true"),
-    ]);
-    let post = vec![
-        required("text"),
-        table(&[
-            ("name", "\"files\""),
-            ("type", "\"list[str]\""),
-            ("named_only", "true"),
-            ("default", "[]"),
-        ]),
-    ];
-    let mut want = BTreeMap::from([
-        ("comment".to_string(), post.clone()),
-        ("describe".to_string(), post),
-        ("rename".to_string(), vec![required("title")]),
-        ("move_to".to_string(), vec![required("state")]),
-        ("add_label".to_string(), vec![required("label")]),
-        ("remove_label".to_string(), vec![required("label")]),
-        ("delegate".to_string(), vec![required("to")]),
-        ("create_issue".to_string(), new_issue.clone()),
-        ("create_sub_issue".to_string(), new_issue),
-        ("list_comments".to_string(), vec![required("to")]),
-        ("read_description".to_string(), vec![required("to")]),
-        ("list_sub_issues".to_string(), vec![required("to")]),
-        (
-            "move_sub_issue".to_string(),
-            vec![required("sub_issue"), required("state")],
-        ),
-        ("fetch_files".to_string(), vec![required("to")]),
-    ]);
-    for action in ACTIONS {
-        want.entry(action.to_string())
-            .or_default()
-            .insert(0, issue.clone());
-    }
-    assert_eq!(params, want, "archive and undelegate take the issue alone");
-    assert_eq!(
-        ACTION_HANDLE, HANDLE,
-        "an action takes the issue a slot is passed"
-    );
-
     assert!(
         named(&tables, "value").is_empty(),
         "a plugin exposes no values"
@@ -627,6 +552,7 @@ fn the_reads_take_a_workspace_and_return_what_they_read() {
         returns,
         BTreeMap::from(
             [
+                ("issue", "\"Issue\""),
                 ("issues", "\"list[Issue]\""),
                 ("comments", "\"list[Comment]\""),
                 ("me", "\"User\""),
@@ -700,6 +626,7 @@ fn the_reads_take_a_workspace_and_return_what_they_read() {
     let issue = required("issue", "Issue");
     let team = named_only("team", "str");
     let want = BTreeMap::from([
+        ("issue".to_string(), vec![ws.clone(), required("id", "str")]),
         ("issues".to_string(), issues),
         ("comments".to_string(), vec![ws.clone(), issue.clone()]),
         ("me".to_string(), vec![ws.clone()]),
@@ -727,13 +654,14 @@ fn the_reads_take_a_workspace_and_return_what_they_read() {
 }
 
 /// Each write takes a `linear.Workspace` first and the handle of what it changes, and returns
-/// it, but `delete_comment`, which returns nothing: `update_issue` every field it sets
+/// it, but `delete_comment`, which returns nothing, and `create_issue`, which takes the team
+/// and the title and returns the issue it files: `update_issue` every field it sets
 /// named-only with no default, so one left out reaches the plugin as no key and leaves its
 /// field; a field that can hold nothing is optional, so `nil` clears it; `at` is one of two
 /// words and `after` and `parent` an issue's handle. A relation is one of six words and
-/// `other` an issue's handle, a link's url is required and its title named-only, and a
-/// subscriber is `"me"` unless named. A comment's body is required, its files and the comment
-/// it answers named-only.
+/// `other` an issue's handle, a link's url is required and its title named-only, a subscriber
+/// is `"me"` unless named, and a label is required. A comment's body is required, its files and
+/// the comment it answers named-only.
 #[test]
 fn the_writes_take_a_workspace_and_return_what_they_change() {
     let tables = tables(MANIFEST);
@@ -820,7 +748,29 @@ fn the_writes_take_a_workspace_and_return_what_they_change() {
     .concat();
     let url = required("url", "str");
     let user = param("user", "str", &[("default", &quoted("me"))]);
-    let mut want = BTreeMap::from([("update_issue".to_string(), update_issue)]);
+    // `create_issue` the team and the title, then every other field `update_issue` sets, and
+    // the labels; a `T?` one so a field read off another issue can be passed straight in.
+    let mut create_issue = vec![
+        required("ws", "Workspace"),
+        required("team", "str"),
+        required("title", "str"),
+    ];
+    for field in &update_issue[2..] {
+        if [quoted("team"), quoted("title")].contains(&field["name"]) {
+            continue;
+        }
+        if field["name"] == quoted("assignee") {
+            create_issue.push(named_only("labels", "list[str]"));
+        }
+        create_issue.push(field.clone());
+    }
+    let label = [issue.to_vec(), vec![required("label", "str")]].concat();
+    let mut want = BTreeMap::from([
+        ("create_issue".to_string(), create_issue),
+        ("update_issue".to_string(), update_issue),
+        ("add_label".to_string(), label.clone()),
+        ("remove_label".to_string(), label),
+    ]);
     for (write, params) in [
         ("add_relation", relate.clone()),
         ("remove_relation", relate),

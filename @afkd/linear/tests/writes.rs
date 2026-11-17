@@ -598,8 +598,8 @@ fn an_ambiguous_name_lists_the_ids_and_the_id_stands_in() {
 }
 
 /// An issue of another workspace is refused as the issue of every write, as `after` and as
-/// `parent`, and as a relation's `other`, each naming both workspaces, and nothing is written
-/// to either.
+/// `parent` of `update_issue` and `create_issue`, and as a relation's `other`, each naming
+/// both workspaces, and nothing is written to either or filed.
 #[test]
 fn a_handle_of_another_workspace_is_refused() {
     let w = world();
@@ -643,6 +643,8 @@ fn a_handle_of_another_workspace_is_refused() {
             json!({"url": "https://acme.example"}),
             "issue",
         ),
+        ("add_label", &theirs, json!({"label": "Bug 🐛"}), "issue"),
+        ("remove_label", &theirs, json!({"label": "Bug 🐛"}), "issue"),
         ("add_subscriber", &theirs, json!({}), "issue"),
         ("remove_subscriber", &theirs, json!({"user": "me"}), "issue"),
         ("archive_issue", &theirs, json!({}), "issue"),
@@ -658,6 +660,30 @@ fn a_handle_of_another_workspace_is_refused() {
                 "{action}: {param} is ENG-101 of workspace globex, and the linear.Workspace \
                  reaches acme"
             ),
+        );
+    }
+    for (args, param) in [
+        (json!({"parent": theirs}), "parent"),
+        (json!({"after": theirs}), "after"),
+    ] {
+        refused(
+            &create(&w.fake, "ENG", "Never filed", args, &state),
+            &format!(
+                "create_issue: {param} is ENG-101 of workspace globex, and the \
+                 linear.Workspace reaches acme"
+            ),
+        );
+    }
+    for fake in [&w.fake, &globex] {
+        let filed: Vec<String> = fake.seen().into_iter().map(|s| s.operation).collect();
+        assert!(!filed.iter().any(|op| op == "IssueCreate"), "{filed:?}");
+        assert!(
+            !filed.iter().any(|op| op.starts_with("IssueAddLabel")),
+            "{filed:?}"
+        );
+        assert!(
+            !filed.iter().any(|op| op.starts_with("IssueRemoveLabel")),
+            "{filed:?}"
         );
     }
     assert_eq!(writes_seen(&w.fake), Vec::<Value>::new());
@@ -713,6 +739,498 @@ fn update_issue_embeds_files_after_the_description() {
         json!([uploads[0].asset_url, uploads[1].asset_url]),
         "the files read back as the issue's"
     );
+    end(f);
+}
+
+// --- create_issue ---
+
+/// `create_issue` with `args` beside the workspace reaching `fake`, the team `team` and the
+/// title `title`: the reply, and what the child wrote to stderr.
+fn create(
+    fake: &FakeLinear,
+    team: &str,
+    title: &str,
+    args: Value,
+    state: &TempDir,
+) -> (Value, String) {
+    let mut args = args;
+    args["ws"] = ws(fake);
+    args["team"] = json!(team);
+    args["title"] = json!(title);
+    once("create_issue", args, state.path())
+}
+
+/// The `IssueCreate` inputs the fake was sent, in order.
+fn creates_seen(fake: &FakeLinear) -> Vec<Value> {
+    fake.seen()
+        .into_iter()
+        .filter(|seen| seen.operation == "IssueCreate")
+        .map(|seen| seen.variables["input"].clone())
+        .collect()
+}
+
+/// Every parameter set files the issue with every field: the files embedded after the
+/// description, the state named, a team label and a workspace label, two users, the project,
+/// its milestone, the cycle and the parent. The reply is the issue as `issues` then reads it,
+/// filed by the credential's user, and one `IssueCreate` carried every id.
+#[test]
+fn create_issue_files_every_field() {
+    let w = world();
+    let f = &w.fake;
+    let state = TempDir::new("writes-create-every");
+    let dir = TempDir::new("writes-create-files");
+    let shot = dir.path().join("screen shot — 修复.png");
+    std::fs::write(&shot, png()).unwrap();
+    let parent = read_issue(f, "ENG-102", &state);
+    let text = "## Steps\n\n1. run it\n2. watch it retry 🚨";
+    let (reply, stderr) = create(
+        f,
+        "ENG",
+        "子任务: read Retry-After 🚦 — \"seconds\"",
+        json!({
+            "description": text, "files": [shot], "state": "In Progress", "priority": "high",
+            "estimate": 5, "due": "2028-02-29", "labels": ["Bug 🐛", "Needs Info", "Bug 🐛"],
+            "assignee": "chen@acme.example", "delegate": "me", "project": "Trackers 🧭",
+            "milestone": "C — writes", "cycle": 13, "parent": handle_of(&parent),
+        }),
+        &state,
+    );
+    assert_eq!(reply["ok"], true, "{reply}");
+    let handle = &reply["handle"];
+    let id = handle["fields"]["uuid"]
+        .as_str()
+        .expect("a uuid")
+        .to_string();
+    assert_eq!(
+        handle,
+        &read_issue(f, &id, &state),
+        "read back as issues reads it"
+    );
+    assert_eq!(handle["key"], format!("linear:{}/{id}", f.org_id()));
+    let uploads = f.uploads();
+    assert_eq!(uploads.len(), 1);
+    let fields = &handle["fields"];
+    for (field, value) in [
+        ("team", json!("ENG")),
+        ("title", json!("子任务: read Retry-After 🚦 — \"seconds\"")),
+        (
+            "description",
+            json!(format!(
+                "{text}\n\n![screen shot — 修复.png]({})",
+                uploads[0].asset_url
+            )),
+        ),
+        ("state", json!("In Progress")),
+        ("priority", json!("high")),
+        ("estimate", json!(5)),
+        ("due", json!("2028-02-29")),
+        ("labels", json!(["Bug 🐛", "Needs Info"])),
+        ("assignee", json!("chen")),
+        ("delegate", json!("afkd")),
+        ("creator", json!("afkd")),
+        ("project", json!("Trackers 🧭")),
+        ("milestone", json!("C — writes")),
+        ("cycle", json!(13)),
+        ("parent", json!("ENG-102")),
+    ] {
+        assert_eq!(fields[field], value, "{field}");
+    }
+    assert_eq!(
+        stderr,
+        format!(
+            "[linear] filed {} in workspace acme\n",
+            handle["id"].as_str().unwrap()
+        )
+    );
+    let sent = creates_seen(f);
+    assert_eq!(sent.len(), 1, "one IssueCreate: {sent:?}");
+    let mut keys: Vec<&str> = sent[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "assigneeId",
+            "cycleId",
+            "delegateId",
+            "description",
+            "dueDate",
+            "estimate",
+            "labelIds",
+            "parentId",
+            "priority",
+            "projectId",
+            "projectMilestoneId",
+            "stateId",
+            "teamId",
+            "title"
+        ]
+    );
+    assert_eq!(
+        sent[0]["labelIds"].as_array().map(Vec::len),
+        Some(2),
+        "a label named twice is sent once"
+    );
+    assert_eq!(writes_seen(f), Vec::<Value>::new(), "filed in one request");
+    end(f);
+}
+
+/// With only the team and the title, the issue lands in the team's default state, with no
+/// other field set and nothing else sent; `nil` for each `T?` parameter files the same, and a
+/// state named, or files without a description, are taken.
+#[test]
+fn create_issue_lands_in_the_default_state_unless_state_says() {
+    let w = world();
+    let f = &w.fake;
+    let state = TempDir::new("writes-create-bare");
+    let (reply, _) = create(f, "OPS", "Rotate the TLS cert", json!({}), &state);
+    assert_eq!(reply["ok"], true, "{reply}");
+    let fields = &reply["handle"]["fields"];
+    assert_eq!(
+        (&fields["team"], &fields["state"]),
+        (&json!("OPS"), &json!("Todo"))
+    );
+    for field in [
+        "estimate", "due", "assignee", "delegate", "project", "cycle",
+    ] {
+        assert_eq!(fields[field], Value::Null, "{field}");
+    }
+    assert_eq!(fields["description"], "");
+    assert_eq!(fields["labels"], json!([]));
+    assert_eq!(fields["priority"], "none");
+    let nil = json!({
+        "estimate": null, "due": null, "assignee": null, "delegate": null, "project": null,
+        "milestone": null, "cycle": null, "parent": null,
+    });
+    let (again, _) = create(f, "OPS", "Rotate the TLS cert", nil, &state);
+    assert_eq!(again["handle"]["fields"]["state"], "Todo");
+    let teams_and_titles = json!({"teamId": w.ops, "title": "Rotate the TLS cert"});
+    assert_eq!(
+        creates_seen(f),
+        [teams_and_titles.clone(), teams_and_titles]
+    );
+    let ops: Vec<String> = f.seen().into_iter().map(|s| s.operation).collect();
+    assert!(
+        !ops.iter()
+            .any(|op| op == "TeamDefaultState" || op == "Issues"),
+        "nothing placed, so nothing read to place it: {ops:?}"
+    );
+
+    let (named, _) = create(f, "ENG", "Triage me", json!({"state": "Triage"}), &state);
+    assert_eq!(named["handle"]["fields"]["state"], "Triage");
+    let log = state.path().join("run.log");
+    std::fs::write(&log, "retry 1\nretry 2\n").unwrap();
+    let (filed, _) = create(f, "ENG", "With a log", json!({"files": [log]}), &state);
+    let uploads = f.uploads();
+    assert_eq!(
+        filed["handle"]["fields"]["description"],
+        format!("[run.log]({})", uploads[0].asset_url),
+        "files without a description embed after nothing"
+    );
+    end(f);
+}
+
+/// `at` places the new issue above the first or below the last of its state, the team's
+/// default one when no `state` is named, and `after` right below another issue of it. An
+/// `after` in another state, or `at` beside `after`, is refused and nothing is filed, and so
+/// is `at` in a team with no state to place it in.
+#[test]
+fn create_issue_at_and_after_place_it() {
+    let w = world();
+    let f = &w.fake;
+    let state = TempDir::new("writes-create-place");
+    let (e1, e2, e3) = (w.issue(101), w.issue(102), w.issue(103));
+    let todo = || f.in_state("Todo");
+    let filed = |args: Value| {
+        let (reply, _) = create(f, "ENG", "Placed 📌", args, &state);
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["handle"]["fields"]["uuid"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let top = filed(json!({"at": "top"}));
+    assert_eq!(
+        todo(),
+        [top.as_str(), e1, e2, e3],
+        "the default state's top"
+    );
+    let bottom = filed(json!({"at": "bottom"}));
+    assert_eq!(todo(), [top.as_str(), e1, e2, e3, bottom.as_str()]);
+    let after = filed(json!({"after": handle_of(&read_issue(f, e1, &state))}));
+    assert_eq!(
+        todo(),
+        [top.as_str(), e1, after.as_str(), e2, e3, bottom.as_str()]
+    );
+    let first = filed(json!({"state": "In Progress", "at": "bottom"}));
+    let second = filed(json!({"state": "In Progress", "at": "top"}));
+    assert_eq!(
+        f.in_state("In Progress"),
+        [second.as_str(), w.issue(104), first.as_str()]
+    );
+    let made = creates_seen(f).len();
+
+    let e2_handle = handle_of(&read_issue(f, e2, &state));
+    refused(
+        &create(
+            f,
+            "ENG",
+            "Nowhere",
+            json!({"state": "Done", "after": e2_handle}),
+            &state,
+        ),
+        "create_issue: after ENG-102 is in Todo of ENG, not Done of ENG",
+    );
+    let seen = f.seen().len();
+    refused(
+        &create(
+            f,
+            "ENG",
+            "Nowhere",
+            json!({"at": "top", "after": e2_handle}),
+            &state,
+        ),
+        "create_issue: at and after cannot both be given",
+    );
+    assert_eq!(f.seen().len(), seen, "refused before any request");
+    f.team("QA", "Quality — 品質");
+    refused(
+        &create(f, "QA", "Nowhere", json!({"at": "top"}), &state),
+        "create_issue: team QA has no default state to place the issue in; name its state",
+    );
+    assert_eq!(creates_seen(f).len(), made, "nothing filed");
+    end(f);
+}
+
+/// A name that names nothing is refused naming what there is — the team, a state of the
+/// team, a label neither the team nor the workspace has, a user, a project, a milestone of the
+/// project and a cycle of the team — and a name several answer to listing their ids; nothing
+/// is filed. A due date that is no day, and a milestone with no project, are refused before
+/// any request.
+#[test]
+fn create_issue_refuses_unknown_and_ambiguous_names() {
+    let w = world();
+    let f = &w.fake;
+    let state = TempDir::new("writes-create-names");
+    let sam = f.user("Sam Lee", "sam", "sam@acme.example");
+    let sam_k = f.user("Sam Kim", "sam", "sam.k@acme.example");
+    let first = f.label_of("ENG", "Hold", None);
+    let second = f.label_of("ENG", "Hold", None);
+    for (team, args, sentence) in [
+        (
+            "QA",
+            json!({}),
+            "create_issue: no team named \"QA\"; there are: ENG, OPS".to_string(),
+        ),
+        (
+            "ENG",
+            json!({"state": "Doing"}),
+            "create_issue: no state named \"Doing\" in team ENG; there are: Triage, Todo, In \
+             Progress, Done"
+                .to_string(),
+        ),
+        (
+            "ENG",
+            json!({"labels": ["Bug 🐛", "Infra"]}),
+            "create_issue: no label named \"Infra\" in team ENG or the workspace; there are: \
+             Bug 🐛, Hold, Hold, Needs Info"
+                .to_string(),
+        ),
+        (
+            "ENG",
+            json!({"labels": ["Hold"]}),
+            format!(
+                "create_issue: 2 labels are named \"Hold\" in team ENG: {first}, {second}; \
+                 pass the id of the one you mean in place of the name"
+            ),
+        ),
+        (
+            "ENG",
+            json!({"assignee": "sam"}),
+            format!(
+                "create_issue: 2 users are named \"sam\": {sam}, {sam_k}; pass the id of the \
+                 one you mean in place of the name"
+            ),
+        ),
+        (
+            "ENG",
+            json!({"delegate": "nobody@acme.example"}),
+            "create_issue: no user named \"nobody@acme.example\"; there are: afkd, afkd-app, \
+             phil, chen, sam, sam"
+                .to_string(),
+        ),
+        (
+            "ENG",
+            json!({"project": "Trackers"}),
+            "create_issue: no project named \"Trackers\"; there are: Trackers 🧭, Billing"
+                .to_string(),
+        ),
+        (
+            "ENG",
+            json!({"project": "Billing", "milestone": "B — reads"}),
+            "create_issue: no milestone named \"B — reads\" in project Billing; there are: M1"
+                .to_string(),
+        ),
+        (
+            "OPS",
+            json!({"cycle": 12}),
+            "create_issue: no cycle 12 in team OPS; there are: 3".to_string(),
+        ),
+    ] {
+        refused(&create(f, team, "Never filed", args, &state), &sentence);
+    }
+    let seen = f.seen().len();
+    for (args, sentence) in [
+        (
+            json!({"due": "2026-02-29"}),
+            "create_issue: due \"2026-02-29\" is no YYYY-MM-DD date",
+        ),
+        (
+            json!({"milestone": "M1"}),
+            "create_issue: milestone \"M1\" needs a project to be in, and none is given",
+        ),
+    ] {
+        refused(&create(f, "ENG", "Never filed", args, &state), sentence);
+    }
+    assert_eq!(f.seen().len(), seen, "refused before any request");
+    assert_eq!(creates_seen(f), Vec::<Value>::new(), "nothing filed");
+    assert_eq!(f.find_by_title("Never filed"), None);
+    let (reply, _) = create(
+        f,
+        "ENG",
+        "Held",
+        json!({"labels": [second], "assignee": sam_k}),
+        &state,
+    );
+    assert_eq!(reply["ok"], true, "an id stands in for the name: {reply}");
+    assert_eq!(reply["handle"]["fields"]["labels"], json!(["Hold"]));
+    assert_eq!(reply["handle"]["fields"]["assignee"], "sam");
+    end(f);
+}
+
+// --- add_label and remove_label ---
+
+/// The label writes the fake was sent, each one's operation and variables, in order.
+fn labels_seen(fake: &FakeLinear) -> Vec<(String, Value)> {
+    fake.seen()
+        .into_iter()
+        .filter(|seen| ["IssueAddLabel", "IssueRemoveLabel"].contains(&seen.operation.as_str()))
+        .map(|seen| (seen.operation, seen.variables))
+        .collect()
+}
+
+/// `add_label` puts on the issue's team's label of the name, else the workspace's, the team's
+/// winning over a workspace label of the same name; `remove_label` takes it off. Each answers
+/// with the issue as `issues` then reads it. A label the issue already carries, or does not
+/// carry, is `.ok` with nothing sent.
+#[test]
+fn add_and_remove_label_by_team_then_workspace() {
+    let w = world();
+    let f = &w.fake;
+    let state = TempDir::new("writes-labels");
+    let e3 = w.issue(103);
+    let ours = f.label_of("ENG", "Needs Info", None);
+    let theirs = label_id(f, "Needs Info");
+    assert_ne!(ours, theirs, "the team's own label and the workspace's");
+    let ready = f.workspace_label("afkd/ready", "#5e6ad2");
+    let (eng, _) = once("labels", json!({"ws": ws(f), "team": "ENG"}), state.path());
+    let bug = eng["handles"]
+        .as_array()
+        .expect("labels")
+        .iter()
+        .find(|l| l["fields"]["name"] == "Bug 🐛")
+        .map(|l| l["id"].as_str().expect("an id").to_string())
+        .expect("ENG's Bug 🐛");
+    let issue = read_issue(f, e3, &state);
+    let label = |action: &str, name: &str| {
+        let (reply, stderr) = write(f, action, &issue, json!({"label": name}), &state);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["handle"], read_issue(f, e3, &state));
+        (reply["handle"]["fields"]["labels"].clone(), stderr)
+    };
+    let (labels, stderr) = label("add_label", "Bug 🐛");
+    assert_eq!(labels, json!(["Bug 🐛"]));
+    assert_eq!(
+        stderr,
+        "[linear] put label Bug 🐛 on ENG-103 in workspace acme\n"
+    );
+    label("add_label", "afkd/ready");
+    label("add_label", "Needs Info");
+    assert_eq!(
+        f.label_ids(e3),
+        [bug.clone(), ready.clone(), ours.clone()],
+        "the team's Needs Info"
+    );
+    let (labels, stderr) = label("add_label", "Bug 🐛");
+    assert_eq!(labels, json!(["Bug 🐛", "afkd/ready", "Needs Info"]));
+    assert_eq!(
+        stderr,
+        "[linear] label Bug 🐛 already on ENG-103 in workspace acme\n"
+    );
+    let (labels, stderr) = label("remove_label", "afkd/ready");
+    assert_eq!(labels, json!(["Bug 🐛", "Needs Info"]));
+    assert_eq!(
+        stderr,
+        "[linear] took label afkd/ready off ENG-103 in workspace acme\n"
+    );
+    let (_, stderr) = label("remove_label", "afkd/ready");
+    assert_eq!(
+        stderr,
+        "[linear] label afkd/ready not on ENG-103 in workspace acme\n"
+    );
+    let issue_id = |label: &str| json!({"id": e3, "labelId": label});
+    assert_eq!(
+        labels_seen(f),
+        [
+            ("IssueAddLabel".to_string(), issue_id(&bug)),
+            ("IssueAddLabel".to_string(), issue_id(&ready)),
+            ("IssueAddLabel".to_string(), issue_id(&ours)),
+            ("IssueRemoveLabel".to_string(), issue_id(&ready)),
+        ],
+        "one already on and one already off send nothing"
+    );
+    end(f);
+}
+
+/// A label neither the issue's team nor the workspace has is refused naming the ones there
+/// are, the team's first and none of another team's, and several of one name listing their
+/// ids; nothing is sent.
+#[test]
+fn a_label_neither_the_team_nor_the_workspace_has_is_refused() {
+    let w = world();
+    let f = &w.fake;
+    let state = TempDir::new("writes-labels-unknown");
+    let first = f.workspace_label("見出し", "#5e6ad2");
+    let second = f.workspace_label("見出し", "#f2994a");
+    let issue = read_issue(f, "ENG-103", &state);
+    for action in ["add_label", "remove_label"] {
+        refused(
+            &write(f, action, &issue, json!({"label": "Infra"}), &state),
+            &format!(
+                "{action}: no label named \"Infra\" in team ENG or the workspace; there are: Bug \
+                 🐛, Needs Info, 見出し, 見出し"
+            ),
+        );
+        refused(
+            &write(f, action, &issue, json!({"label": "見出し"}), &state),
+            &format!(
+                "{action}: 2 labels are named \"見出し\" in the workspace: {first}, {second}; \
+                 pass the id of the one you mean in place of the name"
+            ),
+        );
+    }
+    let ops = read_issue(f, "OPS-106", &state);
+    let (reply, _) = write(f, "add_label", &ops, json!({"label": "Infra"}), &state);
+    assert_eq!(
+        reply["handle"]["fields"]["labels"],
+        json!(["Infra"]),
+        "OPS's own"
+    );
+    assert_eq!(labels_seen(f).len(), 1, "only OPS's label was sent");
     end(f);
 }
 

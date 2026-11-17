@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# add_label.py — put a label on the active Linear issue.
+# add_label.py — `linear.add_label`: a label put on an issue.
 #
-# A write half of the bundled `linear` skill's labels (its read half is list_labels.py): it puts
-# the label its argument names on the issue, by id or by exact name, read against the team's and
-# the workspace's labels. A name no label carries, or one two labels carry, exits 1 and writes
-# nothing; the ids it prints tell them apart. A label already on the issue is a no-op success with
-# no write. It reads LINEAR_API_URL, LINEAR_AUTHORIZATION, LINEAR_TEAM_ID and LINEAR_ISSUE_ID,
-# overridable with --team and --issue, and exits 1 naming any failure.
+# The label is named as Linear shows it, or by its id: the issue's team's label of that name,
+# else the workspace's. A label the issue already carries is left as it is. It prints the
+# issue's `linear.Issue` handle as Linear then holds it, as the plugin's `add_label` gives it
+# back. A name neither the team nor the workspace has exits 1 naming the labels there are, and
+# one two labels carry exits 1 listing their ids. It reads LINEAR_API_URL and
+# LINEAR_AUTHORIZATION.
 
 import argparse
 import os
@@ -19,20 +19,11 @@ import linear_api as linear  # noqa: E402
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Put a label on the issue.")
-    parser.add_argument("label", help="the label, by id or exact name")
-    linear.add_issue_arg(parser)
-    linear.add_team_arg(parser)
+    parser = argparse.ArgumentParser(description="Put a label on an issue.")
+    parser.add_argument("issue", help="the issue's identifier (ENG-123) or its uuid")
+    parser.add_argument("label", help="the label's name, or its id")
     args = parser.parse_args()
-
-    issue, team = linear.issue_ref(args), linear.team_ref(args)
-    label = linear.resolve("label", linear.labels(team), args.label, team)
-    name = linear.issue_name(args)
-    if label["id"] in linear.issue_label_ids(issue):
-        print(f"add_label.py: {name} already carries {label['name']}; nothing to do")
-        return
-    linear.call("add label", "IssueAddLabel", {"id": issue, "labelId": label["id"]})
-    print(f"add_label.py: put {label['name']} on {name}")
+    linear.emit(linear.change_label(args.issue, args.label, True))
 
 
 if __name__ == "__main__":

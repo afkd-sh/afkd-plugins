@@ -4,12 +4,13 @@
 //! ([`bin_path`]).
 //!
 //! - The **install** leg installs the tree the release holds and runs one issue through it
-//!   on a real daemon with an API key, its slots reading the fields of the issue's handle,
-//!   its run reading the issue's comments through a `linear.Workspace`, reading the
-//!   description and moving the issue through the plugin's actions, and its `on_done`
-//!   commenting on the finished issue; the **app** leg does the same as an OAuth app, on a
-//!   token the plugin fetched, claiming the issue nobody holds with
-//!   `require_member "me", "none"` and delegating it to the app from `on_claim`.
+//!   on a real daemon with an API key, every slot passed the `linear.Workspace` the service's
+//!   credential settings build: `on_claim` moving the issue with `update_issue`, the run
+//!   reading the fields of the issue's handle, its comments and its description through the
+//!   workspace and moving it to Done, and `on_done` commenting on the finished issue with
+//!   `create_comment`, every request with the service's key; the **app** leg does the same as
+//!   an OAuth app, on a token the plugin fetched, claiming the issue nobody delegated with
+//!   `only_delegate "me", "none"` and delegating it to the app from `on_claim`.
 //! - The **reads** leg runs an interval service by hand whose run reads a workspace through
 //!   children afkd starts for each call — the viewer, the teams, a team's issues, an issue's
 //!   comments and files and a file downloaded — and reads the issue again once it has moved
@@ -18,13 +19,18 @@
 //!   children afkd starts for each call: it moves an issue to the top of another state,
 //!   relates it to a blocker, comments on it with a screenshot, resolves the comment, and
 //!   replies to it and deletes the reply.
+//! - The **two workspaces** leg runs a daily service by hand whose run holds two
+//!   `linear.Workspace` values, one per fake: it lists each one's issues, files an issue in
+//!   one, updates it, moves it, labels it, relates it to an issue of that workspace and
+//!   comments on it, and has the issue's handle refused when passed with the other workspace.
 //! - The **files** leg runs one issue whose run puts a PNG into its description and into a
-//!   comment through `files=`, and fetches both back with `fetch_files`, byte for byte.
+//!   comment through `files=`, and downloads both back through `files` and `download_file`,
+//!   byte for byte.
 //! - The **validate** legs hold `afkd validate` to a `service(linear)` that writes every
-//!   setting in both credential forms, to one whose slots call every action the plugin
-//!   declares, to services calling every read and every write with every parameter, to
-//!   refusing one without `team` or `pick_from`, and to refusing a call of an action the
-//!   plugin does not declare.
+//!   setting in both credential forms, to one whose every slot reads and writes through the
+//!   workspace it is passed, to services calling every read and every write with every
+//!   parameter, to refusing one without `team` or `claim_from`, and to refusing a call of an
+//!   action the plugin does not declare.
 //! - The **README** leg validates every `conf` fence of the plugin's README, each a whole
 //!   entry file, against the installed release, with every variable the fences read set by
 //!   [`CONFIG_ENV`].
@@ -44,7 +50,9 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use common::fake::{png, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, TEAM};
+use common::fake::{
+    png, Author, FakeLinear, API_KEY, CLIENT_ID, CLIENT_SECRET, GLOBEX_API_KEY, TEAM,
+};
 use common::*;
 use tempfile::TempDir;
 
@@ -184,8 +192,8 @@ const DONE: &str = "done.txt";
 const AUTH: &str = "auth.txt";
 const API_URL: &str = "api_url.txt";
 
-/// The file, under the service's work dir, `on_run` writes the issue's description to
-/// through the plugin's `read_description`.
+/// The file, under the service's work dir, `on_run` writes the issue's description to, as a
+/// read through the workspace finds it.
 const DESCRIPTION: &str = "description.md";
 
 /// How long a claim, a run or a finish may take. Generous, because it bounds a failure
@@ -233,43 +241,48 @@ fn seed() -> Seeded {
 }
 
 /// The service that drives the seeded issue, `home` its work dir, its credential and any gate
-/// written as `keys`, and the same credential as a `linear.Workspace`'s fields as `ws`. It
-/// writes no `every`, so the cadence is afkd's default and its first beat is at once.
-/// `on_claim` writes the state it claimed from, then runs the statements `claim` holds, a
-/// line each; the run holds until the test creates `release` — bounded, so a test that never
-/// does cannot wedge it — then writes fields of the issue's handle to [`FIELDS`], a line each,
-/// and how many comments a read of it through the workspace finds, the endpoint and
-/// credential its env carries, writes the description to [`DESCRIPTION`] and moves the issue
-/// to Done through the plugin's actions; `on_done` writes the title and comments on the
-/// finished issue. It keeps every run, because [`drive_one_issue`] counts the finished run's
-/// dir, where the default `keep_runs on_fail` leaves nothing of a clean run.
-fn service(home: &Path, base_url: &str, keys: &str, ws: &str, claim: &str) -> String {
+/// written as `keys`. It writes no `every`, so the cadence is afkd's default and its first
+/// beat is at once. `on_claim` writes the state it claimed from, moves the issue to In
+/// Progress through the workspace it is passed and writes the state that gave back, then runs
+/// the statements `claim` holds, a line each; the run holds until the test creates `release`
+/// — bounded, so a test that never does cannot wedge it — then writes fields of the issue's
+/// handle to [`FIELDS`], a line each, and how many comments a read of it through the
+/// workspace finds, the endpoint and credential its env carries, writes the description a
+/// read through the workspace finds to [`DESCRIPTION`] and moves the issue to Done;
+/// `on_done` writes the title and comments on the finished issue. It keeps every run,
+/// because [`drive_one_issue`] counts the finished run's dir, where the default `keep_runs
+/// on_fail` leaves nothing of a clean run.
+fn service(home: &Path, base_url: &str, keys: &str, claim: &str) -> String {
     format!(
         r#"import "afkd"
 import "@afkd/linear"
 
-WS :: linear.Workspace{{ {ws}, base_url: "{base_url}" }}
-
 widgets :: service(linear) {{
-  team      "{TEAM}"
-  base_url  "{base_url}"
   {keys}
-  pick_from "Todo"
-  keep_runs always
+  base_url   "{base_url}"
+  team       "{TEAM}"
+  claim_from "Todo"
+  keep_runs  always
 
-  on_claim proc(issue: linear.Issue) {{
+  on_claim proc(workspace: linear.Workspace, issue: linear.Issue) {{
     $ echo claimed #{{issue.state}} >> {CLAIMED}
+    match linear.update_issue(workspace, issue, state="In Progress") {{
+      .ok(started) => {{
+        $ echo started #{{started.state}} >> {CLAIMED}
+      }}
+      .err(e) => fail("linear.update_issue: #{{e.message}}")
+    }}
 {claim}  }}
-  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
+  on_done proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
     $ echo done #{{issue.title}} >> {DONE}
-    match linear.comment(issue, "landed #{{issue.title}} ✅") {{
+    match linear.create_comment(workspace, issue, "landed #{{issue.title}} ✅") {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.comment: #{{e.message}}")
+      .err(e) => fail("linear.create_comment: #{{e.message}}")
     }}
   }}
 
   work_dir "{home}"
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo uuid #{{issue.uuid}} >> {FIELDS}
     $ echo workspace #{{issue.workspace}} team #{{issue.team}} >> {FIELDS}
@@ -287,7 +300,7 @@ widgets :: service(linear) {{
     for blocker in issue.blocked_by {{
       $ echo blocked_by #{{blocker}} >> {FIELDS}
     }}
-    match linear.comments(WS, issue) {{
+    match linear.comments(workspace, issue) {{
       .ok(comments) => {{
         $ echo comments #{{len(comments)}} >> {FIELDS}
       }}
@@ -296,13 +309,17 @@ widgets :: service(linear) {{
     $ printenv LINEAR_AUTHORIZATION > {AUTH}
     $ printenv LINEAR_API_URL > {API_URL}
     $ cat $AFKD_SCRATCH_DIR/task.md
-    match linear.read_description(issue, "{home}/{DESCRIPTION}") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.read_description: #{{e.message}}")
+    match linear.issues(workspace, id=[ issue.uuid ]) {{
+      .ok(found) => {{
+        for fresh in found {{
+          $ printf %s #{{fresh.description}} > {DESCRIPTION}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
     }}
-    match linear.move_to(issue, "Done") {{
+    match linear.update_issue(workspace, issue, state="Done") {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.move_to: #{{e.message}}")
+      .err(e) => fail("linear.update_issue: #{{e.message}}")
     }}
   }}
 }}
@@ -417,19 +434,19 @@ fn read(path: &Path) -> String {
 }
 
 /// Drive the seeded issue through the plugin, installed in `home`, on a real daemon, its
-/// service writing `keys`, its workspace `ws` and its `on_claim` running `claim` (see
-/// [`service`]): it is **claimed** (the claim comment, and `on_claim` read its state),
-/// **run** (its run dir is named for the issue, its task carries the issue and its thread
-/// whole, and `on_run` read the fields of its handle, the endpoint and the credential as the
-/// plugin sent them, read its comments through the workspace and its description, and moved
-/// it to Done through the plugin) and **finished** (the `[afkd-ran]` watermark posted, the
-/// claim released, and `on_done` read its title and commented on it through the plugin), and
-/// the daemon then drains clean.
+/// service writing `keys` and its `on_claim` running `claim` (see [`service`]): it is
+/// **claimed** (the claim comment, and `on_claim` read its state and moved it through the
+/// workspace it is passed), **run** (its run dir is named for the issue, its task carries
+/// the issue and its thread whole, and `on_run` read the fields of its handle, the endpoint
+/// and the credential as the plugin sent them, read its comments and its description through
+/// the workspace, and moved it to Done) and **finished** (the `[afkd-ran]` watermark posted,
+/// the claim released, and `on_done` read its title and commented on it through the
+/// workspace), and the daemon then drains clean.
 /// Returns the seeded team, for the leg's own checks.
-fn drive_one_issue(home: &Path, keys: &str, ws: &str, claim: &str) -> Seeded {
+fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
     let seeded = seed();
     let (fake, issue) = (&seeded.fake, seeded.issue.as_str());
-    write_config(home, &service(home, fake.base_url(), keys, ws, claim));
+    write_config(home, &service(home, fake.base_url(), keys, claim));
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
 
@@ -483,18 +500,25 @@ fn drive_one_issue(home: &Path, keys: &str, ws: &str, claim: &str) -> Seeded {
             && thread.iter().any(|c| c.body == landed)
             && home.join(DONE).exists()
     });
-    assert_eq!(fake.state_of(issue), "Done", "the run's move_to moved it");
+    assert_eq!(
+        fake.state_of(issue),
+        "Done",
+        "the run's update_issue moved it"
+    );
     assert_eq!(
         read(&home.join(DESCRIPTION)),
         BODY,
-        "the run's read_description wrote it"
+        "the run read it through the workspace"
     );
     assert_eq!(
         read(&home.join(API_URL)),
         format!("{}/graphql\n", fake.base_url())
     );
     assert_eq!(run_dirs(home).len(), 1, "one run, never claimed again");
-    assert_eq!(read(&home.join(CLAIMED)), "claimed Todo\n");
+    assert_eq!(
+        read(&home.join(CLAIMED)),
+        "claimed Todo\nstarted In Progress\n"
+    );
     assert_eq!(read(&home.join(DONE)), format!("done {TITLE}\n"));
     // Every field verbatim — the `$` lines shell-quote what they interpolate. The thread a
     // read finds is Chen's question and the claim.
@@ -562,14 +586,29 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
         .mode();
     assert!(mode & 0o111 != 0, "{} is executable", exec.display());
 
-    let seeded = drive_one_issue(
-        home.path(),
-        &format!("api_key   \"{API_KEY}\""),
-        &format!("api_key: \"{API_KEY}\""),
-        "",
-    );
+    let seeded = drive_one_issue(home.path(), &format!("api_key    \"{API_KEY}\""), "");
     assert_eq!(read(&home.path().join(AUTH)), format!("{API_KEY}\n"));
-    assert_eq!(seeded.fake.token_fetches(), 0, "a key fetches no token");
+    let fake = &seeded.fake;
+    assert_eq!(fake.token_fetches(), 0, "a key fetches no token");
+    let writes: Vec<_> = fake
+        .seen()
+        .into_iter()
+        .filter(|s| ["IssueWrite", "CommentPost"].contains(&s.operation.as_str()))
+        .collect();
+    assert_eq!(
+        writes.len(),
+        3,
+        "on_claim's move, the run's and on_done's comment: {:?}",
+        writes.iter().map(|s| &s.operation).collect::<Vec<_>>()
+    );
+    for s in &writes {
+        assert_eq!(
+            s.authorization.as_deref(),
+            Some(API_KEY),
+            "{} went out with the service's key",
+            s.operation
+        );
+    }
 }
 
 #[test]
@@ -578,13 +617,12 @@ fn app_auth_leg_runs_one_issue_with_a_fetched_token() {
     let seeded = drive_one_issue(
         home.path(),
         &format!(
-            "client_id      \"{CLIENT_ID}\"\n  client_secret  \"{CLIENT_SECRET}\"\n  \
-             require_member \"me\", \"none\""
+            "client_id     \"{CLIENT_ID}\"\n  client_secret \"{CLIENT_SECRET}\"\n  \
+             only_delegate \"me\", \"none\""
         ),
-        &format!("client_id: \"{CLIENT_ID}\", client_secret: \"{CLIENT_SECRET}\""),
-        "    match linear.delegate(issue, \"me\") {\n      \
+        "    match linear.update_issue(workspace, issue, delegate=\"me\") {\n      \
          .ok(_) => { }\n      \
-         .err(e) => fail(\"linear.delegate: #{e.message}\")\n    \
+         .err(e) => fail(\"linear.update_issue: #{e.message}\")\n    \
          }\n",
     );
     let fake = &seeded.fake;
@@ -592,8 +630,8 @@ fn app_auth_leg_runs_one_issue_with_a_fetched_token() {
     assert_eq!(
         fake.delegate_of(&seeded.issue),
         Some(fake.app_user()),
-        "`require_member \"me\", \"none\"` claimed the free issue and `on_claim` delegated it \
-         to the app"
+        "`only_delegate \"me\", \"none\"` claimed the issue nobody delegated and `on_claim` \
+         delegated it to the app"
     );
     let graphql: Vec<_> = fake
         .seen()
@@ -628,7 +666,8 @@ fn app_auth_leg_runs_one_issue_with_a_fetched_token() {
 }
 
 /// A config that writes every setting the kind declares — both credential forms, in two
-/// services — afkd's own claim keys, and all five slots as `proc`s, validates.
+/// services, an `only_*` of every type, enum members, numbers and wide text — afkd's own
+/// claim keys, and all five slots as `proc`s, each passed the workspace, validates.
 #[test]
 fn a_service_linear_config_validates() {
     let home = installed();
@@ -639,35 +678,44 @@ fn a_service_linear_config_validates() {
 import "@afkd/linear"
 
 develop :: service(linear) {{
-  team           "{TEAM}"
-  base_url       "https://api.linear.app"
-  api_key        "{API_KEY}"
-  pick_from      "Todo", "Backlog 📥"
-  require_member "me", "none"
-  require_label  "afkd/ready"
-  without_label  "Hold", "Blockerat / Väntar"
-  every          2m
-  max_attempts   2
-  work_dir       "/srv/acme/widgets"
+  api_key         "{API_KEY}"
+  client_id       nil
+  base_url        "https://api.linear.app"
+  team            "{TEAM}", "OPS"
+  claim_from      "Todo", "Backlog 📥"
+  only_state_type .unstarted, .backlog
+  only_priority   .urgent, .high, .none
+  only_labels     "afkd/ready", "Väntar på svar"
+  only_assignee   "me", "none"
+  only_delegate   "me", "none"
+  only_project    "Trackers 🧭"
+  only_milestone  "B — reads"
+  only_cycle      12, 13
+  only_parent     "ENG-400"
+  only_text       "retry \"storm\""
+  skip_labels     "Hold", "Blockerat / Väntar"
+  every           2m
+  max_attempts    2
+  work_dir        "/srv/acme/widgets"
 
-  on_claim proc(issue: linear.Issue) {{
-    $ echo #{{issue.title}} #{{issue.state}}
+  on_claim proc(workspace: linear.Workspace, issue: linear.Issue) {{
+    $ echo #{{issue.title}} #{{issue.state}} #{{workspace.base_url}}
   }}
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
     $ echo #{{issue.url}} #{{issue.parent ?? ""}}
     for sub in issue.sub_issues {{
       $ echo #{{sub}}
     }}
   }}
-  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
+  on_done proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
     $ echo done #{{issue.title}}
   }}
-  on_fail proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
+  on_fail proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
     for blocker in issue.blocked_by {{
       $ echo #{{blocker}}
     }}
   }}
-  on_park proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
+  on_park proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
     for label in issue.labels {{
       $ echo #{{label}}
     }}
@@ -675,14 +723,14 @@ develop :: service(linear) {{
 }}
 
 discuss :: service(linear) {{
-  team          "{TEAM}"
   client_id     "{CLIENT_ID}"
   client_secret "{CLIENT_SECRET}"
-  pick_from     "Triage"
+  team          "{TEAM}"
+  claim_from    "Triage"
   discuss_with  "chen@acme.example", "me"
   work_dir      "/srv/acme/widgets"
 
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
 }}
@@ -693,12 +741,13 @@ discuss :: service(linear) {{
     assert_eq!(code, Some(0), "every setting validates:\n{report}");
 }
 
-/// A service whose slots call every action the plugin declares, each checked for its error —
-/// a new issue in a named state and one in the team's default, a sub-issue, absolute paths
-/// for the reads, a comment and a description with files and without, wide and multi-line
-/// texts — validates: afkd types every call against the manifest.
+/// A service whose every slot reads and writes the issue it claimed through the workspace it
+/// is passed, each call checked for its error — its comments and files, a file downloaded,
+/// the issue moved, relabelled through `update_issue`'s other fields, delegated and commented
+/// on with files and without, wide and multi-line texts — validates: afkd types every slot's
+/// `workspace` as a `linear.Workspace`, and every call against the manifest.
 #[test]
-fn every_action_validates_from_its_slots() {
+fn every_slot_reads_and_writes_through_its_workspace() {
     let home = installed();
     write_config(
         home.path(),
@@ -707,107 +756,94 @@ fn every_action_validates_from_its_slots() {
 import "@afkd/linear"
 
 widgets :: service(linear) {{
-  team      "{TEAM}"
-  api_key   "{API_KEY}"
-  pick_from "Todo"
-  work_dir  "/srv/acme/widgets"
+  team       "{TEAM}"
+  api_key    "{API_KEY}"
+  claim_from "Todo"
+  work_dir   "/srv/acme/widgets"
 
-  on_claim proc(issue: linear.Issue) {{
-    match linear.move_to(issue, "In Progress 🚧") {{
+  on_claim proc(workspace: linear.Workspace, issue: linear.Issue) {{
+    match linear.update_issue(workspace, issue, state="In Progress 🚧", at=.top, delegate="me") {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.move_to: #{{e.message}}")
+      .err(e) => fail("linear.update_issue: #{{e.message}}")
     }}
-    match linear.add_label(issue, "afkd/working") {{
+    match linear.add_subscriber(workspace, issue) {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.add_label: #{{e.message}}")
-    }}
-    match linear.delegate(issue, "me") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.delegate: #{{e.message}}")
+      .err(e) => fail("linear.add_subscriber: #{{e.message}}")
     }}
   }}
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
-    match linear.list_comments(issue, "/srv/acme/widgets/thread 計画.md") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.list_comments: #{{e.message}}")
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
+    match linear.comments(workspace, issue) {{
+      .ok(comments) => {{
+        for comment in comments {{
+          $ echo #{{comment.author ?? "-"}} #{{comment.body}}
+        }}
+      }}
+      .err(e) => fail("linear.comments: #{{e.message}}")
     }}
-    match linear.read_description(issue, "/srv/acme/widgets/description.md") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.read_description: #{{e.message}}")
-    }}
-    match linear.list_sub_issues(issue, "/srv/acme/widgets/subs.md") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.list_sub_issues: #{{e.message}}")
-    }}
-    match linear.fetch_files(issue, "/srv/acme/widgets/files 計画") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.fetch_files: #{{e.message}}")
+    match linear.files(workspace, issue) {{
+      .ok(urls) => {{
+        for i, url in urls {{
+          match linear.download_file(workspace, url, "/srv/acme/widgets/files 計画/#{{i + 1}}") {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.download_file: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.files: #{{e.message}}")
     }}
     $ cat $AFKD_SCRATCH_DIR/task.md
   }}
-  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
-    match linear.comment(issue, "## 完了 ✅\n\nlanded #{{issue.title}} in #{{outcome.duration}}.") {{
+  on_done proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
+    match linear.create_comment(workspace, issue, "## 完了 ✅\n\nlanded #{{issue.title}} in #{{outcome.duration}}.") {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.comment: #{{e.message}}")
+      .err(e) => fail("linear.create_comment: #{{e.message}}")
     }}
-    match linear.comment(
+    match linear.create_comment(
+      workspace,
       issue,
       "After the fix:",
       files=[ "/srv/acme/widgets/screen shot — 修复.png", "/srv/acme/widgets/run.log" ],
     ) {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.comment: #{{e.message}}")
+      .err(e) => fail("linear.create_comment: #{{e.message}}")
     }}
-    match linear.describe(issue, "Done by afkd — 修复 🚀") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.describe: #{{e.message}}")
-    }}
-    match linear.describe(issue, "", files=[ "/srv/acme/widgets/before.png" ]) {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.describe: #{{e.message}}")
-    }}
-    match linear.rename(issue, "[done] #{{issue.title}}") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.rename: #{{e.message}}")
-    }}
-    match linear.remove_label(issue, "afkd/working") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.remove_label: #{{e.message}}")
-    }}
-    for sub in issue.sub_issues {{
-      match linear.move_sub_issue(issue, sub, "Done") {{
-        .ok(_) => {{ }}
-        .err(e) => fail("linear.move_sub_issue: #{{e.message}}")
-      }}
-    }}
-    match linear.archive(issue) {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.archive: #{{e.message}}")
-    }}
-  }}
-  on_fail proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
-    match linear.create_issue(
+    match linear.update_issue(
+      workspace,
       issue,
-      "Follow up on #{{issue.title}}",
-      "It failed:\n\n#{{outcome.duration}}",
-      state="Backlog 📥",
+      title="[done] #{{issue.title}}",
+      description="Done by afkd — 修复 🚀",
+      files=[ "/srv/acme/widgets/before.png" ],
+      state="Done",
     ) {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.create_issue: #{{e.message}}")
+      .err(e) => fail("linear.update_issue: #{{e.message}}")
     }}
-    match linear.create_issue(issue, "Look again 👀") {{
+    match linear.archive_issue(workspace, issue) {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.create_issue: #{{e.message}}")
-    }}
-    match linear.undelegate(issue) {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.undelegate: #{{e.message}}")
+      .err(e) => fail("linear.archive_issue: #{{e.message}}")
     }}
   }}
-  on_park proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
-    match linear.create_sub_issue(issue, "Answer the question 🙋", "Asked on #{{issue.url}}") {{
+  on_fail proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
+    match linear.update_issue(workspace, issue, delegate=nil, priority=.urgent) {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.create_sub_issue: #{{e.message}}")
+      .err(e) => fail("linear.update_issue: #{{e.message}}")
+    }}
+    match linear.create_comment(workspace, issue, "It failed:\n\n#{{outcome.duration}}") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.create_comment: #{{e.message}}")
+    }}
+  }}
+  on_park proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
+    match linear.issues(workspace, parent=[ issue.id ]) {{
+      .ok(subs) => {{
+        for sub in subs {{
+          match linear.add_relation(workspace, issue, .blocked_by, sub) {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.add_relation: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
     }}
   }}
 }}
@@ -815,7 +851,7 @@ widgets :: service(linear) {{
         ),
     );
     let (code, report) = validate(home.path());
-    assert_eq!(code, Some(0), "every action validates:\n{report}");
+    assert_eq!(code, Some(0), "every slot validates:\n{report}");
 }
 
 /// Services calling every read the plugin declares with every parameter it takes, each
@@ -917,6 +953,20 @@ nightly :: service(interval) {{
       .ok(_) => {{ }}
       .err(e) => fail("linear.issues: #{{e.message}}")
     }}
+    match linear.issue(WS, "ENG-1") {{
+      .ok(one) => {{
+        $ echo #{{one.id}} #{{one.uuid}} #{{one.workspace}} #{{one.parent ?? "-"}}
+        match linear.issue(APP, one.uuid) {{
+          .ok(again) => {{
+            if again != one {{
+              $ echo #{{again.id}} is #{{one.id}} of another workspace
+            }}
+          }}
+          .err(e) => fail("linear.issue: #{{e.message}}")
+        }}
+      }}
+      .err(e) => fail("linear.issue: #{{e.message}}")
+    }}
     match linear.me(APP) {{
       .ok(me) => {{
         $ echo #{{me.name}} #{{me.full_name}} #{{me.email}} #{{me.app}}
@@ -990,25 +1040,25 @@ nightly :: service(interval) {{
 }}
 
 widgets :: service(linear) {{
-  team      "{TEAM}"
-  api_key   "{API_KEY}"
-  pick_from "Todo"
-  work_dir  "/srv/acme/widgets"
+  team       "{TEAM}"
+  api_key    "{API_KEY}"
+  claim_from "Todo"
+  work_dir   "/srv/acme/widgets"
 
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
-    match linear.comments(WS, issue) {{
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
+    match linear.comments(workspace, issue) {{
       .ok(comments) => {{
         $ echo #{{len(comments)}}
       }}
       .err(e) => fail("linear.comments: #{{e.message}}")
     }}
-    match linear.files(WS, issue) {{
+    match linear.files(workspace, issue) {{
       .ok(urls) => {{
         $ echo #{{len(urls)}}
       }}
       .err(e) => fail("linear.files: #{{e.message}}")
     }}
-    match linear.issues(WS, parent=[ issue.id ]) {{
+    match linear.issues(workspace, parent=[ issue.id ]) {{
       .ok(subs) => {{
         for sub in subs {{
           if sub == issue {{
@@ -1017,6 +1067,12 @@ widgets :: service(linear) {{
         }}
       }}
       .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+    match linear.issue(workspace, issue.uuid) {{
+      .ok(anew) => {{
+        $ echo #{{anew.id}} #{{anew.state}}
+      }}
+      .err(e) => fail("linear.issue: #{{e.message}}")
     }}
   }}
 }}
@@ -1031,13 +1087,16 @@ widgets :: service(linear) {{
 /// checked for its error, validate: an interval service updating the issues it read with every
 /// field set — a team and a state, `at=.top`, files beside a description, a user by email and
 /// as `"me"`, a parent — then every field that can hold nothing cleared with `nil`, and
-/// placing one issue `after` another or `at=.bottom`; relating each to every other it read by
+/// placing one issue `after` another or `at=.bottom`; filing an issue under each with every
+/// parameter, the fields it read passed straight in, then one bare and one placed `after` it,
+/// and putting a label on it and taking one off; relating each to every other it read by
 /// every member of `relation` and taking it off again, linking a url with a title and without and
 /// unlinking it, subscribing and unsubscribing a user named and the one left out, archiving,
 /// putting in the trash and taking back, commenting with a file, replying, editing the reply
 /// with a file, resolving and unresolving the thread and deleting the reply; and a
-/// `service(linear)`'s slot updating, subscribing to, relating and commenting on the issue it
-/// claimed. afkd types every argument and result against the manifest.
+/// `service(linear)`'s slot updating, labelling, subscribing to, relating and commenting on the
+/// issue it claimed, and filing a follow-up in its team. afkd types every argument and result
+/// against the manifest.
 #[test]
 fn every_write_validates() {
     let home = installed();
@@ -1105,6 +1164,52 @@ nightly :: service(interval) {{
           match linear.update_issue(WS, issue, after=issue, priority=.none) {{
             .ok(_) => {{ }}
             .err(e) => fail("linear.update_issue: #{{e.message}}")
+          }}
+          match linear.create_issue(
+            WS,
+            issue.team,
+            "Cap the backoff at 30s — \"Retry-After\" 🚦",
+            description="Linear's header is in seconds.\n\n- [ ] honour it",
+            files=[ "/srv/acme/widgets/run.log" ],
+            state="Todo",
+            at=.top,
+            priority=issue.priority,
+            estimate=issue.estimate,
+            due=issue.due,
+            labels=[ "Bug 🐛", "Needs Info" ],
+            assignee=issue.assignee,
+            delegate="me",
+            project=issue.project,
+            milestone=issue.milestone,
+            cycle=issue.cycle,
+            parent=issue,
+          ) {{
+            .ok(made) => {{
+              $ echo #{{made.id}} #{{made.state}} #{{made.parent ?? "-"}}
+              match linear.create_issue(WS, made.team, "子任务: read it", parent=nil, assignee=nil) {{
+                .ok(bare) => {{
+                  $ echo #{{bare.id}} #{{bare.state}}
+                }}
+                .err(e) => fail("linear.create_issue: #{{e.message}}")
+              }}
+              match linear.create_issue(WS, "OPS", "Below it", after=made, due=nil) {{
+                .ok(_) => {{ }}
+                .err(e) => fail("linear.create_issue: #{{e.message}}")
+              }}
+              match linear.add_label(WS, made, "afkd/ready") {{
+                .ok(labelled) => {{
+                  for name in labelled.labels {{
+                    $ echo #{{name}}
+                  }}
+                }}
+                .err(e) => fail("linear.add_label: #{{e.message}}")
+              }}
+              match linear.remove_label(WS, made, "Needs Info") {{
+                .ok(_) => {{ }}
+                .err(e) => fail("linear.remove_label: #{{e.message}}")
+              }}
+            }}
+            .err(e) => fail("linear.create_issue: #{{e.message}}")
           }}
           for other in issues {{
             if other.id == issue.id {{
@@ -1268,26 +1373,40 @@ nightly :: service(interval) {{
 }}
 
 widgets :: service(linear) {{
-  team      "{TEAM}"
-  api_key   "{API_KEY}"
-  pick_from "Todo"
-  work_dir  "/srv/acme/widgets"
+  team       "{TEAM}"
+  api_key    "{API_KEY}"
+  claim_from "Todo"
+  work_dir   "/srv/acme/widgets"
 
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
-    match linear.update_issue(WS, issue, state="In Progress", at=.top, assignee="me") {{
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
+    match linear.update_issue(workspace, issue, state="In Progress", at=.top, assignee="me") {{
       .ok(started) => {{
         $ echo #{{started.id}} #{{started.state}}
       }}
       .err(e) => fail("linear.update_issue: #{{e.message}}")
     }}
-    match linear.add_subscriber(WS, issue) {{
+    match linear.add_subscriber(workspace, issue) {{
       .ok(_) => {{ }}
       .err(e) => fail("linear.add_subscriber: #{{e.message}}")
     }}
-    match linear.issues(WS, id=[ "ENG-1" ]) {{
+    match linear.add_label(workspace, issue, "In flight 🚧") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.add_label: #{{e.message}}")
+    }}
+    match linear.remove_label(workspace, issue, "afkd/ready") {{
+      .ok(_) => {{ }}
+      .err(e) => fail("linear.remove_label: #{{e.message}}")
+    }}
+    match linear.create_issue(workspace, issue.team, "Follow up on #{{issue.id}}", parent=issue, priority=issue.priority, labels=[ "Problem" ]) {{
+      .ok(follow_up) => {{
+        $ echo #{{follow_up.id}}
+      }}
+      .err(e) => fail("linear.create_issue: #{{e.message}}")
+    }}
+    match linear.issues(workspace, id=[ "ENG-1" ]) {{
       .ok(found) => {{
         for blocker in found {{
-          match linear.add_relation(WS, issue, .blocked_by, blocker) {{
+          match linear.add_relation(workspace, issue, .blocked_by, blocker) {{
             .ok(_) => {{ }}
             .err(e) => fail("linear.add_relation: #{{e.message}}")
           }}
@@ -1295,7 +1414,7 @@ widgets :: service(linear) {{
       }}
       .err(e) => fail("linear.issues: #{{e.message}}")
     }}
-    match linear.create_comment(WS, issue, "Started on #{{issue.id}} 🚦") {{
+    match linear.create_comment(workspace, issue, "Started on #{{issue.id}} 🚦") {{
       .ok(posted) => {{
         $ echo #{{posted.url}}
       }}
@@ -1693,6 +1812,244 @@ fn writes_leg_an_interval_service_writes_through_a_child_per_call() {
     );
 }
 
+/// The file, under the two workspaces leg's work dir, its run writes what it did to.
+const DAILY: &str = "daily.txt";
+
+/// The two workspaces leg's service: a daily service, run by hand, holding `ACME` and
+/// `GLOBEX`, a `linear.Workspace` each, reaching the fakes at `acme` and `globex`. Its run
+/// lists each one's issues, then files an issue in acme and updates its title and priority,
+/// moves it to the top of In Progress, puts a label on it, relates it as blocked by acme's
+/// issue and comments on it, each through `ACME`; last it passes the filed issue to
+/// `update_issue` with `GLOBEX` and writes the refusal. Each step's result goes to [`DAILY`]
+/// under `home`, a line each.
+fn daily_service(home: &Path, acme: &str, globex: &str) -> String {
+    format!(
+        r###"import "afkd"
+import "svc:daily"
+import "@afkd/linear"
+
+ACME   :: linear.Workspace{{ api_key: "{API_KEY}", base_url: "{acme}" }}
+GLOBEX :: linear.Workspace{{ api_key: "{GLOBEX_API_KEY}", base_url: "{globex}" }}
+
+sweep :: service(daily) {{
+  at       "04:00"
+  work_dir "{home}"
+
+  on_run proc(run: afkd.Run) {{
+    match linear.issues(GLOBEX) {{
+      .ok(theirs) => {{
+        for issue in theirs {{
+          $ echo globex #{{issue.id}} #{{issue.workspace}} >> {DAILY}
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+    match linear.issues(ACME, team=[ "{TEAM}" ], state=[ "Todo" ]) {{
+      .ok(ours) => {{
+        for blocker in ours {{
+          $ echo acme #{{blocker.id}} #{{blocker.workspace}} >> {DAILY}
+          file_and_work(blocker)
+        }}
+      }}
+      .err(e) => fail("linear.issues: #{{e.message}}")
+    }}
+  }}
+}}
+
+file_and_work :: proc(blocker: linear.Issue) {{
+  made := match linear.create_issue(ACME, blocker.team, "{title}", description="{body}", priority=.high, labels=[ "Bug 🐛" ]) {{
+    .ok(made) => made
+    .err(e) => fail("linear.create_issue: #{{e.message}}")
+  }}
+  $ echo created #{{made.id}} #{{made.state}} #{{made.priority}} >> {DAILY}
+  match linear.update_issue(ACME, made, title="Cap the backoff at 30s 🚦", priority=.urgent) {{
+    .ok(updated) => {{
+      $ echo updated #{{updated.title}} #{{updated.priority}} >> {DAILY}
+    }}
+    .err(e) => fail("linear.update_issue: #{{e.message}}")
+  }}
+  match linear.update_issue(ACME, made, state="In Progress", at=.top) {{
+    .ok(moved) => {{
+      $ echo moved #{{moved.state}} >> {DAILY}
+    }}
+    .err(e) => fail("linear.update_issue: #{{e.message}}")
+  }}
+  match linear.add_label(ACME, made, "Needs Info") {{
+    .ok(labelled) => {{
+      for name in labelled.labels {{
+        $ echo label #{{name}} >> {DAILY}
+      }}
+    }}
+    .err(e) => fail("linear.add_label: #{{e.message}}")
+  }}
+  match linear.add_relation(ACME, made, .blocked_by, blocker) {{
+    .ok(related) => {{
+      for id in related.blocked_by {{
+        $ echo blocked_by #{{id}} >> {DAILY}
+      }}
+    }}
+    .err(e) => fail("linear.add_relation: #{{e.message}}")
+  }}
+  match linear.create_comment(ACME, made, "{note}") {{
+    .ok(comment) => {{
+      $ echo commented #{{comment.issue}} >> {DAILY}
+    }}
+    .err(e) => fail("linear.create_comment: #{{e.message}}")
+  }}
+  match linear.update_issue(GLOBEX, made, title="Never written") {{
+    .ok(_) => fail("globex took an issue of acme")
+    .err(e) => {{
+      $ echo refused #{{e.message}} >> {DAILY}
+    }}
+  }}
+}}
+"###,
+        home = home.display(),
+        title = literal(TITLE),
+        body = literal(BODY),
+        note = literal(NOTE),
+    )
+}
+
+/// A daily service holding two `linear.Workspace` values works two workspaces from one run,
+/// through a child afkd starts for each call: it lists each one's issues, files an issue in
+/// acme with a label, updates its title and priority, moves it to the top of In Progress,
+/// labels it, relates it as blocked by acme's issue and comments on it, each change landing
+/// in acme with acme's key; and the filed issue passed with globex's workspace is refused
+/// naming both, with nothing written to globex.
+#[test]
+fn two_workspaces_leg_a_daily_service_works_each_and_keeps_them_apart() {
+    let home = installed();
+    let home = home.path();
+    let acme = FakeLinear::start();
+    acme.state("Todo", "unstarted");
+    acme.state("In Progress", "started");
+    acme.label_of(TEAM, "Bug 🐛", None);
+    acme.workspace_label("Needs Info", "#f2c94c");
+    let ahead = acme.issue("In Progress", "Upgrade ureq", "");
+    let blocker = acme.issue("Todo", "Upgrade the client", "");
+    let globex = FakeLinear::start_globex();
+    globex.state("Todo", "unstarted");
+    let theirs = globex.issue("Todo", "Globex's own 🌐", "");
+    write_config(
+        home,
+        &daily_service(home, acme.base_url(), globex.base_url()),
+    );
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let out = run_subcommand_args(home, &["run", "sweep"]);
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "`afkd run sweep` within {BUDGET:?}: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            dump(home, &acme, &blocker, &daemon)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    wait_for(
+        home,
+        &acme,
+        &blocker,
+        &daemon,
+        "the run worked both workspaces",
+        || std::fs::read_to_string(home.join(DAILY)).is_ok_and(|d| d.contains("refused ")),
+    );
+    let made = acme
+        .find_by_title("Cap the backoff at 30s 🚦")
+        .expect("the filed issue, retitled");
+    let (made_id, blocker_id) = (acme.identifier(&made), acme.identifier(&blocker));
+    assert_eq!(
+        read(&home.join(DAILY)),
+        format!(
+            "globex {theirs_id} globex\nacme {blocker_id} acme\n\
+             created {made_id} Todo high\nupdated Cap the backoff at 30s 🚦 urgent\n\
+             moved In Progress\nlabel Bug 🐛\nlabel Needs Info\nblocked_by {blocker_id}\n\
+             commented {made_id}\n\
+             refused update_issue: issue is {made_id} of workspace acme, and the \
+             linear.Workspace reaches globex\n",
+            theirs_id = globex.identifier(&theirs),
+        )
+    );
+    assert_eq!(acme.description_of(&made), BODY);
+    assert_eq!(acme.state_of(&made), "In Progress");
+    assert_eq!(
+        acme.in_state("In Progress"),
+        [made.clone(), ahead],
+        "at the top of In Progress"
+    );
+    assert_eq!(acme.labels(&made), ["Bug 🐛", "Needs Info"]);
+    assert_eq!(acme.relation_count(), 1);
+    let comments = acme.comments(&made);
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].body, NOTE);
+    assert_eq!(acme.title_of(&made), "Cap the backoff at 30s 🚦");
+
+    let written = |fake: &FakeLinear| -> Vec<String> {
+        fake.seen()
+            .into_iter()
+            .map(|s| s.operation)
+            .filter(|op| {
+                [
+                    "IssueCreate",
+                    "IssueWrite",
+                    "IssueAddLabel",
+                    "RelationCreate",
+                    "CommentPost",
+                ]
+                .contains(&op.as_str())
+            })
+            .collect()
+    };
+    assert_eq!(
+        written(&acme),
+        [
+            "IssueCreate",
+            "IssueWrite",
+            "IssueWrite",
+            "IssueAddLabel",
+            "RelationCreate",
+            "CommentPost"
+        ]
+    );
+    assert_eq!(
+        written(&globex),
+        Vec::<String>::new(),
+        "nothing written to globex"
+    );
+    for (fake, key) in [(&acme, API_KEY), (&globex, GLOBEX_API_KEY)] {
+        assert!(
+            fake.seen()
+                .iter()
+                .filter(|s| s.path == "/graphql")
+                .all(|s| s.authorization.as_deref() == Some(key)),
+            "each workspace saw only its own key"
+        );
+    }
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for fake in [&acme, &globex] {
+        assert_eq!(
+            fake.invalid_requests(),
+            Vec::<String>::new(),
+            "requests Linear's schema refuses"
+        );
+    }
+}
+
 /// The screenshot the files and the writes legs' runs put up: spaces, an em dash and wide
 /// CJK.
 const SHOT: &str = "screen shot — 修复.png";
@@ -1701,37 +2058,45 @@ const SHOT: &str = "screen shot — 修复.png";
 const FETCHED: &str = "fetched.txt";
 
 /// The files leg's service: its run puts [`SHOT`] into the issue's description and into a
-/// comment, fetches the issue's files into `fetched/`, moves it to Done and writes
-/// [`FETCHED`], each action checked for its error.
+/// comment, downloads each file the issue links into `fetched/`, numbered in the order
+/// `files` gives them, moves it to Done and writes [`FETCHED`], each call checked for its
+/// error.
 fn files_service(home: &Path, base_url: &str) -> String {
     format!(
         r###"import "afkd"
 import "@afkd/linear"
 
 widgets :: service(linear) {{
-  team      "{TEAM}"
-  base_url  "{base_url}"
-  api_key   "{API_KEY}"
-  pick_from "Todo"
+  team       "{TEAM}"
+  base_url   "{base_url}"
+  api_key    "{API_KEY}"
+  claim_from "Todo"
 
   work_dir "{home}"
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
-    match linear.describe(issue, "## 背景\n\nBefore:", files=[ "{home}/{SHOT}" ]) {{
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
+    match linear.update_issue(workspace, issue, description="## 背景\n\nBefore:", files=[ "{home}/{SHOT}" ]) {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.describe: #{{e.message}}")
+      .err(e) => fail("linear.update_issue: #{{e.message}}")
     }}
-    match linear.comment(issue, "After the fix ✅", files=[ "{home}/{SHOT}" ]) {{
+    match linear.create_comment(workspace, issue, "After the fix ✅", files=[ "{home}/{SHOT}" ]) {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.comment: #{{e.message}}")
+      .err(e) => fail("linear.create_comment: #{{e.message}}")
     }}
     $ mkdir -p fetched
-    match linear.fetch_files(issue, "{home}/fetched") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("linear.fetch_files: #{{e.message}}")
+    match linear.files(workspace, issue) {{
+      .ok(urls) => {{
+        for i, url in urls {{
+          match linear.download_file(workspace, url, "{home}/fetched/#{{i + 1}}-{SHOT}") {{
+            .ok(_) => {{ }}
+            .err(e) => fail("linear.download_file: #{{e.message}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("linear.files: #{{e.message}}")
     }}
-    match linear.move_to(issue, "Done") {{
+    match linear.update_issue(workspace, issue, state="Done") {{
       .ok(_) => {{ }}
-      .err(e) => fail("linear.move_to: #{{e.message}}")
+      .err(e) => fail("linear.update_issue: #{{e.message}}")
     }}
     $ echo fetched > {FETCHED}
   }}
@@ -1742,7 +2107,7 @@ widgets :: service(linear) {{
 }
 
 /// A run puts a PNG on its issue through a real daemon — into the description and into a
-/// comment, each embedding it at its asset url — and fetches both back byte for byte, the
+/// comment, each embedding it at its asset url — and downloads both back byte for byte, the
 /// description's first; every request conforms, and the PUTs carried no credential.
 #[test]
 fn files_leg_a_run_puts_a_png_on_its_issue_and_fetches_it_back() {
@@ -1821,14 +2186,14 @@ fn files_leg_a_run_puts_a_png_on_its_issue_and_fetches_it_back() {
     );
 }
 
-/// `team` and `pick_from` are required: a service without either is refused at validate,
+/// `team` and `claim_from` are required: a service without either is refused at validate,
 /// naming the setting and the service.
 #[test]
-fn a_service_without_team_or_pick_from_fails_validate_naming_the_setting() {
+fn a_service_without_team_or_claim_from_fails_validate_naming_the_setting() {
     let home = installed();
     for (missing, keep) in [
-        ("team", "pick_from \"Todo\""),
-        ("pick_from", "team \"ENG\""),
+        ("team", "claim_from \"Todo\""),
+        ("claim_from", "team \"ENG\""),
     ] {
         write_config(
             home.path(),
@@ -1840,7 +2205,7 @@ widgets :: service(linear) {{
   {keep}
   api_key "{API_KEY}"
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
     $ true
   }}
 }}
@@ -1873,23 +2238,26 @@ fn a_call_to_an_undeclared_action_is_a_load_error() {
 import "@afkd/linear"
 
 widgets :: service(linear) {{
-  team      "ENG"
-  api_key   "{API_KEY}"
-  pick_from "Todo"
+  team       "ENG"
+  api_key    "{API_KEY}"
+  claim_from "Todo"
 
-  on_done proc(run: afkd.Run, issue: linear.Issue, outcome: afkd.Outcome) {{
+  on_done proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
     {call}
   }}
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
     $ true
   }}
 }}
 "#
         )
     };
-    write_config(home.path(), &config(r#"linear.assign(issue, "me")"#));
+    write_config(
+        home.path(),
+        &config(r#"linear.assign(workspace, issue, "me")"#),
+    );
     let (code, report) = validate(home.path());
     assert_eq!(
         code,
@@ -1902,8 +2270,8 @@ widgets :: service(linear) {{
     );
     assert!(
         report.contains(
-            "its actions are add_label, add_link, add_relation, add_subscriber, archive, \
-             archive_issue, comment, comments,"
+            "its actions are add_label, add_link, add_relation, add_subscriber, archive_issue, \
+             comments, create_comment, create_issue, cycles,"
         ),
         "and lists the actions it has:\n{report}"
     );
@@ -2000,7 +2368,7 @@ fn every_readme_conf_fence_validates() {
     }
 }
 
-/// What the skill leg's run posts through `post_comment.py`, and then asks through `ask.py`,
+/// What the skill leg's run posts through `create_comment.py`, and then asks through `ask.py`,
 /// and the comment the writes leg's run posts: wide CJK, an emoji, quotes, a fence and several
 /// lines.
 const NOTE: &str = "计划 ✅ — \"backoff\" capped at 30s:\n\n```\nlet backoff = 30;\n```";
@@ -2017,14 +2385,14 @@ NOTE     :: "{note}"
 QUESTION :: "{question}"
 
 widgets :: service(linear) {{
-  team      "{TEAM}"
-  base_url  "{base_url}"
-  api_key   "{API_KEY}"
-  pick_from "Todo"
+  team       "{TEAM}"
+  base_url   "{base_url}"
+  api_key    "{API_KEY}"
+  claim_from "Todo"
 
   work_dir "{home}"
-  on_run proc(run: afkd.Run, issue: linear.Issue) {{
-    $ python3 {skill}/post_comment.py #{{NOTE}}
+  on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
+    $ python3 {skill}/create_comment.py "$LINEAR_ISSUE" #{{NOTE}}
     $ python3 {skill}/ask.py #{{QUESTION}}
   }}
 }}

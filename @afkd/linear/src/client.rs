@@ -21,8 +21,9 @@
 //! read the pages after it ([`ISSUE_CONNECTIONS`]). A client made [`retrying`] tries a request
 //! Linear could not take again within the call's deadline. A workspace write
 //! ([`crate::writes`]) reads where an issue sits ([`LinearClient::issue_place`]), changes it
-//! with one `IssueWrite`, kept apart from the `IssueUpdate` the skill shares, and reads it back
-//! as the reads do. A relation or a link it removes is found by its id, which the reads leave
+//! with one `IssueWrite`, kept apart from the `IssueUpdate` the kind puts an issue back with,
+//! and reads it back as the reads do. The skill's scripts, ports of the reads and the writes,
+//! send the same documents under the same names. A relation or a link it removes is found by its id, which the reads leave
 //! out ([`LinearClient::relations`], [`LinearClient::links`]).
 //!
 //! [`retrying`]: LinearClient::retrying
@@ -146,10 +147,20 @@ pub(crate) fn states_vars(team_id: &str) -> Value {
     json!({ "teamId": team_id })
 }
 
-/// `Issues`: one page of a state's issues in the team's manual order, from `after`.
-pub(crate) fn issues_in_state_vars(team_id: &str, state_id: &str, after: Option<&str>) -> Value {
+/// `Issues`: one page of a state's issues the `IssueFilter` `gate` keeps, in the team's
+/// manual order, from `after`: the gate's clauses beside the team and the state, `{}` adding
+/// none.
+pub(crate) fn issues_in_state_vars(
+    team_id: &str,
+    state_id: &str,
+    gate: &Value,
+    after: Option<&str>,
+) -> Value {
+    let mut filter = gate.as_object().cloned().unwrap_or_default();
+    filter.insert("team".into(), json!({ "id": { "eq": team_id } }));
+    filter.insert("state".into(), json!({ "id": { "eq": state_id } }));
     json!({
-        "filter": { "team": { "id": { "eq": team_id } }, "state": { "id": { "eq": state_id } } },
+        "filter": filter,
         "sort": [{ "manual": { "order": "Ascending" } }],
         "first": ISSUES_PAGE,
         "after": after,
@@ -187,7 +198,7 @@ pub(crate) fn follow_up_vars(id: &str, after: &str) -> Value {
 
 /// `IssueFull`, `IssuePlace`, `IssueUnarchive` and `IssueDelete`: the issue; `RelationDelete`
 /// and `LinkDelete`: the relation or the link; `CommentOne` and `CommentUnresolve`: the
-/// comment.
+/// comment; `TeamDefaultState`: the team.
 pub(crate) fn issue_vars(issue_id: &str) -> Value {
     json!({ "id": issue_id })
 }
@@ -256,6 +267,12 @@ pub(crate) fn issue_write_vars(issue_id: &str, input: &Map<String, Value>) -> Va
     json!({ "id": issue_id, "input": input })
 }
 
+/// `IssueCreate`: an issue filed as `input`, an `IssueCreateInput`, says: each key it holds
+/// set, and every field it leaves out left empty or to Linear's default.
+pub(crate) fn issue_create_vars(input: &Map<String, Value>) -> Value {
+    json!({ "input": input })
+}
+
 /// `RelationsOut`, `RelationsIn` and `IssueLinks`: one page of the relations the issue holds,
 /// of those that name it, or of its links, from `after`.
 pub(crate) fn issue_page_vars(issue_id: &str, after: Option<&str>) -> Value {
@@ -310,11 +327,6 @@ pub(crate) fn issue_label_ids_vars(issue_id: &str) -> Value {
     json!({ "id": issue_id })
 }
 
-/// `IssueChildren`: one page of an issue's sub-issues, from `after`.
-pub(crate) fn children_vars(issue_id: &str, after: Option<&str>) -> Value {
-    json!({ "id": issue_id, "after": after })
-}
-
 /// `IssueComments`: one page of an issue's comments, from `after`.
 pub(crate) fn comments_vars(issue_id: &str, after: Option<&str>) -> Value {
     json!({ "id": issue_id, "after": after })
@@ -360,48 +372,6 @@ pub(crate) fn move_vars(issue_id: &str, state_id: &str, sort_order: f64) -> Valu
     json!({ "id": issue_id, "input": { "stateId": state_id, "sortOrder": sort_order } })
 }
 
-/// `IssueUpdate`: the issue retitled `title`.
-pub(crate) fn title_vars(issue_id: &str, title: &str) -> Value {
-    json!({ "id": issue_id, "input": { "title": title } })
-}
-
-/// `IssueUpdate`: the issue's description replaced with `text`.
-pub(crate) fn description_update_vars(issue_id: &str, text: &str) -> Value {
-    json!({ "id": issue_id, "input": { "description": text } })
-}
-
-/// `IssueUpdate`: the issue moved to the state, its place there Linear's to pick.
-pub(crate) fn state_vars(issue_id: &str, state_id: &str) -> Value {
-    json!({ "id": issue_id, "input": { "stateId": state_id } })
-}
-
-/// `IssueUpdate`: the issue delegated to the user, or its delegate taken off for `None`.
-pub(crate) fn delegate_vars(issue_id: &str, user_id: Option<&str>) -> Value {
-    json!({ "id": issue_id, "input": { "delegateId": user_id } })
-}
-
-/// `IssueCreate`: a new issue in the team titled `title`, and only what else is given: the
-/// description when it is not empty, the parent, the state.
-pub(crate) fn issue_create_vars(
-    team_id: &str,
-    parent_id: Option<&str>,
-    title: &str,
-    description: &str,
-    state_id: Option<&str>,
-) -> Value {
-    let mut input = json!({ "teamId": team_id, "title": title });
-    if !description.is_empty() {
-        input["description"] = json!(description);
-    }
-    if let Some(parent_id) = parent_id {
-        input["parentId"] = json!(parent_id);
-    }
-    if let Some(state_id) = state_id {
-        input["stateId"] = json!(state_id);
-    }
-    json!({ "input": input })
-}
-
 /// `IssueArchive`: the issue.
 pub(crate) fn archive_vars(issue_id: &str) -> Value {
     json!({ "id": issue_id })
@@ -419,7 +389,7 @@ pub(crate) fn file_upload_vars(content_type: &str, filename: &str, size: usize) 
 pub(crate) struct LinearClient {
     /// The spine, holding the API root and the timeout budgets.
     http: Http,
-    /// The credential, shared with the outbox worker's client so an app fetches one token.
+    /// The credential, and an app's token once fetched.
     auth: Arc<Auth>,
     /// The API root, its trailing `/` dropped: a file under it is Linear's too.
     base: String,
@@ -796,6 +766,57 @@ impl LinearClient {
             .map(drop)
     }
 
+    /// File an issue as `input`, an `IssueCreateInput`, says: the new issue's uuid.
+    pub(crate) fn issue_create(&self, input: &Map<String, Value>) -> Result<String, LinearError> {
+        let stage = "create issue";
+        let data = self.post_graphql(stage, "IssueCreate", issue_create_vars(input))?;
+        str_at(stage, &data["issueCreate"]["issue"], "id")
+    }
+
+    /// The state an issue filed in the team `team_id` without one lands in, its id and its
+    /// name: `None` when Linear names none.
+    pub(crate) fn default_state(
+        &self,
+        team_id: &str,
+    ) -> Result<Option<(String, String)>, LinearError> {
+        let stage = "read default state";
+        let data = self.post_graphql(stage, "TeamDefaultState", issue_vars(team_id))?;
+        let state = &data["team"]["defaultIssueState"];
+        if state.is_null() {
+            return Ok(None);
+        }
+        Ok(Some((
+            str_at(stage, state, "id")?,
+            str_at(stage, state, "name")?,
+        )))
+    }
+
+    /// The ids of the labels on the issue `issue_id`.
+    pub(crate) fn label_ids(&self, issue_id: &str) -> Result<Vec<String>, LinearError> {
+        let stage = "read labels";
+        let data = self.post_graphql(stage, "IssueLabelIds", issue_label_ids_vars(issue_id))?;
+        nodes(stage, &data["issue"]["labels"])?
+            .iter()
+            .map(|label| str_at(stage, label, "id"))
+            .collect()
+    }
+
+    /// Put the label `label_id` on the issue `issue_id`, or, when not `on`, take it off.
+    pub(crate) fn issue_label(
+        &self,
+        issue_id: &str,
+        label_id: &str,
+        on: bool,
+    ) -> Result<(), LinearError> {
+        let (stage, name) = if on {
+            ("add label", "IssueAddLabel")
+        } else {
+            ("remove label", "IssueRemoveLabel")
+        };
+        self.post_graphql(stage, name, issue_label_vars(issue_id, label_id))
+            .map(drop)
+    }
+
     /// Every node of the connection `field` of the issue `issue_id`, read a page at a time by
     /// the document `name`.
     fn issue_nodes(
@@ -1082,11 +1103,12 @@ impl Tracker for LinearClient {
         &self,
         team_id: &str,
         state_id: &str,
+        gate: &Value,
         after: Option<&str>,
     ) -> Result<Page<Issue>, LinearError> {
         self.issue_page(
             "read issues",
-            issues_in_state_vars(team_id, state_id, after),
+            issues_in_state_vars(team_id, state_id, gate, after),
         )
     }
 
@@ -1182,19 +1204,10 @@ impl Tracker for LinearClient {
             return Ok(());
         };
         // Linear refuses to take off a label the issue does not carry.
-        let carried = self.post_graphql(stage, "IssueLabelIds", issue_label_ids_vars(issue_id))?;
-        if !nodes(stage, &carried["issue"]["labels"])?
-            .iter()
-            .any(|l| l["id"].as_str() == Some(label_id.as_str()))
-        {
+        if !self.label_ids(issue_id)?.contains(&label_id) {
             return Ok(());
         }
-        self.post_graphql(
-            stage,
-            "IssueRemoveLabel",
-            issue_label_vars(issue_id, &label_id),
-        )
-        .map(drop)
+        self.issue_label(issue_id, &label_id, false)
     }
 
     fn move_to_bottom(
@@ -1228,62 +1241,6 @@ impl Tracker for LinearClient {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string())
-    }
-
-    fn sub_issues(&self, issue_id: &str) -> Result<Vec<Child>, LinearError> {
-        let stage = "read sub-issues";
-        let mut children = Vec::new();
-        let mut after: Option<String> = None;
-        loop {
-            let vars = children_vars(issue_id, after.as_deref());
-            let data = self.post_graphql(stage, "IssueChildren", vars)?;
-            let connection = &data["issue"]["children"];
-            children.extend(parse_children(stage, connection)?);
-            match next_cursor(connection) {
-                Some(next) => after = Some(next),
-                None => return Ok(children),
-            }
-        }
-    }
-
-    fn set_title(&self, issue_id: &str, title: &str) -> Result<(), LinearError> {
-        self.post_graphql("rename issue", "IssueUpdate", title_vars(issue_id, title))
-            .map(drop)
-    }
-
-    fn set_description(&self, issue_id: &str, text: &str) -> Result<(), LinearError> {
-        let vars = description_update_vars(issue_id, text);
-        self.post_graphql("describe issue", "IssueUpdate", vars)
-            .map(drop)
-    }
-
-    fn set_state(&self, issue_id: &str, state_id: &str) -> Result<(), LinearError> {
-        self.post_graphql("move issue", "IssueUpdate", state_vars(issue_id, state_id))
-            .map(drop)
-    }
-
-    fn set_delegate(&self, issue_id: &str, user_id: Option<&str>) -> Result<(), LinearError> {
-        let stage = if user_id.is_some() {
-            "delegate issue"
-        } else {
-            "undelegate issue"
-        };
-        self.post_graphql(stage, "IssueUpdate", delegate_vars(issue_id, user_id))
-            .map(drop)
-    }
-
-    fn create_issue(
-        &self,
-        team_id: &str,
-        parent_id: Option<&str>,
-        title: &str,
-        description: &str,
-        state_id: Option<&str>,
-    ) -> Result<String, LinearError> {
-        let stage = "create issue";
-        let vars = issue_create_vars(team_id, parent_id, title, description, state_id);
-        let data = self.post_graphql(stage, "IssueCreate", vars)?;
-        str_at(stage, &data["issueCreate"]["issue"], "identifier")
     }
 
     fn archive_issue(&self, issue_id: &str) -> Result<(), LinearError> {
@@ -2063,12 +2020,13 @@ mod tests {
         "IssueRemoveLabel",
         "IssueLabelCreate",
         "IssueUpdate",
-        "IssueCreate",
         "IssueArchive",
         "FileUpload",
         "IssuePlace",
         "MilestoneList",
         "IssueWrite",
+        "IssueCreate",
+        "TeamDefaultState",
         "RelationsOut",
         "RelationsIn",
         "RelationCreate",
@@ -2149,8 +2107,14 @@ mod tests {
             ("TeamByKey", team_by_key_vars("ENG")),
             ("TeamByKey", team_by_key_vars("ÅÄÖ")),
             ("States", states_vars(team)),
-            ("Issues", issues_in_state_vars(team, state, None)),
-            ("Issues", issues_in_state_vars(team, state, cursor)),
+            (
+                "Issues",
+                issues_in_state_vars(team, state, &json!({}), None),
+            ),
+            (
+                "Issues",
+                issues_in_state_vars(team, state, &every_filter, cursor),
+            ),
             ("Issues", parked_vars(team, "Needs Info", None)),
             ("Issues", parked_vars(team, "Väntar på svar 🚦", cursor)),
             ("Issues", last_in_state_vars(team, state)),
@@ -2184,8 +2148,7 @@ mod tests {
             ),
             ("IssueDescription", description_vars(issue)),
             ("IssueLabelIds", issue_label_ids_vars(issue)),
-            ("IssueChildren", children_vars(issue, None)),
-            ("IssueChildren", children_vars(issue, cursor)),
+            ("IssueChildren", follow_up_vars(issue, "c20")),
             ("IssueComments", comments_vars(issue, None)),
             ("IssueComments", comments_vars(issue, cursor)),
             ("Users", users_vars("陳大文")),
@@ -2209,35 +2172,6 @@ mod tests {
             ("IssueLabelCreate", label_create_vars("Needs Info", team)),
             ("IssueUpdate", move_vars(issue, state, 0.0)),
             ("IssueUpdate", move_vars(issue, state, 1e15)),
-            (
-                "IssueUpdate",
-                title_vars(issue, "修复 the retry storm 🚨 — \"backoff\" resets"),
-            ),
-            (
-                "IssueUpdate",
-                description_update_vars(issue, "## 完了 ✅\n\n```rust\nlet x = 1;\n```"),
-            ),
-            ("IssueUpdate", description_update_vars(issue, "")),
-            ("IssueUpdate", state_vars(issue, state)),
-            (
-                "IssueUpdate",
-                delegate_vars(issue, Some("8e7d6c5b-4a39-4281-b0c9-d8e7f6a5b4c3")),
-            ),
-            ("IssueUpdate", delegate_vars(issue, None)),
-            (
-                "IssueCreate",
-                issue_create_vars(team, None, "Cap the backoff at 30s", "", None),
-            ),
-            (
-                "IssueCreate",
-                issue_create_vars(
-                    team,
-                    Some(issue),
-                    "子任务: read Retry-After 🚦",
-                    "Linear's header is in seconds.\n\n- [ ] honour it",
-                    Some(state),
-                ),
-            ),
             ("IssueArchive", archive_vars(issue)),
             (
                 "FileUpload",
@@ -2278,6 +2212,16 @@ mod tests {
         };
         rows.push(("IssueWrite", issue_write_vars(issue, &every.input())));
         rows.push(("IssueWrite", issue_write_vars(issue, &cleared.input())));
+        // `create_issue` with every field set, its labels among them, and with only its team.
+        let mut filed = every.input();
+        filed.insert("labelIds".into(), json!([state, issue]));
+        rows.push(("IssueCreate", issue_create_vars(&filed)));
+        let bare = crate::writes::IssueInput {
+            team: Some(team.into()),
+            ..crate::writes::IssueInput::default()
+        };
+        rows.push(("IssueCreate", issue_create_vars(&bare.input())));
+        rows.push(("TeamDefaultState", issue_vars(team)));
         for name in ["RelationsOut", "RelationsIn", "IssueLinks"] {
             rows.push((name, issue_page_vars(issue, None)));
             rows.push((name, issue_page_vars(issue, cursor)));
@@ -2353,13 +2297,26 @@ mod tests {
             })
         );
         assert_eq!(
-            issues_in_state_vars("t", "s", Some("c")),
+            issues_in_state_vars("t", "s", &json!({}), Some("c")),
             json!({
                 "filter": {"team": {"id": {"eq": "t"}}, "state": {"id": {"eq": "s"}}},
                 "sort": [{"manual": {"order": "Ascending"}}],
                 "first": 25,
                 "after": "c",
             })
+        );
+        let gate = json!({"and": [{"labels": {"every": {"name": {"nin": ["Blocked"]}}}},
+                                  {"hasBlockedByRelations": {"eq": false}}]});
+        assert_eq!(
+            issues_in_state_vars("t", "s", &gate, None),
+            json!({
+                "filter": {"team": {"id": {"eq": "t"}}, "state": {"id": {"eq": "s"}},
+                           "and": gate["and"]},
+                "sort": [{"manual": {"order": "Ascending"}}],
+                "first": 25,
+                "after": null,
+            }),
+            "the gate's clauses go beside the team and the state"
         );
         assert_eq!(
             last_in_state_vars("t", "s"),
@@ -2372,41 +2329,6 @@ mod tests {
         assert_eq!(
             move_vars("i", "s", 1012.5),
             json!({"id": "i", "input": {"stateId": "s", "sortOrder": 1012.5}})
-        );
-    }
-
-    /// An issue is filed with only what it is given: no description key for an empty one,
-    /// and the parent and the state only when named; each update sends its one field.
-    #[test]
-    fn a_new_issue_carries_only_what_it_is_given() {
-        assert_eq!(
-            issue_create_vars("t", None, "Cap it", "", None),
-            json!({"input": {"teamId": "t", "title": "Cap it"}})
-        );
-        assert_eq!(
-            issue_create_vars("t", Some("p"), "子任务", "Body\n", Some("s")),
-            json!({"input": {"teamId": "t", "title": "子任务", "description": "Body\n",
-                             "parentId": "p", "stateId": "s"}})
-        );
-        assert_eq!(
-            title_vars("i", "New"),
-            json!({"id": "i", "input": {"title": "New"}})
-        );
-        assert_eq!(
-            description_update_vars("i", ""),
-            json!({"id": "i", "input": {"description": ""}})
-        );
-        assert_eq!(
-            state_vars("i", "s"),
-            json!({"id": "i", "input": {"stateId": "s"}})
-        );
-        assert_eq!(
-            delegate_vars("i", Some("u")),
-            json!({"id": "i", "input": {"delegateId": "u"}})
-        );
-        assert_eq!(
-            delegate_vars("i", None),
-            json!({"id": "i", "input": {"delegateId": null}})
         );
     }
 
@@ -3123,7 +3045,7 @@ mod tests {
             relations(vec![relation("blocks", "ENG-402", "canceled")], None),
         ]);
         let client = stub.client(AuthConfig::ApiKey("k".into()));
-        let page = client.issues_in_state("t", "s", None).unwrap();
+        let page = client.issues_in_state("t", "s", &json!({}), None).unwrap();
         let blockers: Vec<Vec<&str>> = page
             .items
             .iter()
@@ -3620,26 +3542,9 @@ mod tests {
         assert_eq!(stub.captured(1).len(), 1, "the kind's client sends once");
     }
 
-    /// A description is read as Linear holds it, `""` for none; sub-issues are read to the
-    /// last page, each with its uuid; a new issue's identifier comes back.
+    /// A description is read as Linear holds it, `""` for none.
     #[test]
-    fn the_reads_and_the_create_read_their_replies() {
-        let children = |ids: &[&str], next: Option<&str>| {
-            let nodes: Vec<Value> = ids
-                .iter()
-                .map(|id| {
-                    json!({"id": id, "identifier": format!("ENG-{id}"), "title": "子任务 🚦",
-                                 "state": {"name": "In Progress"}})
-                })
-                .collect();
-            http(
-                200,
-                "",
-                &json!({"data": {"issue": {"children": {"nodes": nodes,
-                    "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next}}}}})
-                .to_string(),
-            )
-        };
+    fn a_description_is_read_as_linear_holds_it() {
         let stub = Stub::serve(vec![
             http(
                 200,
@@ -3647,13 +3552,6 @@ mod tests {
                 &json!({"data": {"issue": {"description": "## 背景\n\nIt resets."}}}).to_string(),
             ),
             http(200, "", r#"{"data":{"issue":{"description":null}}}"#),
-            children(&["7", "8"], Some("k8")),
-            children(&["9"], None),
-            http(
-                200,
-                "",
-                r#"{"data":{"issueCreate":{"success":true,"issue":{"identifier":"ENG-130"}}}}"#,
-            ),
         ]);
         let client = stub.client(AuthConfig::ApiKey("k".into()));
         assert_eq!(
@@ -3661,24 +3559,9 @@ mod tests {
             "## 背景\n\nIt resets."
         );
         assert_eq!(client.issue_description("i").unwrap(), "");
-        let subs = client.sub_issues("i").unwrap();
         assert_eq!(
-            subs.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-            ["7", "8", "9"]
-        );
-        assert_eq!(subs[2].identifier, "ENG-9");
-        assert_eq!(subs[2].state, "In Progress");
-        assert_eq!(
-            client
-                .create_issue("t", Some("i"), "Cap it", "", None)
-                .unwrap(),
-            "ENG-130"
-        );
-        let seen = stub.captured(5);
-        assert_eq!(seen[3].json()["variables"], children_vars("i", Some("k8")));
-        assert_eq!(
-            seen[4].json()["variables"],
-            issue_create_vars("t", Some("i"), "Cap it", "", None)
+            stub.captured(2)[1].json()["variables"],
+            description_vars("i")
         );
     }
 

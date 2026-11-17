@@ -18,8 +18,6 @@ pub(crate) const ENV_API_URL: &str = "LINEAR_API_URL";
 /// or `Bearer <token>` for an app, as of the claim. One variable for both credentials, so a
 /// script reaching Linear has one code path.
 pub(crate) const ENV_AUTHORIZATION: &str = "LINEAR_AUTHORIZATION";
-/// Env var carrying the team's id to the run.
-pub(crate) const ENV_TEAM_ID: &str = "LINEAR_TEAM_ID";
 /// Env var carrying the active issue's id (its uuid) to the run.
 pub(crate) const ENV_ISSUE_ID: &str = "LINEAR_ISSUE_ID";
 /// Env var carrying the active issue's identifier (`ENG-123`) to the run.
@@ -130,7 +128,7 @@ pub(crate) trait Diag {
     fn err(&self, err: &dyn Display);
 
     /// Narrate one success — a claimed issue, a released claim, a parked issue, a takeover,
-    /// a write delivered from the outbox.
+    /// a read or a write done.
     fn narrate(&self, line: &str);
 }
 

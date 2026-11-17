@@ -1,5 +1,5 @@
-//! The `issue` kind's **vendor half**: the Linear side of afkd's unit spine, `@afkd/trello`'s
-//! card kind re-seated on a team's issues.
+//! The `intake` kind's **vendor half**: the Linear side of afkd's unit spine, `@afkd/trello`'s
+//! card kind re-seated on teams' issues.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt loop,
 //! the framing of `task.md`, the mid-run watch. What lives here is what only the tracker can
@@ -9,14 +9,18 @@
 //! for `release`. It reaches Linear through the mockable [`Tracker`] seam, so that logic is
 //! unit-tested with no network against the in-memory `MockTracker`.
 //!
-//! Work is only ever *claimed from a `pick_from` state*, or re-claimed by the parked sweep
-//! from wherever a badged issue sits. A state's issues are read in the team's manual order,
-//! which plays the part of a Trello list's position. A parked issue is the sweep's alone,
-//! wherever it sits: one whose slots did not move it on is still in the state it was claimed
-//! from, and the state scan passes it over.
+//! Work is only ever *claimed from a `claim_from` state*, team by team and state by state in
+//! the order written, or re-claimed by the parked sweep from wherever a badged issue sits. A
+//! state's issues are read in the team's manual order, which plays the part of a Trello
+//! list's position, and only those the gate keeps: the `linear.issues` filters the `only_*`
+//! settings and `skip_labels` name, and no open blocker ([`IntakeConfig::gate`]). A parked
+//! issue is the sweep's alone, wherever it sits: one whose slots did not move it on is still
+//! in the state it was claimed from, and the state scan passes it over.
 //!
-//! The actions a slot calls on an issue ([`crate::action`]) come through here too: a write
-//! is [`deliver`](LinearUnits::deliver)ed like the kind's own, and a read is done at once.
+//! The kind's own comments — the watermark, an attempt note, the discuss backstop — are
+//! posted once, when they are due; one Linear cannot take is said in one line and lost. A
+//! slot reaches Linear itself, through the `linear.Workspace` it is passed
+//! ([`IntakeConfig::workspace`]).
 //!
 //! The issue a won claim hands over is read whole first ([`Tracker::issue_full`]), so its
 //! handle carries every field a workspace read's does, through the same builder
@@ -31,10 +35,11 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::action::{self, action_line, IssueAction, Read};
+use serde_json::{Map, Value};
+
 use crate::claim::{
     claim_renewal_text, claim_text, is_claim, unescape, won_claim, ClaimMarker, CLAIM_LIFETIME,
     CLAIM_SETTLE,
@@ -42,11 +47,9 @@ use crate::claim::{
 use crate::client::GRAPHQL_PATH;
 use crate::common::{
     lock, Clock, Diag, ScanBudget, ENV_API_URL, ENV_AUTHORIZATION, ENV_ISSUE, ENV_ISSUE_ID,
-    ENV_TEAM_ID,
 };
-use crate::file;
-use crate::outbox::{lost_line, named, queued_behind_line, queued_line, Outbox, Write, RETRY_FOR};
-use crate::settings::{DiscussWith, Holder, IssueConfig};
+use crate::reads::issue_filter;
+use crate::settings::{DiscussWith, IntakeConfig};
 use crate::tracker::{
     state_named, Child, Comment, Issue, LinearError, Organization, State, Team, Tracker,
 };
@@ -55,6 +58,13 @@ use crate::{PARK_FILE, TASK_FILE};
 
 /// Marker prefix on a failed-attempt comment.
 const ATTEMPT_MARKER: &str = "[afkd-attempt]";
+
+/// How long an owed finish is replayed, from when it first failed to land, before the issue
+/// is returned to its state instead.
+pub(crate) const RETRY_FOR: Duration = Duration::from_secs(60 * 60);
+
+/// How much of a comment a log line quotes.
+const QUOTE_MAX: usize = 80;
 
 /// The bound on remembered undelivered finishes. Empty in the steady state — every
 /// `release` drains its entry — so this only bites where afkd never asks.
@@ -107,8 +117,10 @@ pub(crate) struct Unit {
     delivered_upto: SystemTime,
     /// The ids afkd's own comments come back authored by ([`SelfIds`]).
     me: SelfIds,
-    /// The `pick_from` state the issue was claimed from, when it is not the first one
-    /// named; `None` for the first, and for an issue the sweep found outside every one.
+    /// The configured team the issue was claimed in.
+    team: Team,
+    /// The `claim_from` state the issue returns to, when it is not the first team's first
+    /// one; `None` for that one.
     source: Option<State>,
     /// The `Authorization` the run reaches Linear with, as of the claim.
     authorization: String,
@@ -185,6 +197,8 @@ struct PendingFinish {
     returns_to: String,
     /// The issue itself: its title for the log lines, its id for every call.
     issue: Issue,
+    /// The team the issue was claimed in, whose label the badge is.
+    team: Team,
     /// Whether the [`NEEDS_INFO_LABEL`] **badge** a park owes is still unwritten. The badge is
     /// what the next beat's sweep re-finds the issue by, so a park whose label write failed
     /// is *not* delivered.
@@ -224,35 +238,15 @@ struct DiscussGate {
     allowed: HashSet<String>,
 }
 
-/// The `require_member` gate resolved for one poll: the ids of the members it names, and
-/// whether an issue nobody holds passes too.
-struct MemberGate {
-    ids: Vec<String>,
-    nobody: bool,
-}
-
-impl MemberGate {
-    /// Whether `issue` passes: nobody holds it and the gate takes that, or one of the members
-    /// is its assignee or its delegate.
-    fn holds(&self, issue: &Issue) -> bool {
-        let held_by = |who: &Option<String>| who.as_ref().is_some_and(|id| self.ids.contains(id));
-        (self.nobody && issue.assignee.is_none() && issue.delegate.is_none())
-            || held_by(&issue.assignee)
-            || held_by(&issue.delegate)
-    }
-}
-
 /// The intake gates' identities, resolved once per poll.
 struct Gates {
     /// The viewer: the tail boundary's and the brief's self.
     me: SelfIds,
-    member: Option<MemberGate>,
     discuss: Option<DiscussGate>,
 }
 
-/// One `pick_from` scan's context, shared by every candidate it considers.
+/// One `claim_from` scan's context, shared by every candidate it considers.
 struct Beat<'a> {
-    team_id: &'a str,
     gates: Gates,
     budget: &'a ScanBudget<'a>,
     diag: &'a dyn Diag,
@@ -282,12 +276,12 @@ enum ClaimRound {
 
 /// What the parked-issue sweep decided for the whole badged set.
 enum ParkScan {
-    /// A parked issue was answered and re-claimed; this is the beat's unit and `pick_from`
+    /// A parked issue was answered and re-claimed; this is the beat's unit and `claim_from`
     /// is not read at all.
     Claimed(Box<Unit>),
     /// The scan ran past its budget: the beat ends idle, and the rest waits.
     Spent,
-    /// Nothing parked, or nothing answered: fall through to the `pick_from` scan.
+    /// Nothing parked, or nothing answered: fall through to the `claim_from` scan.
     Nothing,
 }
 
@@ -305,34 +299,28 @@ pub(crate) struct Identity {
     pub(crate) roster: Vec<String>,
 }
 
-/// Where a write [`deliver`](LinearUnits::deliver)ed went.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Delivery {
-    /// Linear took it.
-    Landed,
-    /// Linear could not be reached, or the issue still owes earlier writes: the [`Outbox`]
-    /// has it, and said so.
-    Queued,
-}
-
-/// The `issue` kind's vendor half: the tracker seam, the intake gates, the comment-lock
+/// The `intake` kind's vendor half: the tracker seam, the intake gates, the comment-lock
 /// claim and the brief.
 pub(crate) struct LinearUnits {
     tracker: Box<dyn Tracker>,
-    team_key: String,
-    /// The team's id, resolved from its key on the first poll that needs it, and kept: a
+    /// The keys of the teams issues are claimed from, in the order written.
+    team_keys: Vec<String>,
+    /// Each team's id by its key, resolved on the first poll that needs it, and kept: a
     /// team's id never changes.
-    team_id: Mutex<Option<String>>,
+    team_ids: Mutex<BTreeMap<String, String>>,
     /// The workspace the credential reaches, read on the first poll and kept: what a claimed
     /// handle's `workspace` names, and what a read passed a claimed handle checks it against.
     organization: Mutex<Option<Organization>>,
     /// The GraphQL endpoint a run reaches Linear at.
     api_url: String,
+    /// The `linear.Workspace` every slot is passed.
+    workspace: Value,
     /// The workflow states new work is claimed from, by name, in the order written.
-    pick_from: Vec<String>,
-    require_member: Option<Vec<Holder>>,
-    require_label: Option<String>,
-    without_label: Vec<String>,
+    claim_from: Vec<String>,
+    /// The `IssueFilter` a state's scan asks Linear for, beside the team and the state: the
+    /// gate ([`IntakeConfig::gate`]).
+    gate: Value,
+    skip_labels: Vec<String>,
     discuss_with: Option<DiscussWith>,
     settle: Duration,
     claim_lifetime: Duration,
@@ -352,23 +340,21 @@ pub(crate) struct LinearUnits {
     /// The current call's deadline, `None` between calls: the poll's scan reads it for its
     /// claim reserve.
     call_deadline: Mutex<Option<Instant>>,
-    /// The writes Linear could not take, which the plugin's worker retries.
-    outbox: Arc<Outbox>,
 }
 
 impl LinearUnits {
     /// The vendor half for `cfg`, talking to Linear through `tracker`, as `id`.
-    pub(crate) fn new(tracker: Box<dyn Tracker>, cfg: &IssueConfig, id: Identity) -> Self {
+    pub(crate) fn new(tracker: Box<dyn Tracker>, cfg: &IntakeConfig, id: Identity) -> Self {
         Self {
             tracker,
-            team_key: cfg.team_key.clone(),
-            team_id: Mutex::new(None),
+            team_keys: cfg.teams.clone(),
+            team_ids: Mutex::new(BTreeMap::new()),
             organization: Mutex::new(None),
             api_url: format!("{}{GRAPHQL_PATH}", cfg.base_url),
-            pick_from: cfg.pick_from.clone(),
-            require_member: cfg.require_member.clone(),
-            require_label: cfg.require_label.clone(),
-            without_label: cfg.without_label.clone(),
+            workspace: cfg.workspace(),
+            claim_from: cfg.claim_from.clone(),
+            gate: issue_filter(&cfg.gate),
+            skip_labels: cfg.skip_labels.clone(),
             discuss_with: cfg.discuss_with.clone(),
             settle: CLAIM_SETTLE,
             claim_lifetime: CLAIM_LIFETIME,
@@ -378,41 +364,22 @@ impl LinearUnits {
             park_cursor: Mutex::new(0),
             pending: Mutex::new(Vec::new()),
             call_deadline: Mutex::new(None),
-            outbox: Arc::default(),
         }
     }
 
-    /// The writes this kind owes Linear, for the worker that delivers them.
-    pub(crate) fn outbox(&self) -> &Arc<Outbox> {
-        &self.outbox
-    }
-
-    /// Do `write` on `issue`, or queue it: behind the issue's earlier writes while any is
-    /// still owed, so one issue's writes land in the order they were asked for; and for a
-    /// retry when Linear cannot take it now, its wait counted from when the inline try failed,
-    /// read off `clock` after it. Every write queued is said, one line. A refusal no retry can
-    /// fix is the caller's error, and nothing is queued.
-    pub(crate) fn deliver(
-        &self,
-        issue: &Issue,
-        write: Write,
-        clock: &dyn Clock,
-        diag: &dyn Diag,
-    ) -> Result<Delivery, LinearError> {
-        if self.outbox.owes(&issue.id) {
-            diag.err(&queued_behind_line(issue, &write));
-            self.outbox.queue_behind(issue, write, clock.now());
-            return Ok(Delivery::Queued);
-        }
-        match write.perform(&*self.tracker, issue) {
-            Ok(()) => Ok(Delivery::Landed),
-            Err(e) if e.transient() => {
-                diag.err(&queued_line(issue, &write, &e));
-                self.outbox
-                    .queue_retry(issue, write, clock.now(), e.retry_after());
-                Ok(Delivery::Queued)
+    /// Post `text`, a comment of the kind's own, on `issue`, once: one Linear does not take
+    /// is said in one line naming the issue and the comment, and lost. Whether it landed.
+    fn post_note(&self, issue: &Issue, text: &str, diag: &dyn Diag) -> bool {
+        match self.tracker.post_comment(&issue.id, text) {
+            Ok(_) => true,
+            Err(e) => {
+                diag.err(&lost_line(
+                    issue,
+                    &format!("the comment {}", quoted(text)),
+                    &e,
+                ));
+                false
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -444,98 +411,68 @@ impl LinearUnits {
         Ok(organization)
     }
 
-    /// The team's id, resolved from its key once and kept.
-    fn team_id(&self) -> Result<String, LinearError> {
-        let mut slot = lock(&self.team_id);
-        if let Some(id) = &*slot {
-            return Ok(id.clone());
-        }
-        let id = self.tracker.resolve_team(&self.team_key)?.id;
-        *slot = Some(id.clone());
-        Ok(id)
-    }
-
-    /// The team, its id resolved once and kept: what an action's write is done in.
-    fn team(&self) -> Result<Team, LinearError> {
-        Ok(Team {
-            id: self.team_id()?,
-            key: self.team_key.clone(),
-        })
-    }
-
-    /// Every `pick_from` name resolved to its state, in the order named. An unknown name
-    /// fails the poll naming it.
-    fn sources(&self, team_id: &str) -> Result<Vec<State>, LinearError> {
-        let states = self.tracker.states(team_id)?;
-        self.pick_from
+    /// The configured teams, in the order written, each id resolved from its key once and
+    /// kept. A key no team has fails the poll naming it.
+    fn teams(&self) -> Result<Vec<Team>, LinearError> {
+        let mut ids = lock(&self.team_ids);
+        self.team_keys
             .iter()
-            .map(|name| state_named(&states, name, &self.team_key))
+            .map(|key| {
+                let id = match ids.get(key) {
+                    Some(id) => id.clone(),
+                    None => {
+                        let id = self.tracker.resolve_team(key)?.id;
+                        ids.insert(key.clone(), id.clone());
+                        id
+                    }
+                };
+                Ok(Team {
+                    id,
+                    key: key.clone(),
+                })
+            })
             .collect()
     }
 
-    /// Do the write `action` a slot called on `issue`, in the service's team, or queue it
-    /// as [`deliver`](Self::deliver) does; one that lands is narrated. A refusal no retry
-    /// can fix is the caller's error.
-    pub(crate) fn act(
-        &self,
-        issue: &Issue,
-        action: IssueAction,
-        clock: &dyn Clock,
-        diag: &dyn Diag,
-    ) -> Result<(), LinearError> {
-        let team = self.team()?;
-        let line = action_line(&action, &team, issue);
-        if self.deliver(issue, Write::Act { team, action }, clock, diag)? == Delivery::Landed {
-            diag.narrate(&line);
+    /// Every `claim_from` name resolved to its state in `team`, in the order named. A name
+    /// the team lacks fails the poll naming both.
+    fn sources(&self, team: &Team) -> Result<Vec<State>, LinearError> {
+        let states = self.tracker.states(&team.id)?;
+        self.claim_from
+            .iter()
+            .map(|name| state_named(&states, name, &team.key))
+            .collect()
+    }
+
+    /// The state a claim keeps in its key: `state`, the `claim_from` state at `state_at` of
+    /// the team at `team_at`, or `None` for the first team's first one, the key's default.
+    fn keyed(team_at: usize, state_at: usize, state: &State) -> Option<State> {
+        (team_at > 0 || state_at > 0).then(|| state.clone())
+    }
+
+    /// The configured team whose workflow holds the state `state_id`, read team by team.
+    fn team_of_state(&self, state_id: &str) -> Result<Team, LinearError> {
+        for team in self.teams()? {
+            if self
+                .tracker
+                .states(&team.id)?
+                .iter()
+                .any(|s| s.id == state_id)
+            {
+                return Ok(team);
+            }
         }
-        Ok(())
+        Err(LinearError::NoSuch {
+            stage: "resolve state",
+            what: format!("workflow state {state_id} in the teams this service claims from"),
+        })
     }
 
-    /// Do the read `read` a slot called on `issue` now, and write it to `to`, the comments
-    /// rendered for a reader whose own ids are `me` ([`action::read`]).
-    pub(crate) fn read(
-        &self,
-        issue: &Issue,
-        me: &SelfIds,
-        read: Read,
-        to: &str,
-        diag: &dyn Diag,
-    ) -> Result<(), String> {
-        action::read(&*self.tracker, issue, me, read, to, diag)
-    }
-
-    /// Fetch the files `issue` carries now, and write them into the directory `to`
-    /// ([`file::fetch`]).
-    pub(crate) fn fetch_files(
-        &self,
-        issue: &Issue,
-        to: &str,
-        diag: &dyn Diag,
-    ) -> Result<(), String> {
-        file::fetch(&*self.tracker, issue, to, diag)
-    }
-
-    /// The intake gates' identities for one poll: the viewer, the `require_member` users,
-    /// resolved in the order written, and the `discuss_with` allow-list, self removed from it.
-    /// Unset gates resolve nothing but the viewer, which the claim itself needs.
+    /// The intake gates' identities for one poll: the viewer, and the `discuss_with`
+    /// allow-list, self removed from it. An unset gate resolves nothing but the viewer, which
+    /// the claim itself needs.
     fn resolve_gates(&self) -> Result<Gates, LinearError> {
         let me = SelfIds::viewer(self.tracker.viewer()?);
-        let member = match &self.require_member {
-            None => None,
-            Some(holders) => {
-                let mut gate = MemberGate {
-                    ids: Vec::new(),
-                    nobody: false,
-                };
-                for holder in holders {
-                    match holder {
-                        Holder::Member(who) => gate.ids.push(self.tracker.resolve_user(who)?),
-                        Holder::Nobody => gate.nobody = true,
-                    }
-                }
-                Some(gate)
-            }
-        };
         let discuss = match &self.discuss_with {
             None => None,
             Some(DiscussWith::Anyone) => Some(DiscussGate {
@@ -556,37 +493,37 @@ impl LinearUnits {
                 })
             }
         };
-        Ok(Gates {
-            me,
-            member,
-            discuss,
-        })
+        Ok(Gates { me, discuss })
     }
 
-    /// The parked-issue sweep, run **ahead of** the `pick_from` scan on every beat: ask
-    /// Linear which of the team's issues carry [`NEEDS_INFO_LABEL`], and re-claim the first one
-    /// a human has answered — wherever it sits.
+    /// The parked-issue sweep, run **ahead of** the `claim_from` scan on every beat: ask
+    /// Linear which of each team's issues carry [`NEEDS_INFO_LABEL`], and re-claim the first
+    /// one a human has answered — wherever it sits.
     ///
     /// The reply test is the feedback delta ([`feedback_comments`]), so afkd's own comments
     /// cannot re-arm an issue, and neither can comments a run already answered. Two gates are
-    /// re-applied: `without_label`, a human's live veto, and blocked-by, since a blocker
-    /// added while the issue was parked holds it back as one there at the first claim would.
+    /// re-applied: `skip_labels`, a human's live veto, and blocked-by, since a blocker added
+    /// while the issue was parked holds it back as one there at the first claim would.
     ///
     /// An issue's [`PARK_MARKER`] names who parked it, and only that service resumes it; an
     /// issue naming a service off the roster is an orphan, taken over with one narrated line.
     fn scan_parked(
         &self,
-        team_id: &str,
+        teams: &[Team],
         diag: &dyn Diag,
         clock: &dyn Clock,
         budget: &ScanBudget,
     ) -> Result<ParkScan, LinearError> {
-        let badged = self.tracker.parked_issues(team_id, NEEDS_INFO_LABEL)?;
+        let mut badged = Vec::new();
+        for (at, team) in teams.iter().enumerate() {
+            let parked = self.tracker.parked_issues(&team.id, NEEDS_INFO_LABEL)?;
+            badged.extend(parked.into_iter().map(|issue| (at, issue)));
+        }
         if badged.is_empty() {
             return Ok(ParkScan::Nothing);
         }
         // The viewer, read only once something is badged, which keeps the idle beat at one
-        // request.
+        // request a team.
         let viewer = SelfIds::viewer(self.tracker.viewer()?);
         let take = badged.len().min(PARK_SCAN_MAX);
         let start = {
@@ -595,14 +532,14 @@ impl LinearUnits {
             *cursor = start + take;
             start
         };
-        // The `pick_from` states, resolved once an issue is about to be taken.
-        let mut sources = None;
+        // Each team's `claim_from` states, resolved once an issue of it is about to be taken.
+        let mut sources = BTreeMap::new();
         for step in 0..take {
             if budget.spent() {
                 return Ok(ParkScan::Spent);
             }
-            let issue = &badged[(start + step) % badged.len()];
-            if self.without_label.iter().any(|l| issue.labels.contains(l)) || blocked(issue) {
+            let (team_at, issue) = &badged[(start + step) % badged.len()];
+            if self.skip_labels.iter().any(|l| issue.labels.contains(l)) || blocked(issue) {
                 continue;
             }
             let comments = match self.tracker.issue_comments(&issue.id) {
@@ -628,14 +565,15 @@ impl LinearUnits {
             if self.parked_elsewhere(&comments) {
                 continue;
             }
-            let source = self.sweep_source(team_id, issue, &mut sources)?;
+            let team = &teams[*team_at];
+            let source = self.sweep_source(*team_at, team, issue, &mut sources)?;
             if budget.claim_reserve_short() {
                 return Ok(ParkScan::Spent);
             }
             if let Some(line) = self.orphan_takeover(issue, &comments) {
                 diag.narrate(&line);
             }
-            match self.attempt_claim(team_id, issue.clone(), source.as_ref(), &me, diag, clock)? {
+            match self.attempt_claim(team, issue.clone(), source.as_ref(), &me, diag, clock)? {
                 ClaimRound::Won(unit) => return Ok(ParkScan::Claimed(unit)),
                 ClaimRound::Lost => continue,
             }
@@ -643,27 +581,31 @@ impl LinearUnits {
         Ok(ParkScan::Nothing)
     }
 
-    /// The `pick_from` state an issue the sweep claims returns to: the later state it sits
-    /// in, or `None` — the key's default, the first state — for an issue in the first state
-    /// or in none of them. A lone `pick_from` resolves nothing.
+    /// The `claim_from` state an issue the sweep claims in `team`, the team at `team_at`,
+    /// returns to, as its key keeps it ([`Self::keyed`]): the state it sits in when that is
+    /// one of them, else the team's first. The first team's states are read only when there
+    /// is more than one.
     fn sweep_source(
         &self,
-        team_id: &str,
+        team_at: usize,
+        team: &Team,
         issue: &Issue,
-        sources: &mut Option<Vec<State>>,
+        sources: &mut BTreeMap<usize, Vec<State>>,
     ) -> Result<Option<State>, LinearError> {
-        if self.pick_from.len() < 2 {
+        if team_at == 0 && self.claim_from.len() < 2 {
             return Ok(None);
         }
-        let sources = match sources {
-            Some(sources) => sources,
-            None => sources.insert(self.sources(team_id)?),
+        let states = match sources.get(&team_at) {
+            Some(states) => states,
+            None => sources.entry(team_at).or_insert(self.sources(team)?),
         };
-        Ok(sources
+        let at = states
             .iter()
-            .skip(1)
-            .find(|source| source.id == issue.state.id)
-            .cloned())
+            .position(|source| source.id == issue.state.id)
+            .unwrap_or(0);
+        Ok(states
+            .get(at)
+            .and_then(|state| Self::keyed(team_at, at, state)))
     }
 
     /// Whether a parked issue is **another live service's**: its newest [`PARK_MARKER`]
@@ -684,18 +626,17 @@ impl LinearUnits {
         (owner != self.service).then(|| orphan_line(issue, owner))
     }
 
-    /// Claim the next issue via the comment lock: the parked sweep first, then the
-    /// `pick_from` states in the order named, and in each the first issue, in manual order,
-    /// that passes every gate and wins its claim race. Every name resolves before any state
-    /// is read, so a name the team lacks fails the poll even while an earlier state holds
-    /// work.
+    /// Claim the next issue via the comment lock: the parked sweep first, then each team in
+    /// the order named, and in it the `claim_from` states in the order named, and in each the
+    /// first issue, in manual order, the gate keeps that passes every check left and wins its
+    /// claim race. Every team and every name resolves before any state is read, so a name a
+    /// team lacks fails the poll even while an earlier state holds work.
     ///
-    /// The gates run cheapest first, strictly before the claim comment is posted, so a
-    /// skipped issue is never commented on: the holder (a member as assignee or delegate, or
-    /// nobody), the deny
-    /// label, the required label, blocked-by and the park badge off the state read, then off
-    /// the issue's comments a live claim and the `discuss_with` tail. A badged issue is the
-    /// parked sweep's alone.
+    /// Linear applies the gate ([`IntakeConfig::gate`]) to the state's read itself. The checks
+    /// left run cheapest first, strictly before the claim comment is posted, so a skipped
+    /// issue is never commented on: the skipped labels, blocked-by and the park badge off the
+    /// state read, then off the issue's comments a live claim and the `discuss_with` tail. A
+    /// badged issue is the parked sweep's alone.
     ///
     /// The whole scan runs under [`ScanBudget`]: past it, the beat ends idle and the rest
     /// waits for the next poll; so it does, before a claim is posted, once less than the
@@ -708,71 +649,68 @@ impl LinearUnits {
     ) -> Result<Option<Unit>, LinearError> {
         let budget = ScanBudget::start(clock, diag, *lock(&self.call_deadline));
         self.resolve_organization()?;
-        let team_id = self.team_id()?;
-        match self.scan_parked(&team_id, diag, clock, &budget)? {
+        let teams = self.teams()?;
+        match self.scan_parked(&teams, diag, clock, &budget)? {
             ParkScan::Claimed(unit) => return Ok(Some(*unit)),
             ParkScan::Spent => return Ok(None),
             ParkScan::Nothing => {}
         }
-        let sources = self.sources(&team_id)?;
+        let sources = teams
+            .iter()
+            .map(|team| self.sources(team))
+            .collect::<Result<Vec<_>, _>>()?;
         let beat = Beat {
-            team_id: &team_id,
             gates: self.resolve_gates()?,
             budget: &budget,
             diag,
             clock,
         };
-        for (at, source) in sources.iter().enumerate() {
-            // The first state is the key's default, so only a later one rides in it.
-            let keyed = (at > 0).then_some(source);
-            let mut after: Option<String> = None;
-            loop {
-                if budget.spent() {
-                    return Ok(None);
-                }
-                let page = self
-                    .tracker
-                    .issues_in_state(&team_id, &source.id, after.as_deref())?;
-                for issue in page.items {
+        for (team_at, (team, states)) in teams.iter().zip(&sources).enumerate() {
+            for (state_at, source) in states.iter().enumerate() {
+                let keyed = Self::keyed(team_at, state_at, source);
+                let mut after: Option<String> = None;
+                loop {
                     if budget.spent() {
                         return Ok(None);
                     }
-                    match self.consider(&beat, issue, keyed)? {
-                        Considered::Claimed(unit) => return Ok(Some(*unit)),
-                        Considered::Passed => {}
-                        Considered::OutOfTime => return Ok(None),
+                    let page = self.tracker.issues_in_state(
+                        &team.id,
+                        &source.id,
+                        &self.gate,
+                        after.as_deref(),
+                    )?;
+                    for issue in page.items {
+                        if budget.spent() {
+                            return Ok(None);
+                        }
+                        match self.consider(&beat, team, issue, keyed.as_ref())? {
+                            Considered::Claimed(unit) => return Ok(Some(*unit)),
+                            Considered::Passed => {}
+                            Considered::OutOfTime => return Ok(None),
+                        }
                     }
-                }
-                match page.next {
-                    Some(next) => after = Some(next),
-                    None => break,
+                    match page.next {
+                        Some(next) => after = Some(next),
+                        None => break,
+                    }
                 }
             }
         }
         Ok(None)
     }
 
-    /// Run one candidate through the gates and, when it passes them all, race for it.
+    /// Run one candidate of `team` through the checks the gate leaves and, when it passes
+    /// them all, race for it.
     fn consider(
         &self,
         beat: &Beat,
+        team: &Team,
         issue: Issue,
         source: Option<&State>,
     ) -> Result<Considered, LinearError> {
         let gates = &beat.gates;
-        if let Some(member) = &gates.member {
-            if !member.holds(&issue) {
-                return Ok(Considered::Passed);
-            }
-        }
-        // Deny first, so deny wins over `require_label`.
-        if self.without_label.iter().any(|l| issue.labels.contains(l)) {
+        if self.skip_labels.iter().any(|l| issue.labels.contains(l)) {
             return Ok(Considered::Passed);
-        }
-        if let Some(label) = &self.require_label {
-            if !issue.labels.contains(label) {
-                return Ok(Considered::Passed);
-            }
         }
         if blocked(&issue) {
             return Ok(Considered::Passed);
@@ -797,14 +735,7 @@ impl LinearUnits {
         if beat.budget.claim_reserve_short() {
             return Ok(Considered::OutOfTime);
         }
-        let round = self.attempt_claim(
-            beat.team_id,
-            issue,
-            source,
-            &gates.me,
-            beat.diag,
-            beat.clock,
-        )?;
+        let round = self.attempt_claim(team, issue, source, &gates.me, beat.diag, beat.clock)?;
         Ok(match round {
             ClaimRound::Won(unit) => Considered::Claimed(unit),
             ClaimRound::Lost => Considered::Passed,
@@ -821,7 +752,7 @@ impl LinearUnits {
     /// not a lost round: our claim is released and the error propagates.
     fn attempt_claim(
         &self,
-        team_id: &str,
+        team: &Team,
         issue: Issue,
         source: Option<&State>,
         me: &SelfIds,
@@ -866,7 +797,7 @@ impl LinearUnits {
         if issue.labels.iter().any(|l| l == NEEDS_INFO_LABEL) {
             if let Err(e) = self
                 .tracker
-                .remove_label(team_id, &issue.id, NEEDS_INFO_LABEL)
+                .remove_label(&team.id, &issue.id, NEEDS_INFO_LABEL)
             {
                 diag.err(&e);
             }
@@ -889,6 +820,7 @@ impl LinearUnits {
             comments,
             delivered_upto: delivered,
             me,
+            team: team.clone(),
             source: source.cloned(),
             authorization,
         })))
@@ -905,13 +837,12 @@ impl LinearUnits {
     /// On the `discuss_with` path, guarantee afkd is the last speaker after a turn: re-read
     /// the issue's comments and, if no comment authored by afkd this turn is new, post one
     /// backstop comment. If the re-read fails, post anyway — a rare redundant comment beats
-    /// the re-fire loop. A Linear that cannot be reached gets it from the [`Outbox`].
+    /// the re-fire loop.
     fn post_backstop_if_silent(
         &self,
         unit: &Unit,
         outcome: UnitOutcome,
         facts: &Facts,
-        clock: &dyn Clock,
         diag: &dyn Diag,
     ) {
         let spoke = match self.tracker.issue_comments(&unit.issue.id) {
@@ -927,10 +858,7 @@ impl LinearUnits {
             }
         };
         if !spoke {
-            let backstop = Write::Note(backstop_text(outcome, facts));
-            if let Err(e) = self.deliver(&unit.issue, backstop.clone(), clock, diag) {
-                diag.err(&lost_line(&unit.issue, &backstop, &e, None));
-            }
+            self.post_note(&unit.issue, &backstop_text(outcome, facts), diag);
         }
     }
 
@@ -973,10 +901,10 @@ impl LinearUnits {
             failed = Some(e);
         };
         if owed.park {
-            match self.team_id().and_then(|team_id| {
-                self.tracker
-                    .add_label(&team_id, &owed.issue.id, NEEDS_INFO_LABEL)
-            }) {
+            match self
+                .tracker
+                .add_label(&owed.team.id, &owed.issue.id, NEEDS_INFO_LABEL)
+            {
                 Ok(()) => {
                     diag.narrate(&parked_line(&owed.issue));
                     owed.park = false;
@@ -1015,8 +943,8 @@ impl LinearUnits {
             diag.err(&format_args!(
                 "giving up on the finish for {} after {}: {} still owed{why}; returning it to \
                  \"{}\"",
-                named(&owed.issue),
-                crate::outbox::span(now.saturating_duration_since(owed.since)),
+                issue_words(&owed.issue),
+                span(now.saturating_duration_since(owed.since)),
                 owed.what(),
                 owed.returns_to
             ));
@@ -1024,6 +952,16 @@ impl LinearUnits {
         }
         self.remember_pending(owed);
         Some(false)
+    }
+
+    /// Delete the prior watermarks a landed one supersedes. Best-effort, each failure said and
+    /// dropped: the newest watermark is the one a run reads, and it has landed.
+    fn prune(&self, priors: &[String], diag: &dyn Diag) {
+        for prior in priors {
+            if let Err(e) = self.tracker.delete_comment(prior) {
+                diag.err(&e);
+            }
+        }
     }
 
     /// Delete the prior [`PARK_MARKER`] comments a just-posted marker supersedes, leaving in
@@ -1044,8 +982,8 @@ impl LinearUnits {
     /// **The finish is still owed** (a `held` finish): replay it. **Otherwise it is a crash
     /// victim**, a unit whose `on_claim` failed, or a key the reaper found: prune the
     /// `[afkd-claim]` comment and move the issue back to the **bottom** of the state it was
-    /// claimed from — the first `pick_from` state for a key that names none — so a
-    /// repeatedly-crashing issue cannot starve the queue head. Best-effort: a tracker failure
+    /// claimed from — the first team's first `claim_from` state for a key that names none —
+    /// so a repeatedly-crashing issue cannot starve the queue head. Best-effort: a tracker failure
     /// is diagnosed and the key still released. A unit a stop handed back goes through
     /// [`Self::hand_back`] instead.
     ///
@@ -1058,16 +996,21 @@ impl LinearUnits {
             }
         }
         self.prune_claim(claim_id, diag);
-        let moved = self.team_id().and_then(|team_id| {
-            let state_id = match state_id {
-                Some(state_id) => state_id.to_string(),
-                None => match self.sources(&team_id)?.into_iter().next() {
-                    Some(first) => first.id,
-                    None => return Ok(()),
-                },
+        let moved = (|| {
+            let (team, state_id) = match state_id {
+                Some(state_id) => (self.team_of_state(state_id)?, state_id.to_string()),
+                None => {
+                    let Some(team) = self.teams()?.into_iter().next() else {
+                        return Ok(());
+                    };
+                    let Some(first) = self.sources(&team)?.into_iter().next() else {
+                        return Ok(());
+                    };
+                    (team, first.id)
+                }
             };
-            self.tracker.move_to_bottom(&team_id, issue_id, &state_id)
-        });
+            self.tracker.move_to_bottom(&team.id, issue_id, &state_id)
+        })();
         if let Err(e) = moved {
             diag.err(&e);
         }
@@ -1113,7 +1056,8 @@ impl LinearUnits {
     /// - `thread`: the issue's uuid, stable across every claim and every move of team;
     /// - `seen`: the claim-read comment ids, which the brief already carries;
     /// - `self`: the viewer's id;
-    /// - `env`: the endpoint, the credential, and the team's and the issue's ids;
+    /// - `env`: the endpoint, the credential, and the issue's id and identifier;
+    /// - `args`: the `linear.Workspace` every slot is passed, as `workspace`;
     /// - `files`: the brief, unframed — afkd frames `task.md` itself.
     pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
         let issue = &unit.issue;
@@ -1133,13 +1077,10 @@ impl LinearUnits {
             env: BTreeMap::from([
                 (ENV_API_URL.to_string(), self.api_url.clone()),
                 (ENV_AUTHORIZATION.to_string(), unit.authorization.clone()),
-                (
-                    ENV_TEAM_ID.to_string(),
-                    lock(&self.team_id).clone().unwrap_or_default(),
-                ),
                 (ENV_ISSUE_ID.to_string(), issue.id.clone()),
                 (ENV_ISSUE.to_string(), issue.identifier.clone()),
             ]),
+            args: Map::from_iter([("workspace".to_string(), self.workspace.clone())]),
             files: vec![WireFile {
                 path: TASK_FILE.to_string(),
                 text: brief_text(issue, &unit.comments, &unit.me),
@@ -1159,23 +1100,19 @@ impl LinearUnits {
 
     /// A faulting attempt leaves a marked comment on the issue, so the budget spent on it is
     /// legible from Linear itself. afkd sends the fault's sentence; with none there is
-    /// nothing to mark. A Linear that cannot take it now gets it from the [`Outbox`].
+    /// nothing to mark. One Linear does not take is said and lost.
     pub(crate) fn attempt_failed(
         &self,
         unit: &Unit,
         n: u32,
         max: u32,
         reason: Option<&str>,
-        clock: &dyn Clock,
         diag: &dyn Diag,
     ) {
         let Some(reason) = reason else {
             return;
         };
-        let note = Write::Note(attempt_text(n, max, reason));
-        if let Err(e) = self.deliver(&unit.issue, note.clone(), clock, diag) {
-            diag.err(&lost_line(&unit.issue, &note, &e, None));
-        }
+        self.post_note(&unit.issue, &attempt_text(n, max, reason), diag);
     }
 
     /// Every comment on the unit's issue, for afkd's mid-run watch.
@@ -1191,8 +1128,9 @@ impl LinearUnits {
     ///
     /// Returns whether the finish was delivered. Anything short of "the badge and owner
     /// marker are up, and the claim comment is gone" is remembered, and a later `release` of
-    /// the key finishes it. The watermark or backstop is not part of that: one Linear cannot
-    /// take goes to the [`Outbox`].
+    /// the key finishes it. The watermark or backstop is not part of that: one Linear does
+    /// not take is said and lost, and the next run's brief reads the comments it would have
+    /// marked delivered as new.
     pub(crate) fn finish(
         &self,
         unit: &Unit,
@@ -1204,10 +1142,10 @@ impl LinearUnits {
         let issue = &unit.issue;
         let mut park_owed = matches!(outcome, UnitOutcome::Park);
         if park_owed {
-            match self.team_id().and_then(|team_id| {
-                self.tracker
-                    .add_label(&team_id, &issue.id, NEEDS_INFO_LABEL)
-            }) {
+            match self
+                .tracker
+                .add_label(&unit.team.id, &issue.id, NEEDS_INFO_LABEL)
+            {
                 Ok(()) => {
                     diag.narrate(&parked_line(issue));
                     park_owed = false;
@@ -1225,19 +1163,13 @@ impl LinearUnits {
                     .filter(|c| is_ran(&c.text))
                     .map(|c| c.id.clone())
                     .collect();
-                let watermark = Write::Watermark {
-                    text: ran_text(&self.owner, unit.delivered_upto),
-                    priors: priors.clone(),
-                };
-                match self.deliver(issue, watermark.clone(), clock, diag) {
-                    Ok(Delivery::Landed) => crate::outbox::prune(&*self.tracker, &priors, diag),
-                    Ok(Delivery::Queued) => {}
-                    Err(e) => diag.err(&lost_line(issue, &watermark, &e, None)),
+                if self.post_note(issue, &ran_text(&self.owner, unit.delivered_upto), diag) {
+                    self.prune(&priors, diag);
                 }
             }
             // Grooming path: afkd's own last comment IS the tail boundary, so the backstop
             // guarantees afkd is the last speaker.
-            Some(_) => self.post_backstop_if_silent(unit, outcome, facts, clock, diag),
+            Some(_) => self.post_backstop_if_silent(unit, outcome, facts, diag),
         }
         // The park owner marker: AFTER the watermark/backstop branch (posted before it, it
         // would count as afkd speaking and suppress the backstop) and BEFORE the release (a
@@ -1278,10 +1210,11 @@ impl LinearUnits {
             self.remember_pending(PendingFinish {
                 key: unit.key(),
                 returns_to: unit.source.as_ref().map_or_else(
-                    || self.pick_from.first().cloned().unwrap_or_default(),
+                    || self.claim_from.first().cloned().unwrap_or_default(),
                     |source| source.name.clone(),
                 ),
                 issue: issue.clone(),
+                team: unit.team.clone(),
                 park: park_owed,
                 park_marker: marker_owed,
                 park_priors,
@@ -1336,8 +1269,8 @@ fn instance_base(name: &str) -> Option<&str> {
 
 /// The claim-journal key for an issue's in-flight claim: the issue's uuid (the put-back
 /// subject at reap), the claim comment's uuid (the prune target) and, for an issue claimed
-/// from a `pick_from` state after the first, that state's id (where the reversal returns
-/// it), joined by `#`.
+/// from any `claim_from` state but the first team's first, that state's id (where the
+/// reversal returns it), joined by `#`.
 fn issue_key(issue_id: &str, claim_id: &str, state_id: Option<&str>) -> String {
     match state_id {
         Some(state_id) => format!("{issue_id}#{claim_id}#{state_id}"),
@@ -1398,6 +1331,45 @@ fn issue_words(issue: &Issue) -> String {
     format!("issue {} \"{}\"", issue.identifier, issue.title)
 }
 
+/// The first line of `text`, cut to [`QUOTE_MAX`] characters, in quotes: `…` when anything
+/// was left out.
+fn quoted(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default();
+    let mut quote: String = line.chars().take(QUOTE_MAX).collect();
+    // A prefix of `text`, so shorter exactly when something was left out.
+    if quote.len() < text.len() {
+        quote.push('…');
+    }
+    format!("\"{quote}\"")
+}
+
+/// A span for a log line: `20s`, `4m10s`, `1h`, `1h5m`.
+fn span(d: Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
+    match (h, m, s) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m{s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h{m}m"),
+    }
+}
+
+/// The line for `what`, a comment of the kind's own, which Linear did not take on `issue`,
+/// failing with `e`. A `Decode` says it may have landed — Linear answered, and the reply
+/// could not be read — rather than that it is lost.
+fn lost_line(issue: &Issue, what: &str, e: &LinearError) -> String {
+    let issue = issue_words(issue);
+    match e {
+        LinearError::Decode { .. } => format!(
+            "linear answered {issue} with a reply the plugin could not read; {what} may or may \
+             not have landed — {e}"
+        ),
+        _ => format!("{issue}: {what} is lost — {e}"),
+    }
+}
+
 /// The success line for a won claim.
 fn claimed_line(issue: &Issue) -> String {
     format!("{ACTION_TAG} claimed {}", issue_words(issue))
@@ -1455,9 +1427,8 @@ fn render_family(issue: &Issue) -> String {
     parts.join("\n\n")
 }
 
-/// One sub-issue as the brief lists it, and `list_sub_issues` writes it: its identifier,
-/// its state and its title.
-pub(crate) fn sub_issue_line(child: &Child) -> String {
+/// One sub-issue as the brief lists it: its identifier, its state and its title.
+fn sub_issue_line(child: &Child) -> String {
     format!("- {} ({}) {}", child.identifier, child.state, child.title)
 }
 
@@ -1613,10 +1584,9 @@ fn render_comment(c: &Comment, me: &SelfIds) -> String {
     format!("**{speaker}:** {}", c.text.trim())
 }
 
-/// Comments rendered as the brief renders a section of its thread, and `list_comments`
-/// writes the thread: each [`render_comment`], a blank line between two, every one ending
-/// its line. `""` for none.
-pub(crate) fn render_comments(comments: &[&Comment], me: &SelfIds) -> String {
+/// Comments rendered as the brief renders a section of its thread: each [`render_comment`],
+/// a blank line between two, every one ending its line. `""` for none.
+fn render_comments(comments: &[&Comment], me: &SelfIds) -> String {
     comments
         .iter()
         .map(|c| format!("{}\n", render_comment(c, me)))
@@ -1693,12 +1663,13 @@ mod tests {
 
     use super::*;
     use crate::common::{CaptureDiag, FakeClock, TempDir};
-    use crate::settings::issue_config;
+    use crate::settings::intake_config;
     use crate::tracker::{
         Action, Blocker, Child, MockTracker, Priority, Related, StateType, FILED_AT, SELF_ID,
         TEAM_ID,
     };
-    use serde_json::{json, Value};
+    use serde_json::json;
+    use std::sync::Arc;
 
     /// An issue title carrying the delimiter a success line wraps it in, wide CJK, an emoji
     /// and an em dash.
@@ -1773,11 +1744,11 @@ mod tests {
             tracker.add_state(state, kind);
         }
         tracker.set_clock(now_secs() - 600);
-        let mut block = json!({"team": "ENG", "api_key": "lin_api_k", "pick_from": "Todo"});
+        let mut block = json!({"team": ["ENG"], "api_key": "lin_api_k", "claim_from": ["Todo"]});
         for (k, v) in settings.as_object().unwrap() {
             block[k] = v.clone();
         }
-        let cfg = issue_config(&block).expect("valid settings");
+        let cfg = intake_config(&block).expect("valid settings");
         let units = LinearUnits::new(
             Box::new(Arc::clone(&tracker)),
             &cfg,
@@ -1813,6 +1784,26 @@ mod tests {
 
     fn me() -> SelfIds {
         SelfIds::viewer(SELF_ID.into())
+    }
+
+    /// The mock's one team.
+    fn eng() -> Team {
+        Team {
+            id: TEAM_ID.into(),
+            key: "ENG".into(),
+        }
+    }
+
+    /// Seed a live claim by a rival on `id`: what the scan steps over after reading the
+    /// issue's comments.
+    fn held(f: &Fx, id: &str) {
+        f.tracker.seed_comment_by(
+            id,
+            &format!("rival-{id}"),
+            "[afkd-claim] owner=afkd-17",
+            "u-rival",
+            now_secs() - 60,
+        );
     }
 
     // --- pure helpers ---
@@ -2012,85 +2003,6 @@ mod tests {
         assert_eq!(brief_text(&f.tracker.issue("ENG-2"), &[], &me()), "Bare");
     }
 
-    /// What `list_comments` and `list_sub_issues` write is what the brief renders of the
-    /// same issue: the thread its two sections hold, back to back, and the lines of its
-    /// `## Sub-issues` — over a thread of multi-line, wide and empty comments, afkd's own
-    /// words and a control marker, and sub-issues with wide titles.
-    #[test]
-    fn the_reads_write_what_the_brief_renders() {
-        let f = fx(json!({}));
-        f.tracker.add_issue("Todo", "ENG-7", TITLE, BODY);
-        f.tracker.edit_issue("ENG-7", |i| {
-            i.children = [
-                ("ENG-8", "In Progress", "Cap the backoff at 30s"),
-                (
-                    "ENG-9",
-                    "Done ✅",
-                    "子任务: read Retry-After 🚦 — \"seconds\"",
-                ),
-            ]
-            .iter()
-            .map(|(id, state, title)| Child {
-                id: format!("uuid-{id}"),
-                identifier: (*id).into(),
-                title: (*title).into(),
-                state: (*state).into(),
-            })
-            .collect();
-        });
-        let at = |millis: u64| UNIX_EPOCH + Duration::from_millis(millis);
-        for (id, author, text, millis) in [
-            (
-                "h1",
-                "u-phil",
-                "Please cap it.\n\n- at 30s\n- per header",
-                1_000,
-            ),
-            ("a1", SELF_ID, "  Which header? 🤔  ", 2_000),
-            ("m1", SELF_ID, "[afkd-ran] owner=a upto=2000", 2_500),
-            (
-                "h2",
-                "u-chen",
-                "看起来不对 🚨\n\n```\nPOST /graphql 401\n```",
-                3_000,
-            ),
-            ("h3", "u-alvaro", "", 3_500),
-        ] {
-            f.tracker
-                .push_comment("ENG-7", id, text, author, at(millis));
-        }
-        let issue = f.tracker.issue("ENG-7");
-        let brief = brief_text(&issue, &f.tracker.comments_on("ENG-7"), &me());
-        let (_, thread) = brief
-            .split_once("## Earlier conversation\n\n")
-            .expect("an earlier section");
-        let (earlier, new) = thread
-            .split_once("\n\n## New comments\n\n")
-            .expect("a new section");
-        let subs = brief
-            .split_once("## Sub-issues\n\n")
-            .and_then(|(_, rest)| rest.split_once("\n\n## "))
-            .expect("a sub-issue section")
-            .0;
-
-        let dir = TempDir::new("parity");
-        let read = |read: Read, name: &str| {
-            let to = dir.path().join(name).display().to_string();
-            f.units.read(&issue, &me(), read, &to, &f.diag).unwrap();
-            std::fs::read_to_string(&to).unwrap()
-        };
-        assert_eq!(
-            read(Read::Comments, "thread.md"),
-            format!("{earlier}\n{new}")
-        );
-        assert_eq!(read(Read::SubIssues, "subs.md"), format!("{subs}\n"));
-        assert!(new.ends_with("**u-alvaro:** \n"), "{new}");
-        assert!(
-            earlier.contains("**afkd:** Which header? 🤔\n"),
-            "{earlier}"
-        );
-    }
-
     /// An issue is blocked while any `blocks` blocker is in a state not done; a completed,
     /// a canceled and a duplicate one hold nothing back.
     #[test]
@@ -2121,7 +2033,7 @@ mod tests {
     /// The won race hands over the issue as a unit: the identifier as its id and its key's
     /// uuid and claim, the uuid as its thread, every handle field as the full read after the
     /// win saw the issue, in the workspace the poll read, the viewer as `self`, the five env
-    /// names, and the brief.
+    /// names, the workspace every slot is passed, and the brief.
     #[test]
     fn a_won_claim_hands_over_the_issue_as_a_unit() {
         let f = fx(json!({}));
@@ -2213,10 +2125,14 @@ mod tests {
             BTreeMap::from([
                 (ENV_API_URL.into(), "https://api.linear.app/graphql".into()),
                 (ENV_AUTHORIZATION.into(), "lin_api_mock".into()),
-                (ENV_TEAM_ID.into(), TEAM_ID.into()),
                 (ENV_ISSUE_ID.into(), "ENG-7".into()),
                 (ENV_ISSUE.into(), "ENG-7".into()),
             ])
+        );
+        assert_eq!(
+            Value::Object(wire.args),
+            json!({"workspace": {"api_key": "lin_api_k", "client_id": null,
+                                 "client_secret": null, "base_url": "https://api.linear.app"}})
         );
         assert_eq!(wire.files[0].path, TASK_FILE);
         assert!(wire.files[0]
@@ -2293,95 +2209,39 @@ mod tests {
         );
     }
 
-    /// `require_member` holds an issue to the user it names, as its assignee or its
-    /// delegate — `me` the viewer, which an app the issue is delegated to is — and passes
-    /// over the rest; an unknown name fails the poll.
+    /// Every state's scan asks Linear for what the gate keeps — the skipped labels and no
+    /// open blocker here, each `only_*` filter beside them (`settings`' tests) — the same
+    /// gate for every state.
     #[test]
-    fn require_member_matches_the_assignee_or_the_delegate() {
-        let f = fx(json!({"require_member": ["chen@acme.example"]}));
-        f.tracker.seed_user("chen@acme.example", "u-chen");
-        f.tracker.add_issue("Todo", "ENG-1", "nobody's", "");
-        f.tracker.add_issue("Todo", "ENG-2", "Phil's", "");
-        f.tracker
-            .edit_issue("ENG-2", |i| i.assignee = Some("u-phil".into()));
-        f.tracker.add_issue("Todo", "ENG-3", "Chen's", "");
-        f.tracker
-            .edit_issue("ENG-3", |i| i.assignee = Some("u-chen".into()));
-        assert_eq!(f.wire().id, "ENG-3");
+    fn every_state_scan_asks_for_what_the_gate_keeps() {
+        let f = fx(json!({"claim_from": [["Todo", "Backlog"]], "skip_labels": ["Blocked 🚧"]}));
+        f.tracker.add_issue("Backlog", "ENG-1", TITLE, "");
+        assert!(f.poll().is_some());
+        let gate = json!({"and": [
+            {"labels": {"every": {"name": {"nin": ["Blocked 🚧"]}}}},
+            {"hasBlockedByRelations": {"eq": false}},
+        ]});
+        assert_eq!(
+            f.tracker.gates(),
+            [gate.clone(), gate],
+            "Todo, then Backlog"
+        );
+    }
 
-        let f = fx(json!({"require_member": ["me"]}));
-        f.tracker
-            .add_issue("Todo", "ENG-1", "assigned to a human", "");
-        f.tracker
-            .edit_issue("ENG-1", |i| i.assignee = Some("u-phil".into()));
-        f.tracker
-            .add_issue("Todo", "ENG-2", "delegated to the app", "");
-        f.tracker.edit_issue("ENG-2", |i| {
-            i.assignee = Some("u-phil".into());
-            i.delegate = Some(SELF_ID.into());
-        });
+    /// `skip_labels` holds back an issue carrying any of its labels, in the state's read
+    /// itself, and nothing is written to it.
+    #[test]
+    fn a_skipped_label_holds_an_issue_back() {
+        let f = fx(json!({"skip_labels": [["Hold", "WIP 🚧"]]}));
+        f.tracker.add_issue("Todo", "ENG-1", "held", "");
+        f.tracker.seed_label("ENG-1", "WIP 🚧");
+        f.tracker.add_issue("Todo", "ENG-2", "free", "");
         assert_eq!(f.wire().id, "ENG-2");
-
-        let f = fx(json!({"require_member": ["ghost@acme.example"]}));
-        f.tracker.add_issue("Todo", "ENG-1", "t", "");
-        let e = f.poll_err();
-        assert_eq!(
-            e.to_string(),
-            "linear resolve user: no user whose display name or email is 'ghost@acme.example'"
+        assert!(
+            f.tracker.comments_on("ENG-1").is_empty(),
+            "ENG-1 was written to"
         );
-        assert!(f.tracker.comments_on("ENG-1").is_empty(), "nothing posted");
-    }
-
-    /// `require_member "me", "none"` claims what nobody holds and what is the app's own, and
-    /// passes over an issue a person or another app holds without a word on it.
-    #[test]
-    fn require_member_none_or_me_claims_what_nobody_holds_and_what_is_mine() {
-        let f = fx(json!({"require_member": [["me", "none"]]}));
-        f.tracker.seed_user("vesper@oauthapp.example", "u-vesper");
-        f.tracker.add_issue("Todo", "ENG-1", "Phil's", "");
-        f.tracker
-            .edit_issue("ENG-1", |i| i.assignee = Some("u-phil".into()));
-        f.tracker
-            .add_issue("Todo", "ENG-2", "delegated to vesper 🌑", "");
-        f.tracker
-            .edit_issue("ENG-2", |i| i.delegate = Some("u-vesper".into()));
-        f.tracker.add_issue("Todo", "ENG-3", "nobody's", "");
-        f.tracker
-            .add_issue("Todo", "ENG-4", "delegated to the app", "");
-        f.tracker
-            .edit_issue("ENG-4", |i| i.delegate = Some(SELF_ID.into()));
-        assert_eq!(f.wire().id, "ENG-3");
-        assert_eq!(f.wire().id, "ENG-4");
-        assert!(f.poll().is_none(), "nothing else passes");
-        for held in ["ENG-1", "ENG-2"] {
-            assert!(f.tracker.comments_on(held).is_empty(), "{held} untouched");
-        }
-
-        // An unknown entry fails the poll even beside `me` and `none`.
-        let f = fx(json!({"require_member": [["me", "none", "ghost@acme.example"]]}));
-        f.tracker.add_issue("Todo", "ENG-1", "t", "");
-        assert_eq!(
-            f.poll_err().to_string(),
-            "linear resolve user: no user whose display name or email is 'ghost@acme.example'"
-        );
-        assert!(f.tracker.comments_on("ENG-1").is_empty(), "nothing posted");
-    }
-
-    /// `require_label` claims only a labelled issue, `without_label` none carrying any of
-    /// its labels, and deny wins over require.
-    #[test]
-    fn the_label_gates_hold_and_deny_wins() {
-        let f = fx(json!({"require_label": "afkd/ready", "without_label": [["Hold", "WIP 🚧"]]}));
-        f.tracker.add_issue("Todo", "ENG-1", "unlabelled", "");
-        f.tracker.add_issue("Todo", "ENG-2", "ready but held", "");
-        f.tracker.seed_label("ENG-2", "afkd/ready");
-        f.tracker.seed_label("ENG-2", "WIP 🚧");
-        f.tracker.add_issue("Todo", "ENG-3", "ready", "");
-        f.tracker.seed_label("ENG-3", "afkd/ready");
-        assert_eq!(f.wire().id, "ENG-3");
-        for id in ["ENG-1", "ENG-2"] {
-            assert!(f.tracker.comments_on(id).is_empty(), "{id} was written to");
-        }
+        assert!(f.poll().is_none(), "ENG-2 is held, ENG-1 skipped");
     }
 
     /// A blocked issue is passed over in silence and the next claimed; once its blocker is
@@ -2452,7 +2312,7 @@ mod tests {
         let round = f
             .units
             .attempt_claim(
-                TEAM_ID,
+                &eng(),
                 f.tracker.issue("ENG-1"),
                 None,
                 &me(),
@@ -2469,15 +2329,15 @@ mod tests {
         );
     }
 
-    /// The scan reads a state page by page, and with two `pick_from` states moves to the
+    /// The scan reads a state page by page, and with two `claim_from` states moves to the
     /// second past every issue the first holds back; the key names the second state.
     #[test]
-    fn pick_from_pages_its_states_in_order() {
-        let f = fx(json!({"pick_from": [["Todo", "Backlog"]], "without_label": "Hold"}));
+    fn claim_from_pages_its_states_in_order() {
+        let f = fx(json!({"claim_from": [["Todo", "Backlog"]]}));
         f.tracker.set_page(2);
         for n in 1..=5 {
             f.tracker.add_issue("Todo", &format!("ENG-{n}"), "held", "");
-            f.tracker.seed_label(&format!("ENG-{n}"), "Hold");
+            held(&f, &format!("ENG-{n}"));
         }
         f.tracker
             .add_issue("Backlog", "ENG-9", "Bakgrund: stadsvy i skymning 🌆", "");
@@ -2493,11 +2353,11 @@ mod tests {
         assert_eq!(reads, 4, "three pages of Todo, one of Backlog");
     }
 
-    /// A `pick_from` naming a state the team lacks fails the poll naming it, before any
+    /// A `claim_from` naming a state the team lacks fails the poll naming it, before any
     /// state is read.
     #[test]
     fn a_state_the_team_lacks_fails_the_poll_naming_it() {
-        let f = fx(json!({"pick_from": [["Todo", "Väntar ⏳"]]}));
+        let f = fx(json!({"claim_from": [["Todo", "Väntar ⏳"]]}));
         f.tracker.add_issue("Todo", "ENG-1", "t", "");
         let e = f.poll_err();
         assert_eq!(
@@ -2510,11 +2370,11 @@ mod tests {
     /// The scan stops at its budget, says so once, and claims nothing.
     #[test]
     fn the_scan_stops_at_its_budget() {
-        let mut f = fx(json!({"without_label": "Hold"}));
+        let mut f = fx(json!({}));
         f.clock = FakeClock::ticking(Duration::from_secs(4));
         for n in 1..=10 {
             f.tracker.add_issue("Todo", &format!("ENG-{n}"), "held", "");
-            f.tracker.seed_label(&format!("ENG-{n}"), "Hold");
+            held(&f, &format!("ENG-{n}"));
         }
         f.tracker.add_issue("Todo", "ENG-11", "free", "");
         assert!(f.poll().is_none());
@@ -2724,11 +2584,11 @@ mod tests {
     }
 
     /// A crash victim's claim is pruned and its issue put back at the bottom of the state it
-    /// came from — the key's own, else the first `pick_from` state; a key with no `#` names
-    /// nothing.
+    /// came from — the key's own, else the first `claim_from` state; a key with no `#` names
+    /// nothing, and one whose state no team holds moves nothing and says so.
     #[test]
     fn release_reverses_a_crashed_claim_to_the_bottom_of_its_state() {
-        let f = fx(json!({"pick_from": [["Todo", "Backlog"]]}));
+        let f = fx(json!({"claim_from": [["Todo", "Backlog"]]}));
         f.tracker.add_issue("In Progress", "ENG-1", "crashed", "");
         f.tracker.add_issue("Todo", "ENG-2", "waiting", "");
         f.tracker.add_issue("Backlog", "ENG-3", "waiting too", "");
@@ -2761,6 +2621,21 @@ mod tests {
             f.units.release_stale("garbage", f.clock.now(), &f.diag),
             None
         );
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+        assert_eq!(
+            f.units
+                .release_stale("ENG-1#claim3#Gone", f.clock.now(), &f.diag),
+            Some(true)
+        );
+        assert_eq!(
+            f.diag.errs(),
+            [
+                "linear delete comment: Entity not found: Comment",
+                "linear resolve state: no workflow state Gone in the teams this service claims \
+                 from",
+            ]
+        );
+        assert_eq!(f.tracker.in_state("Backlog"), ["ENG-3", "ENG-1"]);
     }
 
     /// A unit afkd handed back before its run is unclaimed where it stands: its claim is
@@ -2818,16 +2693,16 @@ mod tests {
         );
     }
 
-    /// A faulted attempt is noted on the issue; one Linear cannot take now is queued, and
-    /// one with no sentence notes nothing.
+    /// A faulted attempt is noted on the issue; one Linear does not take is said and lost,
+    /// and one with no sentence notes nothing.
     #[test]
-    fn a_faulted_attempt_is_noted_or_queued() {
+    fn a_faulted_attempt_is_noted_or_said_lost() {
         let f = fx(json!({}));
         f.tracker.add_issue("Todo", "ENG-1", "t", "");
         let unit = f.poll().unwrap();
         f.units
-            .attempt_failed(&unit, 1, 2, Some("cargo test: 3 failed"), &f.clock, &f.diag);
-        f.units.attempt_failed(&unit, 2, 2, None, &f.clock, &f.diag);
+            .attempt_failed(&unit, 1, 2, Some("cargo test: 3 failed"), &f.diag);
+        f.units.attempt_failed(&unit, 2, 2, None, &f.diag);
         assert_eq!(
             f.texts("ENG-1")[1..],
             ["[afkd-attempt] 1/2: cargo test: 3 failed"]
@@ -2843,65 +2718,68 @@ mod tests {
             },
         );
         f.units
-            .attempt_failed(&unit, 2, 2, Some("again"), &f.clock, &f.diag);
-        assert!(f.units.outbox().owes("ENG-1"));
+            .attempt_failed(&unit, 2, 2, Some("again\n修复 🚨"), &f.diag);
+        assert_eq!(f.texts("ENG-1").len(), 2, "nothing more landed");
         assert_eq!(
             f.diag.errs(),
             [
-                "linear could not take a write for issue ENG-1 \"t\": linear post comment: Linear \
-              refused it (429): Rate limit exceeded; the comment \"[afkd-attempt] 2/2: again\" \
-              is queued and retried for up to 1h"
+                "issue ENG-1 \"t\": the comment \"[afkd-attempt] 2/2: again…\" is lost — linear \
+                 post comment: Linear refused it (429): Rate limit exceeded"
             ]
+        );
+        f.tracker.fail(
+            "post comment",
+            LinearError::Decode {
+                stage: "post comment",
+                reason: "eof".into(),
+            },
+        );
+        f.units.attempt_failed(&unit, 2, 2, Some("x"), &f.diag);
+        assert_eq!(
+            f.diag.errs()[1],
+            "linear answered issue ENG-1 \"t\" with a reply the plugin could not read; the \
+             comment \"[afkd-attempt] 2/2: x\" may or may not have landed — linear post comment: \
+             undecodable response (eof)"
         );
     }
 
-    /// A write Linear rate limits is first retried no sooner than its `Retry-After` after its
-    /// inline try failed, not after the call that asked for it began: on a clock that moves on
-    /// one slow round trip per read, the wait starts from the read after the try.
+    /// A watermark Linear does not take is said and lost, and its priors are kept: the
+    /// newest that landed is still the one a run reads.
     #[test]
-    fn a_rate_limited_write_waits_its_retry_after_from_the_failure() {
-        const TRY: Duration = Duration::from_secs(2);
-        const RETRY_AFTER: Duration = Duration::from_secs(7);
-        let mut f = fx(json!({}));
+    fn a_watermark_linear_does_not_take_keeps_its_priors() {
+        let f = fx(json!({}));
         f.tracker.add_issue("Todo", "ENG-1", TITLE, "");
+        f.tracker.push_comment(
+            "ENG-1",
+            "ran0",
+            "[afkd-ran] owner=afkd-17 upto=1000",
+            SELF_ID,
+            SystemTime::now() - Duration::from_secs(3600),
+        );
         let unit = f.poll().unwrap();
-        f.clock = FakeClock::ticking(TRY);
         f.tracker.fail(
             "post comment",
-            LinearError::Refused {
+            LinearError::Status {
                 stage: "post comment",
-                status: 429,
-                message: "Rate limit exceeded".into(),
-                kind: "ratelimited".into(),
-                retry_after: Some(RETRY_AFTER),
+                status: 503,
+                retry_after: None,
             },
         );
-        // Read the call's instant where `Plugin::answer` reads it, before the try goes out.
-        let asked = f.clock.now();
-        assert_eq!(
-            f.units.deliver(
-                &unit.issue,
-                Write::Note("[afkd-attempt] 1/2: cargo test: 3 failed\n修复 🚨".into()),
-                &f.clock,
-                &f.diag,
-            ),
-            Ok(Delivery::Queued)
-        );
-        let due = f
-            .units
-            .outbox()
-            .deliver_due(&*f.tracker, &f.clock, &f.diag)
-            .expect("the note is still owed");
         assert!(
-            due >= asked + TRY + RETRY_AFTER,
-            "the retry is due {:?} after the call began: its {RETRY_AFTER:?} wait counts from \
-             the call, not from the try that failed {TRY:?} into it",
-            due - asked
+            f.finish(&unit, UnitOutcome::Clean),
+            "the release still lands"
         );
         assert_eq!(
-            f.tracker.comments_on("ENG-1").len(),
-            1,
-            "only the claim landed"
+            f.texts("ENG-1"),
+            ["[afkd-ran] owner=afkd-17 upto=1000"],
+            "the prior watermark is kept, the claim released"
+        );
+        assert_eq!(
+            f.diag.errs(),
+            [format!(
+                "issue ENG-1 \"{TITLE}\": the comment \"[afkd-ran] owner=afkd-4242 upto=1000\" is \
+                 lost — linear post comment: Linear returned status 503"
+            )]
         );
     }
 
@@ -2937,7 +2815,7 @@ mod tests {
     }
 
     /// A park badges the issue, posts the owner marker, and releases the claim, in that
-    /// order; a reply re-arms it ahead of `pick_from`, the badge and marker coming off.
+    /// order; a reply re-arms it ahead of `claim_from`, the badge and marker coming off.
     #[test]
     fn a_parked_issue_answered_is_reclaimed_and_unbadged() {
         let f = fx(json!({}));
@@ -3020,7 +2898,7 @@ mod tests {
     /// would, and a denied label is a live veto.
     #[test]
     fn a_parked_issue_is_held_by_a_new_blocker_or_a_denied_label() {
-        let f = fx(json!({"without_label": "Hold"}));
+        let f = fx(json!({"skip_labels": "Hold"}));
         f.tracker.add_issue("Todo", "ENG-1", "t", "");
         park(&f, "ENG-1");
         f.tracker.push_comment(

@@ -1,19 +1,17 @@
 //! The plugin's state across calls, and one handler per call: the thin layer between afkd's
-//! wire ([`crate::wire`]) and the `issue` kind's vendor half ([`crate::issue`]).
+//! wire ([`crate::wire`]) and the `intake` kind's vendor half ([`crate::issue`]).
 //!
 //! **afkd runs the slots.** `on_claim` after a `poll` hands a unit over, and `on_done`,
-//! `on_park` or `on_fail` after its `finish`; each action a slot calls is one `call`, naming
-//! the issue it acts on by its handle — the id and key of a unit this plugin handed over,
-//! never an implied claim — which this plugin does on that unit's issue
-//! ([`crate::action`]). A finished unit's issue is kept a while for that
-//! ([`FINISHED_MAX`]), since its post-run slot's calls arrive after `finish`.
+//! `on_park` or `on_fail` after its `finish`; each is passed the `linear.Workspace` the
+//! service's credential settings build, beside the issue, and each action a slot calls is
+//! one `call`. A finished unit's issue is kept a while ([`FINISHED_MAX`]), since its post-run
+//! slot's calls arrive after `finish` and may pass it.
 //!
-//! **A read reaches a workspace, not the service** ([`crate::reads`]). It comes as a `call`
-//! too: to the trigger child from a `service(linear)`'s slot, which may pass it the issue the
-//! service claimed, and from anywhere else to a child afkd starts for that one call, which
-//! gets no `hello` and reads its `proto` and the plugin's directory off the call itself.
-//! The issue actions act on a claimed issue, which such a child never holds, so it refuses
-//! them.
+//! **Every action reaches a workspace, not the service** ([`crate::reads`],
+//! [`crate::writes`]). It comes as a `call`: to the trigger child from a `service(linear)`'s
+//! slot, which may pass it the issue the service claimed, and from anywhere else to a child
+//! afkd starts for that one call, which gets no `hello` and reads its `proto` and the
+//! plugin's directory off the call itself.
 //!
 //! What the wire forces, as for `@afkd/trello`:
 //!
@@ -28,8 +26,6 @@
 //! - **The lines go to stderr**, which afkd files under `[@afkd/linear:err]`.
 //! - **Every call answers within 45 seconds**: each armed call runs under [`CALL_BUDGET`],
 //!   and a Linear too slow for it reads as a Linear that is down.
-//! - **A write Linear could not take is retried after the reply**, by the outbox's worker
-//!   thread ([`crate::outbox`]), each issue's writes in order, for up to an hour.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -38,15 +34,13 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
-use crate::action::{from_call, posted, Call, Op, ACTIONS};
 use crate::auth::Auth;
 use crate::client::LinearClient;
-use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
-use crate::issue::{is_afkd, Identity, LinearUnits, SelfIds, Unit};
-use crate::outbox::Outbox;
+use crate::common::{Clock, Diag, CALL_BUDGET};
+use crate::issue::{is_afkd, Identity, LinearUnits, Unit};
 use crate::reads::{self, Claimed, ReadContext, READS};
 use crate::rfc3339::format_utc;
-use crate::settings::{issue_config, IssueConfig};
+use crate::settings::{intake_config, IntakeConfig};
 use crate::tracker::{Issue, Tracker};
 use crate::wire::{
     fit_comments, fit_poll, Facts, Fitted, Request, UnitOutcome, WireComment, PROTO,
@@ -54,7 +48,7 @@ use crate::wire::{
 use crate::writes::{self, WRITES};
 
 /// The one kind this plugin provides, its main one: `service(linear)` in a config.
-pub(crate) const LINEAR_KIND: &str = "issue";
+pub(crate) const LINEAR_KIND: &str = "intake";
 
 /// How many finished units' issues a post-run slot's `call`s can still reach. afkd sends
 /// them straight after `finish`, one unit at a time, so a handful would do; the rest is
@@ -79,9 +73,8 @@ pub(crate) enum Answer {
 }
 
 /// Builds the tracker a `hello` arms with — the real client in the running plugin, a mock
-/// in the tests — over the credential the service and its outbox worker share. `Send`,
-/// since the worker gets one of its own.
-pub(crate) type Connect = Box<dyn Fn(&IssueConfig, Arc<Auth>) -> Box<dyn Tracker + Send>>;
+/// in the tests — over the service's credential.
+pub(crate) type Connect = Box<dyn Fn(&IntakeConfig, Arc<Auth>) -> Box<dyn Tracker>>;
 
 /// The plugin across its whole life: unarmed until `hello`, then armed.
 pub(crate) struct Plugin {
@@ -89,9 +82,6 @@ pub(crate) struct Plugin {
     clock: Box<dyn Clock>,
     diag: Box<dyn Diag>,
     armed: Option<Armed>,
-    /// Whether arming starts the outbox's worker thread. The tests deliver the outbox
-    /// themselves, on their own clock.
-    worker: bool,
 }
 
 /// The armed service: the kind's vendor half, and the units afkd is running.
@@ -103,14 +93,7 @@ struct Armed {
     live: BTreeMap<String, LiveUnit>,
     /// The issues of the units most recently finished, by key and oldest first, for the
     /// post-run slot's `call`s; at most [`FINISHED_MAX`].
-    finished: VecDeque<(String, Held)>,
-}
-
-/// What a `call` on a finished unit's issue needs of it: the issue, and the ids afkd's own
-/// comments carry on it.
-struct Held {
-    issue: Issue,
-    me: SelfIds,
+    finished: VecDeque<(String, Issue)>,
 }
 
 /// A unit afkd is running.
@@ -125,16 +108,12 @@ impl Plugin {
     /// A plugin that arms against the real Linear, at the block's `base_url`.
     pub(crate) fn new(clock: Box<dyn Clock>, diag: Box<dyn Diag>) -> Self {
         let connect: Connect = Box::new(|cfg, auth| {
-            Box::new(LinearClient::new(&cfg.base_url, auth)) as Box<dyn Tracker + Send>
+            Box::new(LinearClient::new(&cfg.base_url, auth)) as Box<dyn Tracker>
         });
-        Self {
-            worker: true,
-            ..Self::with_connect(connect, clock, diag)
-        }
+        Self::with_connect(connect, clock, diag)
     }
 
-    /// A plugin that arms through `connect`, and starts no worker: what its outbox owes
-    /// waits for the caller to deliver it.
+    /// A plugin that arms through `connect`.
     pub(crate) fn with_connect(
         connect: Connect,
         clock: Box<dyn Clock>,
@@ -145,14 +124,6 @@ impl Plugin {
             clock,
             diag,
             armed: None,
-            worker: false,
-        }
-    }
-
-    /// Say what the outbox still owes: afkd has closed the pipe, and the process ends.
-    pub(crate) fn close(&self) {
-        if let Some(armed) = &self.armed {
-            armed.units.outbox().abandon(&*self.diag);
         }
     }
 
@@ -175,15 +146,9 @@ impl Plugin {
                     roster,
                 };
                 let state_dir = state_dir.map(PathBuf::from);
-                let arming = arm(&self.connect, proto, &kind, &settings, id, state_dir)
+                *armed = arm(&self.connect, proto, &kind, &settings, id, state_dir)
                     .map_err(|problem| diag.err(&problem))
                     .ok();
-                *armed = arming.map(|(armed, cfg, auth)| {
-                    if self.worker {
-                        start_worker(&self.connect, Arc::clone(armed.units.outbox()), &cfg, auth);
-                    }
-                    armed
-                });
                 Answer::Reply(
                     match armed {
                         Some(_) => json!({"ok": true, "proto": PROTO, "calls": CALLS}),
@@ -210,7 +175,7 @@ impl Plugin {
                 max,
                 reason,
             } => on_armed(armed, clock, |a| {
-                a.attempt_failed(&key, n, max, reason.as_deref(), clock, diag)
+                a.attempt_failed(&key, n, max, reason.as_deref(), diag)
             }),
             Request::Finish {
                 key,
@@ -258,11 +223,9 @@ fn on_armed(
 }
 
 /// Answer the one `call` a child afkd started for it gets, with no `hello` before it: a read or
-/// a write, with the plugin's directory the call names and the call's own budget. The issue actions
-/// ([`ACTIONS`]) act only on an issue a `service(linear)` claimed, which this child holds
-/// none of, so each is refused saying so, as is an action no one declared and a protocol
-/// this plugin does not speak. A call with no `proto` at all is no such call: afkd is out of
-/// step, as for any request before a `hello`.
+/// a write, with the plugin's directory the call names and the call's own budget. An action no
+/// one declared is refused, as is a protocol this plugin does not speak. A call with no `proto`
+/// at all is no such call: afkd is out of step, as for any request before a `hello`.
 fn once(
     action: &str,
     args: &Map<String, Value>,
@@ -283,31 +246,39 @@ fn once(
             "afkd speaks plugin protocol {proto}, and this plugin speaks {PROTO}"
         ));
     }
-    if READS.contains(&action) || WRITES.contains(&action) {
-        let ctx = ReadContext {
-            state_dir: state_dir.map(Path::new),
-            deadline: clock.now() + CALL_BUDGET,
-            claimed: &|_| None,
-        };
-        return Answer::Reply(if READS.contains(&action) {
-            reads::answer(action, args, &ctx, diag)
-        } else {
-            writes::answer(action, args, &ctx, diag)
-        });
+    let ctx = ReadContext {
+        state_dir: state_dir.map(Path::new),
+        deadline: clock.now() + CALL_BUDGET,
+        claimed: &|_| None,
+    };
+    answer_action(action, args, &ctx, diag).unwrap_or_else(|| refuse(no_action(action)))
+}
+
+/// The sentence refusing an action the manifest does not declare.
+fn no_action(action: &str) -> String {
+    format!("no action `{action}`")
+}
+
+/// The reply to the read or the write `action` with `args`, in `ctx`, or `None` for an
+/// action that is neither.
+fn answer_action(
+    action: &str,
+    args: &Map<String, Value>,
+    ctx: &ReadContext<'_>,
+    diag: &dyn Diag,
+) -> Option<Answer> {
+    if READS.contains(&action) {
+        Some(Answer::Reply(reads::answer(action, args, ctx, diag)))
+    } else if WRITES.contains(&action) {
+        Some(Answer::Reply(writes::answer(action, args, ctx, diag)))
+    } else {
+        None
     }
-    if ACTIONS.contains(&action) {
-        return refuse(format!(
-            "{action} acts only on an issue a service(linear) claimed; call it from that \
-             service's slots"
-        ));
-    }
-    refuse(format!("no action `{action}`"))
 }
 
 /// Arm the kind `hello` names over its settings, as `id`, keeping the plugin's directory
-/// `state_dir`, or say why not; the settings and the credential it armed with come back too,
-/// for the outbox's worker. afkd has already held the block to the manifest, so what can be
-/// wrong here is the protocol, the kind, a missing identity, or a rule the manifest cannot
+/// `state_dir`, or say why not. afkd has already held the block to the manifest, so what can
+/// be wrong here is the protocol, the kind, a missing identity, or a rule the manifest cannot
 /// express. Nothing is sent to Linear: an outage when the service arms is a poll's idle beat,
 /// not a refused service.
 fn arm(
@@ -317,7 +288,7 @@ fn arm(
     settings: &serde_json::Value,
     id: Identity,
     state_dir: Option<PathBuf>,
-) -> Result<(Armed, IssueConfig, Arc<Auth>), String> {
+) -> Result<Armed, String> {
     if proto != PROTO {
         return Err(format!(
             "afkd speaks plugin protocol {proto}, and this plugin speaks {PROTO}"
@@ -333,22 +304,14 @@ fn arm(
                 .to_string(),
         );
     }
-    let cfg = issue_config(settings).map_err(|e| format!("trigger {kind}: {e}"))?;
+    let cfg = intake_config(settings).map_err(|e| format!("trigger {kind}: {e}"))?;
     let auth = Arc::new(Auth::new(&cfg.auth));
-    let armed = Armed {
-        units: LinearUnits::new(connect(&cfg, Arc::clone(&auth)), &cfg, id),
+    Ok(Armed {
+        units: LinearUnits::new(connect(&cfg, auth), &cfg, id),
         state_dir,
         live: BTreeMap::new(),
         finished: VecDeque::new(),
-    };
-    Ok((armed, cfg, auth))
-}
-
-/// Start the worker that delivers `outbox` for the life of the process, on a tracker client
-/// of its own, which no call's deadline reaches, sharing the service's credential.
-fn start_worker(connect: &Connect, outbox: Arc<Outbox>, cfg: &IssueConfig, auth: Arc<Auth>) {
-    let tracker = connect(cfg, auth);
-    std::thread::spawn(move || outbox.run(&*tracker, &SystemClock, &StderrDiag));
+    })
 }
 
 /// The `poll` reply that hands nothing over.
@@ -496,13 +459,11 @@ impl Armed {
         n: u32,
         max: u32,
         reason: Option<&str>,
-        clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
         let ok = match self.live.get(key) {
             Some(live) => {
-                self.units
-                    .attempt_failed(&live.unit, n, max, reason, clock, diag);
+                self.units.attempt_failed(&live.unit, n, max, reason, diag);
                 true
             }
             None => {
@@ -544,11 +505,8 @@ impl Armed {
         if self.finished.len() == FINISHED_MAX {
             self.finished.pop_front();
         }
-        let held = Held {
-            issue: live.unit.issue().clone(),
-            me: live.unit.me().clone(),
-        };
-        self.finished.push_back((key.to_string(), held));
+        self.finished
+            .push_back((key.to_string(), live.unit.issue().clone()));
         Answer::Reply(reply.to_string())
     }
 
@@ -557,7 +515,7 @@ impl Armed {
     fn claimed(&self, key: &str) -> Option<Claimed> {
         let issue = match self.live.get(key) {
             Some(live) => live.unit.issue(),
-            None => &self.finished.iter().find(|(held, _)| held == key)?.1.issue,
+            None => &self.finished.iter().find(|(held, _)| held == key)?.1,
         };
         Some(Claimed {
             uuid: issue.id.clone(),
@@ -565,15 +523,10 @@ impl Armed {
         })
     }
 
-    /// Do one action a slot called, on the issue of the unit its handle names — a live one,
-    /// or one finished since. `{"ok":false}` with the sentence, diagnosed too, for an action
-    /// afkd would not have bound, a handle naming no issue, a file that could not be read, a
-    /// read that could not be written, or a Linear that refused it. A write Linear could not
-    /// be reached for is taken for delivery and `ok`: the outbox retries it, and the slot's
-    /// next write queues behind it. Its files are read here, at the call, so a retry sends
-    /// what the slot saw. A read is done now or refused, never queued; a workspace read
-    /// ([`crate::reads`]) or write ([`crate::writes`]) goes through the workspace it is passed,
-    /// the issues this service claimed among what it may be passed.
+    /// Do one read or write a slot called, through the workspace it is passed, the issues
+    /// this service claimed — live, or finished since — among what it may be passed.
+    /// `{"ok":false}` with the sentence, diagnosed too, for an action the manifest does not
+    /// declare.
     fn call(
         &self,
         action: &str,
@@ -581,57 +534,19 @@ impl Armed {
         clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
-        if READS.contains(&action) || WRITES.contains(&action) {
-            let ctx = ReadContext {
-                state_dir: self.state_dir.as_deref(),
-                deadline: self
-                    .units
-                    .call_deadline()
-                    .unwrap_or_else(|| clock.now() + CALL_BUDGET),
-                claimed: &|key| self.claimed(key),
-            };
-            return Answer::Reply(if READS.contains(&action) {
-                reads::answer(action, args, &ctx, diag)
-            } else {
-                writes::answer(action, args, &ctx, diag)
-            });
-        }
-        let refuse = |error: String| {
+        let ctx = ReadContext {
+            state_dir: self.state_dir.as_deref(),
+            deadline: self
+                .units
+                .call_deadline()
+                .unwrap_or_else(|| clock.now() + CALL_BUDGET),
+            claimed: &|key| self.claimed(key),
+        };
+        answer_action(action, args, &ctx, diag).unwrap_or_else(|| {
+            let error = no_action(action);
             diag.err(&error);
             Answer::Reply(json!({"ok": false, "error": error}).to_string())
-        };
-        let Call { key, op } = match from_call(action, args) {
-            Ok(call) => call,
-            Err(problem) => return refuse(problem),
-        };
-        let (issue, me) = match self.live.get(&key) {
-            Some(live) => (live.unit.issue(), live.unit.me()),
-            None => match self.finished.iter().find(|(finished, _)| *finished == key) {
-                Some((_, held)) => (&held.issue, &held.me),
-                None => {
-                    return refuse(format!(
-                        "{action} for {key}, which this plugin holds no issue for"
-                    ))
-                }
-            },
-        };
-        let done = match op {
-            Op::Act(act) => self
-                .units
-                .act(issue, act, clock, diag)
-                .map_err(|e| e.to_string()),
-            Op::Post { into, text, paths } => posted(into, text, &paths).and_then(|act| {
-                self.units
-                    .act(issue, act, clock, diag)
-                    .map_err(|e| e.to_string())
-            }),
-            Op::Read { read, to } => self.units.read(issue, me, read, &to, diag),
-            Op::FetchFiles { to } => self.units.fetch_files(issue, &to, diag),
-        };
-        match done {
-            Ok(()) => Answer::Reply(json!({"ok": true}).to_string()),
-            Err(problem) => refuse(problem),
-        }
+        })
     }
 }
 
@@ -644,7 +559,7 @@ mod tests {
     use super::*;
     use crate::claim::{claim_text, is_claim};
     use crate::common::{CaptureDiag, FakeClock, TempDir};
-    use crate::outbox::RETRY_FOR;
+    use crate::issue::RETRY_FOR;
     use crate::tracker::{Action, LinearError, MockTracker, SELF_ID};
     use crate::wire::MAX_REPLY;
     use serde_json::Value;
@@ -705,7 +620,7 @@ mod tests {
             let clock = Arc::new(FakeClock::new());
             let shared = Arc::clone(&tracker);
             let connect: Connect =
-                Box::new(move |_, _| Box::new(Arc::clone(&shared)) as Box<dyn Tracker + Send>);
+                Box::new(move |_, _| Box::new(Arc::clone(&shared)) as Box<dyn Tracker>);
             let plugin = Plugin::with_connect(
                 connect,
                 Box::new(SharedClock(Arc::clone(&clock))),
@@ -719,7 +634,7 @@ mod tests {
             }
         }
 
-        /// The same, armed as the `issue` kind over `settings`.
+        /// The same, armed as the `intake` kind over `settings`.
         fn armed(settings: Value) -> Self {
             let mut f = Self::new();
             let hello = f.call(hello(settings));
@@ -752,13 +667,14 @@ mod tests {
             )
         }
 
-        /// Call `action` on the issue whose key is `key`, its handle first, as afkd binds it.
-        fn act(&mut self, action: &str, args: Value, key: &Value) -> Value {
-            let mut bound = json!({"issue": {"id": "ENG-1", "key": key}});
-            for (k, v) in args.as_object().unwrap() {
-                bound[k] = v.clone();
-            }
-            self.call(json!({"call": "call", "action": action, "args": bound}))
+        /// The issue a slot passing the handle keyed `key` reaches, as a read or a write
+        /// resolves it.
+        fn claimed(&self, key: &Value) -> Option<Claimed> {
+            self.plugin
+                .armed
+                .as_ref()
+                .expect("an armed plugin")
+                .claimed(key.as_str().expect("a key"))
         }
 
         fn claims_on(&self, id: &str) -> usize {
@@ -778,7 +694,7 @@ mod tests {
     }
 
     fn settings() -> Value {
-        json!({"team": "ENG", "api_key": "lin_api_k", "pick_from": "Todo"})
+        json!({"team": ["ENG"], "api_key": "lin_api_k", "claim_from": ["Todo"]})
     }
 
     /// The accepted `hello` lists every optional call, and touches no tracker: an outage
@@ -828,7 +744,7 @@ mod tests {
                 with(&|r| {
                     r["settings"]["client_id"] = json!("app-id");
                 }),
-                "trigger issue: setting `api_key`: write api_key or client_id and \
+                "trigger intake: setting `api_key`: write api_key or client_id and \
                  client_secret, not both"
                     .into(),
             ),
@@ -836,7 +752,7 @@ mod tests {
                 with(&|r| {
                     r["settings"].as_object_mut().unwrap().remove("api_key");
                 }),
-                "trigger issue: setting `api_key`: needs api_key, or client_id and \
+                "trigger intake: setting `api_key`: needs api_key, or client_id and \
                  client_secret"
                     .into(),
             ),
@@ -846,21 +762,27 @@ mod tests {
                     s.remove("api_key");
                     s.insert("client_secret".into(), json!("s"));
                 }),
-                "trigger issue: setting `client_secret`: client_secret needs client_id".into(),
+                "trigger intake: setting `client_secret`: client_secret needs client_id".into(),
             ),
             (
                 with(&|r| {
                     r["settings"].as_object_mut().unwrap().remove("team");
                 }),
-                "trigger issue: setting `team`: `team` is required: name the team by its key"
+                "trigger intake: setting `team`: `team` is required: name each team by its key"
                     .into(),
             ),
             (
                 with(&|r| {
-                    r["settings"].as_object_mut().unwrap().remove("pick_from");
+                    r["settings"].as_object_mut().unwrap().remove("claim_from");
                 }),
-                "trigger issue: setting `pick_from`: `pick_from` is required: name the \
+                "trigger intake: setting `claim_from`: `claim_from` is required: name the \
                  workflow state or states new issues are claimed from"
+                    .into(),
+            ),
+            (
+                with(&|r| r["settings"]["only_cycle"] = json!(["zwölf"])),
+                "trigger intake: setting `only_cycle`: `only_cycle` expects cycle numbers, not \
+                 \"zwölf\""
                     .into(),
             ),
         ] {
@@ -876,34 +798,31 @@ mod tests {
 
     /// A `call` the plugin cannot do answers `ok:false` with its sentence — which afkd fails
     /// the slot's call with — and says it on the diagnostic channel too: an action it does
-    /// not declare, a handle that is no handle, a key it holds no issue for, and a Linear
-    /// that refused it. The next request is still answered.
+    /// not declare, and a read or a write whose workspace is no `linear.Workspace`, refused
+    /// before any request. No tracker is reached, and the next request is still answered.
     #[test]
     fn a_call_the_plugin_cannot_do_answers_its_sentence() {
         let mut f = Fixture::armed(settings());
         let key = f.poll()["unit"]["key"].clone();
+        let calls = f.tracker.calls().len();
+        let issue = json!({"id": "ENG-1", "key": key});
         let mut expect = Vec::new();
         for (action, args, error) in [
             (
                 "assign",
-                json!({"issue": {"id": "ENG-1", "key": key}, "who": "me"}),
-                "no action `assign`".to_string(),
+                json!({"issue": issue, "who": "me"}),
+                "no action `assign`",
             ),
             (
-                "comment",
-                json!({"issue": "ENG-1", "text": "done 🚀"}),
-                "comment: parameter issue must be an item handle".to_string(),
+                "update_issue",
+                json!({"ws": "lin_api_k", "issue": issue, "title": "修复 🚀"}),
+                "update_issue: parameter ws must be a linear.Workspace",
             ),
             (
-                "comment",
-                json!({"issue": {"id": "ENG-9", "key": "ENG-9#c9"}, "text": "done 🚀"}),
-                "comment for ENG-9#c9, which this plugin holds no issue for".to_string(),
-            ),
-            (
-                "move_to",
-                json!({"issue": {"id": "ENG-1", "key": key}, "state": "Nirgendwo 🚫"}),
-                "linear resolve state: no workflow state named 'Nirgendwo 🚫' in team ENG"
-                    .to_string(),
+                "comments",
+                json!({"ws": {"api_key": "", "base_url": "http://127.0.0.1:9"}, "issue": issue}),
+                "comments: the linear.Workspace sets no credential; set api_key, or client_id \
+                 and client_secret",
             ),
         ] {
             assert_eq!(
@@ -913,50 +832,51 @@ mod tests {
             expect.push(error);
         }
         assert_eq!(f.diag.errs(), expect);
-        assert_eq!(f.tracker.issue("ENG-1").state.name, "Todo");
+        assert_eq!(f.tracker.calls().len(), calls, "no tracker is reached");
         assert_eq!(
             f.call(json!({"call": "renew", "key": key, "renewal": 1})),
             json!({"ok": true})
         );
     }
 
-    /// A slot's action on the live issue lands and is narrated; a read writes its file.
+    /// The unit a poll hands over passes every slot the `linear.Workspace` the service's
+    /// credential settings build, in its `args`: an API key's, or an app's.
     #[test]
-    fn a_call_on_the_live_issue_is_done_and_narrated() {
+    fn a_unit_passes_every_slot_the_services_workspace() {
         let mut f = Fixture::armed(settings());
-        let key = f.poll()["unit"]["key"].clone();
         assert_eq!(
-            f.act("move_to", json!({"state": "In Progress"}), &key),
-            json!({"ok": true})
+            f.poll()["unit"]["args"],
+            json!({"workspace": {"api_key": "lin_api_k", "client_id": null,
+                                 "client_secret": null, "base_url": "https://api.linear.app"}})
         );
-        assert_eq!(f.tracker.issue("ENG-1").state.name, "In Progress");
-        let dir = TempDir::new("call");
-        let to = dir.path().join("description.md");
+        let mut f = Fixture::armed(json!({
+            "team": ["ENG"], "claim_from": ["Todo"], "api_key": "",
+            "client_id": "app-id-7f3a", "client_secret": "app-secret/&=",
+            "base_url": "http://127.0.0.1:9",
+        }));
         assert_eq!(
-            f.act("read_description", json!({"to": to}), &key),
-            json!({"ok": true})
+            f.poll()["unit"]["args"],
+            json!({"workspace": {"api_key": null, "client_id": "app-id-7f3a",
+                                 "client_secret": "app-secret/&=",
+                                 "base_url": "http://127.0.0.1:9"}})
         );
-        assert_eq!(std::fs::read_to_string(&to).unwrap(), "Body");
-        assert_eq!(
-            f.diag.narrated()[1..],
-            [
-                format!("[linear] moving issue ENG-1 \"{TITLE}\" to state \"In Progress\""),
-                format!(
-                    "[linear] writing the description of issue ENG-1 \"{TITLE}\" to {}",
-                    to.display()
-                ),
-            ]
-        );
-        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
     }
 
-    /// `poll` and `finish` move nothing themselves, and the post-run slot's calls, which
-    /// afkd sends after `finish`, still reach the finished issue — a `held` one's too — until
-    /// afkd releases the key.
+    /// A slot's read or write reaches the issue the service claimed, by its handle's key, while
+    /// it is live and once it is finished — a `held` one's too — until afkd releases the key;
+    /// `poll` and `finish` move nothing themselves.
     #[test]
-    fn a_post_run_call_reaches_a_finished_issue_until_it_is_released() {
+    fn a_slot_reaches_a_claimed_issue_until_it_is_released() {
         let mut f = Fixture::armed(settings());
         let key = f.poll()["unit"]["key"].clone();
+        let claimed = Claimed {
+            uuid: "ENG-1".into(),
+            organization: crate::tracker::Organization {
+                id: "mock-org".into(),
+                url_key: "acme".into(),
+            },
+        };
+        assert_eq!(f.claimed(&key), Some(claimed.clone()), "live");
         f.tracker.fail(
             "delete comment",
             LinearError::Transport {
@@ -970,63 +890,42 @@ mod tests {
             "Todo",
             "finish moves nothing"
         );
-
+        assert_eq!(f.claimed(&key), Some(claimed), "finished");
         assert_eq!(
-            f.act("move_to", json!({"state": "In Progress"}), &key),
-            json!({"ok": true})
-        );
-        assert_eq!(f.tracker.issue("ENG-1").state.name, "In Progress");
-        let dir = TempDir::new("finished");
-        let to = dir.path().join("thread.md");
-        assert_eq!(
-            f.act("list_comments", json!({"to": to}), &key),
-            json!({"ok": true}),
-            "a read reaches it too"
+            f.claimed(&json!("ENG-9#c9")),
+            None,
+            "a key it never handed out"
         );
         f.tracker.clear_failure();
         assert_eq!(
             f.call(json!({"call": "release", "key": key})),
             json!({"released": true})
         );
-        let released = f.diag.errs().len();
-        assert_eq!(
-            f.act("comment", json!({"text": "late"}), &key),
-            json!({"ok": false, "error": format!(
-                "comment for {}, which this plugin holds no issue for",
-                key.as_str().unwrap()
-            )})
-        );
-        assert_eq!(
-            f.diag.errs().len(),
-            released + 1,
-            "the refusal is diagnosed"
-        );
+        assert_eq!(f.claimed(&key), None, "released");
     }
 
     /// The finished issues a post-run call reaches are bounded: past [`FINISHED_MAX`] the
     /// oldest is forgotten, and the newer ones still answer.
     #[test]
     fn the_finished_issues_a_call_reaches_are_bounded() {
-        let mut f = Fixture::armed(settings());
+        let mut f = Fixture::armed(json!({"team": ["ENG"], "api_key": "lin_api_k",
+                                          "claim_from": ["Todo"], "skip_labels": ["Done 🏁"]}));
         for n in 2..=FINISHED_MAX + 1 {
             f.tracker
                 .add_issue("Todo", &format!("ENG-{n}"), &format!("課題 {n} 🚧"), "");
         }
         let mut keys = Vec::new();
         for _ in 0..=FINISHED_MAX {
-            let key = f.poll()["unit"]["key"].clone();
-            assert_eq!(f.finish(&key, "clean"), json!({"ok": true}));
-            // The `on_done` afkd runs next, so the next poll claims the next issue.
-            assert_eq!(
-                f.act("move_to", json!({"state": "In Progress"}), &key),
-                json!({"ok": true})
-            );
-            keys.push(key);
+            let unit = f.poll()["unit"].clone();
+            assert_eq!(f.finish(&unit["key"], "clean"), json!({"ok": true}));
+            // What an `on_done` would do, so the next poll claims the next issue.
+            f.tracker
+                .seed_label(unit["id"].as_str().unwrap(), "Done 🏁");
+            keys.push(unit["key"].clone());
         }
-        let comment = json!({"text": "see the run log"});
-        assert_eq!(f.act("comment", comment.clone(), &keys[0])["ok"], false);
+        assert_eq!(f.claimed(&keys[0]), None);
         for key in &keys[1..] {
-            assert_eq!(f.act("comment", comment.clone(), key), json!({"ok": true}));
+            assert!(f.claimed(key).is_some(), "{key}");
         }
     }
 
@@ -1046,7 +945,7 @@ mod tests {
         assert_eq!(f.poll()["fire"], true);
 
         let mut f = Fixture::new();
-        let request = serde_json::from_value(json!({"call": "call", "action": "archive"})).unwrap();
+        let request = serde_json::from_value(json!({"call": "call", "action": "issues"})).unwrap();
         assert!(matches!(
             f.plugin.answer(request),
             Answer::Fatal(reason) if reason.contains("before a `hello`")
@@ -1082,7 +981,7 @@ mod tests {
                 "classify" => f.call(json!({"call": "classify", "key": key,
                                             "scratch": scratch.path(), "outcome": "clean"})),
                 "finish" => f.finish(&key, "clean"),
-                "call" => f.call(json!({"call": "call", "action": "comment"})),
+                "call" => f.call(json!({"call": "call", "action": "issues"})),
                 _ => f.call(json!({"call": "release", "key": key})),
             };
             if call == "poll" {
@@ -1366,8 +1265,8 @@ mod tests {
 
     /// The one `call` a child afkd starts for it gets, with no `hello`: a read whose
     /// workspace holds no credential is refused before any request, a call in another
-    /// protocol is refused naming both, and an issue action, which acts only on a claimed
-    /// issue, is refused saying so. The plugin arms nothing, and no tracker is reached.
+    /// protocol is refused naming both, and an action no one declared is refused. The plugin
+    /// arms nothing, and no tracker is reached.
     #[test]
     fn a_child_for_one_call_refuses_what_it_cannot_do_and_reaches_no_tracker() {
         let mut f = Fixture::new();
@@ -1390,20 +1289,11 @@ mod tests {
                 once("issues", json!(1), json!({"ws": {"api_key": "lin_api_k"}})),
                 "afkd speaks plugin protocol 1, and this plugin speaks 2",
             ),
-            (
-                once(
-                    "comment",
-                    json!(2),
-                    json!({"issue": {"id": "ENG-1", "key": "ENG-1#c1"}, "text": "done 🚀"}),
-                ),
-                "comment acts only on an issue a service(linear) claimed; call it from that \
-                 service's slots",
-            ),
             (once("assign", json!(2), json!({})), "no action `assign`"),
         ] {
             assert_eq!(f.call(request), json!({"ok": false, "error": error}));
         }
-        assert_eq!(f.diag.errs().len(), 4, "each refusal is diagnosed");
+        assert_eq!(f.diag.errs().len(), 3, "each refusal is diagnosed");
         assert!(f.tracker.calls().is_empty(), "no tracker is reached");
         assert!(
             std::fs::read_dir(state.path()).unwrap().next().is_none(),
@@ -1415,24 +1305,35 @@ mod tests {
         ));
     }
 
-    /// afkd closing the pipe with writes still owed names each.
+    /// An attempt note Linear does not take is said in one line naming the issue and the
+    /// note, and lost: nothing is owed afterwards, and the next note lands.
     #[test]
-    fn closing_with_writes_owed_names_them() {
+    fn an_attempt_note_linear_does_not_take_is_said_and_lost() {
         let mut f = Fixture::armed(settings());
         let key = f.poll()["unit"]["key"].clone();
         f.tracker.go_down();
-        f.call(
-            json!({"call": "attempt_failed", "key": key, "n": 1, "max": 1,
-                      "reason": "ran out of time\nsee the log"}),
-        );
-        let before = f.diag.errs().len();
-        f.plugin.close();
         assert_eq!(
-            f.diag.errs()[before..],
+            f.call(
+                json!({"call": "attempt_failed", "key": key, "n": 1, "max": 2,
+                          "reason": "ran out of time\nsee the log"})
+            ),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            f.diag.errs(),
             [format!(
-                "afkd ended the plugin with the comment \"[afkd-attempt] 1/1: ran out of time…\" \
-                 for issue ENG-1 \"{TITLE}\" still owed"
+                "issue ENG-1 \"{TITLE}\": the comment \"[afkd-attempt] 1/2: ran out of time…\" is \
+                 lost — linear post comment: no response (mock failure)"
             )]
+        );
+        f.tracker.clear_failure();
+        f.call(
+            json!({"call": "attempt_failed", "key": key, "n": 2, "max": 2,
+                      "reason": "cargo test: 3 failed"}),
+        );
+        assert_eq!(
+            f.tracker.comments_on("ENG-1").last().unwrap().text,
+            "[afkd-attempt] 2/2: cargo test: 3 failed"
         );
     }
 }

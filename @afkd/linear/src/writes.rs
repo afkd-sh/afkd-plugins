@@ -1,7 +1,7 @@
-//! The **workspace writes** a config calls with a `linear.Workspace` first: an issue's fields,
-//! its team and its place in its state changed, its relations, links and subscribers added or
-//! removed, the issue archived, put in the trash or taken back out, and a comment written,
-//! edited, resolved or deleted.
+//! The **workspace writes** a config calls with a `linear.Workspace` first: an issue filed, its
+//! fields, its team and its place in its state changed, its labels, relations, links and
+//! subscribers added or removed, the issue archived, put in the trash or taken back out, and a
+//! comment written, edited, resolved or deleted.
 //!
 //! A write reaches Linear only through the workspace it is passed, as a read does
 //! ([`crate::reads`]), so it answers alike in a child afkd starts for the one call and in a
@@ -14,8 +14,9 @@
 //!    was passed is of that workspace, before it changes anything;
 //! 4. turns each name it was passed into Linear's id ([`crate::lookup`]);
 //! 5. sends the change, none when nothing was given to change or Linear already holds it;
-//! 6. answers with what it changed as Linear then holds it, read back as the reads read it, so
-//!    its handle is the one `issues` or `comments` hands back; `delete_comment` answers nil.
+//! 6. answers with what it made or changed as Linear then holds it, read back as the reads read
+//!    it, so its handle is the one `issues` or `comments` hands back; `delete_comment` answers
+//!    nil.
 //!
 //! A write is never queued: it is done now, a request Linear could not take tried again within
 //! the call's deadline, or refused with the reason.
@@ -39,7 +40,10 @@ use crate::workspace::{read_key, Workspace};
 /// The writes, in the order the manifest declares them, after the reads
 /// ([`READS`](crate::reads::READS)).
 pub(crate) const WRITES: &[&str] = &[
+    "create_issue",
     "update_issue",
+    "add_label",
+    "remove_label",
     "add_relation",
     "remove_relation",
     "add_link",
@@ -97,8 +101,8 @@ pub(crate) enum At {
     Bottom,
 }
 
-/// Where `update_issue` places an issue in its state: at its top or its bottom, or right
-/// below another issue.
+/// Where `create_issue` or `update_issue` places an issue in its state: at its top or its
+/// bottom, or right below another issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Place {
     At(At),
@@ -195,9 +199,33 @@ pub(crate) struct IssueUpdate {
     pub(crate) parent: Change<HandleArg>,
 }
 
+/// What `create_issue` files, each name as it was given; a `T?` parameter passed `nil` is
+/// `None`, as one left out is.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct NewIssue {
+    pub(crate) team: String,
+    pub(crate) title: String,
+    pub(crate) description: Option<String>,
+    /// The absolute paths of the files embedded after the description.
+    pub(crate) files: Vec<String>,
+    pub(crate) state: Option<String>,
+    pub(crate) place: Option<Place>,
+    pub(crate) priority: Option<Priority>,
+    pub(crate) estimate: Option<i64>,
+    pub(crate) due: Option<String>,
+    pub(crate) labels: Vec<String>,
+    pub(crate) assignee: Option<String>,
+    pub(crate) delegate: Option<String>,
+    pub(crate) project: Option<String>,
+    pub(crate) milestone: Option<String>,
+    pub(crate) cycle: Option<i64>,
+    pub(crate) parent: Option<HandleArg>,
+}
+
 /// One write, decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WriteCall {
+    CreateIssue(Box<NewIssue>),
     UpdateIssue(Box<IssueUpdate>),
     /// Every other write on an issue: what it changes of the issue `issue`.
     Issue {
@@ -239,6 +267,11 @@ pub(crate) enum CommentChange {
 /// What a write other than `update_issue` changes of the issue it is passed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IssueChange {
+    /// `add_label` when `add`, else `remove_label`, the label as it was named.
+    Label {
+        label: String,
+        add: bool,
+    },
     /// `add_relation` when `add`, else `remove_relation`.
     Relation {
         relation: Relation,
@@ -261,7 +294,8 @@ pub(crate) enum IssueChange {
 }
 
 /// What `update_issue` sends Linear, every name turned into its id: Linear's
-/// `IssueUpdateInput`, holding each field that changes and no other.
+/// `IssueUpdateInput`, holding each field that changes and no other. `create_issue` sends it
+/// too, each field it sets [`Change::Set`], as the `IssueCreateInput` it is a part of.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct IssueInput {
     pub(crate) team: Option<String>,
@@ -383,12 +417,16 @@ pub(crate) fn answer(
 ///
 /// Returns the sentence for a `ws` that is no workspace or holds no one credential, an
 /// argument missing or of another type than the manifest's, and the refusals of
-/// [`issue_update`].
+/// [`new_issue`] and [`issue_update`].
 pub(crate) fn decode(
     action: &str,
     args: &Map<String, Value>,
 ) -> Result<(Workspace, WriteCall), String> {
     let ws = Workspace::from_arg(action, args.get("ws"))?;
+    if action == "create_issue" {
+        let new = new_issue(action, args)?;
+        return Ok((ws, WriteCall::CreateIssue(Box::new(new))));
+    }
     if action == "update_issue" {
         let update = issue_update(action, args)?;
         return Ok((ws, WriteCall::UpdateIssue(Box::new(update))));
@@ -444,7 +482,15 @@ pub(crate) fn decode(
             add,
         })
     };
+    let label = |add: bool| -> Result<IssueChange, String> {
+        Ok(IssueChange::Label {
+            label: required("label")?,
+            add,
+        })
+    };
     let change = match action {
+        "add_label" => label(true)?,
+        "remove_label" => label(false)?,
         "add_relation" => relation(true)?,
         "remove_relation" => relation(false)?,
         "add_link" => IssueChange::AddLink {
@@ -494,8 +540,14 @@ fn text(value: &Value) -> Option<String> {
 /// The `files` argument of `action`, none when it is left out, or the sentence refusing one
 /// that is not a list of strings.
 fn files(action: &str, args: &Map<String, Value>) -> Result<Vec<String>, String> {
-    let not_strings = || format!("{action}: parameter files must be a list of strings");
-    let Some(items) = optional(action, args, "files", Value::as_array, "a list of strings")? else {
+    strings(action, args, "files")
+}
+
+/// The list argument `param` of `action`, none when it is left out, or the sentence refusing
+/// one that is not a list of strings.
+fn strings(action: &str, args: &Map<String, Value>, param: &str) -> Result<Vec<String>, String> {
+    let not_strings = || format!("{action}: parameter {param} must be a list of strings");
+    let Some(items) = optional(action, args, param, Value::as_array, "a list of strings")? else {
         return Ok(Vec::new());
     };
     items
@@ -508,6 +560,90 @@ fn files(action: &str, args: &Map<String, Value>) -> Result<Vec<String>, String>
 /// request.
 fn uploads(action: &str, paths: &[String]) -> Result<Vec<Upload>, String> {
     paths.iter().map(|path| read_upload(action, path)).collect()
+}
+
+/// Where `args`' `at` or `after` place the issue `action` files or changes, `None` when
+/// neither is given, or the sentence refusing the two together or one of another type.
+fn place(action: &str, args: &Map<String, Value>) -> Result<Option<Place>, String> {
+    let at = optional(action, args, "at", member::<At>, "top or bottom")?;
+    let after = match args.get("after") {
+        None => None,
+        Some(_) => Some(handle_arg(action, args, "after")?),
+    };
+    match (at, after) {
+        (Some(_), Some(_)) => Err(format!("{action}: at and after cannot both be given")),
+        (Some(at), None) => Ok(Some(Place::At(at))),
+        (None, Some(after)) => Ok(Some(Place::After(after))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The `due` argument of `action`, as [`change`] reads it, or the sentence refusing a date
+/// that is no day of the calendar.
+fn due(action: &str, args: &Map<String, Value>) -> Result<Change<String>, String> {
+    let due = change(action, args, "due", text, "a string")?;
+    if let Change::Set(day) = &due {
+        if !is_date(day) {
+            return Err(format!("{action}: due {day:?} is no YYYY-MM-DD date"));
+        }
+    }
+    Ok(due)
+}
+
+/// The value a `T?` argument of `create_issue` sets, `None` for `nil` as for one left out.
+fn given<T>(change: Change<T>) -> Option<T> {
+    match change {
+        Change::Set(value) => Some(value),
+        Change::Keep | Change::Clear => None,
+    }
+}
+
+/// What `create_issue` is asked to file, as `args` say.
+///
+/// # Errors
+///
+/// Returns the sentence refusing an argument missing or of another type than the manifest's,
+/// `at` beside `after`, a due date that is no day of the calendar, and a `milestone` with no
+/// `project` to be in.
+pub(crate) fn new_issue(action: &str, args: &Map<String, Value>) -> Result<NewIssue, String> {
+    let string = |param: &str| optional(action, args, param, text, "a string");
+    let required = |param: &str| {
+        string(param)?.ok_or_else(|| format!("{action}: parameter {param} is required"))
+    };
+    let (team, title) = (required("team")?, required("title")?);
+    let place = place(action, args)?;
+    let due = given(due(action, args)?);
+    let optional_string = |param: &str| change(action, args, param, text, "a string").map(given);
+    let project = optional_string("project")?;
+    let milestone = optional_string("milestone")?;
+    if let (Some(milestone), None) = (&milestone, &project) {
+        return Err(format!(
+            "{action}: milestone {milestone:?} needs a project to be in, and none is given"
+        ));
+    }
+    let labels = strings(action, args, "labels")?;
+    let parent = match args.get("parent") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(handle_arg(action, args, "parent")?),
+    };
+    Ok(NewIssue {
+        team,
+        title,
+        description: string("description")?,
+        files: files(action, args)?,
+        state: string("state")?,
+        place,
+        priority: optional(action, args, "priority", member, "a linear.Priority")?,
+        estimate: given(change(action, args, "estimate", Value::as_i64, "an int")?),
+        due,
+        labels,
+        assignee: optional_string("assignee")?,
+        delegate: optional_string("delegate")?,
+        project,
+        milestone,
+        cycle: given(change(action, args, "cycle", Value::as_i64, "an int")?),
+        parent,
+    })
 }
 
 /// What `update_issue` is asked to change, as `args` say.
@@ -530,25 +666,8 @@ pub(crate) fn issue_update(action: &str, args: &Map<String, Value>) -> Result<Is
     if !files.is_empty() && description.is_none() {
         return Err(format!("{action}: files go only beside description"));
     }
-    let at = optional(action, args, "at", member::<At>, "top or bottom")?;
-    let after = match args.get("after") {
-        None => None,
-        Some(_) => Some(handle_arg(action, args, "after")?),
-    };
-    let place = match (at, after) {
-        (Some(_), Some(_)) => {
-            return Err(format!("{action}: at and after cannot both be given"));
-        }
-        (Some(at), None) => Some(Place::At(at)),
-        (None, Some(after)) => Some(Place::After(after)),
-        (None, None) => None,
-    };
-    let due = change(action, args, "due", text, "a string")?;
-    if let Change::Set(day) = &due {
-        if !is_date(day) {
-            return Err(format!("{action}: due {day:?} is no YYYY-MM-DD date"));
-        }
-    }
+    let place = place(action, args)?;
+    let due = due(action, args)?;
     let project = change(action, args, "project", text, "a string")?;
     let milestone = change(action, args, "milestone", text, "a string")?;
     if let (Change::Set(milestone), Change::Clear) = (&milestone, &project) {
@@ -591,6 +710,7 @@ fn run(
     diag: &dyn Diag,
 ) -> Result<(String, String), String> {
     match call {
+        WriteCall::CreateIssue(new) => create_issue(action, new, client, ctx, diag),
         WriteCall::UpdateIssue(update) => update_issue(action, update, client, ctx, diag),
         WriteCall::Issue { issue, change } => {
             change_issue(action, issue, change, client, ctx, diag)
@@ -747,6 +867,21 @@ fn change_issue(
     // The words that narrate the write, before the issue's identifier and after it.
     let said = |before: String| (before, "");
     let what = match change {
+        IssueChange::Label { label, add } => {
+            let place = client.issue_place(&uuid).map_err(linear)?;
+            let label_id = lookup::label(client, action, &place.team, label)?;
+            let carried = client.label_ids(&uuid).map_err(linear)?.contains(&label_id);
+            // Linear refuses to take off a label the issue does not carry.
+            if *add != carried {
+                client.issue_label(&uuid, &label_id, *add).map_err(linear)?;
+            }
+            said(match (add, carried) {
+                (true, false) => format!("put label {label} on"),
+                (false, true) => format!("took label {label} off"),
+                (true, true) => format!("label {label} already on"),
+                (false, false) => format!("label {label} not on"),
+            })
+        }
         IssueChange::Relation {
             relation,
             other,
@@ -879,6 +1014,121 @@ fn issue_reply(
     ))
 }
 
+/// File the issue `new`, and read it back: every handle is checked and every name looked up,
+/// and the issue it goes after checked, before a file goes up or the issue is filed. Placed
+/// `at` or `after` with no `state`, it is placed in the team's default state.
+fn create_issue(
+    action: &str,
+    new: &NewIssue,
+    client: &LinearClient,
+    ctx: &ReadContext<'_>,
+    diag: &dyn Diag,
+) -> Result<(String, String), String> {
+    let linear = |e: LinearError| e.to_string();
+    let uploads = uploads(action, &new.files)?;
+    let organization = reach(client, ctx, diag)?;
+    let resolve =
+        |param: &str, handle: &HandleArg| resolve(action, param, handle, &organization, ctx);
+    let spot = match &new.place {
+        None => None,
+        Some(Place::At(At::Top)) => Some(Spot::Top),
+        Some(Place::At(At::Bottom)) => Some(Spot::Bottom),
+        Some(Place::After(after)) => Some(Spot::After(resolve("after", after)?)),
+    };
+    let parent = match &new.parent {
+        Some(parent) => Change::Set(resolve("parent", parent)?),
+        None => Change::Keep,
+    };
+    let team = lookup::team(client, action, &new.team)?;
+    let state = match (&new.state, &spot) {
+        (Some(name), _) => Some(lookup::state(client, action, &team, name)?),
+        (None, Some(_)) => {
+            let (id, name) = client
+                .default_state(&team.id)
+                .map_err(linear)?
+                .ok_or_else(|| {
+                    format!(
+                        "{action}: team {} has no default state to place the issue in; name its \
+                     state",
+                        team.key
+                    )
+                })?;
+            Some(Candidate {
+                id,
+                name,
+                alias: None,
+            })
+        }
+        (None, None) => None,
+    };
+    let mut labels: Vec<String> = Vec::new();
+    for name in &new.labels {
+        let id = lookup::label(client, action, &team, name)?;
+        if !labels.contains(&id) {
+            labels.push(id);
+        }
+    }
+    let set = |value: Option<String>| value.map_or(Change::Keep, Change::Set);
+    let user = |name: &Option<String>| -> Result<Change<String>, String> {
+        Ok(set(name
+            .as_ref()
+            .map(|name| lookup::user(client, action, name))
+            .transpose()?))
+    };
+    let project = new
+        .project
+        .as_ref()
+        .map(|name| lookup::project(client, action, name))
+        .transpose()?;
+    let milestone = match (&new.milestone, &project) {
+        (Some(name), Some(project)) => Some(lookup::milestone(client, action, project, name)?),
+        _ => None,
+    };
+    let cycle = new
+        .cycle
+        .map(|number| lookup::cycle(client, action, &team, number))
+        .transpose()?;
+    let mut input = IssueInput {
+        team: Some(team.id.clone()),
+        state: state.as_ref().map(|state| state.id.clone()),
+        title: Some(new.title.clone()),
+        priority: new.priority,
+        estimate: new.estimate.map_or(Change::Keep, Change::Set),
+        due: set(new.due.clone()),
+        assignee: user(&new.assignee)?,
+        delegate: user(&new.delegate)?,
+        project: set(project.map(|project| project.id)),
+        milestone: set(milestone),
+        cycle: set(cycle),
+        parent,
+        ..IssueInput::default()
+    };
+    if let (Some(spot), Some(state)) = (&spot, &state) {
+        if let Spot::After(after) = spot {
+            placed_after(action, client, after, &team, state)?;
+        }
+        let others = in_state(client, &team, &state.id, None).map_err(linear)?;
+        input.sort_order = sort_order_for(spot, &others);
+    }
+    if new.description.is_some() || !uploads.is_empty() {
+        let text = new.description.as_deref().unwrap_or_default();
+        input.description = Some(embedded(client, text, &uploads).map_err(linear)?);
+    }
+    let mut input = input.input();
+    if !labels.is_empty() {
+        input.insert("labelIds".into(), json!(labels));
+    }
+    let uuid = client.issue_create(&input).map_err(linear)?;
+    let (reply, identifier) = issue_reply(client, &organization, &uuid)?;
+    Ok((
+        reply,
+        format!(
+            "{ACTION_TAG} filed {identifier} in workspace {}",
+            organization.url_key
+        ),
+    ))
+}
+
 /// Change the issue as `update` asks, and read it back: every handle is checked and every name
 /// looked up before a file goes up or anything changes.
 fn update_issue(
@@ -953,10 +1203,12 @@ fn update_issue(
     };
     if let Some(spot) = &spot {
         if let Spot::After(after) = spot {
-            let issue = (uuid.as_str(), place.identifier.as_str());
-            placed_after(action, client, issue, after, &team, &state)?;
+            if *after == uuid {
+                return Err(format!("{action}: after is {} itself", place.identifier));
+            }
+            placed_after(action, client, after, &team, &state)?;
         }
-        let others = in_state(client, &team, &state.id, &uuid).map_err(linear)?;
+        let others = in_state(client, &team, &state.id, Some(&uuid)).map_err(linear)?;
         input.sort_order = sort_order_for(spot, &others);
     }
     if let Some(text) = &update.description {
@@ -978,19 +1230,15 @@ fn update_issue(
     ))
 }
 
-/// Check that the issue `after` can be placed after: another issue than `issue`, by its uuid
-/// and its identifier, in the state `state` of the team `team` the issue goes to.
+/// Check that the issue `after` can be placed after: an issue in the state `state` of the team
+/// `team` the issue goes to.
 fn placed_after(
     action: &str,
     client: &LinearClient,
-    issue: (&str, &str),
     after: &str,
     team: &Team,
     state: &Candidate,
 ) -> Result<(), String> {
-    if after == issue.0 {
-        return Err(format!("{action}: after is {} itself", issue.1));
-    }
     let other = client.issue_place(after).map_err(|e| e.to_string())?;
     if other.state.id != state.id {
         return Err(format!(
@@ -1002,21 +1250,21 @@ fn placed_after(
 }
 
 /// The uuids and sort orders of the issues in the state `state_id` of `team`, in manual order,
-/// the issue `uuid` left out.
+/// the issue `uuid` left out when one is given.
 fn in_state(
     client: &LinearClient,
     team: &Team,
     state_id: &str,
-    uuid: &str,
+    uuid: Option<&str>,
 ) -> Result<Vec<(String, f64)>, LinearError> {
     let mut issues = Vec::new();
     let mut after: Option<String> = None;
     loop {
-        let page = client.issues_in_state(&team.id, state_id, after.as_deref())?;
+        let page = client.issues_in_state(&team.id, state_id, &json!({}), after.as_deref())?;
         issues.extend(
             page.items
                 .into_iter()
-                .filter(|issue| issue.id != uuid)
+                .filter(|issue| Some(issue.id.as_str()) != uuid)
                 .map(|issue| (issue.id, issue.sort_order)),
         );
         match page.next {
@@ -1287,6 +1535,139 @@ mod tests {
         }
     }
 
+    /// `create_issue`'s arguments as afkd binds them: a workspace, the team, the title, and
+    /// `extra`.
+    fn new(extra: Value) -> Result<NewIssue, String> {
+        let mut args = Map::from_iter([
+            ("ws".to_string(), json!({"api_key": "lin_api_k"})),
+            ("team".to_string(), json!("ENG")),
+            ("title".to_string(), json!("修复 the retry storm 🚨")),
+        ]);
+        args.extend(extra.as_object().expect("an args object").clone());
+        decode("create_issue", &args).map(|(_, call)| match call {
+            WriteCall::CreateIssue(new) => *new,
+            other => panic!("create_issue decodes to a new issue, not {other:?}"),
+        })
+    }
+
+    /// `create_issue` takes the team and the title, and each other field given; a `T?` one
+    /// passed `nil` is left empty, as one left out is, and `at` and `after` each place it.
+    #[test]
+    fn create_issue_decodes_what_it_files() {
+        let bare = NewIssue {
+            team: "ENG".into(),
+            title: "修复 the retry storm 🚨".into(),
+            ..NewIssue::default()
+        };
+        assert_eq!(new(json!({})), Ok(bare.clone()));
+        assert_eq!(
+            new(json!({
+                "estimate": null, "due": null, "assignee": null, "delegate": null,
+                "project": null, "milestone": null, "cycle": null, "parent": null,
+            })),
+            Ok(bare.clone()),
+            "nil leaves each empty"
+        );
+        let set = new(json!({
+            "description": "## Steps\n\n1. run it", "files": ["/srv/a b/shot.png"],
+            "state": "In Progress", "at": "bottom", "priority": "high", "estimate": 0,
+            "due": "2028-02-29", "labels": ["Bug 🐛", "Needs Info"],
+            "assignee": "chen@acme.example", "delegate": "me", "project": "Trackers 🧭",
+            "milestone": "B — reads", "cycle": 12,
+            "parent": {"id": "ENG-100", "key": "linear:org/ENG-100"},
+        }));
+        assert_eq!(
+            set,
+            Ok(NewIssue {
+                description: Some("## Steps\n\n1. run it".into()),
+                files: vec!["/srv/a b/shot.png".into()],
+                state: Some("In Progress".into()),
+                place: Some(Place::At(At::Bottom)),
+                priority: Some(Priority::High),
+                estimate: Some(0),
+                due: Some("2028-02-29".into()),
+                labels: vec!["Bug 🐛".into(), "Needs Info".into()],
+                assignee: Some("chen@acme.example".into()),
+                delegate: Some("me".into()),
+                project: Some("Trackers 🧭".into()),
+                milestone: Some("B — reads".into()),
+                cycle: Some(12),
+                parent: Some(handle("ENG-100")),
+                ..bare
+            })
+        );
+        assert_eq!(
+            new(json!({"after": {"id": "ENG-9", "key": "linear:org/ENG-9"}}))
+                .unwrap()
+                .place,
+            Some(Place::After(handle("ENG-9")))
+        );
+        assert_eq!(
+            new(json!({"files": ["/tmp/shot.png"]})).unwrap().files,
+            ["/tmp/shot.png"],
+            "files without a description"
+        );
+    }
+
+    /// Each argument `create_issue` cannot use is refused in its own sentence, before any
+    /// request: `at` beside `after`, a due date that is no day, a `milestone` with no
+    /// `project`, a team or a title left out, and a value of another type.
+    #[test]
+    fn create_issue_refuses_what_it_cannot_use() {
+        let after = json!({"id": "ENG-9", "key": "linear:org/ENG-9"});
+        for (extra, refusal) in [
+            (
+                json!({"at": "top", "after": after}),
+                "create_issue: at and after cannot both be given",
+            ),
+            (
+                json!({"due": "2026-02-29"}),
+                "create_issue: due \"2026-02-29\" is no YYYY-MM-DD date",
+            ),
+            (
+                json!({"milestone": "B"}),
+                "create_issue: milestone \"B\" needs a project to be in, and none is given",
+            ),
+            (
+                json!({"milestone": "B", "project": null}),
+                "create_issue: milestone \"B\" needs a project to be in, and none is given",
+            ),
+            (
+                json!({"team": null}),
+                "create_issue: parameter team must be a string",
+            ),
+            (
+                json!({"labels": "Bug"}),
+                "create_issue: parameter labels must be a list of strings",
+            ),
+            (
+                json!({"labels": [7]}),
+                "create_issue: parameter labels must be a list of strings",
+            ),
+            (
+                json!({"priority": "p1"}),
+                "create_issue: parameter priority must be a linear.Priority",
+            ),
+            (
+                json!({"cycle": "12"}),
+                "create_issue: parameter cycle must be an int",
+            ),
+            (
+                json!({"parent": "ENG-1"}),
+                "create_issue: parameter parent must be an item handle",
+            ),
+        ] {
+            assert_eq!(new(extra.clone()), Err(refusal.to_string()), "{extra}");
+        }
+        let mut no_title = Map::new();
+        no_title.insert("ws".into(), json!({"api_key": "lin_api_k"}));
+        no_title.insert("team".into(), json!("ENG"));
+        assert_eq!(
+            decode("create_issue", &no_title).map(|_| ()),
+            Err("create_issue: parameter title is required".into())
+        );
+    }
+
     /// The write `action` decoded from the workspace, the issue and `extra`.
     fn issue_write(action: &str, extra: Value) -> Result<(HandleArg, IssueChange), String> {
         decode(action, &args(extra)).map(|(_, call)| match call {
@@ -1295,14 +1676,30 @@ mod tests {
         })
     }
 
-    /// Each issue write decodes the issue and what it changes: a relation and the other issue,
-    /// a link's url and its title or none, a subscriber named or `"me"` when left out, and what
-    /// it does with the issue.
+    /// Each issue write decodes the issue and what it changes: a label, a relation and the
+    /// other issue, a link's url and its title or none, a subscriber named or `"me"` when left
+    /// out, and what it does with the issue.
     #[test]
     fn the_issue_writes_decode_what_they_change() {
         let other = json!({"id": "ENG-9", "key": "linear:org/ENG-9"});
         let url = "https://github.com/acme/widgets/pull/42?tab=files#diff-修复";
         for (action, extra, change) in [
+            (
+                "add_label",
+                json!({"label": "Bug 🐛"}),
+                IssueChange::Label {
+                    label: "Bug 🐛".into(),
+                    add: true,
+                },
+            ),
+            (
+                "remove_label",
+                json!({"label": "Needs Info"}),
+                IssueChange::Label {
+                    label: "Needs Info".into(),
+                    add: false,
+                },
+            ),
             (
                 "add_relation",
                 json!({"relation": "duplicate_of", "other": other}),
@@ -1388,6 +1785,16 @@ mod tests {
     fn the_issue_writes_refuse_what_they_cannot_use() {
         let other = json!({"id": "ENG-9", "key": "linear:org/ENG-9"});
         for (action, extra, refusal) in [
+            (
+                "add_label",
+                json!({}),
+                "add_label: parameter label is required",
+            ),
+            (
+                "remove_label",
+                json!({"label": ["Bug"]}),
+                "remove_label: parameter label must be a string",
+            ),
             (
                 "add_relation",
                 json!({"other": other}),

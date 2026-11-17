@@ -5,15 +5,12 @@
 //! replies and nothing else; every diagnostic and every success line goes to stderr, which
 //! afkd streams into the service log under `[@afkd/linear:err]`.
 //!
-//! The `issue` kind ([`issue`]) — `service(linear)` in a config — claims a Linear team's
+//! The `intake` kind ([`issue`]) — `service(linear)` in a config — claims Linear teams'
 //! issues one per run, by the scheme `@afkd/trello` claims cards with: a claim comment raced
 //! and settled on the issue, the same watermark, attempt and park comments, and the same
 //! journal keys, session threads, run env and brief. It talks to Linear's GraphQL API
-//! ([`client`]) as an API key or as an OAuth app ([`auth`]). The slots are afkd's, and the
-//! actions they call on an issue — comment, describe, rename, move, label, file an issue or
-//! a sub-issue, archive, and read its thread, description and sub-issues — are [`action`]'s.
-//! A comment or a description carries files, and an issue's files are fetched back
-//! ([`file`]).
+//! ([`client`]) as an API key or as an OAuth app ([`auth`]). The slots are afkd's, each passed
+//! the `linear.Workspace` the service's credential settings build, beside the claimed issue.
 //!
 //! The reads a config makes of a whole workspace — issues by any filter, an issue's comments
 //! and files, the viewer, users, teams, states, labels, projects and cycles, and a file
@@ -22,13 +19,14 @@
 //! child and in a child afkd starts for that one call.
 //!
 //! The writes a config makes through a `linear.Workspace` — changing an issue's fields, its
-//! team or its place — are [`writes`]'s, the names they are passed turned into Linear's ids by
-//! [`lookup`]. Each is done now and gives back what Linear then holds, or is refused.
+//! team or its place, its relations, links and subscribers, and its comments — are
+//! [`writes`]'s, the names they are passed turned into Linear's ids by [`lookup`], and the
+//! files a description or a comment carries put up by [`file`]. Each is done now and gives
+//! back what Linear then holds, or is refused.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-mod action;
 mod auth;
 mod claim;
 mod client;
@@ -39,7 +37,6 @@ mod issue;
 mod lookup;
 #[cfg(test)]
 mod manifest;
-mod outbox;
 mod plugin;
 mod reads;
 mod rfc3339;
@@ -97,6 +94,4 @@ fn main() {
             }
         }
     }
-    // afkd closed the pipe: the process ends, and its outbox with it.
-    plugin.close();
 }

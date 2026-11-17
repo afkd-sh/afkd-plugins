@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::tracker::{Issue, Priority, StateType};
 
@@ -152,6 +153,8 @@ pub(crate) struct WireUnit {
     #[serde(rename = "self")]
     pub(crate) me: String,
     pub(crate) env: BTreeMap<String, String>,
+    /// The values every slot of the kind is passed beside the run and the issue, by name.
+    pub(crate) args: Map<String, Value>,
     pub(crate) files: Vec<WireFile>,
 }
 
@@ -531,11 +534,12 @@ mod tests {
                     "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5".to_string(),
                 ),
                 ("LINEAR_ISSUE".to_string(), "ENG-421".to_string()),
-                (
-                    "LINEAR_TEAM_ID".to_string(),
-                    "2b3c4d5e-6f70-4812-93a4-b5c6d7e8f901".to_string(),
-                ),
             ]),
+            args: Map::from_iter([(
+                "workspace".to_string(),
+                serde_json::json!({"api_key": "lin_api_k", "client_id": null,
+                                   "client_secret": null, "base_url": "https://api.linear.app"}),
+            )]),
             files: vec![WireFile {
                 path: crate::TASK_FILE.into(),
                 text: text.into(),

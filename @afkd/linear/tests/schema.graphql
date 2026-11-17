@@ -434,6 +434,7 @@ type ProjectMilestoneConnection {
 }
 
 type Team {
+  defaultIssueState: WorkflowState
   id: ID!
   key: String!
   name: String!
@@ -555,8 +556,17 @@ input IDComparator {
 }
 
 input IssueCreateInput {
+  assigneeId: String
+  cycleId: String
+  delegateId: String
   description: String
+  dueDate: TimelessDate
+  estimate: Int
+  labelIds: [String!]
   parentId: String
+  priority: Int
+  projectId: String
+  projectMilestoneId: String
   sortOrder: Float
   stateId: String
   teamId: String!

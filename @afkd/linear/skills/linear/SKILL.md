@@ -1,39 +1,126 @@
 ---
 name: linear
-description: Navigate and work the Linear issue this run works on — read and post comments, rewrite the issue's title and description, move it to another workflow state, work its sub-issues, browse the team's states and issues, handle the files it links, and file a follow-up issue. List the comments already on the issue; list its sub-issues and move one you have genuinely finished to a done state; browse states and issues to find related work; fetch a file the issue links (that is where a pasted screenshot lives) so you can look at it; post a comment to report a finished plan, a blocker, or a changed approach; ask a question that parks the issue until a human replies, when it does not say enough to build or its premise does not hold; retitle a groomed issue into house style and move it out of the state it was groomed in; label it; archive an issue that has resolved to nothing; put an artifact back on the issue; or file follow-up work you discovered as a new issue — where your run's instructions say, else in the team's backlog — instead of derailing onto it. Not for routine chatter.
-allowed-tools: Bash(*/list_states.py *), Bash(*/list_states.py), Bash(*/list_issues.py *), Bash(*/list_comments.py *), Bash(*/list_comments.py), Bash(*/list_sub_issues.py *), Bash(*/list_sub_issues.py), Bash(*/move_sub_issue.py *), Bash(*/list_files.py *), Bash(*/list_files.py), Bash(*/fetch_file.py *), Bash(*/post_comment.py *), Bash(*/ask.py *), Bash(*/post_file.py *), Bash(*/create_issue.py *), Bash(*/read_description.py *), Bash(*/read_description.py), Bash(*/set_description.py *), Bash(*/set_title.py *), Bash(*/move_issue.py *), Bash(*/archive_issue.py *), Bash(*/archive_issue.py), Bash(*/list_labels.py *), Bash(*/list_labels.py), Bash(*/add_label.py *), Bash(*/remove_label.py *)
+description: Work the Linear issue this run works on, and the workspace around it — read an issue whole, find issues by any filter, read an issue's comments and the files it links, browse a team's states and labels; change an issue's title, description, state, place, priority, estimate, due date, assignee, delegate, project, milestone, cycle or parent; label it, relate it to another issue, archive it; comment on it with files, or reply in a thread; ask a question that parks the issue until a human replies, when it does not say enough to build or its premise does not hold; or file follow-up work you discovered as a new issue — where your run's instructions say, else in the team's backlog — instead of derailing onto it. Not for routine chatter.
+allowed-tools: Bash(*/issue.py *), Bash(*/issues.py *), Bash(*/comments.py *), Bash(*/states.py *), Bash(*/labels.py *), Bash(*/labels.py), Bash(*/files.py *), Bash(*/download_file.py *), Bash(*/create_issue.py *), Bash(*/update_issue.py *), Bash(*/add_label.py *), Bash(*/remove_label.py *), Bash(*/add_relation.py *), Bash(*/archive_issue.py *), Bash(*/create_comment.py *), Bash(*/ask.py *)
 requires-executables: [python3]
 ---
 
-## Read the active issue's comments
+## How the scripts work
 
-Run the bundled reader yourself through the Bash tool, with no argument:
+Each script is one of the `@afkd/linear` plugin's actions, under the action's name, and does
+what the action does: `update_issue.py` is `linear.update_issue`. It takes the action's
+parameters — the required ones as arguments in the action's order, the others as flags of
+their own names (`--due 2026-12-24`) — and prints what the action gives back, as JSON:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/list_comments.py"`
+- an issue as a `linear.Issue` handle: `{"id": "ENG-123", "key": …, "fields": {…}}`, its
+  fields its `uuid`, `team`, `title`, `url`, `description`, `state`, `state_type`,
+  `priority`, `estimate`, `due`, `assignee`, `delegate`, `creator`, `project`, `milestone`,
+  `cycle`, `labels`, `parent`, `sub_issues`, `blocks`, `blocked_by`, `related`, `similar`,
+  `duplicates`, `duplicate_of`, `links`, `subscribers`, `created_at`, `updated_at`,
+  `completed_at`, `canceled_at` (unix milliseconds), `archived` and `trashed`;
+- a comment, a state or a label as its handle, its `id` its uuid;
+- a list as a JSON array, and nothing as `null`.
 
-It prints the newest comments oldest first, each as a line with its author and time
-(` (edited)` when it was edited), then its text verbatim, with a blank line between
-comments. An issue with no comments prints a single `no comments on issue …` line and
-succeeds.
+A write prints what it made or changed as Linear then holds it, so you never need to read it
+back. An **issue** is named by its identifier (`ENG-123`) or its uuid, either one. **This
+run's issue** is `$LINEAR_ISSUE` (its uuid is `$LINEAR_ISSUE_ID`), so pass `"$LINEAR_ISSUE"`
+wherever a script takes the issue. A team is named by its key (`ENG`), and a state, a label,
+a project or a milestone by its name as Linear shows it, matched exactly, or by its id. A
+user is named by display name or email, or `"me"` — whoever this run acts as. A flag that
+takes a list is given once per item: `--labels Bug --labels "Needs Info"`.
 
-Optional flags:
+## Read an issue
 
-- `--limit N` — how many of the newest comments to print (default 50).
-- `--issue REF` — read a different issue, by its identifier (`ENG-12`) or its id
-  (overrides `$LINEAR_ISSUE_ID`).
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/issue.py" "$LINEAR_ISSUE"`
 
-## Post a comment to the active issue
+It prints the issue whole: every field above, each list to its end. By its uuid an issue is
+read anew even after it moved team and took another identifier. An issue Linear does not
+hold fails naming it.
 
-Run the bundled helper yourself through the Bash tool, **substituting your real
-message** for the placeholder. Never run it with the placeholder text — the helper
-rejects it and exits non-zero.
+## Read the comments
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/post_comment.py" "<REPLACE WITH YOUR COMMENT>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/comments.py" "$LINEAR_ISSUE"`
 
-The comment is posted verbatim, as markdown. Pass `--issue REF` to post to a different
-issue (overrides `$LINEAR_ISSUE_ID`). Anything long — a plan, a review, a patch — goes on
-the issue as a file with `post_file.py` (see [Files](#files)), with a short comment saying
-what it is.
+It prints the issue's comments, oldest first, each reply right after the comment it
+answers: each one's `body` verbatim, its `author`, `created_at`, `edited_at`, `resolved_at`,
+and `reply_to`, the id of the comment it answers. afkd's own bookkeeping comments, opening
+`[afkd-claim]`, `[afkd-ran]`, `[afkd-attempt]` or `[afkd-park]`, are among them.
+
+## Find issues
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/issues.py" --team "<TEAM>" --state "<STATE>"`
+
+It prints the issues every filter given keeps, workspace-wide unless `--team` says, each read
+whole. The filters, each a flag:
+
+- `--id`, `--team`, `--state`, `--project`, `--milestone`, `--cycle N` — any of the values
+  given; `--parent ISSUE` keeps its sub-issues.
+- `--state_type` — `triage`, `backlog`, `unstarted`, `started`, `completed` or `canceled`.
+- `--priority` — `none`, `urgent`, `high`, `medium` or `low`.
+- `--labels` keeps an issue carrying **every** label given; `--without_labels` one carrying
+  none of them.
+- `--assignee`, `--delegate` — a display name or email, `me`, or `none` for nobody.
+- `--blocked true` keeps an issue an open issue blocks, `false` one no open issue blocks.
+- `--text` — in the title or the description, case ignored.
+- `--created_after`, `--created_before`, `--updated_after`, `--updated_before`,
+  `--completed_after`, `--completed_before`, `--canceled_after`, `--canceled_before` — a time
+  as RFC 3339 (`2026-11-17T09:30:00Z`).
+- `--due_after`, `--due_before` — a date, `YYYY-MM-DD`.
+- `--include_archived` — archived and trashed issues too.
+- `--order` — up to three of `manual`, `team`, `state`, `priority`, `assignee`, `project`,
+  `cycle`, `due`, `estimate`, `title`, `created`, `updated`, `completed`, each breaking the
+  ties of the one before (default: team, then state, then `manual`, top to bottom as Linear
+  shows a state — the order afkd claims in).
+- `--limit N` — 1 to 250 (default 50).
+
+## Browse a team
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/states.py" "<TEAM>"`
+
+It prints the team's workflow states in the order its workflow shows them, each one's `name`
+and `type`. Then the labels an issue of the team can carry, the workspace's and the team's,
+a workspace label's `team` null:
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/labels.py" --team "<TEAM>"`
+
+Without `--team` it prints the workspace's labels alone.
+
+## Files
+
+A file on a Linear issue is a link in its markdown — an image embedded `![name](url)` or a
+file linked `[name](url)` — at a url Linear hosts, in the description or in a comment. A
+screenshot a human pasted lives there. List the urls of the issue's files, the
+description's first, then the comments' oldest first, each once:
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/files.py" "$LINEAR_ISSUE"`
+
+Then save one, by its url, to an absolute path — under `$AFKD_SCRATCH_DIR`, say — and open
+it with the `Read` tool to look at an image:
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/download_file.py" "<URL>" "<ABSOLUTE-PATH>"`
+
+It fetches only from Linear, and refuses a file over 10 MiB. To put a file of your own on
+the issue, post it with a comment (`create_comment.py --files`, below) or the description
+(`update_issue.py --files`).
+
+## Post a comment
+
+Run it yourself, **substituting your real message** for the placeholder — the script
+refuses the placeholder and exits non-zero:
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/create_comment.py" "$LINEAR_ISSUE" "<REPLACE WITH YOUR COMMENT>"`
+
+The comment is posted verbatim, as markdown. Its flags:
+
+- `--body_file PATH` — the comment from a file, in place of the argument: use it for a real,
+  multi-line comment, written into `$AFKD_SCRATCH_DIR` first.
+- `--files PATH` — an absolute path, put up and embedded after the comment: an image shown,
+  any other file linked. Anything long — a plan, a review, a patch — goes on the issue as a
+  file, with a short comment saying what it is.
+- `--reply_to COMMENT` — answer that comment, by its id from `comments.py`: the reply goes in
+  its thread.
+
+It prints the new comment.
 
 ## Ask for clarification and park the run
 
@@ -64,274 +151,103 @@ next run. Ask only about genuine ambiguities and genuine contradictions, not thi
 code itself would answer. Pass `--issue REF` to ask on a different issue (overrides
 `$LINEAR_ISSUE_ID`).
 
-## Read and update the issue description
+## Change the issue
 
-To change the issue **description**, read the current description, change it, then write
-the **whole** description back. First read it:
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/update_issue.py" "$LINEAR_ISSUE" --title "<REPLACE WITH YOUR NEW TITLE>"`
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/read_description.py"`
+Each field given is set, and each one left out is left as it is:
 
-It prints the issue's current description verbatim (an empty description prints an empty
-line and succeeds). Make your change in that text — keeping every part you did not mean
-to change as it is — write the result into `$AFKD_SCRATCH_DIR`, then set it back:
+- `--title TEXT` — the whole title (the script refuses the placeholder).
+- `--description TEXT` or `--description_file PATH` — the **whole** description: read it
+  first with `issue.py`, make your change in that text, keeping every part you did not mean
+  to change, write the result into `$AFKD_SCRATCH_DIR`, and pass the file. `""` empties it.
+- `--files PATH` — beside a description: an absolute path put up and embedded after it.
+- `--state STATE` — a state of the issue's team; `--team KEY` beside a `--state` of that team
+  moves the issue to another team.
+- `--at top`, `--at bottom`, or `--after ISSUE` — where it goes in its state, the new one or
+  the one it is in; afkd claims from the top. `--after` names an issue already in that state.
+- `--priority`, `--estimate N`, `--due YYYY-MM-DD`, `--assignee`, `--delegate`, `--project`,
+  `--milestone` (of the issue's project, or of `--project`), `--cycle N`, `--parent ISSUE`.
+- `--clear NAME` — clear `estimate`, `due`, `assignee`, `delegate`, `project`, `milestone`,
+  `cycle` or `parent`.
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/set_description.py" --desc-file "$AFKD_SCRATCH_DIR/desc.md"`
-
-`set_description.py` **replaces** the whole description, so always write back the full
-text you read with your change made in it, never just the part you changed. Its flags:
-
-- `--desc "text"` — the new description inline. Mutually exclusive with `--desc-file`.
-- `--desc-file PATH` — read the new description from a file (use this for a real,
-  multi-line body). One of `--desc` / `--desc-file` is **required**.
-- `--issue REF` — read/write a different issue (overrides `$LINEAR_ISSUE_ID`).
+Every name is looked up, and every file read, before anything changes: a name that matches
+nothing fails listing what there is, and one that matches several listing their ids — pass
+the id you mean. It prints the issue as Linear then holds it.
 
 **Blast radius:** the credential is workspace-wide — an API key acts as the user who made
-it, an app as itself — so an `--issue` override can rewrite the description of **any**
-issue it reaches, and `set_description.py` overwrites the whole field: read first, change,
-write back. The default (no flag) stays scoped to this run's issue.
+it, an app as itself — so a script can change **any** issue it reaches, not only this run's.
+Sharper still: moving an issue **into** a state an afkd linear service claims from
+(`claim_from`) **enqueues autonomous work for afkd itself**. Do it only when your run's
+instructions say to, and then only with an issue that is a finished spec — one another agent
+can build without asking a question. The script never learns `claim_from` and cannot enforce
+this — you are the guardrail.
 
-## Retitle the issue
+## Labels
 
-When a groomed issue's title no longer says what the issue is, rewrite it —
-**substituting your real title** for the placeholder. Never run it with the placeholder
-text; the helper rejects it and exits non-zero.
+Put a label on an issue, the issue's team's label of that name, else the workspace's, by its
+exact name or its id from `labels.py`:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/set_title.py" "<REPLACE WITH YOUR NEW TITLE>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/add_label.py" "$LINEAR_ISSUE" "<LABEL>"`
 
-`set_title.py` **replaces** the whole title, so pass the finished title you want the issue
-to carry. Pass `--issue REF` to retitle a different issue (overrides `$LINEAR_ISSUE_ID`).
+Take one off the same way:
 
-**Blast radius:** the credential is workspace-wide, so an `--issue` override can retitle
-**any** issue it reaches, and the old title is gone. The default (no flag) stays scoped to
-this run's issue.
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/remove_label.py" "$LINEAR_ISSUE" "<LABEL>"`
 
-## Move the issue to another state
+Adding a label the issue already carries, or removing one it does not, changes nothing and
+succeeds. A name neither the team nor the workspace has fails naming the labels there are.
 
-When you are done with the issue in the workflow state it sits in — a groomed issue
-leaving triage, say — move it. Name the state by its exact name, or by its id from
-`list_states.py` (see "Navigate the team"):
+## Relate issues
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/move_issue.py" "<STATE>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/add_relation.py" "$LINEAR_ISSUE" blocked_by "<ISSUE>"`
 
-A name that matches no state of the team errors non-zero, lists the states there are, and
-moves nothing. Optional flags:
+The relation is the issue's field the other issue lands in: `blocks`, `blocked_by`,
+`related`, `similar`, `duplicate_of` or `duplicates`, and the other issue gets the matching
+one. afkd never claims an issue an open issue blocks. A relation the issue already holds is
+left as it is.
 
-- `--pos top|bottom` — where in the state's manual order the issue lands (default
-  `bottom`, the end afkd puts back an issue it gave up at; afkd claims from the top).
-- `--above ISSUE` / `--below ISSUE` — put the issue directly above or below ISSUE, an
-  issue already in that state, named by its identifier or its id. It lands between ISSUE
-  and ISSUE's neighbour (at the very top or bottom when ISSUE is at that end). An ISSUE
-  that is not in the state exits non-zero and moves nothing, and an ISSUE that is the
-  issue being moved is refused. Exclusive with `--pos` and with each other.
-- `--issue REF` — move a different issue (overrides `$LINEAR_ISSUE_ID`).
-- `--team ID` — read the states of a different team, named by its id, not its key
-  (overrides `$LINEAR_TEAM_ID`).
-
-**Blast radius:** the credential is workspace-wide, so an `--issue` override can move
-**any** issue it reaches. Sharper still: moving an issue **into** a state the afkd linear
-service picks from (`pick_from`) **enqueues autonomous work for afkd itself**, exactly as
-filing one there does. Do it only when your run's instructions say to, and then only with
-an issue that is a finished spec — one another agent can build without asking a question.
-The helper never learns `pick_from` and cannot enforce this — you are the guardrail.
-
-## Archive the issue
+## Archive an issue
 
 When an issue has resolved to nothing — a bug that did not reproduce, a duplicate, work
-already done — and the owner has declared it a non-bug, archive it so it leaves every
-view. It takes no argument; the issue is this run's own:
+already done — and the owner has declared it a non-bug, archive it, its sub-issues with it:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/archive_issue.py"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/archive_issue.py" "<ISSUE>"`
 
-To restore an issue you (or someone) archived, unarchive it — you must already know its
-identifier or id, since an archived issue no longer appears in any read this skill makes:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/archive_issue.py" --unarchive --issue "<ISSUE>"`
-
-Pass `--issue REF` to archive a different issue (overrides `$LINEAR_ISSUE_ID`).
-
-**Blast radius:** the credential is workspace-wide, so an `--issue` override can archive
-**any** issue it reaches. An archived issue leaves **every** state's listing — nothing in
-this skill can list or find it again; the only way back is `--unarchive` with the
-identifier you already know. The default (no flag) stays scoped to this run's issue.
+An archived issue leaves every read but `issues.py --include_archived`.
 
 ## File a new issue
 
 When you discover follow-up work while running this issue, **file it instead of doing
 it**: a new issue keeps you on the task you were given. Substitute your real title for the
-placeholder — the helper rejects it and exits non-zero:
+placeholder — the script refuses it and exits non-zero:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/create_issue.py" "<REPLACE WITH YOUR ISSUE TITLE>" --state "<STATE>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/create_issue.py" "<TEAM>" "<REPLACE WITH YOUR ISSUE TITLE>" --state "<STATE>"`
 
-It files the issue in this run's team. Optional flags:
+It files the issue in the team whose key it is given, in the team's default state unless
+`--state` names one, with the same flags as `update_issue.py` — `--description_file` for a
+real, multi-line body, `--at` or `--after` to place it, `--parent ISSUE` to file it as a
+sub-issue — and `--labels`, once per label. It prints the new issue.
 
-- `--desc "text"` — the issue's description.
-- `--desc-file PATH` — read the description from a file instead. Use this for a real,
-  multi-line body; write it into `$AFKD_SCRATCH_DIR` first. It is mutually exclusive
-  with `--desc`.
-- `--state STATE` — the workflow state it starts in, by exact name or id. Without it,
-  Linear files it in the team's default state.
-- `--pos top|bottom` — where in `--state` it lands (default `bottom`).
-- `--above ISSUE` / `--below ISSUE` — file it directly above or below ISSUE, an issue
-  already in `--state`, named by its identifier or id. It lands between ISSUE and ISSUE's
-  neighbour (at the very top or bottom when ISSUE is at that end). An ISSUE that is not in
-  the state exits non-zero and files nothing. Exclusive with `--pos` and with each other;
-  all three need `--state`.
-- `--parent ISSUE` — file it as a sub-issue of ISSUE (see [Sub-issues](#sub-issues)).
-- `--team ID` — file it in a different team, named by its id, not its key (overrides
-  `$LINEAR_TEAM_ID`).
-
-On success it prints the new issue's identifier, its title and its url.
-
-**Blast radius:** the credential is workspace-wide, so `--team` can file into **any** team
-it reaches. Sharper still: filing an issue into a state the afkd linear service picks from
-(`pick_from`) **enqueues autonomous work for afkd itself**. File a follow-up into the state
+**Blast radius:** filing an issue into a state an afkd linear service claims from
+(`claim_from`) **enqueues autonomous work for afkd itself**. File a follow-up into the state
 and at the place your run's instructions name. Only when they name none, file it into the
 team's backlog, where a human promotes it. Filing into the build queue is right only when
 the instructions say so, and then the issue must be a finished spec — one another agent can
-build without asking a question. The helper never learns `pick_from` and cannot enforce
-this — you are the guardrail.
+build without asking a question.
 
-## Sub-issues
+## How the scripts reach Linear
 
-An issue's sub-issues are its parts — where a Trello card has a checklist, a Linear issue
-has sub-issues — and the brief already lists them, each with its state, under the issue.
-To re-read them on demand:
+Every script reads its credential and Linear's endpoint from the environment afkd already
+merged into this run (`LINEAR_AUTHORIZATION`, `LINEAR_API_URL`); you do not pass them. They
+reach the workspace this run's issue is in, and no other. The script paths are passed on the
+command line because `CLAUDE_PLUGIN_ROOT` is not exported into Bash subprocesses.
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/list_sub_issues.py"`
-
-It prints one `- ENG-12 (In Progress) title` line per sub-issue, in Linear's order. An
-issue with none prints a single `no sub-issues on issue …` line and succeeds.
-
-When you have **genuinely completed** a sub-issue, move it to a done state, naming it by
-its identifier and the state by its exact name or id:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/move_sub_issue.py" "<SUB-ISSUE>" "<STATE>"`
-
-Move only what you truly finished. An issue that is not a sub-issue of this one is
-refused and nothing moves. To split work into a new sub-issue, file it with
-`create_issue.py --parent` (see [File a new issue](#file-a-new-issue)).
-
-Both take `--issue REF` to work a different issue's sub-issues (overrides
-`$LINEAR_ISSUE_ID`), and `move_sub_issue.py` takes `--team ID` (the team's id, not its key)
-too.
-**Blast radius:** the credential is workspace-wide, so a `move_sub_issue.py --issue` can
-move the sub-issues of **any** issue it reaches — use the override deliberately; the
-default (no flag) stays scoped to this run's issue.
-
-## Labels
-
-An issue's labels are the flags on it (mark a groomed issue `ready`, say, or clear that
-flag). A label belongs to the team or to the whole workspace, so start by listing the
-labels an issue of the team can carry — this also flags the ones already on the active
-issue:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/list_labels.py"`
-
-It prints one `id  color  name` line per label, appending `[workspace]` to a workspace
-label and `[on issue]` to the ones the active issue carries. A team with no labels prints a
-single `no labels on team …` line and succeeds.
-
-Add a label to the active issue by its exact name, or by its id from that output:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/add_label.py" "<LABEL>"`
-
-Remove a label the same way:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/remove_label.py" "<LABEL>"`
-
-A name that matches no label errors non-zero; so does one that two labels carry (a team
-label and a workspace label of one name, say), naming each id — pass the id you mean.
-Adding a label the issue already has, or removing one it does not, is a no-op success
-(it never duplicates and never errors). Both take `--issue REF` and `--team ID` (the
-team's id, not its key).
-
-**Blast radius:** the credential is workspace-wide, so an `--issue` override can flag or
-unflag **any** issue it reaches. The default (no flag) stays scoped to this run's issue.
-
-## Navigate the team
-
-To find work related to this issue, browse the team's workflow states, then a state's
-issues. First list the states:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/list_states.py"`
-
-It prints one `id  type  name` line per state, in the order the team's workflow shows
-them; the type is Linear's category (`triage`, `backlog`, `unstarted`, `started`,
-`completed`, `canceled`). The team defaults from the environment; pass `--team ID` (the
-team's id, not its key) to browse a different team.
-
-Then list the issues in one state, named by its exact name or id:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/list_issues.py" "<STATE>"`
-
-It prints one `identifier  title` line per open issue, in the state's manual order — the
-order afkd claims in. Pass `--limit N` to bound how many are printed (default 50).
-
-## Files
-
-A file on a Linear issue is a link in its markdown: an image embedded `![name](url)` or a
-file linked `[name](url)`, at a url Linear hosts, in the description or in a comment. A
-screenshot a human pasted lives there. List the issue's files:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/list_files.py"`
-
-It prints one `N  name  url` line per file — the description's first, then the thread's
-oldest first, each url once — and passes over a link to anywhere else. An issue with none
-prints a single `no files on issue …` line and succeeds.
-
-Then fetch one by its number from that listing, or by its url:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/fetch_file.py" "<N>"`
-
-It downloads the file into `$AFKD_SCRATCH_DIR/attachments/`, named as the service's
-`fetch_files` names it (`1-shot.png`), and prints the written path — open it with the
-`Read` tool to view an image.
-
-Or fetch by name — the newest file named exactly that, say an earlier attempt's plan —
-and choose where it lands:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/fetch_file.py" --name "<FILE-NAME>" --to "<ABSOLUTE-PATH>"`
-
-`--name` takes the place of the number (give one or the other). With no file of that name
-it prints `no file named …`, writes nothing and succeeds. `--to` works with a number too.
-A file over 10 MiB is refused.
-
-To hand an artifact back — an annotated screenshot, a rendered diff, a report — put a
-local file on the issue:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/linear/post_file.py" "/path/to/file" --comment "<WHAT IT IS>"`
-
-It uploads the file to Linear and posts a comment holding it: an image shown, any other
-file linked, after the `--comment` text when you give one. Optional flags:
-
-- `--name "text"` — the name it is shown under (defaults to the file's basename).
-- `--comment "text"` — the comment's text, above the file.
-- `--issue REF` — put it on a different issue (overrides `$LINEAR_ISSUE_ID`).
-
-A file larger than 10 MiB fails cleanly before any upload.
-
-## How locators and credentials are resolved
-
-Every helper reads its credential and Linear's endpoint from the environment afkd already
-merged into this run (`LINEAR_AUTHORIZATION`, `LINEAR_API_URL`); you do not pass them. The
-locators are read **from the environment only** — the active issue from
-`$LINEAR_ISSUE_ID` (its identifier is `$LINEAR_ISSUE`) and the team from
-`$LINEAR_TEAM_ID` — each overridable with the `--issue` / `--team` flag. An issue is
-named by its identifier (`ENG-12`) or its id, either one, wherever a helper takes one. A
-team is named by its id, as `$LINEAR_TEAM_ID` holds it, never by its key (`ENG`): Linear
-answers a key with `Argument Validation Error`. The helper paths are passed on the command line because `CLAUDE_PLUGIN_ROOT` is not exported
-into Bash subprocesses.
-
-`AFKD_SCRATCH_DIR` — the per-run scratch dir — is additionally required by
-`fetch_file.py` without `--to` (the download destination) and by `ask.py` (where its park
-marker, `park`, is written). Both fail loudly when it is unset.
-
-**Blast radius of the overrides.** The credential is workspace-wide, so `--issue` and
-`--team` can reach **any** team or issue it can — not just this run's. Use the overrides
-deliberately; the default (no flag) stays scoped to this run's issue and team.
+`ask.py` also reads `$LINEAR_ISSUE_ID`, the active issue, and `$AFKD_SCRATCH_DIR`, the
+per-run scratch dir where its park marker, `park`, is written; it fails loudly when either is
+unset.
 
 A run stages the skill `@afkd/linear/linear` flattened, as `afkd-linear-linear`.
 
-If a helper exits non-zero it has failed — **surface that failure** (report it as a
-blocker), do not retry it blindly. That holds for a rate limit too: the helper says how
-long Linear asked it to wait.
+If a script exits non-zero it has failed — **surface that failure** (report it as a
+blocker), do not retry it blindly. That holds for a rate limit too: the script says how long
+Linear asked it to wait.

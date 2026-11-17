@@ -5,42 +5,259 @@
 # schema (tests/schema.graphql). Every value that varies is a variable; the literals written
 # inline are page sizes. A comment is a whole line, before the first operation.
 
-query TeamStates($teamId: String!) {
-  team(id: $teamId) {
-    states(first: 100) {
+query Organization {
+  organization {
+    id
+    urlKey
+  }
+}
+
+query IssueRef($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+  }
+}
+
+query IssueFull($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    description
+    url
+    branchName
+    sortOrder
+    priority
+    estimate
+    dueDate
+    createdAt
+    updatedAt
+    completedAt
+    canceledAt
+    archivedAt
+    trashed
+    team {
+      key
+    }
+    state {
+      id
+      name
+      type
+    }
+    assignee {
+      id
+      displayName
+    }
+    delegate {
+      id
+      displayName
+    }
+    creator {
+      displayName
+    }
+    project {
+      name
+    }
+    projectMilestone {
+      name
+    }
+    cycle {
+      number
+    }
+    parent {
+      identifier
+      title
+    }
+    labels(first: 20) {
+      nodes {
+        name
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    children(first: 20) {
       nodes {
         id
-        name
+        identifier
+        title
+        state {
+          name
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    relations(first: 20) {
+      nodes {
         type
-        position
+        relatedIssue {
+          identifier
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    inverseRelations(first: 20) {
+      nodes {
+        type
+        issue {
+          identifier
+          state {
+            type
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    attachments(first: 20) {
+      nodes {
+        url
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    subscribers(first: 20) {
+      nodes {
+        displayName
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
       }
     }
   }
 }
 
-query StateIssues($filter: IssueFilter!, $sort: [IssueSortInput!]!, $first: Int!, $after: String) {
-  issues(filter: $filter, sort: $sort, first: $first, after: $after) {
+query IssueList($filter: IssueFilter!, $sort: [IssueSortInput!]!, $first: Int!, $after: String, $includeArchived: Boolean!) {
+  issues(filter: $filter, sort: $sort, first: $first, after: $after, includeArchived: $includeArchived) {
     nodes {
       id
       identifier
       title
+      description
+      url
+      branchName
       sortOrder
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
-  }
-}
-
-query TeamLabels($filter: IssueLabelFilter!, $after: String) {
-  issueLabels(filter: $filter, first: 100, after: $after) {
-    nodes {
-      id
-      name
-      color
+      priority
+      estimate
+      dueDate
+      createdAt
+      updatedAt
+      completedAt
+      canceledAt
+      archivedAt
+      trashed
       team {
+        key
+      }
+      state {
         id
+        name
+        type
+      }
+      assignee {
+        id
+        displayName
+      }
+      delegate {
+        id
+        displayName
+      }
+      creator {
+        displayName
+      }
+      project {
+        name
+      }
+      projectMilestone {
+        name
+      }
+      cycle {
+        number
+      }
+      parent {
+        identifier
+        title
+      }
+      labels(first: 20) {
+        nodes {
+          name
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      children(first: 20) {
+        nodes {
+          id
+          identifier
+          title
+          state {
+            name
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      relations(first: 20) {
+        nodes {
+          type
+          relatedIssue {
+            identifier
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      inverseRelations(first: 20) {
+        nodes {
+          type
+          issue {
+            identifier
+            state {
+              type
+            }
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      attachments(first: 20) {
+        nodes {
+          url
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      subscribers(first: 20) {
+        nodes {
+          displayName
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
       }
     }
     pageInfo {
@@ -50,9 +267,17 @@ query TeamLabels($filter: IssueLabelFilter!, $after: String) {
   }
 }
 
-query IssueDescription($id: String!) {
+query IssueLabelNames($id: String!, $after: String) {
   issue(id: $id) {
-    description
+    labels(first: 50, after: $after) {
+      nodes {
+        name
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
   }
 }
 
@@ -72,6 +297,136 @@ query IssueChildren($id: String!, $after: String) {
         endCursor
       }
     }
+  }
+}
+
+query IssueOutRelations($id: String!, $after: String) {
+  issue(id: $id) {
+    relations(first: 50, after: $after) {
+      nodes {
+        type
+        relatedIssue {
+          identifier
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueRelations($id: String!, $after: String) {
+  issue(id: $id) {
+    inverseRelations(first: 50, after: $after) {
+      nodes {
+        type
+        issue {
+          identifier
+          state {
+            type
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueAttachments($id: String!, $after: String) {
+  issue(id: $id) {
+    attachments(first: 50, after: $after) {
+      nodes {
+        url
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueSubscribers($id: String!, $after: String) {
+  issue(id: $id) {
+    subscribers(first: 50, after: $after) {
+      nodes {
+        displayName
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query IssueThread($id: String!, $after: String) {
+  issue(id: $id) {
+    identifier
+    comments(first: 100, after: $after) {
+      nodes {
+        id
+        body
+        createdAt
+        editedAt
+        resolvedAt
+        url
+        parent {
+          id
+        }
+        user {
+          displayName
+        }
+        botActor {
+          name
+        }
+        externalUser {
+          name
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query CommentOne($id: String!) {
+  comment(id: $id) {
+    id
+    body
+    createdAt
+    editedAt
+    resolvedAt
+    url
+    parent {
+      id
+    }
+    user {
+      displayName
+    }
+    botActor {
+      name
+    }
+    externalUser {
+      name
+    }
+    issue {
+      id
+      identifier
+    }
+  }
+}
+
+query IssueDescription($id: String!) {
+  issue(id: $id) {
+    description
   }
 }
 
@@ -105,6 +460,242 @@ query IssueComments($id: String!, $after: String) {
   }
 }
 
+query TeamByKey($filter: TeamFilter!) {
+  teams(filter: $filter, first: 2) {
+    nodes {
+      id
+      key
+    }
+  }
+}
+
+query States($teamId: String!) {
+  team(id: $teamId) {
+    states(first: 100) {
+      nodes {
+        id
+        name
+        type
+        position
+      }
+    }
+  }
+}
+
+query LabelList($filter: IssueLabelFilter!, $after: String) {
+  issueLabels(filter: $filter, first: 100, after: $after) {
+    nodes {
+      id
+      name
+      team {
+        key
+      }
+      parent {
+        name
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query TeamList($after: String) {
+  teams(first: 100, after: $after) {
+    nodes {
+      id
+      key
+      name
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query Viewer {
+  viewer {
+    id
+  }
+}
+
+query UserList($after: String) {
+  users(first: 100, after: $after) {
+    nodes {
+      id
+      name
+      displayName
+      email
+      app
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query ProjectList($filter: ProjectFilter!, $after: String) {
+  projects(filter: $filter, first: 25, after: $after) {
+    nodes {
+      id
+      name
+      url
+      teams(first: 50) {
+        nodes {
+          key
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      projectMilestones(first: 50) {
+        nodes {
+          name
+          sortOrder
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query MilestoneList($id: String!, $after: String) {
+  project(id: $id) {
+    projectMilestones(first: 50, after: $after) {
+      nodes {
+        id
+        name
+        sortOrder
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query CycleList($filter: CycleFilter!, $after: String) {
+  cycles(filter: $filter, first: 100, after: $after) {
+    nodes {
+      id
+      number
+      name
+      startsAt
+      endsAt
+      isActive
+      team {
+        key
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query IssuePlace($id: String!) {
+  issue(id: $id) {
+    identifier
+    sortOrder
+    team {
+      id
+      key
+    }
+    state {
+      id
+      name
+      type
+    }
+    project {
+      id
+    }
+  }
+}
+
+query Issues($filter: IssueFilter!, $sort: [IssueSortInput!]!, $first: Int!, $after: String) {
+  issues(filter: $filter, sort: $sort, first: $first, after: $after) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      url
+      sortOrder
+      state {
+        id
+        name
+        type
+      }
+      labels(first: 20) {
+        nodes {
+          name
+        }
+      }
+      assignee {
+        id
+      }
+      delegate {
+        id
+      }
+      parent {
+        identifier
+        title
+      }
+      children(first: 20) {
+        nodes {
+          id
+          identifier
+          title
+          state {
+            name
+          }
+        }
+      }
+      inverseRelations(first: 20) {
+        nodes {
+          type
+          issue {
+            identifier
+            state {
+              type
+            }
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+
+query TeamDefaultState($id: String!) {
+  team(id: $id) {
+    defaultIssueState {
+      id
+      name
+    }
+  }
+}
+
 query IssueLabelIds($id: String!) {
   issue(id: $id) {
     identifier
@@ -112,6 +703,90 @@ query IssueLabelIds($id: String!) {
       nodes {
         id
       }
+    }
+  }
+}
+
+mutation IssueCreate($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    success
+    issue {
+      id
+    }
+  }
+}
+
+mutation IssueWrite($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) {
+    success
+  }
+}
+
+mutation IssueAddLabel($id: String!, $labelId: String!) {
+  issueAddLabel(id: $id, labelId: $labelId) {
+    success
+  }
+}
+
+mutation IssueRemoveLabel($id: String!, $labelId: String!) {
+  issueRemoveLabel(id: $id, labelId: $labelId) {
+    success
+  }
+}
+
+query RelationsOut($id: String!, $after: String) {
+  issue(id: $id) {
+    relations(first: 50, after: $after) {
+      nodes {
+        id
+        type
+        relatedIssue {
+          id
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query RelationsIn($id: String!, $after: String) {
+  issue(id: $id) {
+    inverseRelations(first: 50, after: $after) {
+      nodes {
+        id
+        type
+        issue {
+          id
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+mutation RelationCreate($input: IssueRelationCreateInput!) {
+  issueRelationCreate(input: $input) {
+    success
+  }
+}
+
+mutation IssueArchive($id: String!) {
+  issueArchive(id: $id) {
+    success
+  }
+}
+
+mutation CommentPost($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment {
+      id
     }
   }
 }
@@ -138,47 +813,6 @@ mutation CommentCreate($input: CommentCreateInput!) {
         name
       }
     }
-  }
-}
-
-mutation IssueAddLabel($id: String!, $labelId: String!) {
-  issueAddLabel(id: $id, labelId: $labelId) {
-    success
-  }
-}
-
-mutation IssueRemoveLabel($id: String!, $labelId: String!) {
-  issueRemoveLabel(id: $id, labelId: $labelId) {
-    success
-  }
-}
-
-mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
-  issueUpdate(id: $id, input: $input) {
-    success
-  }
-}
-
-mutation NewIssue($input: IssueCreateInput!) {
-  issueCreate(input: $input) {
-    success
-    issue {
-      id
-      identifier
-      url
-    }
-  }
-}
-
-mutation IssueArchive($id: String!) {
-  issueArchive(id: $id) {
-    success
-  }
-}
-
-mutation IssueUnarchive($id: String!) {
-  issueUnarchive(id: $id) {
-    success
   }
 }
 

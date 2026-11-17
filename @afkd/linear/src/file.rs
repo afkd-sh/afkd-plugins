@@ -1,6 +1,6 @@
-//! Files on an issue, both ways: the files `comment` and `describe` upload and embed, and
-//! the files an issue links ([`linked_issue_files`]), which `fetch_files` writes back to a
-//! directory and the workspace read `linear.files` hands back as urls.
+//! Files on an issue, both ways: the files `update_issue` and `create_comment` upload and
+//! embed, and the files an issue links ([`linked_issue_files`]), which the workspace read
+//! `linear.files` hands back as urls.
 //!
 //! Linear stores a file in two steps: `fileUpload` signs an upload url and names the asset
 //! url the file will live at, and the bytes are PUT to the signed url. The file is then
@@ -9,22 +9,16 @@
 //! an issue's files is a read of the links its description and thread carry
 //! ([`linked_files`]), each fetched with the credential the GraphQL API takes.
 //!
-//! An upload reads its file when the slot calls, and the bytes ride the [`Upload`] from then
-//! on: a write Linear could not take is retried from the outbox with what the slot saw, even
-//! once the file has moved or gone. Its asset url is kept once the PUT has landed, so a retry
-//! of the comment or the description puts no file up twice. A fetch is a read the slot needs
-//! now, so it is never queued.
+//! An upload reads its file when the slot calls, before any request, and the bytes ride the
+//! [`Upload`] from then on.
 
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::path::Path;
 
-use crate::common::Diag;
-use crate::issue::{is_control_marker, ACTION_TAG};
-use crate::outbox::named;
-use crate::tracker::{Issue, LinearError, Tracker};
+use crate::issue::is_control_marker;
+use crate::tracker::{LinearError, Tracker};
 
 /// The most one file may hold, either way: what `@afkd/trello` takes, and ureq's own cap on
 /// a body.
@@ -45,38 +39,25 @@ const MAX_LINK_DESTINATION: usize = 2048;
 /// each bracket a few dozen bytes of scan, not [`MAX_LINK_DESTINATION`].
 const MAX_LINK_PARENS: usize = 32;
 
-/// The most bytes a file name holds on Linux, its `NAME_MAX`. A name [`file_name_for`] writes,
-/// `{n}-` prefix included, is cut to it on a character, so a wide name stays readable. The
-/// temp file [`write_all`] writes first is named apart from it, so its length never counts.
-const NAME_MAX: usize = 255;
-
-/// The longest extension, dot included, [`file_name_for`] keeps whole when it cuts a name.
-const MAX_EXTENSION: usize = 16;
-
-/// A file to put on an issue: the name it is linked under, its content type, its bytes as
-/// they were read, and its asset url once it has been put up.
+/// A file to put on an issue: the name it is linked under, its content type, and its bytes
+/// as they were read.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Upload {
     /// The file's name, the last part of the path the slot gave: what Linear stores and
     /// the link's text.
     pub(crate) name: String,
     pub(crate) content_type: String,
-    /// Shared, so a retry from the outbox clones a pointer and not the file.
-    pub(crate) bytes: Arc<[u8]>,
-    /// The asset url, set once the PUT has landed and shared by every clone, so a retry
-    /// does not put the file up again.
-    pub(crate) asset: Arc<OnceLock<String>>,
+    pub(crate) bytes: Vec<u8>,
 }
 
-/// The name, the type, the length and whether it is up, never the bytes: an upload can be
-/// a whole screenshot, and it sits in queue entries a log line may print.
+/// The name, the type and the length, never the bytes: an upload can be a whole screenshot,
+/// and a log line may print it.
 impl fmt::Debug for Upload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Upload")
             .field("name", &self.name)
             .field("content_type", &self.content_type)
             .field("bytes", &self.bytes.len())
-            .field("uploaded", &self.asset.get().is_some())
             .finish()
     }
 }
@@ -90,8 +71,7 @@ pub(crate) fn upload(name: &str) -> Upload {
     Upload {
         name: name.to_string(),
         content_type: content_type_of(name).to_string(),
-        bytes: bytes.into(),
-        asset: Arc::default(),
+        bytes,
     }
 }
 
@@ -130,8 +110,7 @@ pub(crate) fn read_upload(action: &str, path: &str) -> Result<Upload, String> {
     Ok(Upload {
         content_type: content_type_of(&name).to_string(),
         name,
-        bytes: bytes.into(),
-        asset: Arc::default(),
+        bytes,
     })
 }
 
@@ -189,9 +168,8 @@ pub(crate) fn embed(text: &str, uploads: &[Upload], urls: &[String]) -> String {
     parts.join("\n\n")
 }
 
-/// Put each upload up that is not up yet, keeping its asset url, and return the markdown
-/// `text` is sent as with every file in it ([`embed`]). An upload that fails is the
-/// caller's, to queue or refuse, and the files already up stay up for the retry.
+/// Put each upload up, and return the markdown `text` is sent as with every file in it
+/// ([`embed`]). An upload that fails is the caller's to refuse.
 pub(crate) fn embedded(
     tracker: &dyn Tracker,
     text: &str,
@@ -199,13 +177,7 @@ pub(crate) fn embedded(
 ) -> Result<String, LinearError> {
     let urls = uploads
         .iter()
-        .map(|upload| match upload.asset.get() {
-            Some(url) => Ok(url.clone()),
-            None => {
-                let url = tracker.upload_file(upload)?;
-                Ok(upload.asset.get_or_init(|| url).clone())
-            }
-        })
+        .map(|upload| tracker.upload_file(upload))
         .collect::<Result<Vec<_>, LinearError>>()?;
     Ok(embed(text, uploads, &urls))
 }
@@ -334,55 +306,6 @@ fn link_at(md: &str, start: usize) -> Option<(String, String)> {
     after.starts_with(')').then(|| (text, url.to_string()))
 }
 
-/// The name the `n`th of the files fetched is written under, `n` padded to `width` digits:
-/// the link's `name`, else the last segment of its `url`, made safe to write — `/`, `\` and
-/// control characters made `_`, leading dots dropped, cut to [`NAME_MAX`] bytes of whole
-/// characters with its extension kept — and `file` when nothing is left.
-pub(crate) fn file_name_for(n: usize, width: usize, name: &str, url: &str) -> String {
-    let name = match name.trim() {
-        "" => url
-            .split(['?', '#'])
-            .next()
-            .unwrap_or_default()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default(),
-        name => name,
-    };
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if c == '/' || c == '\\' || c.is_control() {
-                '_'
-            } else {
-                c
-            }
-        })
-        .skip_while(|&c| c == '.')
-        .collect();
-    let safe = if safe.is_empty() { "file" } else { &safe };
-    let prefix = format!("{n:0width$}-");
-    format!("{prefix}{}", cut_to(safe, NAME_MAX - prefix.len()))
-}
-
-/// `name` cut to at most `budget` bytes of whole characters, its extension of up to
-/// [`MAX_EXTENSION`] bytes kept after the cut stem.
-fn cut_to(name: &str, budget: usize) -> String {
-    if name.len() <= budget {
-        return name.to_string();
-    }
-    let ext = name
-        .rfind('.')
-        .map(|at| &name[at..])
-        .filter(|ext| ext.len() <= MAX_EXTENSION)
-        .unwrap_or_default();
-    let mut end = budget - ext.len();
-    while !name.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{ext}", &name[..end])
-}
-
 /// Every file Linear hosts that the issue `issue_id` embeds or links, as its name and its url:
 /// in its description, then in its thread oldest first, control markers left out, each url
 /// once.
@@ -414,96 +337,13 @@ pub(crate) fn linked_issue_files(
     Ok(files)
 }
 
-/// Fetch every file [`linked_issue_files`] finds on `issue`, and write them to the directory
-/// `to`, each under [`file_name_for`]. All are fetched before any is written, and each is
-/// written to a temp file renamed onto its name: a file that cannot be fetched or written
-/// leaves nothing, no file is ever half there, and only a rename that fails keeps the files
-/// renamed before it. An issue with no file writes nothing and says so.
-pub(crate) fn fetch(
-    tracker: &dyn Tracker,
-    issue: &Issue,
-    to: &str,
-    diag: &dyn Diag,
-) -> Result<(), String> {
-    const ACTION: &str = "fetch_files";
-    let dir = Path::new(to);
-    if !dir.is_absolute() {
-        return Err(format!("{ACTION}: to must be absolute, not {to:?}"));
-    }
-    match std::fs::metadata(dir) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return Err(format!("{ACTION}: {to} is not a directory")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("{ACTION}: no directory at {to}"))
-        }
-        Err(e) => return Err(format!("{ACTION}: cannot read {to}: {e}")),
-    }
-    let files = linked_issue_files(tracker, &issue.id)?;
-    if files.is_empty() {
-        diag.narrate(&format!(
-            "{ACTION_TAG} no files on {}; nothing written to {to}",
-            named(issue)
-        ));
-        return Ok(());
-    }
-    let width = files.len().to_string().len();
-    let fetched = files
-        .iter()
-        .enumerate()
-        .map(|(n, (name, url))| {
-            let bytes = tracker
-                .download(url)
-                .map_err(|e| format!("{ACTION}: cannot fetch {name} ({url}): {e}"))?;
-            Ok((file_name_for(n + 1, width, name, url), bytes))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let names: Vec<&str> = fetched.iter().map(|(name, _)| name.as_str()).collect();
-    write_all(dir, &fetched).map_err(|e| format!("{ACTION}: cannot write to {to}: {e}"))?;
-    diag.narrate(&format!(
-        "{ACTION_TAG} writing {} files from {} to {to}: {}",
-        fetched.len(),
-        named(issue),
-        names.join(", ")
-    ));
-    Ok(())
-}
-
-/// Write each `(name, bytes)` into `dir`: every one to a temp file first, then each renamed
-/// onto its name. The temp files are named by the process and the file's place, never by its
-/// name, so a name that fits fits as a temp file too. A file that cannot be written takes
-/// every temp file with it. A rename that fails, onto a directory of the same name, keeps the
-/// files already renamed and takes the temp files still left.
-fn write_all(dir: &Path, files: &[(String, Vec<u8>)]) -> std::io::Result<()> {
-    let temps: Vec<PathBuf> = (1..=files.len())
-        .map(|n| dir.join(format!(".afkd-linear-{}-{n}", std::process::id())))
-        .collect();
-    let clear = |left: &[PathBuf]| {
-        for path in left {
-            let _ = std::fs::remove_file(path);
-        }
-    };
-    for (n, (path, (_, bytes))) in temps.iter().zip(files).enumerate() {
-        if let Err(e) = std::fs::write(path, bytes) {
-            clear(&temps[..=n]);
-            return Err(e);
-        }
-    }
-    for (n, (path, (name, _))) in temps.iter().zip(files).enumerate() {
-        if let Err(e) = std::fs::rename(path, dir.join(name)) {
-            clear(&temps[n..]);
-            return Err(e);
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{CaptureDiag, TempDir};
-    use crate::tracker::{MockTracker, MOCK_UPLOADS, SELF_ID};
+    use crate::common::TempDir;
+    use crate::tracker::MOCK_UPLOADS;
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::sync::Arc;
 
     /// Whether a url is the mock's.
     fn mock_file(url: &str) -> bool {
@@ -518,11 +358,10 @@ mod tests {
         let path = dir.path().join("screen shot — 修复.PNG");
         let bytes = b"\x89PNG\r\n\x1a\n\0\xff\xfe--afkd--\r\n".to_vec();
         std::fs::write(&path, &bytes).unwrap();
-        let upload = read_upload("comment", &path.display().to_string()).unwrap();
+        let upload = read_upload("create_comment", &path.display().to_string()).unwrap();
         assert_eq!(upload.name, "screen shot — 修复.PNG");
         assert_eq!(upload.content_type, "image/png");
-        assert_eq!(&*upload.bytes, &bytes[..]);
-        assert!(upload.asset.get().is_none(), "not up yet");
+        assert_eq!(upload.bytes, bytes);
     }
 
     /// Each path an upload cannot be read from is refused in the action's words: relative,
@@ -538,26 +377,32 @@ mod tests {
         for (path, refusal) in [
             (
                 "shot.png".to_string(),
-                "comment: files must be absolute, not \"shot.png\"".to_string(),
+                "create_comment: files must be absolute, not \"shot.png\"".to_string(),
             ),
-            ("/".to_string(), "comment: / names no file".to_string()),
+            (
+                "/".to_string(),
+                "create_comment: / names no file".to_string(),
+            ),
             (
                 at("gone.png"),
-                format!("comment: no file at {}", at("gone.png")),
+                format!("create_comment: no file at {}", at("gone.png")),
             ),
             (
                 dir.path().display().to_string(),
-                format!("comment: {} is not a regular file", dir.path().display()),
+                format!(
+                    "create_comment: {} is not a regular file",
+                    dir.path().display()
+                ),
             ),
             (
                 big.clone(),
-                format!("comment: {big} is over the 10 MiB a file may hold"),
+                format!("create_comment: {big} is over the 10 MiB a file may hold"),
             ),
         ] {
-            assert_eq!(read_upload("comment", &path).map(drop), Err(refusal));
+            assert_eq!(read_upload("create_comment", &path).map(drop), Err(refusal));
         }
         assert_eq!(
-            read_upload("describe", &exact).unwrap().bytes.len() as u64,
+            read_upload("update_issue", &exact).unwrap().bytes.len() as u64,
             MAX_FILE_BYTES,
             "the cap itself is taken"
         );
@@ -566,9 +411,9 @@ mod tests {
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
         if File::open(&locked).is_err() {
             assert_eq!(
-                read_upload("describe", &locked).map(drop),
+                read_upload("update_issue", &locked).map(drop),
                 Err(format!(
-                    "describe: cannot read {locked}: Permission denied (os error 13)"
+                    "update_issue: cannot read {locked}: Permission denied (os error 13)"
                 ))
             );
         }
@@ -745,71 +590,7 @@ mod tests {
         }
     }
 
-    /// Each fetched file's name: padded to the count's width, the link's text made safe to
-    /// write, the url's last segment for an empty text, and `file` when nothing is left.
-    #[test]
-    fn a_fetched_file_is_named_safely_in_order() {
-        let url = "https://uploads.linear.app/o/a/shot%201.png?sig=x#y";
-        for (n, width, name, written) in [
-            (1, 1, "image.png", "1-image.png".to_string()),
-            (9, 1, "image.png", "9-image.png".to_string()),
-            (1, 2, "image.png", "01-image.png".to_string()),
-            (10, 2, "image.png", "10-image.png".to_string()),
-            (
-                7,
-                3,
-                "screen shot — 修复.png",
-                "007-screen shot — 修复.png".to_string(),
-            ),
-            (1, 1, "../x", "1-_x".to_string()),
-            (1, 1, "..\\..\\etc\\passwd", "1-_.._etc_passwd".to_string()),
-            (1, 1, ".hidden", "1-hidden".to_string()),
-            (1, 1, "a\nb\tc\u{7}", "1-a_b_c_".to_string()),
-            (1, 1, "", "1-shot%201.png".to_string()),
-            (1, 1, "  ", "1-shot%201.png".to_string()),
-            (1, 1, "...", "1-file".to_string()),
-            (
-                1,
-                1,
-                "長".repeat(300).as_str(),
-                format!("1-{}", "長".repeat(84)),
-            ),
-            (
-                1,
-                1,
-                format!("{}.png", "長".repeat(300)).as_str(),
-                format!("1-{}.png", "長".repeat(83)),
-            ),
-            (
-                12,
-                3,
-                format!("a{}", "🚨".repeat(100)).as_str(),
-                format!("012-a{}", "🚨".repeat(62)),
-            ),
-            (
-                1,
-                1,
-                format!("{}.tar.gz", "🚨".repeat(100)).as_str(),
-                format!("1-{}.gz", "🚨".repeat(62)),
-            ),
-            (
-                1,
-                1,
-                format!("{}.png", "長".repeat(82)).as_str(),
-                format!("1-{}.png", "長".repeat(82)),
-            ),
-        ] {
-            let got = file_name_for(n, width, name, url);
-            assert_eq!(got, written, "{name:?}");
-            assert!(got.len() <= NAME_MAX, "{} bytes: {got}", got.len());
-        }
-        assert_eq!(
-            file_name_for(1, 1, "", "https://uploads.linear.app/"),
-            "1-file"
-        );
-    }
-
-    /// An upload prints its name, type, length and whether it is up, and never a byte.
+    /// An upload prints its name, type and length, and never a byte.
     #[test]
     fn an_upload_never_prints_its_bytes() {
         let upload = upload("shot.png");
@@ -817,233 +598,15 @@ mod tests {
         assert_eq!(
             printed,
             format!(
-                "Upload {{ name: \"shot.png\", content_type: \"image/png\", bytes: {}, uploaded: \
-                 false }}",
+                "Upload {{ name: \"shot.png\", content_type: \"image/png\", bytes: {} }}",
                 upload.bytes.len()
             )
         );
-        upload.asset.set("u".into()).unwrap();
-        assert!(format!("{upload:?}").ends_with("uploaded: true }"));
     }
 
-    /// A team whose issue `ENG-1` carries a pasted image in its description, a thread with a
-    /// log, a file named twice, a marker that links one, and links that are no Linear file.
-    fn issue_with_files() -> (MockTracker, Vec<Vec<u8>>) {
-        let t = MockTracker::new();
-        t.add_state("Todo", "unstarted");
-        let url = |n: u32| format!("{MOCK_UPLOADS}acme/{n}/x");
-        let bytes: Vec<Vec<u8>> = (1..=4u8)
-            .map(|n| [b"\x89PNG\r\n\x1a\n\0\xff".to_vec(), vec![n; n as usize]].concat())
-            .collect();
-        for (n, b) in bytes.iter().enumerate() {
-            t.seed_file(&url(n as u32 + 1), b);
-        }
-        let description = format!(
-            "## 背景\n\n![image.png]({})\n\nsee https://example.com/x.png",
-            url(1)
-        );
-        t.add_issue("Todo", "ENG-1", "修复 the retry storm 🚨", &description);
-        let at = |secs: u64| UNIX_EPOCH + Duration::from_secs(secs);
-        t.push_comment(
-            "ENG-1",
-            "c2",
-            &format!("again ![image.png]({}) and [run.log]({})", url(1), url(3)),
-            "u-chen",
-            at(20),
-        );
-        t.push_comment(
-            "ENG-1",
-            "c1",
-            &format!("[](<{}>)", url(2)),
-            "u-phil",
-            at(10),
-        );
-        t.push_comment(
-            "ENG-1",
-            "m1",
-            &format!("[afkd-claim] owner=afkd-4242 [x]({})", url(4)),
-            SELF_ID,
-            at(15),
-        );
-        (t, bytes)
-    }
-
-    /// The description's files then the thread's, oldest first, each url once and markers
-    /// left out, are written byte for byte under their numbered names, and the line names
-    /// each; nothing else is left in the directory.
-    #[test]
-    fn fetch_writes_every_linear_file_the_issue_carries() {
-        let (t, bytes) = issue_with_files();
-        let issue = t.issue("ENG-1");
-        let (dir, diag) = (TempDir::new("fetch"), CaptureDiag::default());
-        let to = dir.path().display().to_string();
-        fetch(&t, &issue, &to, &diag).unwrap();
-        let mut names: Vec<String> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(names, ["1-image.png", "2-x", "3-run.log"]);
-        for (name, n) in [("1-image.png", 0), ("2-x", 1), ("3-run.log", 2)] {
-            assert_eq!(
-                std::fs::read(dir.path().join(name)).unwrap(),
-                bytes[n],
-                "{name}"
-            );
-        }
-        assert_eq!(
-            diag.narrated(),
-            [format!(
-                "[linear] writing 3 files from issue ENG-1 \"修复 the retry storm 🚨\" to {to}: \
-                 1-image.png, 2-x, 3-run.log"
-            )]
-        );
-    }
-
-    /// A link whose text is too long to be a file name is written under its cut name, and one
-    /// whose wide name is just short enough under its whole name, each byte for byte.
-    #[test]
-    fn fetch_writes_a_wide_name_whole_and_a_too_long_one_cut() {
-        let t = MockTracker::new();
-        t.add_state("Todo", "unstarted");
-        let (long, legal) = ("長".repeat(300), format!("{}.png", "長".repeat(82)));
-        assert_eq!(legal.len(), 250);
-        let url = |n: u32| format!("{MOCK_UPLOADS}acme/{n}/x");
-        let bytes = [
-            b"\x89PNG\r\n\x1a\n\0\xff".to_vec(),
-            "長".repeat(3).into_bytes(),
-        ];
-        t.seed_file(&url(1), &bytes[0]);
-        t.seed_file(&url(2), &bytes[1]);
-        t.add_issue(
-            "Todo",
-            "ENG-3",
-            "Wide",
-            &format!("![{legal}]({})\n\n[{long}]({})", url(1), url(2)),
-        );
-        let (dir, diag) = (TempDir::new("wide"), CaptureDiag::default());
-        fetch(
-            &t,
-            &t.issue("ENG-3"),
-            &dir.path().display().to_string(),
-            &diag,
-        )
-        .unwrap();
-        let cut = format!("2-{}", "長".repeat(84));
-        for (name, bytes) in [(format!("1-{legal}"), &bytes[0]), (cut, &bytes[1])] {
-            assert_eq!(
-                &std::fs::read(dir.path().join(&name)).unwrap(),
-                bytes,
-                "{name}"
-            );
-        }
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            2,
-            "no temp left"
-        );
-    }
-
-    /// A file that cannot be renamed onto its name, a directory there already, refuses the
-    /// fetch and leaves no temp file behind.
-    #[test]
-    fn a_failed_rename_leaves_no_temp_file() {
-        let (t, bytes) = issue_with_files();
-        let (dir, diag) = (TempDir::new("squat"), CaptureDiag::default());
-        std::fs::create_dir_all(dir.path().join("2-x").join("kept")).unwrap();
-        let to = dir.path().display().to_string();
-        let refusal = fetch(&t, &t.issue("ENG-1"), &to, &diag).unwrap_err();
-        assert!(
-            refusal.starts_with(&format!("fetch_files: cannot write to {to}: ")),
-            "{refusal}"
-        );
-        let mut names: Vec<String> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(names, ["1-image.png", "2-x"]);
-        assert_eq!(
-            std::fs::read(dir.path().join("1-image.png")).unwrap(),
-            bytes[0]
-        );
-        assert!(dir.path().join("2-x").join("kept").is_dir());
-    }
-
-    /// An issue with no Linear file writes nothing and says so; a `to` that is relative, a
-    /// file or missing is refused; and a file Linear cannot serve refuses the whole fetch
-    /// naming it, with nothing written.
-    #[test]
-    fn fetch_refuses_what_it_cannot_write_and_writes_nothing_then() {
-        let t = MockTracker::new();
-        t.add_state("Todo", "unstarted");
-        t.add_issue(
-            "Todo",
-            "ENG-2",
-            "Bare",
-            "[elsewhere](https://example.com/x.png)",
-        );
-        let bare = t.issue("ENG-2");
-        let (dir, diag) = (TempDir::new("nofiles"), CaptureDiag::default());
-        let to = dir.path().display().to_string();
-        fetch(&t, &bare, &to, &diag).unwrap();
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-        assert_eq!(
-            diag.narrated(),
-            [format!(
-                "[linear] no files on issue ENG-2 \"Bare\"; nothing written to {to}"
-            )]
-        );
-
-        let file = dir.path().join("a file");
-        std::fs::write(&file, b"").unwrap();
-        let file = file.display().to_string();
-        let missing = dir.path().join("nowhere").display().to_string();
-        for (to, refusal) in [
-            (
-                "files".to_string(),
-                "fetch_files: to must be absolute, not \"files\"".to_string(),
-            ),
-            (
-                file.clone(),
-                format!("fetch_files: {file} is not a directory"),
-            ),
-            (
-                missing.clone(),
-                format!("fetch_files: no directory at {missing}"),
-            ),
-        ] {
-            assert_eq!(fetch(&t, &bare, &to, &diag), Err(refusal));
-        }
-
-        let (t, _) = issue_with_files();
-        let issue = t.issue("ENG-1");
-        let gone = format!("{MOCK_UPLOADS}acme/9/gone.png");
-        t.push_comment(
-            "ENG-1",
-            "c9",
-            &format!("![gone.png]({gone})"),
-            "u-chen",
-            UNIX_EPOCH + Duration::from_secs(99),
-        );
-        let (dir, diag) = (TempDir::new("gone"), CaptureDiag::default());
-        assert_eq!(
-            fetch(&t, &issue, &dir.path().display().to_string(), &diag),
-            Err(format!(
-                "fetch_files: cannot fetch gone.png ({gone}): linear fetch file: Linear returned \
-                 status 404"
-            ))
-        );
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            0,
-            "nothing written"
-        );
-        assert!(diag.narrated().is_empty());
-    }
-
-    /// The skill's Python, which reads and writes links for `list_files.py`, `fetch_file.py`
-    /// and `post_file.py`, run over `fixture` as JSON on its stdin; its answers, as JSON.
+    /// The skill's Python, which reads and writes links for `files.py`, `create_issue.py`,
+    /// `update_issue.py` and `create_comment.py`, run over `fixture` as JSON on its stdin; its
+    /// answers, as JSON.
     fn python_ports(fixture: &serde_json::Value, api_url: &str) -> serde_json::Value {
         const DRIVER: &str = r#"
 import json, sys
@@ -1052,7 +615,6 @@ import linear_api as linear
 f = json.load(sys.stdin)
 json.dump({
     "links": [linear.linked_files(md, linear.is_linear_file) for md in f["markdown"]],
-    "names": [linear.file_name_for(*row) for row in f["names"]],
     "types": [linear.content_type_of(name) for name in f["types"]],
     "embeds": [
         linear.embed(text, [(n, linear.content_type_of(n), u) for n, u in files])
@@ -1090,8 +652,8 @@ json.dump({
     /// The skill's Python ports read and write links exactly as this module does, over one
     /// fixture of the inputs that tell two readings apart: wide and four-byte text at each
     /// bound, escapes, nesting, every destination and title form, the whitespace and control
-    /// characters Python and Rust class differently, unsafe and over-long names, extensions in
-    /// any case, names a link must escape, and afkd's markers escaped and indented.
+    /// characters Python and Rust class differently, extensions in any case, names a link must
+    /// escape, and afkd's markers escaped and indented.
     #[test]
     fn the_skill_ports_read_and_write_links_as_the_plugin_does() {
         use crate::auth::Auth;
@@ -1137,36 +699,6 @@ json.dump({
             format!("[a\\]b\\\\c\\d\\字]({up}/z)"),
             String::new(),
             text("[](", 500),
-        ];
-        let long = format!("{}.png", text("長", 100));
-        let names: Vec<(usize, usize, String, String)> = vec![
-            (1, 1, "shot — 修复.png".into(), format!("{up}/a")),
-            (
-                3,
-                2,
-                "".into(),
-                format!("{up}/screen%20shot.png?sig=1#frag"),
-            ),
-            (1, 1, "  ".into(), format!("{up}/")),
-            (1, 1, "../../etc/passwd".into(), format!("{up}/a")),
-            (1, 1, "a\\b\u{7}c\u{7f}\u{9f}d".into(), format!("{up}/a")),
-            (1, 1, "...hidden".into(), format!("{up}/a")),
-            (1, 1, "\u{1c}name\u{1c}".into(), format!("{up}/a")),
-            (1, 1, "\u{85}name.txt\u{3000}".into(), format!("{up}/a")),
-            (12, 3, long, format!("{up}/a")),
-            (
-                1,
-                1,
-                format!("{}.verylongextension123", text("x", 300)),
-                format!("{up}/a"),
-            ),
-            (
-                1,
-                1,
-                format!("{}.tar.gz", text("😀", 70)),
-                format!("{up}/a"),
-            ),
-            (7, 1, "".into(), format!("{up}/../")),
         ];
         let types = [
             "shot.PNG",
@@ -1222,7 +754,6 @@ json.dump({
         ];
         let fixture = json!({
             "markdown": markdown,
-            "names": names,
             "types": types,
             "embeds": embeds,
             "urls": urls,
@@ -1230,10 +761,6 @@ json.dump({
         });
         let rust = json!({
             "links": markdown.iter().map(|md| linked_files(md, &is_linear)).collect::<Vec<_>>(),
-            "names": names
-                .iter()
-                .map(|(n, width, name, url)| file_name_for(*n, *width, name, url))
-                .collect::<Vec<_>>(),
             "types": types.iter().map(|name| content_type_of(name)).collect::<Vec<_>>(),
             "embeds": embeds
                 .iter()
@@ -1258,7 +785,7 @@ json.dump({
             rust["links"]
         );
         let python = python_ports(&fixture, &format!("{base}{GRAPHQL_PATH}"));
-        for key in ["links", "names", "types", "embeds", "linear", "markers"] {
+        for key in ["links", "types", "embeds", "linear", "markers"] {
             let (rust, python) = (&rust[key], &python[key]);
             for (n, (r, p)) in rust
                 .as_array()
