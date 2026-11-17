@@ -16,8 +16,9 @@
 //!   and to refusing a returning action's result read as an error, which only an afkd that
 //!   read the manifest's `returns` refuses.
 //! - The **README** leg validates every `conf` fence of the plugin's README against the
-//!   installed release: each a whole entry file, but for the one that is the plugin's
-//!   settings file, which is placed as that file for the fences after it.
+//!   installed release, with every variable the fences read set by [`CONFIG_ENV`]: each a
+//!   whole entry file, but for the one that is the plugin's settings file, which is placed
+//!   as that file for the fences after it.
 //! - The **skill** leg runs one message whose run replies through the installed `telegram`
 //!   skill, so the env a real daemon hands a run is the env the skill's scripts read.
 //!
@@ -286,9 +287,14 @@ fn write_settings(home: &Path, settings: &str) {
     std::fs::write(&file, settings).expect("write the settings file");
 }
 
-/// `afkd validate` over `home`'s config: the exit code and the report.
+/// The credential a config reads from the daemon's environment
+/// (`env.get("TELEGRAM_BOT_TOKEN")`), as the README's examples do.
+const CONFIG_ENV: &[(&str, &str)] = &[("TELEGRAM_BOT_TOKEN", TOKEN)];
+
+/// `afkd validate` over `home`'s config, with [`CONFIG_ENV`] set: the exit code and the
+/// report.
 fn validate(home: &Path) -> (Option<i32>, String) {
-    let out = run_subcommand_args(home, &["validate"]);
+    let out = run_subcommand_env(home, &["validate"], CONFIG_ENV);
     (
         out.status.code(),
         format!(
@@ -875,6 +881,20 @@ fn conf_fences(readme: &str) -> Vec<(usize, String)> {
     fences
 }
 
+/// The name of each variable `fence` reads from the environment, each `env.get("NAME")`, in
+/// the order it reads them.
+fn env_reads(fence: &str) -> Vec<&str> {
+    const READ: &str = "env.get(\"";
+    fence
+        .match_indices(READ)
+        .filter_map(|(at, _)| {
+            fence[at + READ.len()..]
+                .split_once('"')
+                .map(|(name, _)| name)
+        })
+        .collect()
+}
+
 /// The first line of the README fence that is the plugin's settings file.
 const SETTINGS_FENCE: &str = "// ~/.config/afkd/plugins/@afkd/telegram.afk";
 
@@ -894,6 +914,27 @@ fn every_readme_conf_fence_validates() {
             .count(),
         1,
         "one fence is the settings file"
+    );
+
+    // Check that every name a fence reads is set before any fence is validated, so a name the
+    // README starts reading fails as itself, not as a load failure.
+    let reads: Vec<(usize, &str)> = fences
+        .iter()
+        .flat_map(|(line, fence)| env_reads(fence).into_iter().map(move |name| (*line, name)))
+        .collect();
+    assert!(
+        !reads.is_empty(),
+        "the README's fences read their credentials from the environment"
+    );
+    let unset: Vec<String> = reads
+        .iter()
+        .filter(|(_, name)| CONFIG_ENV.iter().all(|(set, _)| set != name))
+        .map(|(line, name)| format!("the fence at README line {line} reads {name}"))
+        .collect();
+    assert!(
+        unset.is_empty(),
+        "CONFIG_ENV sets every name the README reads, but not:\n{}",
+        unset.join("\n")
     );
 
     let home = installed();

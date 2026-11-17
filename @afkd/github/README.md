@@ -50,9 +50,10 @@ each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and
 but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
 manifest when it is installed.
 
-The configs below are written in the afk language of **afkd 0.2.651 or newer**, the
-first that imports agent kinds from `ai`; an older afkd still runs the plugin, but refuses
-the examples when they load.
+The configs below are written in the afk language of **afkd 0.2.695 or newer**, the
+first that reads a required environment variable where it is written,
+`env.get(…) ?? fail(…)`; an older afkd still runs the plugin, but refuses the examples
+when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `github`:
 
@@ -61,7 +62,7 @@ import "afkd"
 import "std:env"
 import "@afkd/github"
 
-GITHUB_TOKEN :: env.get("GITHUB_TOKEN") ?? ""
+GITHUB_TOKEN :: env.get("GITHUB_TOKEN") ?? fail("GITHUB_TOKEN is unset")
 BOT :: "autocoder[bot]"
 
 task :: proc() {

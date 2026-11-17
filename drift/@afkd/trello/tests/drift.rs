@@ -15,13 +15,15 @@
 //!   attempt left on the card, and finds no patch; its `on_run` then attaches one, and
 //!   the card holds it byte for byte.
 //! - The **complete example** leg `afkd validate`s the selfdev pipeline of the afk language
-//!   spec's §24 against the installed plugin, and the **handle** leg holds `afkd validate` to
-//!   refusing an action called without its card.
+//!   spec's §24 against the installed plugin and, given an afkd checkout in `AFKD_SRC`, holds
+//!   its copies to §24 there; the **handle** leg holds `afkd validate` to refusing an action
+//!   called without its card.
 //! - The **cadence** leg holds `afkd validate` to refusing a service that writes the claim
 //!   key afkd renamed to `every`, pointing it at `every`, and to taking the same service
 //!   with `every`.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
-//!   each a whole entry file, against the installed plugin.
+//!   each a whole entry file, against the installed plugin, with every variable the fences
+//!   read set by [`CONFIG_ENV`].
 //!
 //! The Trello is the plugin's own loopback fake ([`fake`]), so no leg touches a network, and
 //! every wait is bounded and every spawn held in a [`Daemon`]: a claim that never lands must
@@ -820,7 +822,8 @@ discuss :: queue { capacity 2 }
 /// §24's `selfdev/selfdev.afk`, copied from `docs/lang-v2.md` at afkd master, up to the
 /// `develop` service's end. The `discuss` half after it is left out: it writes
 /// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
-/// `list[str]` and is written `[ "anyone" ]`.
+/// `list[str]` and is written `[ "anyone" ]`. [`the_section_24_copies_are_the_specs`] holds
+/// this copy and the two above to the spec.
 const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afk - Trello-driven pipeline: afkd develops itself.
 // Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
 // on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
@@ -840,11 +843,11 @@ PLUGINS    :: "/home/user/Projects/afkd-plugins"
 PNPM_STORE :: "/home/user/Projects/.pnpm-store"
 
 TRELLO_BOARD   :: "https://trello.com/b/BOARDID/afkd"
-TRELLO_API_KEY :: env.get("TRELLO_API_KEY") ?? ""
-TRELLO_TOKEN   :: env.get("TRELLO_TOKEN") ?? ""
+TRELLO_API_KEY :: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset")
+TRELLO_TOKEN   :: env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset")
 
 // gh's keyring is unreachable inside the sandbox, so the token travels by env.
-GH_TOKEN :: env.get("GH_TOKEN") ?? ""
+GH_TOKEN :: env.get("GH_TOKEN") ?? fail("GH_TOKEN is unset")
 
 // Git commands the review-only agents may never run.
 GIT_WRITES :: [
@@ -904,6 +907,9 @@ repo_jail :: sandbox {
             "#{HOME}/.local/share/nvm/",
             "#{HOME}/.rustup/",
             "#{HOME}/.ssh/"
+
+  // The toolchain is found on PATH, and claude's login under HOME.
+  env "HOME", "LANG", "PATH"
 }
 
 // Fresh marker state each run, and a tree that starts where master is.
@@ -930,7 +936,7 @@ prompt :: proc(name: str) -> str {
 }
 
 // Builds, then critiques, up to three times.
-gate :: proc(run: afkd.Run, phase: str, build: str, critique: str) -> Verdict {
+gate :: proc(run: afkd.Run, phase: str, ~build: str, ~critique: str) -> Verdict {
   for _ in 0..<3 {
     match builder(prompt(build)) {
       .ok(_) => { }
@@ -948,7 +954,7 @@ gate :: proc(run: afkd.Run, phase: str, build: str, critique: str) -> Verdict {
 }
 
 plan :: proc(run: afkd.Run) {
-  verdict := gate(run, "plan", "20-plan-build.md", "21-plan-critique.md")
+  verdict := gate(run, "plan", build="20-plan-build.md", critique="21-plan-critique.md")
   if verdict == .blocked {
     fail("card unimplementable as written - see card comment")
   } else if verdict == .rejected {
@@ -957,7 +963,7 @@ plan :: proc(run: afkd.Run) {
 }
 
 implement :: proc(run: afkd.Run) {
-  verdict := gate(run, "impl", "30-implement-build.md", "31-implement-critique.md")
+  verdict := gate(run, "impl", build="30-implement-build.md", critique="31-implement-critique.md")
   if verdict == .blocked {
     fail("implementation blocked - see card comment")
   } else if verdict == .rejected {
@@ -1003,7 +1009,7 @@ develop :: service(trello) {
   max_attempts 2
   every        1m~3m
 
-  on_claim proc(card: trello.Card) {
+  on_claim proc(card) {
     match trello.add_member(card) {
       .ok(_) => { }
       .err(added) => fail("trello.add_member: #{added.message}")
@@ -1013,7 +1019,7 @@ develop :: service(trello) {
       .err(moved) => fail("trello.move_to: #{moved.message}")
     }
   }
-  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_done proc(run, card, outcome) {
     match trello.move_to(card, "Review", at=.top) {
       .ok(_) => { }
       .err(moved) => fail("trello.move_to: #{moved.message}")
@@ -1023,13 +1029,13 @@ develop :: service(trello) {
       .err(commented) => fail("trello.comment: #{commented.message}")
     }
   }
-  on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_park proc(run, card, outcome) {
     match trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.") {
       .ok(_) => { }
       .err(commented) => fail("trello.comment: #{commented.message}")
     }
   }
-  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_fail proc(run, card, outcome) {
     match trello.move_to(card, "Backlog", at=.bottom) {
       .ok(_) => { }
       .err(moved) => fail("trello.move_to: #{moved.message}")
@@ -1050,7 +1056,7 @@ develop :: service(trello) {
     PNPM_CONFIG_STORE_DIR: PNPM_STORE,
   }
 
-  on_run proc(run: afkd.Run, card: trello.Card) { task(run) }
+  on_run proc(run, card) { task(run) }
 }
 "##;
 
@@ -1079,6 +1085,99 @@ fn the_lang_v2_complete_example_develop_service_validates() {
         report.contains("selfdev/selfdev.afk") && !report.contains("warning:"),
         "every file checked, cleanly:\n{report}"
     );
+}
+
+/// `text` with its end trimmed to one newline, as a copy of §24 holds a file.
+fn ended(text: &str) -> String {
+    format!("{}\n", text.trim_end())
+}
+
+/// The bodies of the fences in `spec`'s §24, from its heading to the next section's, each
+/// [`ended`].
+fn section_24_fences(spec: &str) -> Vec<String> {
+    const HEADING: &str = "\n## 24. Complete example\n";
+    let start = spec
+        .find(HEADING)
+        .unwrap_or_else(|| panic!("lang-v2.md has no `{}` heading", HEADING.trim()));
+    let section = &spec[start + HEADING.len()..];
+    let section = section.find("\n## ").map_or(section, |end| &section[..end]);
+    let mut fences = Vec::new();
+    let mut open: Option<Vec<&str>> = None;
+    for line in section.lines() {
+        match open.as_mut() {
+            None if line == "```" => open = Some(Vec::new()),
+            None => {}
+            Some(_) if line == "```" => fences.push(ended(&open.take().expect("open").join("\n"))),
+            Some(body) => body.push(line),
+        }
+    }
+    assert!(open.is_none(), "every fence in §24 closes");
+    fences
+}
+
+/// The first line, 1-based, where `copy` and `spec` differ, with what each holds there
+/// (`<none>` past its end), or `None` when they are the same text.
+fn first_difference<'a>(copy: &'a str, spec: &'a str) -> Option<(usize, &'a str, &'a str)> {
+    let copy: Vec<&str> = copy.split('\n').collect();
+    let spec: Vec<&str> = spec.split('\n').collect();
+    (0..copy.len().max(spec.len())).find_map(|at| {
+        let (held, said) = (copy.get(at).copied(), spec.get(at).copied());
+        (held != said).then(|| (at + 1, held.unwrap_or("<none>"), said.unwrap_or("<none>")))
+    })
+}
+
+/// The copies of §24 above are the spec's own text in the afkd checkout `AFKD_SRC` names: the
+/// entry file and the shared queues whole, and `selfdev/selfdev.afk` up to its
+/// `DISCUSS_PROMPT`, where the `discuss` half the copy leaves out begins. So the complete
+/// example leg validates what §24 says, and a §24 that moves on fails here until it is copied
+/// afresh.
+#[test]
+fn the_section_24_copies_are_the_specs() {
+    let Some(afkd) = afkd_src() else {
+        eprintln!("SKIP: AFKD_SRC names no afkd checkout, and §24 is afkd's");
+        return;
+    };
+    let path = afkd.join("docs/lang-v2.md");
+    let lang_v2 = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let fences = section_24_fences(&lang_v2);
+    let fence = |first_line: &str| -> &str {
+        let found: Vec<&String> = fences
+            .iter()
+            .filter(|body| body.starts_with(first_line))
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "§24 in {} has one fence opening on `{first_line}`",
+            path.display()
+        );
+        found[0]
+    };
+    let (develop, _) = fence("// selfdev/selfdev.afk")
+        .split_once("\nDISCUSS_PROMPT ::")
+        .unwrap_or_else(|| panic!("§24's selfdev.afk has no `DISCUSS_PROMPT ::` to end the copy"));
+    for (name, copy, spec) in [
+        (
+            "SECTION_24_DAEMON",
+            SECTION_24_DAEMON,
+            fence("// daemon.afk"),
+        ),
+        (
+            "SECTION_24_QUEUES",
+            SECTION_24_QUEUES,
+            fence("// shared/queues.afk"),
+        ),
+        ("SECTION_24_SELFDEV", SECTION_24_SELFDEV, &ended(develop)),
+    ] {
+        if let Some((line, held, said)) = first_difference(copy, spec) {
+            panic!(
+                "{name} is not §24's text in {}; it first differs at its line {line}:\n  \
+                 copy: {held}\n  spec: {said}\ncopy §24 afresh",
+                path.display()
+            );
+        }
+    }
 }
 
 /// An action acts on the card it is passed, so one called without it — the pre-handle
@@ -1234,6 +1333,20 @@ fn conf_fences(readme: &str) -> Vec<(usize, String)> {
     fences
 }
 
+/// The name of each variable `fence` reads from the environment, each `env.get("NAME")`, in
+/// the order it reads them.
+fn env_reads(fence: &str) -> Vec<&str> {
+    const READ: &str = "env.get(\"";
+    fence
+        .match_indices(READ)
+        .filter_map(|(at, _)| {
+            fence[at + READ.len()..]
+                .split_once('"')
+                .map(|(name, _)| name)
+        })
+        .collect()
+}
+
 #[test]
 fn every_readme_conf_fence_validates() {
     let readme = std::fs::read_to_string(plugin_root().join("README.md")).expect("the README");
@@ -1241,6 +1354,27 @@ fn every_readme_conf_fence_validates() {
     let openers = readme.lines().filter(|l| l.trim() == "```conf").count();
     assert!(openers > 0, "the README carries conf fences");
     assert_eq!(fences.len(), openers, "every conf opener yields a fence");
+
+    // Check that every name a fence reads is set before any fence is validated, so a name the
+    // README starts reading fails as itself, not as a load failure.
+    let reads: Vec<(usize, &str)> = fences
+        .iter()
+        .flat_map(|(line, fence)| env_reads(fence).into_iter().map(move |name| (*line, name)))
+        .collect();
+    assert!(
+        !reads.is_empty(),
+        "the README's fences read their credentials from the environment"
+    );
+    let unset: Vec<String> = reads
+        .iter()
+        .filter(|(_, name)| CONFIG_ENV.iter().all(|(set, _)| set != name))
+        .map(|(line, name)| format!("the fence at README line {line} reads {name}"))
+        .collect();
+    assert!(
+        unset.is_empty(),
+        "CONFIG_ENV sets every name the README reads, but not:\n{}",
+        unset.join("\n")
+    );
 
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");

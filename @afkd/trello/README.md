@@ -48,9 +48,10 @@ claimed card as a `trello.Card`, and sends each action a slot calls on a card as
 afkd 0.2.197 to 0.2.240 install and run it too, but there a slot reading any field beyond
 `id` and `key` fails; an older afkd refuses the manifest when it is installed.
 
-The configs below are written in the afk language of **afkd 0.2.651 or newer**, the
-first that imports agent kinds from `ai`; an older afkd still runs the plugin, but refuses
-the examples when they load.
+The configs below are written in the afk language of **afkd 0.2.695 or newer**, the
+first that reads a required environment variable where it is written,
+`env.get(…) ?? fail(…)`; an older afkd still runs the plugin, but refuses the examples
+when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `trello`:
 
@@ -60,8 +61,8 @@ import "std:env"
 import "@afkd/trello"
 
 TRELLO_BOARD   :: "https://trello.com/b/REPLACE_ME/board"
-TRELLO_API_KEY :: env.get("TRELLO_API_KEY") ?? ""
-TRELLO_TOKEN   :: env.get("TRELLO_TOKEN") ?? ""
+TRELLO_API_KEY :: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset")
+TRELLO_TOKEN   :: env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset")
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md

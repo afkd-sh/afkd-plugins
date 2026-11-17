@@ -24,11 +24,11 @@
 //!
 //! This file spells the old extension to forbid it, so it is outside its own walk.
 
-use std::path::Path;
-use std::process::Command;
+mod common;
 
-/// The repository root, one up from this crate.
-const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
+use std::path::Path;
+
+use common::{tracked, REPO_ROOT};
 
 /// The extension the language's files had before they took the language's own name.
 const OLD: &str = ".afkd";
@@ -39,38 +39,6 @@ const THIS_FILE: &str = "checks/tests/afk_extension.rs";
 /// Each spelling of [`OLD`] that names no file, as `(path, fragment of its line)`: a frame's
 /// `afkd` field, the daemon's own version in web_top's layout suite.
 const NOT_FILES: &[(&str, &str)] = &[("@afkd/web_top/layout.test.mjs", r#"f.afkd === "welcome""#)];
-
-/// Every path `git ls-files -z` lists at the repository root.
-fn tracked() -> Vec<String> {
-    let root = Path::new(REPO_ROOT);
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "-z"])
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run `git ls-files` in {}: {e}", root.display()));
-    assert!(
-        output.status.success(),
-        "`git ls-files` failed in {}: the gate needs a git checkout: {}",
-        root.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let listing = String::from_utf8(output.stdout).expect("git lists UTF-8 paths");
-    let files: Vec<String> = listing
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(str::to_owned)
-        .collect();
-    assert!(
-        files
-            .iter()
-            .any(|path| path == "@afkd/telegram/afkd-plugin.toml"),
-        "`git ls-files` listed {} paths but not @afkd/telegram/afkd-plugin.toml: the walk is \
-         not reaching the tree",
-        files.len()
-    );
-    files
-}
 
 /// Whether `c` continues a name, so an [`OLD`] before it is not where a file name ends.
 fn continues_a_name(c: char) -> bool {

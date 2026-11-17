@@ -16,7 +16,8 @@
 //!   declares, to refusing one without `team` or `pick_from`, and to refusing a call of an
 //!   action the plugin does not declare.
 //! - The **README** leg validates every `conf` fence of the plugin's README, each a whole
-//!   entry file, against the installed release.
+//!   entry file, against the installed release, with every variable the fences read set by
+//!   [`CONFIG_ENV`].
 //! - The **skill** leg runs one issue whose run works it through the installed `linear`
 //!   skill — a comment, then a question that parks the run — so the env a real daemon hands
 //!   a run is the env the skill's scripts read, and the issue parks as the plugin parks it.
@@ -293,9 +294,18 @@ fn write_config(home: &Path, config: &str) {
     std::fs::write(&conf, config).expect("write the config");
 }
 
-/// `afkd validate` over `home`'s config: the exit code and the report.
+/// The credentials a config reads from the daemon's environment, as the README's examples
+/// do: the API key, and the OAuth app's client id and secret.
+const CONFIG_ENV: &[(&str, &str)] = &[
+    ("LINEAR_API_KEY", API_KEY),
+    ("LINEAR_CLIENT_ID", CLIENT_ID),
+    ("LINEAR_CLIENT_SECRET", CLIENT_SECRET),
+];
+
+/// `afkd validate` over `home`'s config, with [`CONFIG_ENV`] set: the exit code and the
+/// report.
 fn validate(home: &Path) -> (Option<i32>, String) {
-    let out = run_subcommand_args(home, &["validate"]);
+    let out = run_subcommand_env(home, &["validate"], CONFIG_ENV);
     (
         out.status.code(),
         format!(
@@ -1017,6 +1027,20 @@ fn conf_fences(readme: &str) -> Vec<(usize, String)> {
     fences
 }
 
+/// The name of each variable `fence` reads from the environment, each `env.get("NAME")`, in
+/// the order it reads them.
+fn env_reads(fence: &str) -> Vec<&str> {
+    const READ: &str = "env.get(\"";
+    fence
+        .match_indices(READ)
+        .filter_map(|(at, _)| {
+            fence[at + READ.len()..]
+                .split_once('"')
+                .map(|(name, _)| name)
+        })
+        .collect()
+}
+
 #[test]
 fn every_readme_conf_fence_validates() {
     let readme = std::fs::read_to_string(plugin_root().join("README.md")).expect("the README");
@@ -1024,6 +1048,27 @@ fn every_readme_conf_fence_validates() {
     let openers = readme.lines().filter(|l| l.trim() == "```conf").count();
     assert!(openers > 0, "the README carries conf fences");
     assert_eq!(fences.len(), openers, "every conf opener yields a fence");
+
+    // Check that every name a fence reads is set before any fence is validated, so a name the
+    // README starts reading fails as itself, not as a load failure.
+    let reads: Vec<(usize, &str)> = fences
+        .iter()
+        .flat_map(|(line, fence)| env_reads(fence).into_iter().map(move |name| (*line, name)))
+        .collect();
+    assert!(
+        !reads.is_empty(),
+        "the README's fences read their credentials from the environment"
+    );
+    let unset: Vec<String> = reads
+        .iter()
+        .filter(|(_, name)| CONFIG_ENV.iter().all(|(set, _)| set != name))
+        .map(|(line, name)| format!("the fence at README line {line} reads {name}"))
+        .collect();
+    assert!(
+        unset.is_empty(),
+        "CONFIG_ENV sets every name the README reads, but not:\n{}",
+        unset.join("\n")
+    );
 
     let home = installed();
     for (n, (line, fence)) in fences.iter().enumerate() {

@@ -20,7 +20,8 @@
 //!   writes the claim key afkd renamed to `every`, pointing it at `every`, and to taking
 //!   the same services with `every`.
 //! - The **README** leg `afkd validate`s every `conf` fence the plugin's README carries,
-//!   each a whole entry file, against the installed plugin.
+//!   each a whole entry file, against the installed plugin, with every variable the fences
+//!   read set by [`CONFIG_ENV`].
 //!
 //! The GitHub is the plugin's own loopback fake ([`fake`]), reached through a loopback `host`
 //! the client resolves to the GHES `…/api/v3` base, so no leg touches a network; and every
@@ -945,6 +946,20 @@ fn conf_fences(readme: &str) -> Vec<(usize, String)> {
     fences
 }
 
+/// The name of each variable `fence` reads from the environment, each `env.get("NAME")`, in
+/// the order it reads them.
+fn env_reads(fence: &str) -> Vec<&str> {
+    const READ: &str = "env.get(\"";
+    fence
+        .match_indices(READ)
+        .filter_map(|(at, _)| {
+            fence[at + READ.len()..]
+                .split_once('"')
+                .map(|(name, _)| name)
+        })
+        .collect()
+}
+
 #[test]
 fn every_readme_conf_fence_validates() {
     let readme = std::fs::read_to_string(plugin_root().join("README.md")).expect("the README");
@@ -952,6 +967,27 @@ fn every_readme_conf_fence_validates() {
     let openers = readme.lines().filter(|l| l.trim() == "```conf").count();
     assert!(openers > 0, "the README carries conf fences");
     assert_eq!(fences.len(), openers, "every conf opener yields a fence");
+
+    // Check that every name a fence reads is set before any fence is validated, so a name the
+    // README starts reading fails as itself, not as a load failure.
+    let reads: Vec<(usize, &str)> = fences
+        .iter()
+        .flat_map(|(line, fence)| env_reads(fence).into_iter().map(move |name| (*line, name)))
+        .collect();
+    assert!(
+        !reads.is_empty(),
+        "the README's fences read their credentials from the environment"
+    );
+    let unset: Vec<String> = reads
+        .iter()
+        .filter(|(_, name)| CONFIG_ENV.iter().all(|(set, _)| set != name))
+        .map(|(line, name)| format!("the fence at README line {line} reads {name}"))
+        .collect();
+    assert!(
+        unset.is_empty(),
+        "CONFIG_ENV sets every name the README reads, but not:\n{}",
+        unset.join("\n")
+    );
 
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");

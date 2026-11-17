@@ -39,9 +39,10 @@ $ tools/pack-release linear /tmp/afkd-release @afkd/linear/target/release/afkd-l
 $ afkd install /tmp/afkd-release/afkd-linear
 ```
 
-The configs below are written in the afk language of **afkd 0.2.651 or newer**, the
-first that imports agent kinds from `ai`; an older afkd still runs the plugin, but refuses
-the examples when they load.
+The configs below are written in the afk language of **afkd 0.2.695 or newer**, the
+first that reads a required environment variable where it is written,
+`env.get(…) ?? fail(…)`; an older afkd still runs the plugin, but refuses the examples
+when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `linear`:
 
@@ -50,7 +51,7 @@ import "afkd"
 import "std:env"
 import "@afkd/linear"
 
-LINEAR_API_KEY :: env.get("LINEAR_API_KEY") ?? ""
+LINEAR_API_KEY :: env.get("LINEAR_API_KEY") ?? fail("LINEAR_API_KEY is unset")
 
 task :: proc() {
   $ cat $AFKD_SCRATCH_DIR/task.md
@@ -215,7 +216,7 @@ import "std:env"
 import "@afkd/linear"
 
 LINEAR_CLIENT_ID     :: env.get("LINEAR_CLIENT_ID") ?? ""
-LINEAR_CLIENT_SECRET :: env.get("LINEAR_CLIENT_SECRET") ?? ""
+LINEAR_CLIENT_SECRET :: env.get("LINEAR_CLIENT_SECRET") ?? fail("LINEAR_CLIENT_SECRET is unset")
 
 triage :: service(linear) {
   team           "ENG"
@@ -382,7 +383,7 @@ import "std:env"
 import "@afkd/linear"
 
 LINEAR_CLIENT_ID     :: env.get("LINEAR_CLIENT_ID") ?? ""
-LINEAR_CLIENT_SECRET :: env.get("LINEAR_CLIENT_SECRET") ?? ""
+LINEAR_CLIENT_SECRET :: env.get("LINEAR_CLIENT_SECRET") ?? fail("LINEAR_CLIENT_SECRET is unset")
 
 develop :: service(linear) {
   team           "ENG"
