@@ -141,6 +141,6 @@ jobs:
           # older floor (the platform archive, no build step, lists of structs and of handles
           # an action returns) comes with it.
           # `@afkd/board/tests/release_notes.rs` fails when the notes and the README differ.
-          printf '`afkd install @afkd/board`, or `afkd update @afkd/board` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.679 or newer, the first whose manifests type a handle's field as a `time` and a parameter as optional; an older afkd refuses this manifest.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          printf '`afkd install @afkd/board`, or `afkd update @afkd/board` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.679 or newer, the first whose manifests type a handle field as a `time` and a parameter as optional; an older afkd refuses this manifest.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete board --yes --cleanup-tag || true
           gh release create board --target "$GITHUB_SHA" --title "@afkd/board $version" --notes-file notes.md $assets
