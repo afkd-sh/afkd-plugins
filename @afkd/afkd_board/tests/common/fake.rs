@@ -169,7 +169,7 @@ impl FakeBoard {
         Self { base, store }
     }
 
-    /// The board's address, as a `board.Board`'s `base_url` writes it.
+    /// The board's address, as an `afkd_board.Board`'s `base_url` writes it.
     pub fn base_url(&self) -> &str {
         &self.base
     }

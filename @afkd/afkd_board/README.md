@@ -1,10 +1,10 @@
-# `@afkd/board`
+# `@afkd/afkd_board`
 
 A **provider** plugin that reads a board on [app.afkd.sh](https://app.afkd.sh): one card by
 its number, the cards any filters keep, a card's comments, and the board's lists and labels.
-Each read reaches the board through the [`board.Board`](#boardboard) it is passed, by one of
-the board's API keys, so a config reads two boards side by side with two of them. It declares
-no trigger kind: every call a config makes is a child afkd starts for that one call.
+Each read reaches the board through the [`afkd_board.Board`](#afkd_boardboard) it is passed, by
+one of the board's API keys, so a config reads two boards side by side with two of them. It
+declares no trigger kind: every call a config makes is a child afkd starts for that one call.
 
 It reads the board's HTTP API, which the site's README documents (*A board's API*). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
@@ -15,33 +15,33 @@ It is a Rust program, released as a finished binary.
 ## Install it
 
 ```console
-$ afkd install @afkd/board
+$ afkd install @afkd/afkd_board
 ```
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest and the `afkd-board` binary, nothing else. Nothing is compiled on your
+is: the manifest and the `afkd-afkd_board` binary, nothing else. Nothing is compiled on your
 host, and no Rust toolchain is needed there. Installing it needs **afkd 0.2.679 or newer**,
 the first whose manifests type a handle's field as a `time` and a parameter as optional;
-`afkd update @afkd/board` moves an installed copy onto the next release.
+`afkd update @afkd/afkd_board` moves an installed copy onto the next release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:
 
 ```console
-$ cargo build --release --locked --manifest-path @afkd/board/Cargo.toml
-$ tools/pack-release board /tmp/afkd-release @afkd/board/target/release/afkd-board
-$ afkd install /tmp/afkd-release/afkd-board
+$ cargo build --release --locked --manifest-path @afkd/afkd_board/Cargo.toml
+$ tools/pack-release afkd_board /tmp/afkd-release @afkd/afkd_board/target/release/afkd-afkd_board
+$ afkd install /tmp/afkd-release/afkd-afkd_board
 ```
 
 The configs below are written in the afk language of **afkd 0.2.694 or newer**, the first
 that reads `env.get(…) ?? fail(…)` in a constant at load; an older afkd still runs the plugin,
 but refuses the examples when they load.
 
-## Reading a board through a `board.Board`
+## Reading a board through an `afkd_board.Board`
 
-A config file uses the plugin by importing it, and then names it by its leaf, `board`. Each
-read takes the `board.Board` first, then what it reads by, and gives a `result`: `.ok` of
+A config file uses the plugin by importing it, and then names it by its leaf, `afkd_board`. Each
+read takes the `afkd_board.Board` first, then what it reads by, and gives a `result`: `.ok` of
 what it read, or `.err` with the reason it was refused. Nothing else is read: no read takes a
 service's settings, so it reads the same from any service's run.
 
@@ -49,16 +49,16 @@ service's settings, so it reads the same from any service's run.
 import "afkd"
 import "std:env"
 import "svc:interval"
-import "@afkd/board"
+import "@afkd/afkd_board"
 
-TRAIN :: board.Board{ key: env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset") }
+TRAIN :: afkd_board.Board{ key: env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset") }
 
 standup :: service(interval) {
   every    1h
   work_dir "/srv/acme/widgets"
 
   on_run proc(run: afkd.Run) {
-    match board.cards(
+    match afkd_board.cards(
       TRAIN,
       list=[ "Todo", "In progress" ],
       without_labels=[ "hold" ],
@@ -71,15 +71,15 @@ standup :: service(interval) {
           }
         }
       }
-      .err(e) => fail("board.cards: #{e.message}")
+      .err(e) => fail("afkd_board.cards: #{e.message}")
     }
   }
 }
 ```
 
-### `board.Board`
+### `afkd_board.Board`
 
-A struct the plugin declares, built as `board.Board{ … }`:
+A struct the plugin declares, built as `afkd_board.Board{ … }`:
 
 | Field      | Type                          | What it is                                              |
 |------------|-------------------------------|---------------------------------------------------------|
@@ -87,13 +87,13 @@ A struct the plugin declares, built as `board.Board{ … }`:
 | `base_url` | `str = "https://app.afkd.sh"` | a stand-in's address in tests                           |
 
 - An empty `key` is an `.err` of every read, sent before any request, naming the field:
-  ``cards: the board.Board's key is empty; set key to one of the board's API keys, made in its Board settings``.
+  ``cards: the afkd_board.Board's key is empty; set key to one of the board's API keys, made in its Board settings``.
 - A key reaches exactly one board, so two boards are two `Board` values, used side by side.
-- Every handle a read hands back has the `key` `board:<board uuid>/<card or comment uuid>`,
-  and `==` on two handles compares it, so one card read by `board.card` and by `board.cards`
-  is `==` itself.
+- Every handle a read hands back has the `key` `afkd_board:<board uuid>/<card or comment uuid>`,
+  and `==` on two handles compares it, so one card read by `afkd_board.card` and by
+  `afkd_board.cards` is `==` itself.
 
-### `board.Card`
+### `afkd_board.Card`
 
 A handle, its `id` the card's number as its digits (`"17"` for `#17`):
 
@@ -114,9 +114,9 @@ A handle, its `id` the card's number as its digits (`"17"` for `#17`):
 | `updated_at`  | `time`      | the newest of when it was made, its changes and its comments   |
 
 A card's checklist is not among its fields: afkd refuses a handle's field typed as a struct,
-and an item, a [`board.Item`](#the-values), is one.
+and an item, an [`afkd_board.Item`](#the-values), is one.
 
-### `board.Comment`
+### `afkd_board.Comment`
 
 A handle, its `id` the comment's uuid:
 
@@ -133,23 +133,23 @@ A handle, its `id` the comment's uuid:
 
 Plain structs, read with the board:
 
-| Struct        | Fields                        |
-|---------------|-------------------------------|
-| `board.List`  | `id: str`, `name: str`        |
-| `board.Label` | `name: str`, `colour: str`    |
-| `board.Item`  | `text: str`, `done: bool`: an item of a card's checklist |
+| Struct             | Fields                        |
+|--------------------|-------------------------------|
+| `afkd_board.List`  | `id: str`, `name: str`        |
+| `afkd_board.Label` | `name: str`, `colour: str`    |
+| `afkd_board.Item`  | `text: str`, `done: bool`: an item of a card's checklist |
 
 ### The reads
 
 | Call | Gives |
 |------|-------|
-| `board.card(b, number)` | `Card`, archived or not; a number the board has no card of is an `.err`, ``card: The board has no card #17.`` |
-| `board.cards(b, ~list, ~labels, ~without_labels, ~done, ~blocked, ~text, ~include_archived, ~limit)` | `list[Card]` in the board's order, [filtered](#boardcardss-filters) |
-| `board.comments(b, card)` | `list[Comment]`, oldest first |
-| `board.lists(b)` | `list[List]` in the board's order |
-| `board.labels(b)` | `list[Label]` |
+| `afkd_board.card(b, number)` | `Card`, archived or not; a number the board has no card of is an `.err`, ``card: The board has no card #17.`` |
+| `afkd_board.cards(b, ~list, ~labels, ~without_labels, ~done, ~blocked, ~text, ~include_archived, ~limit)` | `list[Card]` in the board's order, [filtered](#afkd_boardcardss-filters) |
+| `afkd_board.comments(b, card)` | `list[Comment]`, oldest first |
+| `afkd_board.lists(b)` | `list[List]` in the board's order |
+| `afkd_board.labels(b)` | `list[Label]` |
 
-### `board.cards`'s filters
+### `afkd_board.cards`'s filters
 
 Each filter is named, and one left out keeps every card:
 
@@ -175,13 +175,13 @@ Each filter is named, and one left out keeps every card:
 
 Every refusal is an `.err` whose message names the read, `<read>: <what is wrong>`:
 
-- An empty key, before any request, as [above](#boardboard).
+- An empty key, before any request, as [above](#afkd_boardboard).
 - A `limit` outside 1 to 250, before any request: ``cards: limit is 1 to 250, not 0``.
 - A list the board does not have, before any card is read, naming the lists it has:
   ``cards: The board has no list `Doing`; it has `Todo`, `In progress` and `Done`.``. A label
   it does not have is refused by the board the same way.
-- A card of another board than the `board.Board` reaches, passed to `comments`, naming both
-  boards: ``comments: card is #17 of board <its board's uuid>, and the board.Board reaches board <the other's uuid>``.
+- A card of another board than the `afkd_board.Board` reaches, passed to `comments`, naming both
+  boards: ``comments: card is #17 of board <its board's uuid>, and the afkd_board.Board reaches board <the other's uuid>``.
 - What the board refuses, with its own sentence: a key it does not know is
   ``lists: the board key is missing, unknown or revoked``.
 - A board it cannot reach names the host, and never the key:
@@ -190,17 +190,17 @@ Every refusal is an `.err` whose message names the read, `<read>: <what is wrong
 
 ## Two boards side by side
 
-Two keys are two boards, each a `board.Board` of its own. A card of one passed with the other
+Two keys are two boards, each an `afkd_board.Board` of its own. A card of one passed with the other
 is refused, naming both:
 
 ```conf
 import "afkd"
 import "std:env"
 import "svc:interval"
-import "@afkd/board"
+import "@afkd/afkd_board"
 
-TRAIN :: board.Board{ key: env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset") }
-OPS   :: board.Board{ key: env.get("AFKD_OPS_BOARD_KEY") ?? fail("AFKD_OPS_BOARD_KEY is unset") }
+TRAIN :: afkd_board.Board{ key: env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset") }
+OPS   :: afkd_board.Board{ key: env.get("AFKD_OPS_BOARD_KEY") ?? fail("AFKD_OPS_BOARD_KEY is unset") }
 
 digest :: service(interval) {
   every    1d
@@ -208,28 +208,28 @@ digest :: service(interval) {
 
   on_run proc(run: afkd.Run) {
     for b in [ TRAIN, OPS ] {
-      match board.lists(b) {
+      match afkd_board.lists(b) {
         .ok(lists) => {
           for list in lists {
             $ echo #{list.name}
           }
         }
-        .err(e) => fail("board.lists: #{e.message}")
+        .err(e) => fail("afkd_board.lists: #{e.message}")
       }
-      match board.cards(b, labels=[ "bug" ], include_archived=true, limit=250) {
+      match afkd_board.cards(b, labels=[ "bug" ], include_archived=true, limit=250) {
         .ok(cards) => {
           for card in cards {
-            match board.comments(b, card) {
+            match afkd_board.comments(b, card) {
               .ok(comments) => {
                 for comment in comments {
                   $ echo "#{card.id} #{comment.author ?? "a key"} #{comment.run ?? "-"}"
                 }
               }
-              .err(e) => fail("board.comments: #{e.message}")
+              .err(e) => fail("afkd_board.comments: #{e.message}")
             }
           }
         }
-        .err(e) => fail("board.cards: #{e.message}")
+        .err(e) => fail("afkd_board.cards: #{e.message}")
       }
     }
   }
@@ -244,20 +244,20 @@ A handle read by two calls is `==` itself, since `==` compares the key:
 import "afkd"
 import "std:env"
 import "svc:interval"
-import "@afkd/board"
+import "@afkd/afkd_board"
 
-TRAIN :: board.Board{ key: env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset") }
+TRAIN :: afkd_board.Board{ key: env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset") }
 
 watch :: service(interval) {
   every    10m
   work_dir "/srv/acme/widgets"
 
   on_run proc(run: afkd.Run) {
-    lead := match board.card(TRAIN, 17) {
+    lead := match afkd_board.card(TRAIN, 17) {
       .ok(card) => card
-      .err(e) => fail("board.card: #{e.message}")
+      .err(e) => fail("afkd_board.card: #{e.message}")
     }
-    match board.cards(TRAIN, list=[ lead.list ]) {
+    match afkd_board.cards(TRAIN, list=[ lead.list ]) {
       .ok(cards) => {
         for card in cards {
           if card == lead {
@@ -265,7 +265,7 @@ watch :: service(interval) {
           }
         }
       }
-      .err(e) => fail("board.cards: #{e.message}")
+      .err(e) => fail("afkd_board.cards: #{e.message}")
     }
   }
 }

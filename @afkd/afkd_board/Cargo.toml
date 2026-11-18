@@ -1,12 +1,12 @@
 [package]
-name = "afkd-board"
+name = "afkd-afkd_board"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The @afkd/board provider plugin: an afkd board's cards, comments, lists and labels, over the plugin wire"
+description = "The @afkd/afkd_board provider plugin: an afkd board's cards, comments, lists and labels, over the plugin wire"
 
 [[bin]]
-name = "afkd-board"
+name = "afkd-afkd_board"
 path = "src/main.rs"
 
 # Three dependencies and no afkd crate: afkd's crates are unpublished. This repository's

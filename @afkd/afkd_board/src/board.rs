@@ -1,13 +1,13 @@
-//! A `board.Board`, the struct a config builds and passes every read: one of a board's API
+//! An `afkd_board.Board`, the struct a config builds and passes every read: one of a board's API
 //! keys and the address the board is served at. Beside it, the keys of the handles a read
-//! hands back, `board:<board uuid>/<object uuid>`, which afkd's `==` compares, and the check
+//! hands back, `afkd_board:<board uuid>/<object uuid>`, which afkd's `==` compares, and the check
 //! that a handle a read is passed is of the board it reaches.
 
 use std::fmt;
 
 use serde_json::Value;
 
-/// What a `board.Board` holds. Its `Debug` leaves the key out, so nothing that prints one
+/// What an `afkd_board.Board` holds. Its `Debug` leaves the key out, so nothing that prints one
 /// prints the credential.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Board {
@@ -34,12 +34,12 @@ impl Board {
         let field = |name: &str| arg.get(name).and_then(Value::as_str).map(str::to_string);
         let (Some(key), Some(base_url)) = (field("key"), field("base_url")) else {
             return Err(format!(
-                "{action}: parameter b must be a board.Board, with its key and its base_url"
+                "{action}: parameter b must be an afkd_board.Board, with its key and its base_url"
             ));
         };
         if key.trim().is_empty() {
             return Err(format!(
-                "{action}: the board.Board's key is empty; set key to one of the board's API \
+                "{action}: the afkd_board.Board's key is empty; set key to one of the board's API \
                  keys, made in its Board settings"
             ));
         }
@@ -49,21 +49,22 @@ impl Board {
 
 /// The key of the object `object` of the board `board`, both uuids.
 pub(crate) fn handle_key(board: &str, object: &str) -> String {
-    format!("board:{board}/{object}")
+    format!("afkd_board:{board}/{object}")
 }
 
-/// The board's uuid and the object's in a handle's `key`, `board:<board>/<object>`, or
+/// The board's uuid and the object's in a handle's `key`, `afkd_board:<board>/<object>`, or
 /// `None` for a key of any other shape.
 pub(crate) fn parse_key(key: &str) -> Option<(&str, &str)> {
-    let (board, object) = key.strip_prefix("board:")?.split_once('/')?;
+    let (board, object) = key.strip_prefix("afkd_board:")?.split_once('/')?;
     (!board.is_empty() && !object.is_empty() && !object.contains('/')).then_some((board, object))
 }
 
-/// The sentence refusing the card `number` of the board `theirs`, passed `action` with a
-/// `board.Board` that reaches the board `ours`.
+/// The sentence refusing the card `number` of the board `theirs`, passed `action` with an
+/// `afkd_board.Board` that reaches the board `ours`.
 pub(crate) fn other_board(action: &str, number: &str, theirs: &str, ours: &str) -> String {
     format!(
-        "{action}: card is #{number} of board {theirs}, and the board.Board reaches board {ours}"
+        "{action}: card is #{number} of board {theirs}, \
+         and the afkd_board.Board reaches board {ours}"
     )
 }
 
@@ -93,7 +94,7 @@ mod tests {
             assert_eq!(
                 Board::from_arg("cards", Some(&arg)),
                 Err(
-                    "cards: the board.Board's key is empty; set key to one of the board's API \
+                    "cards: the afkd_board.Board's key is empty; set key to one of the board's API \
                      keys, made in its Board settings"
                         .to_string()
                 )
@@ -106,7 +107,7 @@ mod tests {
         assert_eq!(
             Board::from_arg("card", Some(&json!({"key": "k"}))),
             Err(
-                "card: parameter b must be a board.Board, with its key and its base_url"
+                "card: parameter b must be an afkd_board.Board, with its key and its base_url"
                     .to_string()
             )
         );
@@ -116,14 +117,15 @@ mod tests {
     #[test]
     fn a_handle_key_parses_back_into_its_two_uuids() {
         let key = handle_key("b-1", "c-2");
-        assert_eq!(key, "board:b-1/c-2");
+        assert_eq!(key, "afkd_board:b-1/c-2");
         assert_eq!(parse_key(&key), Some(("b-1", "c-2")));
         for other in [
             "linear:b-1/c-2",
-            "board:b-1",
-            "board:/c-2",
-            "board:b-1/",
-            "board:b-1/c-2/d",
+            "board:b-1/c-2",
+            "afkd_board:b-1",
+            "afkd_board:/c-2",
+            "afkd_board:b-1/",
+            "afkd_board:b-1/c-2/d",
             "b-1/c-2",
         ] {
             assert_eq!(parse_key(other), None, "{other}");

@@ -1,14 +1,14 @@
-# Cut the release `afkd install @afkd/board` fetches.
+# Cut the release `afkd install @afkd/afkd_board` fetches.
 #
-# afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose `@afkd/board`
-# entry names this repository's `releases/download/board/afkd-board-{platform}.tar.gz`, and
-# fills `{platform}` with the host's `<arch>-<os>` before the download. So this workflow ships
-# a finished binary per platform, never source: each archive holds the manifest and a static
-# musl build of the plugin for one CPU (it runs on any Linux of that CPU, whatever its glibc),
-# and nothing else. afkd never builds a plugin and places what the archive holds, so no
-# operator's host needs a toolchain. afkd cannot install a subdirectory of a monorepo — its
-# git leg requires the manifest at the clone root, and its tarball leg steps through exactly
-# one wrapper directory — so each archive's single top-level directory is the plugin.
+# afkd resolves a bare plugin name through https://afkd.sh/plugins.json, whose `@afkd/afkd_board`
+# entry names this repository's `releases/download/afkd_board/afkd-afkd_board-{platform}.tar.gz`,
+# and fills `{platform}` with the host's `<arch>-<os>` before the download. So this workflow ships a
+# finished binary per platform, never source: each archive holds the manifest and a static musl
+# build of the plugin for one CPU (it runs on any Linux of that CPU, whatever its glibc), and
+# nothing else. afkd never builds a plugin and places what the archive holds, so no operator's host
+# needs a toolchain. afkd cannot install a subdirectory of a monorepo — its git leg requires the
+# manifest at the clone root, and its tarball leg steps through exactly one wrapper directory — so
+# each archive's single top-level directory is the plugin.
 #
 # The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
 # `{platform}` URL it recorded at install time and never re-reads the index, so the fixed tag
@@ -16,19 +16,19 @@
 #
 # A `workflow_dispatch` on a branch runs everything up to the release itself, which only main
 # publishes: that is how a change to this file is proven on real runners before it ships.
-name: Release @afkd/board
+name: Release @afkd/afkd_board
 
 on:
   push:
     branches: [main]
-    paths: ['@afkd/board/**']
+    paths: ['@afkd/afkd_board/**']
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-board
+  group: release-afkd_board
   cancel-in-progress: false
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
       # drift gate under `drift/` needs an afkd on PATH, so it runs on a host that has one,
       # not here.
       - name: The plugin's own suite
-        working-directory: '@afkd/board'
+        working-directory: '@afkd/afkd_board'
         run: cargo test --locked
 
   build:
@@ -60,7 +60,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.arch }}-unknown-linux-musl
-      ASSET: afkd-board-${{ matrix.arch }}-linux.tar.gz
+      ASSET: afkd-afkd_board-${{ matrix.arch }}-linux.tar.gz
     steps:
       - uses: actions/checkout@v4
       - name: musl
@@ -70,7 +70,7 @@ jobs:
           targets: ${{ env.TARGET }}
 
       - name: Build
-        working-directory: '@afkd/board'
+        working-directory: '@afkd/afkd_board'
         run: cargo build --release --locked --target "$TARGET"
 
       # A binary tied to this runner's glibc would refuse to start on an older host, so the
@@ -78,23 +78,23 @@ jobs:
       # a `grep -q` that stops reading early can fail its writer on SIGPIPE.
       - name: The binary is static
         run: |
-          file -b "@afkd/board/target/$TARGET/release/afkd-board" > kind
+          file -b "@afkd/afkd_board/target/$TARGET/release/afkd-afkd_board" > kind
           cat kind
           grep -Eq 'statically linked|static-pie linked' kind
           rm kind
 
       - name: Pack
         run: |
-          tools/pack-release board out "@afkd/board/target/$TARGET/release/afkd-board"
-          tar czf "$ASSET" -C out afkd-board
+          tools/pack-release afkd_board out "@afkd/afkd_board/target/$TARGET/release/afkd-afkd_board"
+          tar czf "$ASSET" -C out afkd-afkd_board
           # Assert the shape exactly rather than trust it: the expected listing is built from
           # the repository, not from what was packed — the manifest, the binary, and every
           # file git tracks under `skills/` with its directories, which is none, under one
-          # top-level `afkd-board/` — so a stray file and a missing one are both red.
+          # top-level `afkd-afkd_board/` — so a stray file and a missing one are both red.
           {
-            echo 'afkd-board/afkd-plugin.toml'
-            echo 'afkd-board/afkd-board'
-            git ls-files -- '@afkd/board/skills' | sed 's|^@afkd/board/|afkd-board/|'
+            echo 'afkd-afkd_board/afkd-plugin.toml'
+            echo 'afkd-afkd_board/afkd-afkd_board'
+            git ls-files -- '@afkd/afkd_board/skills' | sed 's|^@afkd/afkd_board/|afkd-afkd_board/|'
           } | awk -F/ '{ dir = ""; for (i = 1; i < NF; i++) { dir = dir $i "/"; print dir } print }' \
             | LC_ALL=C sort -u > expected
           tar tzf "$ASSET" | LC_ALL=C sort > listing
@@ -102,7 +102,7 @@ jobs:
           # Unpacked, not read off the listing: `test -x` after extraction is the same
           # question afkd's own unpack answers, asked the same way.
           mkdir shape && tar xzf "$ASSET" -C shape
-          test -x shape/afkd-board/afkd-board
+          test -x shape/afkd-afkd_board/afkd-afkd_board
           rm -rf shape out expected listing
 
       - uses: actions/upload-artifact@v4
@@ -130,9 +130,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/board/afkd-plugin.toml')
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' '@afkd/afkd_board/afkd-plugin.toml')
           test -n "$version"
-          assets="assets/afkd-board-x86_64-linux.tar.gz assets/afkd-board-aarch64-linux.tar.gz"
+          assets="assets/afkd-afkd_board-x86_64-linux.tar.gz assets/afkd-afkd_board-aarch64-linux.tar.gz"
           ls -l $assets
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
           # the notes name the afkd it needs, the floor the README's "Install it" states:
@@ -140,7 +140,7 @@ jobs:
           # parameter as optional, as this manifest's `Card`, `Comment` and `cards` do. Every
           # older floor (the platform archive, no build step, lists of structs and of handles
           # an action returns) comes with it.
-          # `@afkd/board/tests/release_notes.rs` fails when the notes and the README differ.
-          printf '`afkd install @afkd/board`, or `afkd update @afkd/board` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.679 or newer, the first whose manifests type a handle field as a `time` and a parameter as optional; an older afkd refuses this manifest.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
-          gh release delete board --yes --cleanup-tag || true
-          gh release create board --target "$GITHUB_SHA" --title "@afkd/board $version" --notes-file notes.md $assets
+          # `@afkd/afkd_board/tests/release_notes.rs` fails when the notes and the README differ.
+          printf '`afkd install @afkd/afkd_board`, or `afkd update @afkd/afkd_board` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.679 or newer, the first whose manifests type a handle field as a `time` and a parameter as optional; an older afkd refuses this manifest.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          gh release delete afkd_board --yes --cleanup-tag || true
+          gh release create afkd_board --target "$GITHUB_SHA" --title "@afkd/afkd_board $version" --notes-file notes.md $assets

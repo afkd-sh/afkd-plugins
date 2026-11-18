@@ -1,9 +1,9 @@
-name = "@afkd/board"
+name = "@afkd/afkd_board"
 version = "0.1.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
-exec = "afkd-board"
+exec = "afkd-afkd_board"
 
 # The board a read reaches, by one of its API keys, made in its Board settings. A key reaches
 # one board, so two boards are two values.
@@ -59,7 +59,7 @@ name = "Label"
   type = "str"
 
 # A card. afkd carries `id`, the card's number as its digits (`17`), and `key`,
-# `board:<board uuid>/<card uuid>`, which `==` compares. The fields below are the rest of what
+# `afkd_board:<board uuid>/<card uuid>`, which `==` compares. The fields below are the rest of what
 # the plugin knows about a card. Every one is always sent, since a field left out is not
 # delivered and a slot reading it would fail its run. A time is unix milliseconds.
 [[handle]]
@@ -125,7 +125,7 @@ name = "Card"
   type = "time"
 
 # A comment on a card. afkd carries `id`, the comment's uuid, and `key`,
-# `board:<board uuid>/<comment uuid>`.
+# `afkd_board:<board uuid>/<comment uuid>`.
 [[handle]]
 name = "Comment"
 

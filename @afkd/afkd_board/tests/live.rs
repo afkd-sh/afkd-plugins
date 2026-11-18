@@ -52,9 +52,9 @@ fn every_read_answers_against_a_live_board() {
     };
     let key = first["key"].as_str().expect("a key");
     let (board, card) = key
-        .strip_prefix("board:")
+        .strip_prefix("afkd_board:")
         .and_then(|k| k.split_once('/'))
-        .expect("board:<board>/<card>");
+        .expect("afkd_board:<board>/<card>");
     assert!(!board.is_empty() && !card.is_empty(), "{key}");
 
     let number = first["fields"]["number"].clone();
@@ -65,7 +65,7 @@ fn every_read_answers_against_a_live_board() {
     let (comments, _) = once("comments", json!({"b": b, "card": first}));
     for comment in ok(&comments, "handles").as_array().expect("comments") {
         let key = comment["key"].as_str().expect("a key");
-        assert!(key.starts_with(&format!("board:{board}/")), "{key}");
+        assert!(key.starts_with(&format!("afkd_board:{board}/")), "{key}");
         assert_eq!(comment["fields"]["url"], first["fields"]["url"]);
     }
 }

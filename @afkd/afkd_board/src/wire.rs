@@ -39,7 +39,7 @@ pub(crate) enum Answer {
     Fatal(String),
 }
 
-/// A handle as a reply carries it: its `id`, its key `board:<board uuid>/<object uuid>`, and
+/// A handle as a reply carries it: its `id`, its key `afkd_board:<board uuid>/<object uuid>`, and
 /// its fields.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct WireHandle<F> {
@@ -54,7 +54,7 @@ pub(crate) struct WireHandle<F> {
 pub(crate) fn answer(request: Request) -> Answer {
     if request.call != "call" {
         return Answer::Fatal(format!(
-            "afkd sent `{}`, and @afkd/board provides no kind",
+            "afkd sent `{}`, and @afkd/afkd_board provides no kind",
             request.call
         ));
     }
@@ -68,7 +68,7 @@ pub(crate) fn answer(request: Request) -> Answer {
     }
     if !READS.contains(&request.action.as_str()) {
         return Answer::Reply(refusal(&format!(
-            "no action `{}`; @afkd/board has card, cards, comments, lists and labels",
+            "no action `{}`; @afkd/afkd_board has card, cards, comments, lists and labels",
             request.action
         )));
     }
@@ -77,7 +77,7 @@ pub(crate) fn answer(request: Request) -> Answer {
 
 /// The `ok:false` reply refusing a call with `error`, which is diagnosed too.
 pub(crate) fn refusal(error: &str) -> String {
-    eprintln!("afkd-board: {error}");
+    eprintln!("afkd-afkd_board: {error}");
     json!({ "ok": false, "error": error }).to_string()
 }
 
@@ -145,7 +145,7 @@ mod tests {
             answer(request(
                 json!({"call": "hello", "proto": 2, "kind": "board"})
             )),
-            Answer::Fatal("afkd sent `hello`, and @afkd/board provides no kind".to_string())
+            Answer::Fatal("afkd sent `hello`, and @afkd/afkd_board provides no kind".to_string())
         );
         let refused = |r: Answer| match r {
             Answer::Reply(line) => serde_json::from_str::<Value>(&line).unwrap(),
@@ -168,7 +168,7 @@ mod tests {
         )));
         assert_eq!(
             unknown["error"],
-            "no action `create_card`; @afkd/board has card, cards, comments, lists and labels"
+            "no action `create_card`; @afkd/afkd_board has card, cards, comments, lists and labels"
         );
     }
 

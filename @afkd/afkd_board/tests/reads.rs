@@ -1,6 +1,6 @@
-//! The reads suite: the real `afkd-board` exec, sent each read as afkd sends one — a child
+//! The reads suite: the real `afkd-afkd_board` exec, sent each read as afkd sends one — a child
 //! started for the one call, a `call` with the protocol, an empty settings file and the
-//! plugin's directory, and no `hello` — against the fake board a `board.Board` reaches. No
+//! plugin's directory, and no `hello` — against the fake board an `afkd_board.Board` reaches. No
 //! afkd is involved.
 //!
 //! Every leg ends with the fake's record of requests the plugin should never have sent empty,
@@ -140,7 +140,7 @@ fn card_answers_the_whole_handle() {
         reply,
         json!({"ok": true, "handle": {
             "id": "1",
-            "key": format!("board:{}/{}", fake.board_id(), fake.card_id(1)),
+            "key": format!("afkd_board:{}/{}", fake.board_id(), fake.card_id(1)),
             "fields": {
                 "number": 1,
                 "title": TITLE,
@@ -158,7 +158,7 @@ fn card_answers_the_whole_handle() {
             }
         }})
     );
-    assert_eq!(stderr, "afkd-board: card: card #1\n");
+    assert_eq!(stderr, "afkd-afkd_board: card: card #1\n");
 
     let (blocked, _) = once("card", json!({"b": board(&fake), "number": 4}));
     let fields = &blocked["handle"]["fields"];
@@ -177,7 +177,10 @@ fn card_answers_the_whole_handle() {
 
     let (none, stderr) = once("card", json!({"b": board(&fake), "number": 99}));
     assert_eq!(refused(&none), "card: The board has no card #99.");
-    assert_eq!(stderr, "afkd-board: card: The board has no card #99.\n");
+    assert_eq!(
+        stderr,
+        "afkd-afkd_board: card: The board has no card #99.\n"
+    );
     let seen = fake.seen();
     assert!(seen.iter().all(|s| s.method == "GET"), "{seen:?}");
     assert_eq!(
@@ -213,7 +216,10 @@ fn comments_come_oldest_first_with_their_author() {
     );
     for comment in comments {
         let id = comment["id"].as_str().expect("an id");
-        assert_eq!(comment["key"], format!("board:{}/{id}", fake.board_id()));
+        assert_eq!(
+            comment["key"],
+            format!("afkd_board:{}/{id}", fake.board_id())
+        );
     }
 
     fake.delete_account("Ed");
@@ -235,7 +241,7 @@ fn comments_come_oldest_first_with_their_author() {
     let (empty, _) = once(
         "comments",
         json!({"b": board(&fake), "card": {"id": "2",
-               "key": format!("board:{}/{}", fake.board_id(), fake.card_id(2))}}),
+               "key": format!("afkd_board:{}/{}", fake.board_id(), fake.card_id(2))}}),
     );
     assert_eq!(handles(&empty), &Vec::<Value>::new());
     no_invalid(&fake);
@@ -254,7 +260,7 @@ fn lists_and_labels_come_with_the_board() {
             {"id": fake.list_id("Done"), "name": "Done"},
         ]})
     );
-    assert_eq!(stderr, "afkd-board: lists: 3 lists\n");
+    assert_eq!(stderr, "afkd-afkd_board: lists: 3 lists\n");
     let (labels, _) = once("labels", json!({"b": board(&fake)}));
     assert_eq!(
         labels,
@@ -273,7 +279,8 @@ fn lists_and_labels_come_with_the_board() {
 fn an_empty_key_is_refused_by_every_read() {
     let fake = world();
     let b = json!({"key": "", "base_url": fake.base_url()});
-    let card = json!({"id": "1", "key": format!("board:{}/{}", fake.board_id(), fake.card_id(1))});
+    let card =
+        json!({"id": "1", "key": format!("afkd_board:{}/{}", fake.board_id(), fake.card_id(1))});
     for (action, args) in [
         ("card", json!({"b": b, "number": 1})),
         ("cards", json!({"b": b})),
@@ -285,7 +292,7 @@ fn an_empty_key_is_refused_by_every_read() {
         assert_eq!(
             refused(&reply),
             format!(
-                "{action}: the board.Board's key is empty; set key to one of the board's API \
+                "{action}: the afkd_board.Board's key is empty; set key to one of the board's API \
                  keys, made in its Board settings"
             )
         );
@@ -338,7 +345,7 @@ fn a_card_of_another_board_is_refused() {
     assert_eq!(
         refused(&reply),
         format!(
-            "comments: card is #1 of board {}, and the board.Board reaches board {}",
+            "comments: card is #1 of board {}, and the afkd_board.Board reaches board {}",
             globex.board_id(),
             acme.board_id()
         )
@@ -351,7 +358,7 @@ fn a_card_of_another_board_is_refused() {
     );
     assert_eq!(
         refused(&reply),
-        "comments: card is no board.Card: its id is `1` and its key `linear:org/issue`"
+        "comments: card is no afkd_board.Card: its id is `1` and its key `linear:org/issue`"
     );
     no_invalid(&acme);
     no_invalid(&globex);
@@ -511,7 +518,7 @@ fn cards_takes_a_limit_of_1_to_250() {
     no_invalid(&long);
 }
 
-/// Two boards are two `board.Board`s used side by side: each read gives its own board's cards,
+/// Two boards are two `afkd_board.Board`s used side by side: each read gives its own board's cards,
 /// keyed by its own board, and each board sees its own key alone.
 #[test]
 fn two_boards_are_read_side_by_side() {
@@ -528,7 +535,7 @@ fn two_boards_are_read_side_by_side() {
         for handle in handles(reply) {
             let key = handle["key"].as_str().expect("a key");
             assert!(
-                key.starts_with(&format!("board:{}/", fake.board_id())),
+                key.starts_with(&format!("afkd_board:{}/", fake.board_id())),
                 "{key}"
             );
         }
@@ -573,14 +580,14 @@ fn the_wire_serves_one_call_of_protocol_2() {
     assert!(!status.success(), "{status:?}");
     assert_eq!(
         stderr,
-        "afkd-board: afkd sent `hello`, and @afkd/board provides no kind\n"
+        "afkd-afkd_board: afkd sent `hello`, and @afkd/afkd_board provides no kind\n"
     );
 
     let fake = world();
     let (reply, _) = once("create_card", json!({"b": board(&fake)}));
     assert_eq!(
         refused(&reply),
-        "no action `create_card`; @afkd/board has card, cards, comments, lists and labels"
+        "no action `create_card`; @afkd/afkd_board has card, cards, comments, lists and labels"
     );
     let mut plugin = Plugin::spawn();
     let line = plugin.call_raw(json!({"call": "call", "proto": 1, "action": "lists",

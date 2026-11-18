@@ -1,7 +1,7 @@
-//! The **reads** a config calls with a `board.Board` first: one card by its number, the cards
+//! The **reads** a config calls with an `afkd_board.Board` first: one card by its number, the cards
 //! a set of filters keeps, a card's comments, and the board's lists and labels.
 //!
-//! A read reaches the board only through the `board.Board` it is passed: it reads no
+//! A read reaches the board only through the `afkd_board.Board` it is passed: it reads no
 //! service's settings, and the plugin keeps nothing between calls. Each read
 //!
 //! 1. decodes its arguments, a refusal sent before any request ([`decode`]): an empty key, a
@@ -10,7 +10,7 @@
 //! 3. checks that a card it was passed is of that board, and that each list it names is one
 //!    the board has, before any card is read;
 //! 4. reads what it reads;
-//! 5. answers with handles keyed `board:<board uuid>/<object uuid>`, or a value, in one reply
+//! 5. answers with handles keyed `afkd_board:<board uuid>/<object uuid>`, or a value, in one reply
 //!    under afkd's 8 MiB for a call ([`fit_call`]).
 //!
 //! The API filters one list per query, so `cards` of several lists, or with its archived
@@ -36,7 +36,7 @@ const DEFAULT_LIMIT: i64 = 50;
 /// The most cards `cards` reads: the API's largest `limit`.
 const MAX_LIMIT: i64 = 250;
 
-/// The fields of a `board.Card` handle, in the manifest's order. Each is always sent, so afkd
+/// The fields of an `afkd_board.Card` handle, in the manifest's order. Each is always sent, so afkd
 /// never finds one missing. A time is unix milliseconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CardFields {
@@ -57,7 +57,7 @@ pub(crate) struct CardFields {
     pub(crate) updated_at: u64,
 }
 
-/// The fields of a `board.Comment` handle, in the manifest's order.
+/// The fields of an `afkd_board.Comment` handle, in the manifest's order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CommentFields {
     /// The number of the card it is on.
@@ -143,7 +143,7 @@ pub(crate) fn answer(action: &str, args: &Map<String, Value>) -> String {
     });
     match read {
         Ok((line, said)) => {
-            eprintln!("afkd-board: {action}: {said}");
+            eprintln!("afkd-afkd_board: {action}: {said}");
             line
         }
         Err(problem) => refusal(&problem),
@@ -165,14 +165,14 @@ pub(crate) fn decode(action: &str, args: &Map<String, Value>) -> Result<(Board, 
         },
         "cards" => ReadCall::Cards(card_query(args)?),
         "comments" => {
-            let card = required(action, args, "card", Value::as_object, "a board.Card")?;
+            let card = required(action, args, "card", Value::as_object, "an afkd_board.Card")?;
             let (id, key) = (
                 card.get("id").and_then(Value::as_str).unwrap_or(""),
                 card.get("key").and_then(Value::as_str).unwrap_or(""),
             );
             let (Some((board, _)), Ok(number)) = (parse_key(key), id.parse::<i64>()) else {
                 return Err(format!(
-                    "{action}: card is no board.Card: its id is `{id}` and its key `{key}`"
+                    "{action}: card is no afkd_board.Card: its id is `{id}` and its key `{key}`"
                 ));
             };
             ReadCall::Comments {
@@ -523,7 +523,7 @@ mod tests {
     fn comments_reads_the_cards_number_and_board() {
         let (_, call) = decode(
             "comments",
-            &args(json!({"card": {"id": "17", "key": "board:b-1/c-17"}})),
+            &args(json!({"card": {"id": "17", "key": "afkd_board:b-1/c-17"}})),
         )
         .unwrap();
         assert_eq!(
@@ -534,11 +534,14 @@ mod tests {
             }
         );
         for card in [
-            json!({"id": "ENG-17", "key": "board:b-1/c-17"}),
+            json!({"id": "ENG-17", "key": "afkd_board:b-1/c-17"}),
             json!({"id": "17", "key": "linear:b-1/c-17"}),
         ] {
             let e = decode("comments", &args(json!({ "card": card }))).unwrap_err();
-            assert!(e.starts_with("comments: card is no board.Card: "), "{e}");
+            assert!(
+                e.starts_with("comments: card is no afkd_board.Card: "),
+                "{e}"
+            );
         }
         assert_eq!(
             decode("card", &args(json!({}))).unwrap_err(),

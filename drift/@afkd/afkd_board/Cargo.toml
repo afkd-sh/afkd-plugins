@@ -1,9 +1,9 @@
 [package]
-name = "board-drift"
+name = "afkd_board-drift"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Holds @afkd/board to the afkd installed on PATH"
+description = "Holds @afkd/afkd_board to the afkd installed on PATH"
 
 [dev-dependencies]
 libc = "0.2"

@@ -1,4 +1,4 @@
-//! Speaking the plugin wire to the real `afkd-board` exec, as afkd does: a child started for
+//! Speaking the plugin wire to the real `afkd-afkd_board` exec, as afkd does: a child started for
 //! one call, one JSON request line on its stdin, one reply line read back off its stdout,
 //! every read bounded so a wedged child fails the test rather than hanging it.
 
@@ -37,12 +37,12 @@ pub struct Plugin {
 impl Plugin {
     /// Spawn the exec cargo built for this test run.
     pub fn spawn() -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_afkd-board"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_afkd-afkd_board"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn afkd-board");
+            .expect("spawn afkd-afkd_board");
         let stdout = child.stdout.take().expect("piped stdout");
         let (tx, lines) = mpsc::channel();
         thread::spawn(move || {
@@ -184,14 +184,14 @@ pub fn reply_of(line: &str, cap: usize) -> Value {
 /// everything it wrote to stderr.
 pub fn once(action: &str, args: Value) -> (Value, String) {
     let mut plugin = Plugin::spawn();
-    let state_dir = std::env::temp_dir().join("afkd-board-state");
+    let state_dir = std::env::temp_dir().join("afkd-afkd_board-state");
     let line = plugin.call_raw(json!({"call": "call", "proto": 2, "action": action,
                                       "args": args, "settings": {}, "state_dir": state_dir}));
     let reply = reply_of(&line, MAX_CALL_LINE);
     (reply, plugin.finish())
 }
 
-/// A `board.Board` reaching `fake` with its key, every field sent as afkd sends a struct.
+/// An `afkd_board.Board` reaching `fake` with its key, every field sent as afkd sends a struct.
 pub fn board(fake: &fake::FakeBoard) -> Value {
     json!({"key": fake.key(), "base_url": fake.base_url()})
 }

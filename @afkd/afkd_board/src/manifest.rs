@@ -94,7 +94,7 @@ fn the_manifest_names_the_plugin_and_its_finished_binary() {
     let tables = tables(MANIFEST);
     let top = &tables[0].1;
     for (key, value) in [
-        ("name", "@afkd/board"),
+        ("name", "@afkd/afkd_board"),
         ("shape", "provider"),
         ("source", "https://github.com/afkd-sh/afkd-plugins"),
         ("exec", env!("CARGO_PKG_NAME")),
@@ -153,7 +153,7 @@ fn the_actions_are_the_reads() {
 fn sample(ty: &str) -> Value {
     match ty {
         "Board" => json!({"key": "afk_board_k", "base_url": "http://127.0.0.1:9"}),
-        "Card" => json!({"id": "17", "key": "board:b-1/c-17"}),
+        "Card" => json!({"id": "17", "key": "afkd_board:b-1/c-17"}),
         "int" => json!(17),
         "str" => json!("retry"),
         "bool" | "bool?" => json!(true),

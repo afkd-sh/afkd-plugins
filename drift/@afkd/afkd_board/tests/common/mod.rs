@@ -22,7 +22,7 @@
     dead_code,
     reason = "the fake serves the plugin's own reads suite too, which seeds more than these legs"
 )]
-#[path = "../../../../../@afkd/board/tests/common/fake.rs"]
+#[path = "../../../../../@afkd/afkd_board/tests/common/fake.rs"]
 pub mod fake;
 
 use std::io::{Read, Write};

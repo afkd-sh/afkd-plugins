@@ -1,16 +1,16 @@
-//! The gate that holds the **shipped `@afkd/board` plugin** — a manifest v2 provider with no
+//! The gate that holds the **shipped `@afkd/afkd_board` plugin** — a manifest v2 provider with no
 //! trigger kind, shipped as a finished binary — to a real afkd: the `afkd` first on `PATH`,
 //! never a build, since a plugin is checked against the afkd it will meet ([`bin_path`]).
 //!
-//! - The **install by name** leg packs the release as `.github/workflows/release-board.yml`
-//!   does, serves it and an index naming it on loopback, and installs `@afkd/board` by its name
-//!   alone: afkd reads the index once, fills in the platform, fetches the archive once and
+//! - The **install by name** leg packs the release as `.github/workflows/release-afkd_board.yml`
+//!   does, serves it and an index naming it on loopback, and installs `@afkd/afkd_board` by its
+//!   name alone: afkd reads the index once, fills in the platform, fetches the archive once and
 //!   places exactly the manifest and the binary.
 //! - The **published index** leg holds the entry the site's `public/plugins.json` ships to the
-//!   manifest's name and to this repository's fixed `board` release, in the afkd.sh checkout
+//!   manifest's name and to this repository's fixed `afkd_board` release, in the afkd.sh checkout
 //!   `AFKD_SITE_SRC` names ([`site_src`]); it skips loudly without one.
 //! - The **validate** leg holds `afkd validate` to a service calling every read with every
-//!   parameter and reading every field of every handle and value, through two `board.Board`
+//!   parameter and reading every field of every handle and value, through two `afkd_board.Board`
 //!   values.
 //! - The **reads** leg runs an interval service by hand whose run reads two boards through
 //!   children afkd starts for each call: the lists, the labels and the cards of one, the cards
@@ -39,17 +39,17 @@ use tempfile::TempDir;
 // --- the shipped tree --------------------------------------------------------------
 
 /// The plugin's name, as the manifest spells it and afkd places it.
-const NAME: &str = "@afkd/board";
+const NAME: &str = "@afkd/afkd_board";
 
-/// The source the site's index lists the plugin under: this repository's fixed `board`
+/// The source the site's index lists the plugin under: this repository's fixed `afkd_board`
 /// release, one archive per platform, `{platform}` filled in by afkd.
 const RELEASE_URL: &str =
-    "https://github.com/afkd-sh/afkd-plugins/releases/download/board/afkd-board-{platform}.tar.gz";
+    "https://github.com/afkd-sh/afkd-plugins/releases/download/afkd_board/afkd-afkd_board-{platform}.tar.gz";
 
 /// The plugin's root — the directory `afkd install` takes, whose path this crate's own
 /// mirrors under `drift/`. Canonicalized, so a staged copy and a report both name one path.
 fn plugin_root() -> PathBuf {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../@afkd/board");
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../@afkd/afkd_board");
     std::fs::canonicalize(root).expect("the shipped plugin resolves")
 }
 
@@ -67,24 +67,24 @@ fn built_binary() -> &'static Path {
             .status()
             .expect("run cargo");
         assert!(status.success(), "the plugin builds");
-        plugin_root().join("target/release/afkd-board")
+        plugin_root().join("target/release/afkd-afkd_board")
     })
 }
 
 /// What a release holds, relative and sorted: the manifest and the binary, nothing else.
-const RELEASE_TREE: &[&str] = &["afkd-board", "afkd-plugin.toml"];
+const RELEASE_TREE: &[&str] = &["afkd-afkd_board", "afkd-plugin.toml"];
 
 /// Stage the release `tools/pack-release` packs under `dst` and return the staged root,
-/// `<dst>/afkd-board`, failing unless it holds exactly [`RELEASE_TREE`].
+/// `<dst>/afkd-afkd_board`, failing unless it holds exactly [`RELEASE_TREE`].
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
-        .arg("board")
+        .arg("afkd_board")
         .arg(dst)
         .arg(built_binary())
         .status()
         .expect("run tools/pack-release");
-    assert!(status.success(), "tools/pack-release board");
-    let staged = dst.join("afkd-board");
+    assert!(status.success(), "tools/pack-release afkd_board");
+    let staged = dst.join("afkd-afkd_board");
     assert_eq!(
         tree_of(&staged),
         RELEASE_TREE,
@@ -220,7 +220,7 @@ fn the_published_index_entry_matches_the_shipped_plugin() {
     assert_eq!(
         plugins[NAME]["source"].as_str(),
         Some(RELEASE_URL),
-        "the entry does not point at this repository's board release"
+        "the entry does not point at this repository's afkd_board release"
     );
     // `PluginSource::classify` routes on the `.tar.gz` suffix: a release URL without it would
     // be taken for a git remote and cloned.
@@ -237,13 +237,13 @@ fn installs_by_name_through_a_loopback_index() {
     // release workflow packs it.
     let packing = TempDir::new().expect("a packing dir");
     stage(packing.path());
-    let archive = packing.path().join("afkd-board.tar.gz");
+    let archive = packing.path().join("afkd-afkd_board.tar.gz");
     let packed = Command::new("tar")
         .arg("czf")
         .arg(&archive)
         .arg("-C")
         .arg(packing.path())
-        .arg("afkd-board")
+        .arg("afkd-afkd_board")
         .status()
         .expect("run tar");
     assert!(packed.success(), "tar packs the staged release");
@@ -252,7 +252,7 @@ fn installs_by_name_through_a_loopback_index() {
         std::fs::read(&archive).expect("the archive"),
     );
     let listing = format!(
-        "{{\"index\": 1, \"plugins\": {{\"{NAME}\": {{\"source\": \"{}/afkd-board-{{platform}}.tar.gz\"}}}}}}",
+        "{{\"index\": 1, \"plugins\": {{\"{NAME}\": {{\"source\": \"{}/afkd-afkd_board-{{platform}}.tar.gz\"}}}}}}",
         tarball.base
     );
     let index = serve("application/json", listing.into_bytes());
@@ -280,7 +280,7 @@ fn installs_by_name_through_a_loopback_index() {
     assert_eq!(
         tarball.requests(),
         [format!(
-            "GET /afkd-board-{}-linux.tar.gz HTTP/1.1",
+            "GET /afkd-afkd_board-{}-linux.tar.gz HTTP/1.1",
             std::env::consts::ARCH
         )],
         "the archive for this host's platform is fetched once"
@@ -292,7 +292,7 @@ fn installs_by_name_through_a_loopback_index() {
         RELEASE_TREE,
         "the install placed exactly the archive's contents"
     );
-    let mode = std::fs::metadata(placed.join("afkd-board"))
+    let mode = std::fs::metadata(placed.join("afkd-afkd_board"))
         .expect("stat the binary")
         .permissions()
         .mode();
@@ -306,8 +306,8 @@ fn installs_by_name_through_a_loopback_index() {
 // --- validate ----------------------------------------------------------------------
 
 /// A service calling every read the plugin declares with every parameter it takes, through
-/// two `board.Board` values, one with a `base_url`, and reading every field of every handle and
-/// value a read gives back, the optional ones through `??`, validates: afkd types every
+/// two `afkd_board.Board` values, one with a `base_url`, and reading every field of every handle
+/// and value a read gives back, the optional ones through `??`, validates: afkd types every
 /// argument and field against the manifest.
 #[test]
 fn every_read_validates() {
@@ -316,37 +316,37 @@ fn every_read_validates() {
         home.path(),
         r###"import "afkd"
 import "svc:interval"
-import "@afkd/board"
+import "@afkd/afkd_board"
 
-TRAIN :: board.Board{ key: "afk_board_train-0123456789" }
-OPS   :: board.Board{ key: "afk_board_ops-0123456789", base_url: "http://127.0.0.1:8088" }
+TRAIN :: afkd_board.Board{ key: "afk_board_train-0123456789" }
+OPS   :: afkd_board.Board{ key: "afk_board_ops-0123456789", base_url: "http://127.0.0.1:8088" }
 
 nightly :: service(interval) {
   every    1h
   work_dir "/srv/acme/widgets"
 
   on_run proc(run: afkd.Run) {
-    match board.lists(TRAIN) {
+    match afkd_board.lists(TRAIN) {
       .ok(lists) => {
         for list in lists {
           $ echo #{list.id} #{list.name}
         }
       }
-      .err(e) => fail("board.lists: #{e.message}")
+      .err(e) => fail("afkd_board.lists: #{e.message}")
     }
-    match board.labels(OPS) {
+    match afkd_board.labels(OPS) {
       .ok(labels) => {
         for label in labels {
           $ echo #{label.name} #{label.colour}
         }
       }
-      .err(e) => fail("board.labels: #{e.message}")
+      .err(e) => fail("afkd_board.labels: #{e.message}")
     }
-    lead := match board.card(TRAIN, 17) {
+    lead := match afkd_board.card(TRAIN, 17) {
       .ok(card) => card
-      .err(e) => fail("board.card: #{e.message}")
+      .err(e) => fail("afkd_board.card: #{e.message}")
     }
-    match board.cards(
+    match afkd_board.cards(
       TRAIN,
       list=[ "Todo", "In progress 🚧" ],
       labels=[ "bug" ],
@@ -382,26 +382,26 @@ nightly :: service(interval) {
           if card == lead {
             $ echo same
           }
-          match board.comments(TRAIN, card) {
+          match afkd_board.comments(TRAIN, card) {
             .ok(comments) => {
               for comment in comments {
                 $ echo #{comment.id} #{comment.card} #{comment.author ?? "key"} #{comment.run ?? "-"}
                 $ echo #{comment.body} #{comment.created_at} #{comment.url}
               }
             }
-            .err(e) => fail("board.comments: #{e.message}")
+            .err(e) => fail("afkd_board.comments: #{e.message}")
           }
         }
       }
-      .err(e) => fail("board.cards: #{e.message}")
+      .err(e) => fail("afkd_board.cards: #{e.message}")
     }
-    match board.cards(OPS, done=true, blocked=false) {
+    match afkd_board.cards(OPS, done=true, blocked=false) {
       .ok(cards) => {
         for card in cards {
           $ echo #{card.id}
         }
       }
-      .err(e) => fail("board.cards: #{e.message}")
+      .err(e) => fail("afkd_board.cards: #{e.message}")
     }
   }
 }
@@ -427,59 +427,60 @@ const OPS_KEY: &str = "afk_board_ops-0123456789";
 const TITLE: &str = "修复 the \"retry\" storm 🚨";
 
 /// The reads leg's service: an interval service whose run reads the two boards at
-/// `train` and `ops` through a `board.Board` each, writing what it read to [`READS`] under
+/// `train` and `ops` through an `afkd_board.Board` each, writing what it read to [`READS`] under
 /// `home`, and `end` last.
 fn reads_service(home: &Path, train: &str, ops: &str) -> String {
     format!(
         r###"import "afkd"
 import "svc:interval"
-import "@afkd/board"
+import "@afkd/afkd_board"
 
-TRAIN :: board.Board{{ key: "{TRAIN_KEY}", base_url: "{train}" }}
-OPS   :: board.Board{{ key: "{OPS_KEY}", base_url: "{ops}" }}
+TRAIN :: afkd_board.Board{{ key: "{TRAIN_KEY}", base_url: "{train}" }}
+OPS   :: afkd_board.Board{{ key: "{OPS_KEY}", base_url: "{ops}" }}
 
 nightly :: service(interval) {{
   every    24h
   work_dir "{home}"
 
   on_run proc(run: afkd.Run) {{
-    match board.lists(TRAIN) {{
+    match afkd_board.lists(TRAIN) {{
       .ok(lists) => {{
         for list in lists {{
           $ echo list #{{list.name}} >> {READS}
         }}
       }}
-      .err(e) => fail("board.lists: #{{e.message}}")
+      .err(e) => fail("afkd_board.lists: #{{e.message}}")
     }}
-    match board.labels(TRAIN) {{
+    match afkd_board.labels(TRAIN) {{
       .ok(labels) => {{
         for label in labels {{
           $ echo label #{{label.name}} #{{label.colour}} >> {READS}
         }}
       }}
-      .err(e) => fail("board.labels: #{{e.message}}")
+      .err(e) => fail("afkd_board.labels: #{{e.message}}")
     }}
-    match board.cards(TRAIN, list=[ "In progress", "Todo" ]) {{
+    match afkd_board.cards(TRAIN, list=[ "In progress", "Todo" ]) {{
       .ok(cards) => {{
         for card in cards {{
           $ echo card #{{card.id}} #{{card.title}} #{{card.list}} >> {READS}
         }}
       }}
-      .err(e) => fail("board.cards: #{{e.message}}")
+      .err(e) => fail("afkd_board.cards: #{{e.message}}")
     }}
-    match board.cards(OPS) {{
+    match afkd_board.cards(OPS) {{
       .ok(cards) => {{
         for card in cards {{
           $ echo ops #{{card.id}} #{{card.title}} >> {READS}
         }}
       }}
-      .err(e) => fail("board.cards: #{{e.message}}")
+      .err(e) => fail("afkd_board.cards: #{{e.message}}")
     }}
-    lead := match board.card(TRAIN, 1) {{
+    lead := match afkd_board.card(TRAIN, 1) {{
       .ok(card) => card
-      .err(e) => fail("board.card: #{{e.message}}")
+      .err(e) => fail("afkd_board.card: #{{e.message}}")
     }}
-    match board.cards(TRAIN, labels=[ "bug" ]) {{
+    $ echo key #{{lead.key}} >> {READS}
+    match afkd_board.cards(TRAIN, labels=[ "bug" ]) {{
       .ok(cards) => {{
         for card in cards {{
           if card == lead {{
@@ -487,29 +488,29 @@ nightly :: service(interval) {{
           }}
         }}
       }}
-      .err(e) => fail("board.cards: #{{e.message}}")
+      .err(e) => fail("afkd_board.cards: #{{e.message}}")
     }}
-    match board.comments(TRAIN, lead) {{
+    match afkd_board.comments(TRAIN, lead) {{
       .ok(comments) => {{
         for comment in comments {{
           $ echo comment #{{comment.author ?? "key"}} #{{comment.run ?? "-"}} #{{comment.body}} >> {READS}
         }}
       }}
-      .err(e) => fail("board.comments: #{{e.message}}")
+      .err(e) => fail("afkd_board.comments: #{{e.message}}")
     }}
-    match board.comments(OPS, lead) {{
-      .ok(comments) => fail("board.comments read a card of TRAIN through OPS")
+    match afkd_board.comments(OPS, lead) {{
+      .ok(comments) => fail("afkd_board.comments read a card of TRAIN through OPS")
       .err(e) => {{
         $ echo refused #{{e.message}} >> {READS}
       }}
     }}
-    match board.cards(TRAIN, include_archived=true) {{
+    match afkd_board.cards(TRAIN, include_archived=true) {{
       .ok(cards) => {{
         for card in cards {{
           $ echo all #{{card.id}} >> {READS}
         }}
       }}
-      .err(e) => fail("board.cards: #{{e.message}}")
+      .err(e) => fail("afkd_board.cards: #{{e.message}}")
     }}
     $ echo end >> {READS}
   }}
@@ -566,10 +567,11 @@ fn dump(home: &Path, boards: &[&FakeBoard], daemon: &StreamingDaemon) -> String 
 }
 
 /// A service of another kind reads two boards side by side through a child afkd starts for
-/// each call, each through its own `board.Board`: one board's lists, labels and cards of two
-/// lists in the board's order, the other's cards, one card read by `board.card` and by
-/// `board.cards` and `==` itself, its comments, a person's and a key's in a run, and its
-/// refusal when passed with the other board, naming both. Each board is sent its own key alone.
+/// each call, each through its own `afkd_board.Board`: one board's lists, labels and cards of
+/// two lists in the board's order, the other's cards, one card read by `afkd_board.card` and by
+/// `afkd_board.cards` and `==` itself, its key, its comments, a person's and a key's in a run,
+/// and its refusal when passed with the other board, naming both. Each board is sent its own key
+/// alone.
 #[test]
 fn reads_leg_two_boards_through_a_child_per_call() {
     let home = installed();
@@ -645,10 +647,12 @@ fn reads_leg_two_boards_through_a_child_per_call() {
         format!(
             "list Todo\nlist In progress\nlist Done\nlabel bug red\nlabel 媒体 amber\n\
              card 1 {TITLE} Todo\ncard 2 Cut the tag In progress\nops 1 Rotate the 🔑 keys\n\
-             same\ncomment Ed - 看起来不对 🚨 — it resets\n\
+             key afkd_board:{}/{}\nsame\ncomment Ed - 看起来不对 🚨 — it resets\n\
              comment key develop-0-42 Backoff capped at 30s\n\
-             refused comments: card is #1 of board {}, and the board.Board reaches board {}\n\
+             refused comments: card is #1 of board {}, and the afkd_board.Board reaches board {}\n\
              all 1\nall 4\nall 2\nall 3\nend\n",
+            train.board_id(),
+            train.card_id(1),
             train.board_id(),
             ops.board_id()
         ),

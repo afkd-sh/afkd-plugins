@@ -9,7 +9,7 @@ use std::fs;
 const README: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/README.md");
 const WORKFLOW: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../.github/workflows/release-board.yml"
+    "/../../.github/workflows/release-afkd_board.yml"
 );
 
 /// Every stretch of `text` that follows an occurrence of `lead` and runs up to the next `end`.
@@ -111,8 +111,8 @@ fn the_release_notes_name_the_afkd_the_readme_requires() {
 
 #[test]
 fn a_floor_is_read_where_its_phrase_puts_it() {
-    let readme =
-        "# @afkd/board\n\n## Install it\n\n```console\n$ afkd install @afkd/board\n```\n\n\
+    let readme = "# @afkd/afkd_board\n\n## Install it\n\n```console\n\
+        $ afkd install @afkd/afkd_board\n```\n\n\
         Nothing is compiled on your host. Installing it needs **afkd\n0.2.693 or newer**, the \
         first whose manifests declare a `list[str]` an action returns.\n\nThe configs below are \
         written in the afk language of **afkd 0.2.704 or newer**.\n\n## Configure it\n\n\
@@ -123,7 +123,7 @@ fn a_floor_is_read_where_its_phrase_puts_it() {
         "        run: |\n          ls -l $assets\n          # An operator's `afkd update` \
         lands the new manifest on whatever afkd they run, so\n          # the notes name the \
         afkd it needs: 0.2.693 is the first whose manifests\n          # declare a `list[str]` \
-        an action returns.\n          printf '`afkd install @afkd/board`.\\n\\nNeeds afkd \
+        an action returns.\n          printf '`afkd install @afkd/afkd_board`.\\n\\nNeeds afkd \
         0.2.693 or newer, the first whose manifests declare a `list[str]` an action \
         returns.\\n\\nCut from %s.\\n' \"$GITHUB_SHA\" > notes.md\n          gh release delete \
         board --yes --cleanup-tag || true\n";

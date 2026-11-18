@@ -1,7 +1,7 @@
 //! The board's HTTP API, as the reads use it: a GET under `<base_url>/api/board` with the
-//! `board.Board`'s key as `Authorization: Bearer <key>`, its JSON answer decoded, and a refusal
-//! read from the `{"error": …}` body the API answers every one with (the site's README, "A
-//! board's API").
+//! `afkd_board.Board`'s key as `Authorization: Bearer <key>`, its JSON answer decoded, and a
+//! refusal read from the `{"error": …}` body the API answers every one with (the site's README,
+//! "A board's API").
 //!
 //! The agent is `@afkd/linear`'s cut down to one call: a child answers one call and ends, so
 //! there is no pool to keep fresh. afkd ends the call when it misses its reply, so every
@@ -56,7 +56,7 @@ pub(crate) struct LabelAnswer {
 }
 
 /// A card as the API answers it. Its `checklist` is left unread: a handle's field is never a
-/// struct, so `board.Card` has none.
+/// struct, so `afkd_board.Card` has none.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct CardAnswer {
     pub(crate) id: String,
@@ -99,7 +99,7 @@ struct Problem {
     error: String,
 }
 
-/// The board's API, reached with one `board.Board` for one call.
+/// The board's API, reached with one `afkd_board.Board` for one call.
 pub(crate) struct BoardClient {
     agent: ureq::Agent,
     /// `<base_url>/api/board`, with no `/` after it.
