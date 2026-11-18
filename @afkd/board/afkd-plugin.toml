@@ -1,0 +1,270 @@
+name = "@afkd/board"
+version = "0.1.0"
+proto = 2
+shape = "provider"
+source = "https://github.com/afkd-sh/afkd-plugins"
+exec = "afkd-board"
+
+# The board a read reaches, by one of its API keys, made in its Board settings. A key reaches
+# one board, so two boards are two values.
+[[struct]]
+name = "Board"
+
+  # afk_board_…, which afkd never prints.
+  [[struct.field]]
+  name = "key"
+  type = "str"
+  secret = true
+
+  # A stand-in's address, in tests.
+  [[struct.field]]
+  name = "base_url"
+  type = "str"
+  default = "https://app.afkd.sh"
+
+# One item of a card's checklist.
+[[struct]]
+name = "Item"
+
+  [[struct.field]]
+  name = "text"
+  type = "str"
+
+  [[struct.field]]
+  name = "done"
+  type = "bool"
+
+# A list of the board, read with the board.
+[[struct]]
+name = "List"
+
+  [[struct.field]]
+  name = "id"
+  type = "str"
+
+  [[struct.field]]
+  name = "name"
+  type = "str"
+
+# A label of the board, read with the board.
+[[struct]]
+name = "Label"
+
+  [[struct.field]]
+  name = "name"
+  type = "str"
+
+  [[struct.field]]
+  name = "colour"
+  type = "str"
+
+# A card. afkd carries `id`, the card's number as its digits (`17`), and `key`,
+# `board:<board uuid>/<card uuid>`, which `==` compares. The fields below are the rest of what
+# the plugin knows about a card. Every one is always sent, since a field left out is not
+# delivered and a slot reading it would fail its run. A time is unix milliseconds.
+[[handle]]
+name = "Card"
+
+  # 17 for #17.
+  [[handle.field]]
+  name = "number"
+  type = "int"
+
+  [[handle.field]]
+  name = "title"
+  type = "str"
+
+  # Markdown, "" when it has none.
+  [[handle.field]]
+  name = "description"
+  type = "str"
+
+  # The name of the list it is in.
+  [[handle.field]]
+  name = "list"
+  type = "str"
+
+  # By name, in the order they were put on.
+  [[handle.field]]
+  name = "labels"
+  type = "list[str]"
+
+  [[handle.field]]
+  name = "archived"
+  type = "bool"
+
+  [[handle.field]]
+  name = "done"
+  type = "bool"
+
+  # The numbers of the cards it is blocked by, done or not, and of those it blocks.
+  [[handle.field]]
+  name = "blocked_by"
+  type = "list[int]"
+
+  [[handle.field]]
+  name = "blocking"
+  type = "list[int]"
+
+  # Whether a card it is blocked by is not done.
+  [[handle.field]]
+  name = "blocked"
+  type = "bool"
+
+  [[handle.field]]
+  name = "url"
+  type = "str"
+
+  [[handle.field]]
+  name = "created_at"
+  type = "time"
+
+  # The newest of when it was made, its changes and its comments.
+  [[handle.field]]
+  name = "updated_at"
+  type = "time"
+
+# A comment on a card. afkd carries `id`, the comment's uuid, and `key`,
+# `board:<board uuid>/<comment uuid>`.
+[[handle]]
+name = "Comment"
+
+  # The number of the card it is on.
+  [[handle.field]]
+  name = "card"
+  type = "int"
+
+  [[handle.field]]
+  name = "body"
+  type = "str"
+
+  # The name of the person who made it; nil for a comment a key made, and once the person's
+  # account is deleted.
+  [[handle.field]]
+  name = "author"
+  type = "str?"
+
+  # The id of the run it was made in.
+  [[handle.field]]
+  name = "run"
+  type = "str?"
+
+  [[handle.field]]
+  name = "created_at"
+  type = "time"
+
+  # Its card's url, since a comment has no address of its own.
+  [[handle.field]]
+  name = "url"
+  type = "str"
+
+# The card of that number, archived or not.
+[[action]]
+name = "card"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "number"
+  type = "int"
+  required = true
+
+# The cards every filter given keeps, in the board's order: by their list's place, then their
+# place in it, archived cards after the others, the last archived first.
+[[action]]
+name = "cards"
+returns = "list[Card]"
+
+  [[action.param]]
+  name = "b"
+  type = "Board"
+  required = true
+
+  # A card in any of these lists, by name.
+  [[action.param]]
+  name = "list"
+  type = "list[str]"
+  named_only = true
+
+  # A card carrying every one of these labels.
+  [[action.param]]
+  name = "labels"
+  type = "list[str]"
+  named_only = true
+
+  # A card carrying none of these labels.
+  [[action.param]]
+  name = "without_labels"
+  type = "list[str]"
+  named_only = true
+
+  # true keeps the cards that are done, false those that are not; left out, both.
+  [[action.param]]
+  name = "done"
+  type = "bool?"
+  named_only = true
+
+  # true keeps the blocked cards, false the free ones; left out, both.
+  [[action.param]]
+  name = "blocked"
+  type = "bool?"
+  named_only = true
+
+  # In the title or the description, case aside.
+  [[action.param]]
+  name = "text"
+  type = "str"
+  named_only = true
+
+  # Archived cards too.
+  [[action.param]]
+  name = "include_archived"
+  type = "bool"
+  named_only = true
+  default = false
+
+  # 1 to 250.
+  [[action.param]]
+  name = "limit"
+  type = "int"
+  named_only = true
+  default = 50
+
+# The card's comments, oldest first.
+[[action]]
+name = "comments"
+returns = "list[Comment]"
+
+  [[action.param]]
+  name = "b"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
+
+# The board's lists, in order.
+[[action]]
+name = "lists"
+returns = "list[List]"
+
+  [[action.param]]
+  name = "b"
+  type = "Board"
+  required = true
+
+# The board's labels.
+[[action]]
+name = "labels"
+returns = "list[Label]"
+
+  [[action.param]]
+  name = "b"
+  type = "Board"
+  required = true

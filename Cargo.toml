@@ -4,4 +4,4 @@
 # packs.
 [workspace]
 resolver = "2"
-members = ["drift/@afkd/web_top", "drift/@afkd/gitea", "drift/@afkd/trello", "drift/@afkd/gitlab", "drift/@afkd/github", "drift/@afkd/linear", "drift/@afkd/telegram", "checks"]
+members = ["drift/@afkd/web_top", "drift/@afkd/gitea", "drift/@afkd/trello", "drift/@afkd/gitlab", "drift/@afkd/github", "drift/@afkd/linear", "drift/@afkd/telegram", "drift/@afkd/board", "checks"]
