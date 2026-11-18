@@ -50,10 +50,9 @@ each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and
 but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
 manifest when it is installed.
 
-The configs below are written in the afk language of **afkd 0.2.695 or newer**, the
-first that reads a required environment variable where it is written,
-`env.get(…) ?? fail(…)`; an older afkd still runs the plugin, but refuses the examples
-when they load.
+The configs below are written in the afk language of **afkd 0.2.704 or newer**, the
+first that writes a top-level agent as a block, `agent(claude) { … }`; an older afkd still
+runs the plugin, but refuses the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `github`:
 
@@ -123,7 +122,10 @@ The skill is the plugin's own, so it is named with the plugin's name in front:
 import "ai:claude"
 
 // The agent a `service(github)` runs: the skill is what lets it answer the issue.
-fixer :: claude.agent(model="sonnet", skills=[ "@afkd/github/github" ])
+fixer :: agent(claude) {
+  model  "sonnet"
+  skills "@afkd/github/github"
+}
 ```
 
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the

@@ -36,10 +36,9 @@ $ tools/pack-release telegram /tmp/afkd-release @afkd/telegram/target/release/af
 $ afkd install /tmp/afkd-release/afkd-telegram
 ```
 
-The configs below are written in the afk language of **afkd 0.2.695 or newer**, the
-first that reads a required environment variable where it is written,
-`env.get(…) ?? fail(…)`; an older afkd still runs the plugin, but refuses the examples
-when they load.
+The configs below are written in the afk language of **afkd 0.2.704 or newer**, the
+first that writes a top-level agent as a block, `agent(claude) { … }`; an older afkd still
+runs the plugin, but refuses the examples when they load.
 
 A config file uses the plugin by importing it, and then names it by its leaf, `telegram`.
 This service hands every message in two chats to an agent, which answers through the skill:
@@ -52,7 +51,10 @@ import "@afkd/telegram"
 
 BOT_TOKEN :: env.get("TELEGRAM_BOT_TOKEN") ?? fail("TELEGRAM_BOT_TOKEN is unset")
 
-helper :: claude.agent(timeout=30m, skills=[ "@afkd/telegram/telegram" ])
+helper :: agent(claude) {
+  timeout 30m
+  skills  "@afkd/telegram/telegram"
+}
 
 ops :: service(telegram) {
   token    BOT_TOKEN

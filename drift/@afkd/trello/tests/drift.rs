@@ -859,25 +859,25 @@ GIT_WRITES :: [
 ]
 
 // Plans, implements, commits. Unattended, so bypass_permissions.
-builder :: claude.agent(
-  timeout=4h,
-  model="opus",
-  effort=.high,
-  permission_mode=.bypass_permissions,
-  skills=[ "@afkd/trello/trello" ],
-  allow=[ "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write" ],
-)
+builder :: agent(claude) {
+  timeout         4h
+  model           "opus"
+  effort          high
+  permission_mode bypass_permissions
+  skills          "@afkd/trello/trello"
+  allow           "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write"
+}
 
 // Gates each phase, review-only. Commits stay denied even under bypass_permissions.
-critic :: claude.agent(
-  timeout=1h,
-  model="opus",
-  effort=.high,
-  permission_mode=.bypass_permissions,
-  skills=[ "@afkd/trello/trello" ],
-  allow=[ "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write" ],
-  deny=GIT_WRITES,
-)
+critic :: agent(claude) {
+  timeout         1h
+  model           "opus"
+  effort          high
+  permission_mode bypass_permissions
+  skills          "@afkd/trello/trello"
+  allow           "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write"
+  deny            GIT_WRITES
+}
 
 // Confines the pipeline to the repo plus its Rust/claude toolchain.
 // The run's scratch dir is bound automatically.
