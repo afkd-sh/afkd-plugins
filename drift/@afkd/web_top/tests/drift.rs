@@ -4094,7 +4094,7 @@ fn drive_plugin(
     Screen { grid }
 }
 
-/// `layout::Mark::text`'s stopped mark, the one-cell `▫` a switched-off service opens on at
+/// `layout::Mark::glyph`'s stopped mark, the one-cell `▫` a switched-off service opens on at
 /// 24-bit, the depth every leg's terminal runs at ([`TOP_TERM_ENV`]).
 const STOPPED_MARK: &str = "\u{25AB}";
 

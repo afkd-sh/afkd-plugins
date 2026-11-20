@@ -20,8 +20,8 @@
   /* The screen: the dark ground the night arm is tuned on. */
   --term-bg: #0d1117;
 
-  /* The `Hue` roles of the night arm (`night`), in `palette.rs`'s own order. The selection bar is a blue-black
-     a step above the ground, so every status fg stays legible on it. */
+  /* The `Hue` roles of the night arm (`night`), in `palette.rs`'s own order. The selection bar
+     is a blue-black a step above the ground, so every status fg stays legible on it. */
   --term-accent: #7aa2f7;
   --term-pre-run: #bb9af7;
   --term-caution: #e0af68;
@@ -32,9 +32,10 @@
   --term-bright: #f0f6fc;
   --term-selection: #232a45;
 
-  /* The `Tone` roles of the night arm (`night_tone`), which only 24-bit paints: the text every unhued cell wears, the
-     muted labels, the rules and the footer's key badges, a plugin trigger's name, the parked
-     mark, a lane's free cells and the chip each host-load lane sits on. */
+  /* The `Tone` roles of the night arm (`night_tone`), which only 24-bit paints: the text
+     every unhued cell wears, the muted labels, the rules and the footer's key badges, a
+     plugin trigger's name, the parked mark, a lane's free cells and the chip each host-load
+     lane sits on. */
   --term-text: #c0caf5;
   --term-muted: #737aa2;
   --term-rule: #292e42;
