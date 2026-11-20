@@ -280,7 +280,9 @@ yet completed, canceled or a duplicate is passed over the same way until it is. 
 plugin puts back — its run crashed, its `on_claim` failed or its finish could not be
 delivered — goes to the bottom of the state it was claimed from, in its own team, so an issue
 that keeps crashing cannot starve the head of the queue. An issue afkd handed back because its
-service stopped before the run started keeps its place, with its claim comment deleted.
+service stopped before the run started keeps its place, with its claim comment deleted; a
+resumed issue handed back is not kept in place but goes back to the state it was claimed
+from.
 
 ```conf
 import "afkd"
@@ -423,7 +425,8 @@ can **ask first**. Give an agent the `@afkd/linear/linear` skill (see
 [above](#name-the-skill)); its `ask.py` posts the agent's message on the issue and writes the
 marker `park` into the run's scratch dir (`$AFKD_SCRATCH_DIR`). The plugin reads that marker
 at the end of the run and *parks* the issue instead of failing it: it adds the `Needs Info`
-label, posts an `[afkd-park]` marker naming the service, releases the claim, and **moves
+label, posts an `[afkd-park]` marker naming the service and the state the issue was claimed
+from, releases the claim, and **moves
 nothing** — the issue keeps its state, its place and its unspent attempts. `on_fail` does
 not run, and `on_park` does, for extras.
 
@@ -433,8 +436,12 @@ thread has gained a comment afkd did not write, newer than afkd's own last word,
 again right there — wherever it sits — the label and the marker come off, and the reply
 arrives under **New comments** in the fresh brief. `skip_labels` still vetoes it, and a
 blocker added while it waited still holds it back. An issue goes back only to the service
-its `[afkd-park]` marker names; one parked by a service no longer configured is taken over
-by whichever service finds it, with one line in the log.
+its `[afkd-park]` marker names. One parked by a service no longer configured is taken over,
+with one line in the log, only by a service that claims from the state the marker records, so
+a renamed develop service resumes it and a review service never does; a marker that records
+no state is resumed by its own service alone. A resume that runs nothing — afkd hands the
+issue back, or its `on_claim` fails — returns the issue to that state, not leaving it where
+it sat.
 
 A **multi-step** run must stop at the ask itself, so nothing runs past the question:
 
