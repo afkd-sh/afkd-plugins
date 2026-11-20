@@ -197,10 +197,11 @@ Three properties, and the reason for each:
   trusting the browser's font metrics, and "nothing wraps into a broken row" is a property
   rather than a hope.
 - **Roles, never hexes.** A cell names a palette role; `dashboard.css` is the only file that
-  turns one into a colour. Those tones are `crates/tui/src/palette.rs`'s 24-bit arm, the night
-  look `afkd top` paints at 24-bit, plus the dark ground it assumes, and the
-  suite reads them straight out of the Rust and holds the stylesheet to exactly those, role by
-  role.
+  turns one into a colour. Those tones are `crates/tui/src/palette.rs`'s night arm (`night` and
+  `night_tone`, the `Hue` and `Tone` roles), the look `afkd top` paints at 24-bit on a dark
+  ground, plus that ground, and the suite reads them straight out of the Rust and holds the
+  stylesheet to exactly those, role by role. The day arm, tuned for a light ground, is not the
+  page's look.
 - **DOM-free.** It names neither `document` nor `window`; `paint.mjs` does the DOM work and
   makes no layout decision. That split is what lets the whole dashboard be rendered to text
   and diffed against the committed golden screens under `goldens/`.
