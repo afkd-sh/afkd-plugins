@@ -1,5 +1,5 @@
 name = "@afkd/telegram"
-version = "0.2.1"
+version = "0.2.2"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -11,10 +11,12 @@ exec = "afkd-telegram"
 # file; a call that finds no token in either place is refused, naming the file.
 [[config.setting]]
 name = "token"
+doc = "The bot's token, for a call made outside a service"
 type = "str"
 
 [[config.setting]]
 name = "base_url"
+doc = "The Telegram API address, when not the public one"
 type = "str"
 
 # A Telegram message, `telegram.Message` in a config: what a `service(telegram)` is passed,
@@ -29,32 +31,38 @@ name = "Message"
   # The chat's id, `-1001234567890` for a group, the user's id for a private chat.
   [[handle.field]]
   name = "chat"
+  doc = "The id of the chat: a group's, or the user's for a private chat"
   type = "str"
 
   # The sender's user id, or "" for a message sent on behalf of a chat.
   [[handle.field]]
   name = "sender"
+  doc = "The sender's user id, empty for a message sent as a chat"
   type = "str"
 
   # The sender's first and last name, or `@username` for one with no name.
   [[handle.field]]
   name = "sender_name"
+  doc = "The sender's name, or their @username when they have none"
   type = "str"
 
   # The message's text, or a file's caption.
   [[handle.field]]
   name = "text"
+  doc = "The message's text, or a file's caption"
   type = "str"
 
   # The id of the message in the same chat it replies to.
   [[handle.field]]
   name = "reply_to"
+  doc = "The id of the message it replies to, empty for none"
   type = "str"
 
   # The Telegram file ids of its document, photo (the largest size), video, audio or voice,
   # each one `fetch_file` takes.
   [[handle.field]]
   name = "files"
+  doc = "The file ids of its document, photo, video, audio or voice"
   type = "list[str]"
 
 # The one kind, `service(telegram)` in a config: messages to the bot, one per run, each
@@ -63,6 +71,7 @@ name = "Message"
 # `every` and `max_attempts`, are afkd's and not declared here.
 [[kind]]
 name = "message"
+doc = "Messages to the bot, one per run"
 role = "trigger"
 main = true
 claims = true
@@ -70,6 +79,7 @@ claims = true
   # The bot's token, as BotFather gave it.
   [[kind.setting]]
   name = "token"
+  doc = "The bot's token, as BotFather gave it"
   type = "str"
   required = true
 
@@ -77,16 +87,19 @@ claims = true
   # can message runs nothing for a stranger.
   [[kind.setting]]
   name = "chats"
+  doc = "The ids of the chats whose messages start a run"
   type = "list[str]"
   required = true
 
   [[kind.setting]]
   name = "base_url"
+  doc = "The Telegram API address, when not the public one"
   type = "str"
 
   # The slots afkd runs, each passed the run and its message, and after the run its outcome.
   [[kind.slot]]
   name = "on_run"
+  doc = "Runs for a message to the bot, and does the work on it"
 
     [[kind.slot.param]]
     name = "run"
@@ -98,6 +111,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_claim"
+  doc = "Runs once a message is taken, before the run starts"
   when = "pre"
 
     [[kind.slot.param]]
@@ -106,6 +120,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_done"
+  doc = "Runs after the run finished the message"
   when = "post"
 
     [[kind.slot.param]]
@@ -122,6 +137,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_fail"
+  doc = "Runs after the run failed on the message"
   when = "post"
 
     [[kind.slot.param]]
@@ -144,15 +160,18 @@ claims = true
 # after a newline where it can be, and the last one is the message given back.
 [[action]]
 name = "send"
+doc = "Sends a text to a chat, split when over Telegram's limit"
 returns = "Message"
 
   [[action.param]]
   name = "chat"
+  doc = "The chat's id, or @channel"
   type = "str"
   required = true
 
   [[action.param]]
   name = "text"
+  doc = "The text to send"
   type = "str"
   required = true
 
@@ -160,20 +179,24 @@ returns = "Message"
 # A caption over 1024 is refused, as is a file over 50 MB, or a photo over 10 MB.
 [[action]]
 name = "send_file"
+doc = "Sends a file to a chat, with a caption under it"
 returns = "Message"
 
   [[action.param]]
   name = "chat"
+  doc = "The chat's id, or @channel"
   type = "str"
   required = true
 
   [[action.param]]
   name = "path"
+  doc = "The absolute path of the file to send"
   type = "str"
   required = true
 
   [[action.param]]
   name = "kind"
+  doc = "How Telegram shows the file"
   type = "enum"
   values = ["document", "photo", "video", "audio", "voice"]
   named_only = true
@@ -181,6 +204,7 @@ returns = "Message"
 
   [[action.param]]
   name = "caption"
+  doc = "The text under the file, up to 1024 characters"
   type = "str"
   named_only = true
   default = ""
@@ -189,15 +213,18 @@ returns = "Message"
 # first part replies, and the last is the message given back.
 [[action]]
 name = "reply"
+doc = "Replies to a message in its chat, split as send splits"
 returns = "Message"
 
   [[action.param]]
   name = "message"
+  doc = "The message to reply to"
   type = "Message"
   required = true
 
   [[action.param]]
   name = "text"
+  doc = "The text of the reply"
   type = "str"
   required = true
 
@@ -205,14 +232,17 @@ returns = "Message"
 # (👍 👌 👀 🔥 🎉 ❤), or taken off with "".
 [[action]]
 name = "react"
+doc = "Sets the bot's reaction to a message, or takes it off"
 
   [[action.param]]
   name = "message"
+  doc = "The message to react to"
   type = "Message"
   required = true
 
   [[action.param]]
   name = "emoji"
+  doc = "One of Telegram's reaction emoji, or empty to take it off"
   type = "str"
   required = true
 
@@ -220,23 +250,28 @@ name = "react"
 # a file. Never split: a text over 4096, or a caption over 1024, is refused.
 [[action]]
 name = "edit"
+doc = "Replaces the text, or the caption, of a message the bot sent"
 
   [[action.param]]
   name = "message"
+  doc = "The message to edit"
   type = "Message"
   required = true
 
   [[action.param]]
   name = "text"
+  doc = "The new text, never split"
   type = "str"
   required = true
 
 # The message deleted.
 [[action]]
 name = "delete"
+doc = "Deletes a message"
 
   [[action.param]]
   name = "message"
+  doc = "The message to delete"
   type = "Message"
   required = true
 
@@ -244,13 +279,16 @@ name = "delete"
 # must exist. Telegram hands a bot files of up to 20 MB.
 [[action]]
 name = "fetch_file"
+doc = "Saves a Telegram file to a path"
 
   [[action.param]]
   name = "file"
+  doc = "The Telegram file id"
   type = "str"
   required = true
 
   [[action.param]]
   name = "to"
+  doc = "The absolute path to write the file to, in a directory that exists"
   type = "str"
   required = true

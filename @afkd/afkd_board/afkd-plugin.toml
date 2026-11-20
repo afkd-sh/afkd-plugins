@@ -1,5 +1,5 @@
 name = "@afkd/afkd_board"
-version = "0.1.0"
+version = "0.1.1"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -68,60 +68,73 @@ name = "Card"
   # 17 for #17.
   [[handle.field]]
   name = "number"
+  doc = "The card's number on the board, such as 17"
   type = "int"
 
   [[handle.field]]
   name = "title"
+  doc = "The card's title"
   type = "str"
 
   # Markdown, "" when it has none.
   [[handle.field]]
   name = "description"
+  doc = "The card's description in Markdown, empty when it has none"
   type = "str"
 
   # The name of the list it is in.
   [[handle.field]]
   name = "list"
+  doc = "The name of the list the card is in"
   type = "str"
 
   # By name, in the order they were put on.
   [[handle.field]]
   name = "labels"
+  doc = "The names of the card's labels, in the order they were put on"
   type = "list[str]"
 
   [[handle.field]]
   name = "archived"
+  doc = "Whether the card is archived"
   type = "bool"
 
   [[handle.field]]
   name = "done"
+  doc = "Whether the card is done"
   type = "bool"
 
   # The numbers of the cards it is blocked by, done or not, and of those it blocks.
   [[handle.field]]
   name = "blocked_by"
+  doc = "The numbers of the cards that block it, done or not"
   type = "list[int]"
 
   [[handle.field]]
   name = "blocking"
+  doc = "The numbers of the cards it blocks"
   type = "list[int]"
 
   # Whether a card it is blocked by is not done.
   [[handle.field]]
   name = "blocked"
+  doc = "Whether a card that blocks it is not done"
   type = "bool"
 
   [[handle.field]]
   name = "url"
+  doc = "The link to the card on the board"
   type = "str"
 
   [[handle.field]]
   name = "created_at"
+  doc = "When the card was made"
   type = "time"
 
   # The newest of when it was made, its changes and its comments.
   [[handle.field]]
   name = "updated_at"
+  doc = "The newest of when it was made, changed or commented on"
   type = "time"
 
 # A comment on a card. afkd carries `id`, the comment's uuid, and `key`,
@@ -132,44 +145,53 @@ name = "Comment"
   # The number of the card it is on.
   [[handle.field]]
   name = "card"
+  doc = "The number of the card it is on"
   type = "int"
 
   [[handle.field]]
   name = "body"
+  doc = "The text of the comment"
   type = "str"
 
   # The name of the person who made it; nil for a comment a key made, and once the person's
   # account is deleted.
   [[handle.field]]
   name = "author"
+  doc = "The name of the person who made it, nil for a key's or a deleted one"
   type = "str?"
 
   # The id of the run it was made in.
   [[handle.field]]
   name = "run"
+  doc = "The id of the run it was made in, nil for none"
   type = "str?"
 
   [[handle.field]]
   name = "created_at"
+  doc = "When the comment was made"
   type = "time"
 
   # Its card's url, since a comment has no address of its own.
   [[handle.field]]
   name = "url"
+  doc = "The link to its card, since a comment has no address of its own"
   type = "str"
 
 # The card of that number, archived or not.
 [[action]]
 name = "card"
+doc = "Reads the card of a number, archived or not"
 returns = "Card"
 
   [[action.param]]
   name = "b"
+  doc = "The board to read"
   type = "Board"
   required = true
 
   [[action.param]]
   name = "number"
+  doc = "The card's number"
   type = "int"
   required = true
 
@@ -177,52 +199,61 @@ returns = "Card"
 # place in it, archived cards after the others, the last archived first.
 [[action]]
 name = "cards"
+doc = "Reads the cards every filter given keeps, in the board's order"
 returns = "list[Card]"
 
   [[action.param]]
   name = "b"
+  doc = "The board to read"
   type = "Board"
   required = true
 
   # A card in any of these lists, by name.
   [[action.param]]
   name = "list"
+  doc = "Only cards in any of these lists, by name"
   type = "list[str]"
   named_only = true
 
   # A card carrying every one of these labels.
   [[action.param]]
   name = "labels"
+  doc = "Only cards carrying every one of these labels"
   type = "list[str]"
   named_only = true
 
   # A card carrying none of these labels.
   [[action.param]]
   name = "without_labels"
+  doc = "Only cards carrying none of these labels"
   type = "list[str]"
   named_only = true
 
   # true keeps the cards that are done, false those that are not; left out, both.
   [[action.param]]
   name = "done"
+  doc = "True keeps the done cards, false the others, left out both"
   type = "bool?"
   named_only = true
 
   # true keeps the blocked cards, false the free ones; left out, both.
   [[action.param]]
   name = "blocked"
+  doc = "True keeps the blocked cards, false the free ones, left out both"
   type = "bool?"
   named_only = true
 
   # In the title or the description, case aside.
   [[action.param]]
   name = "text"
+  doc = "Only cards with this text in the title or description, any case"
   type = "str"
   named_only = true
 
   # Archived cards too.
   [[action.param]]
   name = "include_archived"
+  doc = "Whether archived cards are kept too"
   type = "bool"
   named_only = true
   default = false
@@ -230,6 +261,7 @@ returns = "list[Card]"
   # 1 to 250.
   [[action.param]]
   name = "limit"
+  doc = "How many cards to read at most, 1 to 250"
   type = "int"
   named_only = true
   default = 50
@@ -237,34 +269,41 @@ returns = "list[Card]"
 # The card's comments, oldest first.
 [[action]]
 name = "comments"
+doc = "Reads the card's comments, oldest first"
 returns = "list[Comment]"
 
   [[action.param]]
   name = "b"
+  doc = "The board the card is on"
   type = "Board"
   required = true
 
   [[action.param]]
   name = "card"
+  doc = "The card whose comments to read"
   type = "Card"
   required = true
 
 # The board's lists, in order.
 [[action]]
 name = "lists"
+doc = "Reads the board's lists, in order"
 returns = "list[List]"
 
   [[action.param]]
   name = "b"
+  doc = "The board to read"
   type = "Board"
   required = true
 
 # The board's labels.
 [[action]]
 name = "labels"
+doc = "Reads the board's labels"
 returns = "list[Label]"
 
   [[action.param]]
   name = "b"
+  doc = "The board to read"
   type = "Board"
   required = true

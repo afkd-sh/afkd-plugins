@@ -4,7 +4,8 @@
 //! The manifest is data afkd reads without running anything, which is why it is a TOML file
 //! and not generated from these constants — and why this test exists. The crate has no TOML
 //! dependency, so the scan below reads exactly the shape the manifest is written in:
-//! `[[table]]` headers, and `key = value` lines, each value kept as written.
+//! `[[table]]` headers, and `key = value` lines, each value kept as written, bar `doc`: the
+//! line of prose on an item is for the editor, and `checks/` holds it to its rule.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,6 +34,9 @@ fn tables(text: &str) -> Vec<Table> {
         if let Some(header) = line.strip_prefix("[[").and_then(|l| l.strip_suffix("]]")) {
             tables.push((header.to_string(), BTreeMap::new()));
         } else if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "doc" {
+                continue;
+            }
             let table = &mut tables.last_mut().unwrap().1;
             table.insert(key.trim().to_string(), value.trim().to_string());
         }

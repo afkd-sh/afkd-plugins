@@ -1,5 +1,5 @@
 name = "@afkd/linear"
-version = "0.13.0"
+version = "0.13.1"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -59,159 +59,194 @@ name = "Issue"
   # Linear's id for the issue, the same after it moves team and its identifier changes.
   [[handle.field]]
   name = "uuid"
+  doc = "Linear's id for the issue, kept when it moves team"
   type = "str"
 
   # The url key of the workspace it is in.
   [[handle.field]]
   name = "workspace"
+  doc = "The url key of the workspace it is in"
   type = "str"
 
   # Its team's key.
   [[handle.field]]
   name = "team"
+  doc = "Its team's key"
   type = "str"
 
   [[handle.field]]
   name = "title"
+  doc = "The issue's title"
   type = "str"
 
   [[handle.field]]
   name = "url"
+  doc = "The link to the issue on Linear"
   type = "str"
 
   # Markdown, "" when it has none.
   [[handle.field]]
   name = "description"
+  doc = "The description in Markdown, empty when it has none"
   type = "str"
 
   # Linear's git branch name for it.
   [[handle.field]]
   name = "branch"
+  doc = "Linear's git branch name for it"
   type = "str"
 
   # The name of the workflow state it sits in.
   [[handle.field]]
   name = "state"
+  doc = "The name of the workflow state it sits in"
   type = "str"
 
   [[handle.field]]
   name = "state_type"
+  doc = "The category of its workflow state"
   type = "State_Type"
 
   [[handle.field]]
   name = "priority"
+  doc = "Its priority"
   type = "Priority"
 
   [[handle.field]]
   name = "estimate"
+  doc = "Its estimate, nil when it has none"
   type = "int?"
 
   # Its due date, YYYY-MM-DD.
   [[handle.field]]
   name = "due"
+  doc = "Its due date as YYYY-MM-DD, nil when it has none"
   type = "str?"
 
   # The display names of who it is assigned and delegated to, and of who filed it, nil for
   # an issue an integration filed.
   [[handle.field]]
   name = "assignee"
+  doc = "The display name of who it is assigned to, nil for nobody"
   type = "str?"
 
   [[handle.field]]
   name = "delegate"
+  doc = "The display name of who it is delegated to, nil for nobody"
   type = "str?"
 
   [[handle.field]]
   name = "creator"
+  doc = "The display name of who filed it, nil for an integration's"
   type = "str?"
 
   # The names of its project and milestone, and its cycle's number.
   [[handle.field]]
   name = "project"
+  doc = "The name of its project, nil when it has none"
   type = "str?"
 
   [[handle.field]]
   name = "milestone"
+  doc = "The name of its milestone, nil when it has none"
   type = "str?"
 
   [[handle.field]]
   name = "cycle"
+  doc = "Its cycle's number, nil when it is in none"
   type = "int?"
 
   # The names of the labels on it.
   [[handle.field]]
   name = "labels"
+  doc = "The names of the labels on it"
   type = "list[str]"
 
   # The parent issue's identifier.
   [[handle.field]]
   name = "parent"
+  doc = "The parent issue's identifier, nil when it has none"
   type = "str?"
 
   # The sub-issues' identifiers, in Linear's order.
   [[handle.field]]
   name = "sub_issues"
+  doc = "The sub-issues' identifiers, in Linear's order"
   type = "list[str]"
 
   # The identifiers of the issues it relates to, one list per relation, done or not.
   [[handle.field]]
   name = "blocks"
+  doc = "The identifiers of the issues it blocks, done or not"
   type = "list[str]"
 
   [[handle.field]]
   name = "blocked_by"
+  doc = "The identifiers of the issues that block it, done or not"
   type = "list[str]"
 
   [[handle.field]]
   name = "related"
+  doc = "The identifiers of the issues it relates to"
   type = "list[str]"
 
   [[handle.field]]
   name = "similar"
+  doc = "The identifiers of the issues it is marked similar to"
   type = "list[str]"
 
   [[handle.field]]
   name = "duplicates"
+  doc = "The identifiers of the issues it is the original of"
   type = "list[str]"
 
   [[handle.field]]
   name = "duplicate_of"
+  doc = "The identifier of the issue it duplicates, nil for none"
   type = "str?"
 
   # The urls of its links, Linear's attachments.
   [[handle.field]]
   name = "links"
+  doc = "The urls of its links, Linear's attachments"
   type = "list[str]"
 
   # The display names of its subscribers.
   [[handle.field]]
   name = "subscribers"
+  doc = "The display names of its subscribers"
   type = "list[str]"
 
   [[handle.field]]
   name = "created_at"
+  doc = "When the issue was made"
   type = "time"
 
   [[handle.field]]
   name = "updated_at"
+  doc = "When the issue last changed"
   type = "time"
 
   # nil unless it was completed or canceled.
   [[handle.field]]
   name = "completed_at"
+  doc = "When it was completed, nil unless it was"
   type = "time?"
 
   [[handle.field]]
   name = "canceled_at"
+  doc = "When it was canceled, nil unless it was"
   type = "time?"
 
   # Whether it is archived (a trashed issue is too), and whether it is in the trash.
   [[handle.field]]
   name = "archived"
+  doc = "Whether it is archived, as a trashed issue is too"
   type = "bool"
 
   [[handle.field]]
   name = "trashed"
+  doc = "Whether it is in the trash"
   type = "bool"
 
 # A comment, its `id` its uuid.
@@ -221,36 +256,44 @@ name = "Comment"
   # The identifier of the issue it is on.
   [[handle.field]]
   name = "issue"
+  doc = "The identifier of the issue it is on"
   type = "str"
 
   [[handle.field]]
   name = "body"
+  doc = "The text of the comment, in Markdown"
   type = "str"
 
   [[handle.field]]
   name = "url"
+  doc = "The link to the comment on Linear"
   type = "str"
 
   # Its author's display name, or the integration's or the external user's name.
   [[handle.field]]
   name = "author"
+  doc = "Its author's display name, or the integration's or external user's"
   type = "str?"
 
   # The id of the comment it answers.
   [[handle.field]]
   name = "reply_to"
+  doc = "The id of the comment it answers, nil for a first one"
   type = "str?"
 
   [[handle.field]]
   name = "resolved_at"
+  doc = "When its thread was resolved, nil unless it was"
   type = "time?"
 
   [[handle.field]]
   name = "created_at"
+  doc = "When the comment was made"
   type = "time"
 
   [[handle.field]]
   name = "edited_at"
+  doc = "When it was last edited, nil unless it was"
   type = "time?"
 
 # A team, its `id` its key (`ENG`).
@@ -259,6 +302,7 @@ name = "Team"
 
   [[handle.field]]
   name = "name"
+  doc = "The team's name"
   type = "str"
 
 # A workflow state, its `id` its uuid.
@@ -267,15 +311,18 @@ name = "State"
 
   [[handle.field]]
   name = "name"
+  doc = "The state's name"
   type = "str"
 
   [[handle.field]]
   name = "type"
+  doc = "The category of the state"
   type = "State_Type"
 
   # Its team's key.
   [[handle.field]]
   name = "team"
+  doc = "Its team's key"
   type = "str"
 
 # A label, its `id` its uuid.
@@ -284,16 +331,19 @@ name = "Label"
 
   [[handle.field]]
   name = "name"
+  doc = "The label's name"
   type = "str"
 
   # The name of the label group it is in.
   [[handle.field]]
   name = "group"
+  doc = "The name of the label group it is in, nil for none"
   type = "str?"
 
   # Its team's key, nil for a workspace label.
   [[handle.field]]
   name = "team"
+  doc = "Its team's key, nil for a workspace label"
   type = "str?"
 
 # A user, its `id` its uuid.
@@ -303,19 +353,23 @@ name = "User"
   # The display name.
   [[handle.field]]
   name = "name"
+  doc = "The user's display name"
   type = "str"
 
   [[handle.field]]
   name = "full_name"
+  doc = "The user's full name"
   type = "str"
 
   [[handle.field]]
   name = "email"
+  doc = "The user's email address"
   type = "str"
 
   # Whether it is an app's user.
   [[handle.field]]
   name = "app"
+  doc = "Whether it is an app's user"
   type = "bool"
 
 # A project, its `id` its uuid.
@@ -324,20 +378,24 @@ name = "Project"
 
   [[handle.field]]
   name = "name"
+  doc = "The project's name"
   type = "str"
 
   # Its teams' keys.
   [[handle.field]]
   name = "teams"
+  doc = "Its teams' keys"
   type = "list[str]"
 
   # Its milestones' names, in order.
   [[handle.field]]
   name = "milestones"
+  doc = "Its milestones' names, in order"
   type = "list[str]"
 
   [[handle.field]]
   name = "url"
+  doc = "The link to the project on Linear"
   type = "str"
 
 # A cycle, its `id` its uuid.
@@ -346,33 +404,40 @@ name = "Cycle"
 
   [[handle.field]]
   name = "number"
+  doc = "The cycle's number in its team"
   type = "int"
 
   [[handle.field]]
   name = "name"
+  doc = "The cycle's name, nil when it has none"
   type = "str?"
 
   # Its team's key.
   [[handle.field]]
   name = "team"
+  doc = "Its team's key"
   type = "str"
 
   [[handle.field]]
   name = "starts_at"
+  doc = "When the cycle starts"
   type = "time"
 
   [[handle.field]]
   name = "ends_at"
+  doc = "When the cycle ends"
   type = "time"
 
   [[handle.field]]
   name = "active"
+  doc = "Whether it is the team's current cycle"
   type = "bool"
 
 # The one kind, `service(linear)` in a config: Linear teams whose issues are claimed one per
 # run. afkd's own claim keys, `every` and `max_attempts`, are afkd's and not declared here.
 [[kind]]
 name = "intake"
+doc = "Linear teams whose issues are claimed one per run"
 role = "trigger"
 main = true
 claims = true
@@ -382,25 +447,30 @@ claims = true
   # one of the two is written; one written `nil` or `""` is not written.
   [[kind.setting]]
   name = "api_key"
+  doc = "A Linear API key, written in place of an OAuth app's id and secret"
   type = "str?"
 
   [[kind.setting]]
   name = "client_id"
+  doc = "An OAuth app's client id, written with its secret"
   type = "str?"
 
   [[kind.setting]]
   name = "client_secret"
+  doc = "An OAuth app's client secret, written with its id"
   type = "str?"
 
   # A stand-in's address, in tests.
   [[kind.setting]]
   name = "base_url"
+  doc = "The Linear API address, a stand-in's in tests"
   type = "str"
   default = "https://api.linear.app"
 
   # The keys of the teams issues are claimed from (`ENG`), scanned in the order written.
   [[kind.setting]]
   name = "team"
+  doc = "The keys of the teams to claim from, scanned in order"
   type = "list[str]"
   required = true
 
@@ -408,64 +478,78 @@ claims = true
   # each team.
   [[kind.setting]]
   name = "claim_from"
+  doc = "The states to claim from by name, scanned in order in each team"
   type = "list[str]"
   required = true
 
   # Each `only_*` claims only an issue the `issues` filter of the name after `only_` keeps.
   [[kind.setting]]
   name = "only_state_type"
+  doc = "Only issues the state_type filter of issues keeps"
   type = "list[State_Type]"
 
   [[kind.setting]]
   name = "only_priority"
+  doc = "Only issues the priority filter of issues keeps"
   type = "list[Priority]"
 
   [[kind.setting]]
   name = "only_labels"
+  doc = "Only issues the labels filter of issues keeps"
   type = "list[str]"
 
   [[kind.setting]]
   name = "only_assignee"
+  doc = "Only issues the assignee filter of issues keeps"
   type = "list[str]"
 
   [[kind.setting]]
   name = "only_delegate"
+  doc = "Only issues the delegate filter of issues keeps"
   type = "list[str]"
 
   [[kind.setting]]
   name = "only_project"
+  doc = "Only issues the project filter of issues keeps"
   type = "list[str]"
 
   [[kind.setting]]
   name = "only_milestone"
+  doc = "Only issues the milestone filter of issues keeps"
   type = "list[str]"
 
   [[kind.setting]]
   name = "only_cycle"
+  doc = "Only issues the cycle filter of issues keeps"
   type = "list[int]"
 
   [[kind.setting]]
   name = "only_parent"
+  doc = "Only issues the parent filter of issues keeps"
   type = "list[str]"
 
   [[kind.setting]]
   name = "only_text"
+  doc = "Only issues the text filter of issues keeps"
   type = "str"
 
   # No issue carrying any of these labels is claimed, as `issues`'s `without_labels`.
   [[kind.setting]]
   name = "skip_labels"
+  doc = "Skip issues carrying any of these labels"
   type = "list[str]"
 
   # `anyone`, or the users whose reply re-arms an issue afkd spoke on last.
   [[kind.setting]]
   name = "discuss_with"
+  doc = "Whose reply re-arms an issue afkd spoke on last: anyone, or these"
   type = "list[str]"
 
   # The slots afkd runs, each passed the run, the workspace the credential settings build and
   # the issue, and after the run its outcome.
   [[kind.slot]]
   name = "on_run"
+  doc = "Runs for a claimed issue, and does the work on it"
 
     [[kind.slot.param]]
     name = "run"
@@ -481,6 +565,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_claim"
+  doc = "Runs once an issue is claimed, before the run starts"
   when = "pre"
 
     [[kind.slot.param]]
@@ -493,6 +578,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_done"
+  doc = "Runs after the run finished the issue"
   when = "post"
 
     [[kind.slot.param]]
@@ -513,6 +599,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_fail"
+  doc = "Runs after the run failed on the issue"
   when = "post"
 
     [[kind.slot.param]]
@@ -533,6 +620,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_park"
+  doc = "Runs after the run parked the issue to wait for a reply"
   when = "post"
 
     [[kind.slot.param]]
@@ -559,16 +647,19 @@ claims = true
 # it is read anew even after it moved team. None found is refused.
 [[action]]
 name = "issue"
+doc = "Reads one issue by its identifier or uuid, refused when none"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   # An identifier (ENG-123) or a uuid.
   [[action.param]]
   name = "id"
+  doc = "An identifier such as ENG-123, or a uuid"
   type = "str"
   required = true
 
@@ -576,147 +667,175 @@ returns = "Issue"
 # single-valued field keeps an issue holding any of it; `labels` keeps one carrying every one.
 [[action]]
 name = "issues"
+doc = "Reads the issues every filter given keeps"
 returns = "list[Issue]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   # Identifiers or uuids.
   [[action.param]]
   name = "id"
+  doc = "Only these identifiers or uuids"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "team"
+  doc = "Only issues of any of these teams, by key"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "state"
+  doc = "Only issues in any of these states, by name"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "state_type"
+  doc = "Only issues whose state is of any of these categories"
   type = "list[State_Type]"
   named_only = true
 
   [[action.param]]
   name = "priority"
+  doc = "Only issues of any of these priorities"
   type = "list[Priority]"
   named_only = true
 
   [[action.param]]
   name = "labels"
+  doc = "Only issues carrying every one of these labels"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "without_labels"
+  doc = "Only issues carrying none of these labels"
   type = "list[str]"
   named_only = true
 
   # Users by display name or email, "me", or "none" for nobody.
   [[action.param]]
   name = "assignee"
+  doc = "Assigned to any of these users: name, email, me, or none"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "delegate"
+  doc = "Delegated to any of these users: name, email, me, or none"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "project"
+  doc = "Only issues in any of these projects, by name"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "milestone"
+  doc = "Only issues in any of these milestones, by name"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "cycle"
+  doc = "Only issues in any of these cycles, by number"
   type = "list[int]"
   named_only = true
 
   # Sub-issues of these identifiers or uuids.
   [[action.param]]
   name = "parent"
+  doc = "Only sub-issues of these identifiers or uuids"
   type = "list[str]"
   named_only = true
 
   # true keeps an issue an open issue blocks, false one no open issue blocks.
   [[action.param]]
   name = "blocked"
+  doc = "True keeps issues an open issue blocks, false those none blocks"
   type = "bool"
   named_only = true
 
   # In the title or the description, case ignored.
   [[action.param]]
   name = "text"
+  doc = "Only issues with this text in the title or description, any case"
   type = "str"
   named_only = true
 
   [[action.param]]
   name = "created_after"
+  doc = "Only issues made after this time"
   type = "time"
   named_only = true
 
   [[action.param]]
   name = "created_before"
+  doc = "Only issues made before this time"
   type = "time"
   named_only = true
 
   [[action.param]]
   name = "updated_after"
+  doc = "Only issues changed after this time"
   type = "time"
   named_only = true
 
   [[action.param]]
   name = "updated_before"
+  doc = "Only issues changed before this time"
   type = "time"
   named_only = true
 
   [[action.param]]
   name = "completed_after"
+  doc = "Only issues completed after this time"
   type = "time"
   named_only = true
 
   [[action.param]]
   name = "completed_before"
+  doc = "Only issues completed before this time"
   type = "time"
   named_only = true
 
   [[action.param]]
   name = "canceled_after"
+  doc = "Only issues canceled after this time"
   type = "time"
   named_only = true
 
   [[action.param]]
   name = "canceled_before"
+  doc = "Only issues canceled before this time"
   type = "time"
   named_only = true
 
   # YYYY-MM-DD.
   [[action.param]]
   name = "due_after"
+  doc = "Only issues due after this date, as YYYY-MM-DD"
   type = "str"
   named_only = true
 
   [[action.param]]
   name = "due_before"
+  doc = "Only issues due before this date, as YYYY-MM-DD"
   type = "str"
   named_only = true
 
   # Archived and trashed issues too.
   [[action.param]]
   name = "include_archived"
+  doc = "Whether archived and trashed issues are kept too"
   type = "bool"
   named_only = true
   default = false
@@ -724,6 +843,7 @@ returns = "list[Issue]"
   # Linear's own sort, at most three keys, each breaking the ties of the one before.
   [[action.param]]
   name = "order"
+  doc = "Linear's own sort, at most three keys, each breaking ties"
   type = "list[Sort]"
   named_only = true
   default = ["team", "state", "manual"]
@@ -731,6 +851,7 @@ returns = "list[Issue]"
   # 1 to 250, Linear's largest page.
   [[action.param]]
   name = "limit"
+  doc = "How many issues to read at most, 1 to 250"
   type = "int"
   named_only = true
   default = 50
@@ -738,106 +859,127 @@ returns = "list[Issue]"
 # The issue's comments, oldest first, each reply right after the comment it answers.
 [[action]]
 name = "comments"
+doc = "Reads the issue's comments, oldest first, replies after their parent"
 returns = "list[Comment]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue whose comments to read"
   type = "Issue"
   required = true
 
 # The user the credential acts as.
 [[action]]
 name = "me"
+doc = "Reads the user the credential acts as"
 returns = "User"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
 # The workspace's users, apps included, disabled accounts not.
 [[action]]
 name = "users"
+doc = "Reads the workspace's users, apps included, disabled ones not"
 returns = "list[User]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
 # The teams the credential can reach.
 [[action]]
 name = "teams"
+doc = "Reads the teams the credential can reach"
 returns = "list[Team]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
 # The team's workflow states, in workflow order.
 [[action]]
 name = "states"
+doc = "Reads the team's workflow states, in workflow order"
 returns = "list[State]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   # The team's key.
   [[action.param]]
   name = "team"
+  doc = "The team's key"
   type = "str"
   required = true
 
 # The workspace's labels, and the team's when given.
 [[action]]
 name = "labels"
+doc = "Reads the workspace's labels, and the team's when given"
 returns = "list[Label]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "team"
+  doc = "A team's key, to read that team's labels too"
   type = "str"
   named_only = true
 
 # The workspace's projects, or the team's when given.
 [[action]]
 name = "projects"
+doc = "Reads the workspace's projects, or the team's when given"
 returns = "list[Project]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "team"
+  doc = "A team's key, to read only that team's projects"
   type = "str"
   named_only = true
 
 # The team's cycles, oldest first.
 [[action]]
 name = "cycles"
+doc = "Reads the team's cycles, oldest first"
 returns = "list[Cycle]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "team"
+  doc = "The team's key"
   type = "str"
   required = true
 
@@ -846,15 +988,18 @@ returns = "list[Cycle]"
 # control markers is left out, though `comments` returns the markers themselves.
 [[action]]
 name = "files"
+doc = "Reads the urls of the Linear files an issue and its comments link"
 returns = "list[str]"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue whose files to list"
   type = "Issue"
   required = true
 
@@ -862,19 +1007,23 @@ returns = "list[str]"
 # file host asks for, from Linear and from no other host.
 [[action]]
 name = "download_file"
+doc = "Saves a file Linear hosts to a path, fetched from no other host"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "url"
+  doc = "The url of the file to save"
   type = "str"
   required = true
 
   [[action.param]]
   name = "to"
+  doc = "The absolute path to write the file to"
   type = "str"
   required = true
 
@@ -889,27 +1038,32 @@ name = "download_file"
 # Linear places it.
 [[action]]
 name = "create_issue"
+doc = "Files an issue in a team, in its default state unless given one"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   # A team's key.
   [[action.param]]
   name = "team"
+  doc = "The key of the team to file it in"
   type = "str"
   required = true
 
   [[action.param]]
   name = "title"
+  doc = "The issue's title"
   type = "str"
   required = true
 
   # Markdown.
   [[action.param]]
   name = "description"
+  doc = "The description in Markdown"
   type = "str"
   named_only = true
 
@@ -917,18 +1071,21 @@ returns = "Issue"
   # any other file linked.
   [[action.param]]
   name = "files"
+  doc = "Absolute paths of files to embed: an image shown, another linked"
   type = "list[str]"
   named_only = true
 
   # A state of `team`.
   [[action.param]]
   name = "state"
+  doc = "A state of the team, by name"
   type = "str"
   named_only = true
 
   # The place in the state.
   [[action.param]]
   name = "at"
+  doc = "Whether it goes at the top or the bottom of its state"
   type = "enum"
   values = ["top", "bottom"]
   named_only = true
@@ -936,61 +1093,72 @@ returns = "Issue"
   # Right below this issue in the state.
   [[action.param]]
   name = "after"
+  doc = "The issue it goes right below in its state"
   type = "Issue"
   named_only = true
 
   [[action.param]]
   name = "priority"
+  doc = "Its priority"
   type = "Priority"
   named_only = true
 
   [[action.param]]
   name = "estimate"
+  doc = "Its estimate, nil for none"
   type = "int?"
   named_only = true
 
   # YYYY-MM-DD.
   [[action.param]]
   name = "due"
+  doc = "Its due date as YYYY-MM-DD, nil for none"
   type = "str?"
   named_only = true
 
   # Labels of `team` or of the workspace, by name.
   [[action.param]]
   name = "labels"
+  doc = "Labels of the team or the workspace, by name"
   type = "list[str]"
   named_only = true
 
   # A user's display name or email, or "me".
   [[action.param]]
   name = "assignee"
+  doc = "A user's display name or email, or me, to assign it to"
   type = "str?"
   named_only = true
 
   [[action.param]]
   name = "delegate"
+  doc = "A user's display name or email, or me, to delegate it to"
   type = "str?"
   named_only = true
 
   [[action.param]]
   name = "project"
+  doc = "The name of its project, nil for none"
   type = "str?"
   named_only = true
 
   # A milestone of `project`.
   [[action.param]]
   name = "milestone"
+  doc = "A milestone of its project, by name"
   type = "str?"
   named_only = true
 
   # A cycle's number, of `team`.
   [[action.param]]
   name = "cycle"
+  doc = "The number of a cycle of its team, nil for none"
   type = "int?"
   named_only = true
 
   [[action.param]]
   name = "parent"
+  doc = "The issue it is a sub-issue of, nil for none"
   type = "Issue?"
   named_only = true
 
@@ -1000,26 +1168,31 @@ returns = "Issue"
 # it is in; with neither, Linear places it.
 [[action]]
 name = "update_issue"
+doc = "Changes an issue's fields: one given is set, nil clears, one left out stays"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to change"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "title"
+  doc = "Its new title"
   type = "str"
   named_only = true
 
   # Markdown; "" empties it.
   [[action.param]]
   name = "description"
+  doc = "Its new description in Markdown, empty to clear it"
   type = "str"
   named_only = true
 
@@ -1027,24 +1200,28 @@ returns = "Issue"
   # any other file linked. Only beside `description`.
   [[action.param]]
   name = "files"
+  doc = "Absolute paths of files to embed after a new description"
   type = "list[str]"
   named_only = true
 
   # A state of the issue's team, or of `team`.
   [[action.param]]
   name = "state"
+  doc = "A state of its team, or of the new team, by name"
   type = "str"
   named_only = true
 
   # A team's key.
   [[action.param]]
   name = "team"
+  doc = "The key of the team to move it to, with a state of that team"
   type = "str"
   named_only = true
 
   # The place in the state.
   [[action.param]]
   name = "at"
+  doc = "Whether it goes at the top or the bottom of its state"
   type = "enum"
   values = ["top", "bottom"]
   named_only = true
@@ -1052,55 +1229,65 @@ returns = "Issue"
   # Right below this issue in the state.
   [[action.param]]
   name = "after"
+  doc = "The issue it goes right below in its state"
   type = "Issue"
   named_only = true
 
   [[action.param]]
   name = "priority"
+  doc = "Its new priority"
   type = "Priority"
   named_only = true
 
   [[action.param]]
   name = "estimate"
+  doc = "Its new estimate, nil to clear it"
   type = "int?"
   named_only = true
 
   # YYYY-MM-DD.
   [[action.param]]
   name = "due"
+  doc = "Its new due date as YYYY-MM-DD, nil to clear it"
   type = "str?"
   named_only = true
 
   # A user's display name or email, or "me".
   [[action.param]]
   name = "assignee"
+  doc = "A user's display name or email, or me, nil to unassign"
   type = "str?"
   named_only = true
 
   [[action.param]]
   name = "delegate"
+  doc = "A user's display name or email, or me, nil to undelegate"
   type = "str?"
   named_only = true
 
   [[action.param]]
   name = "project"
+  doc = "The name of its new project, nil to clear it"
   type = "str?"
   named_only = true
 
   # A milestone of the issue's project, or of `project`.
   [[action.param]]
   name = "milestone"
+  doc = "A milestone of its project or the new one, nil to clear it"
   type = "str?"
   named_only = true
 
   # A cycle's number, of the issue's team or of `team`.
   [[action.param]]
   name = "cycle"
+  doc = "The number of a cycle of its team or the new one, nil to clear it"
   type = "int?"
   named_only = true
 
   [[action.param]]
   name = "parent"
+  doc = "The issue it becomes a sub-issue of, nil to clear it"
   type = "Issue?"
   named_only = true
 
@@ -1108,20 +1295,24 @@ returns = "Issue"
 # label the issue already carries is left as it is.
 [[action]]
 name = "add_label"
+doc = "Puts a label on the issue, its team's before the workspace's"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to label"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "label"
+  doc = "The name of the label to add"
   type = "str"
   required = true
 
@@ -1129,20 +1320,24 @@ returns = "Issue"
 # is left as it is.
 [[action]]
 name = "remove_label"
+doc = "Takes a label off the issue, left as it is when not there"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to take the label off"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "label"
+  doc = "The name of the label to remove"
   type = "str"
   required = true
 
@@ -1151,27 +1346,32 @@ returns = "Issue"
 # is left as it is.
 [[action]]
 name = "add_relation"
+doc = "Relates the issue to another, in both issues' fields"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to relate"
   type = "Issue"
   required = true
 
   # The issue's field `other` goes in.
   [[action.param]]
   name = "relation"
+  doc = "The field of the issue that the other issue goes in"
   type = "enum"
   values = ["blocks", "blocked_by", "related", "similar", "duplicate_of", "duplicates"]
   required = true
 
   [[action.param]]
   name = "other"
+  doc = "The issue to relate it to"
   type = "Issue"
   required = true
 
@@ -1179,26 +1379,31 @@ returns = "Issue"
 # named for `relation`. A relation the issue does not hold is left as it is.
 [[action]]
 name = "remove_relation"
+doc = "Takes a relation off the issue, left as it is when not held"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to take the relation off"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "relation"
+  doc = "The field of the issue that the other issue is taken out of"
   type = "enum"
   values = ["blocks", "blocked_by", "related", "similar", "duplicate_of", "duplicates"]
   required = true
 
   [[action.param]]
   name = "other"
+  doc = "The issue it is no longer related to"
   type = "Issue"
   required = true
 
@@ -1206,100 +1411,120 @@ returns = "Issue"
 # that link `title`, when one is given.
 [[action]]
 name = "add_link"
+doc = "Links a url on the issue, Linear's attachment"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to link on"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "url"
+  doc = "The url to link"
   type = "str"
   required = true
 
   [[action.param]]
   name = "title"
+  doc = "The link's title, also given to a url the issue already links"
   type = "str"
   named_only = true
 
 # Take the link to `url` off the issue. A url it does not link is left as it is.
 [[action]]
 name = "remove_link"
+doc = "Takes the link to a url off the issue, left as it is when not there"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to take the link off"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "url"
+  doc = "The url whose link to remove"
   type = "str"
   required = true
 
 # Subscribe a user to the issue: a display name or email, or "me".
 [[action]]
 name = "add_subscriber"
+doc = "Subscribes a user to the issue"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to subscribe to"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "user"
+  doc = "A user's display name or email, or me"
   type = "str"
   default = "me"
 
 # Unsubscribe a user from the issue: a display name or email, or "me".
 [[action]]
 name = "remove_subscriber"
+doc = "Unsubscribes a user from the issue"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to unsubscribe from"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "user"
+  doc = "A user's display name or email, or me"
   type = "str"
   default = "me"
 
 # Archive the issue, its sub-issues with it, as Linear does.
 [[action]]
 name = "archive_issue"
+doc = "Archives the issue, its sub-issues with it"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to archive"
   type = "Issue"
   required = true
 
@@ -1307,15 +1532,18 @@ returns = "Issue"
 # Linear's 30 days.
 [[action]]
 name = "unarchive_issue"
+doc = "Takes the issue out of the archive, or out of the trash in 30 days"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to take back"
   type = "Issue"
   required = true
 
@@ -1323,15 +1551,18 @@ returns = "Issue"
 # takes it back within 30 days.
 [[action]]
 name = "delete_issue"
+doc = "Puts the issue in the trash, its sub-issues with it"
 returns = "Issue"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to trash"
   type = "Issue"
   required = true
 
@@ -1340,57 +1571,68 @@ returns = "Issue"
 # the same issue; a reply to a reply goes in the thread both are in.
 [[action]]
 name = "create_comment"
+doc = "Posts a comment on the issue, in a thread when it replies"
 returns = "Comment"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to comment on"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "body"
+  doc = "The text of the comment, in Markdown"
   type = "str"
   required = true
 
   # Absolute paths, each read when called.
   [[action.param]]
   name = "files"
+  doc = "Absolute paths of files to embed after the text"
   type = "list[str]"
   named_only = true
 
   [[action.param]]
   name = "reply_to"
+  doc = "A comment on the same issue, whose thread it goes in"
   type = "Comment"
   named_only = true
 
 # Rewrite the comment's body, each of `files` embedded after it.
 [[action]]
 name = "update_comment"
+doc = "Rewrites the comment's body"
 returns = "Comment"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "comment"
+  doc = "The comment to rewrite"
   type = "Comment"
   required = true
 
   [[action.param]]
   name = "body"
+  doc = "The new text of the comment, in Markdown"
   type = "str"
   required = true
 
   # Absolute paths, each read when called.
   [[action.param]]
   name = "files"
+  doc = "Absolute paths of files to embed after the text"
   type = "list[str]"
   named_only = true
 
@@ -1398,43 +1640,52 @@ returns = "Comment"
 # carries `resolved_at`. A reply resolves its thread, as the reply that resolved it.
 [[action]]
 name = "resolve_comment"
+doc = "Resolves the thread a comment is in, giving back its first comment"
 returns = "Comment"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "comment"
+  doc = "A comment of the thread to resolve"
   type = "Comment"
   required = true
 
 # Unresolve the thread the comment is in, and give back the thread's first comment.
 [[action]]
 name = "unresolve_comment"
+doc = "Unresolves the thread a comment is in, giving back its first comment"
 returns = "Comment"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "comment"
+  doc = "A comment of the thread to unresolve"
   type = "Comment"
   required = true
 
 # Delete the comment. A thread's first comment takes its replies with it, as Linear does.
 [[action]]
 name = "delete_comment"
+doc = "Deletes the comment, a thread's first one with its replies"
 
   [[action.param]]
   name = "ws"
+  doc = "The workspace to reach Linear through"
   type = "Workspace"
   required = true
 
   [[action.param]]
   name = "comment"
+  doc = "The comment to delete"
   type = "Comment"
   required = true
