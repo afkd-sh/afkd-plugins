@@ -750,6 +750,9 @@ json.dump({
             "\u{3000}[afkd-attempt] 1/2",
             "seen a stray [afkd-claim] on this issue",
             "\\\\[afkd-claim] owner=x",
+            "[afkd-flow state]\n\n```json\n{}\n```",
+            "\\[afkd\\-flow build\\] red",
+            "[afkd] a word on afkd",
             "",
         ];
         let fixture = json!({

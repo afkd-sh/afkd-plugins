@@ -262,7 +262,10 @@ turn that said nothing. Each is posted once; one Linear does not take is said in
 the service's log, naming the issue and the comment, and lost. A lost watermark makes the
 next run's brief list the comments it would have marked delivered under **New comments**
 again. The claim, its release and a park's badge and marker are not lost: a finish that does
-not land is held, and afkd's later `release` delivers it.
+not land is held, and afkd's later `release` delivers it. Every comment opening `[afkd-` is
+afkd's own, these and any note a config keeps on the issue under a mark of its own, such as
+`[afkd-flow state]`: the brief leaves each out, and no run is handed one as a human's
+comment, whichever machine posted it.
 
 **Intake.** `team` names one team or several, and `claim_from` one state or several,
 `claim_from "Triage", "Todo"`. The poll goes team by team in the order written, in each
@@ -620,7 +623,7 @@ A field that points at an issue carries its identifier, since a field cannot hol
 | `linear.labels(ws, ~team)`            | `list[linear.Label]`: the workspace's, and the team's when given |
 | `linear.projects(ws, ~team)`          | `list[linear.Project]`, every one or the team's |
 | `linear.cycles(ws, team)`             | `list[linear.Cycle]`, oldest first |
-| `linear.files(ws, issue)`             | `list[str]`: the urls of every file Linear hosts that its description and comments link, the description's first, then the comments' oldest first; a link in one of afkd's own control markers (its claim, attempt, ran and park comments) is left out, though `comments` returns the markers themselves |
+| `linear.files(ws, issue)`             | `list[str]`: the urls of every file Linear hosts that its description and comments link, the description's first, then the comments' oldest first; a link in one of afkd's own control markers (any comment opening `[afkd-`: its claim, attempt, ran and park comments and a config's own notes) is left out, though `comments` returns the markers themselves |
 | `linear.download_file(ws, url, to)`   | nil; saves the file at `url` to the absolute path `to`, sending the credential Linear's file host asks for, and to no other host |
 
 A team is named by its key. An unknown one is refused by `states` and `cycles`, `linear
@@ -909,6 +912,9 @@ Linear's reason.
   watermark or attempt note Linear does not take is said and lost.
 - **The watermark is in milliseconds.** `[afkd-ran]`'s `upto=` is epoch milliseconds, since
   Linear stamps a comment to the millisecond.
+- **Every `[afkd-` comment is afkd's.** One opening `[afkd-`, a config's own note as much as
+  a marker, is left out of the brief and of `files`, where trello leaves out only its claim,
+  attempt, ran and park markers.
 - **The skill's scripts are the plugin's actions.** Each is named for the action it does and
   prints the action's value as JSON, where trello's print lines of text: `update_issue.py`
   does what trello's `set_name.py`, `set_description.py` and `move_card.py` do, and

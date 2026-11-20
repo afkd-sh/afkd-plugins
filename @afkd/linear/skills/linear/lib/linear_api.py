@@ -1528,9 +1528,10 @@ def files(ref):
 
 # --- the thread ------------------------------------------------------------------------
 
-# The control markers the plugin writes on an issue (src/claim.rs, src/issue.rs). A comment
-# opening with one is afkd's bookkeeping, which `files` reads no file out of.
-CONTROL_MARKERS = ("[afkd-claim]", "[afkd-attempt]", "[afkd-ran]", "[afkd-park]")
+# What every control marker opens with (src/issue.rs's AFKD_MARK): the plugin's own
+# bookkeeping and the notes a config keeps under a mark of its own alike. A comment opening
+# with it is afkd's, which `files` reads no file out of.
+AFKD_MARK = "[afkd-"
 
 
 def unescape(text):
@@ -1551,7 +1552,7 @@ def unescape(text):
 
 def is_control_marker(text):
     """Whether a comment is one of afkd's control markers, escaped or as written."""
-    return rust_trim_start(unescape(text)).startswith(CONTROL_MARKERS)
+    return rust_trim_start(unescape(text)).startswith(AFKD_MARK)
 
 
 # --- files: ports of src/file.rs ---------------------------------------------------------

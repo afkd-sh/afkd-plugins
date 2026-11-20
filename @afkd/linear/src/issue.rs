@@ -56,6 +56,10 @@ use crate::tracker::{
 use crate::wire::{Facts, IssueFields, UnitOutcome, WireFile, WireUnit};
 use crate::{PARK_FILE, TASK_FILE};
 
+/// What every control marker opens with: each of the plugin's own, and the mark of any note a
+/// config keeps on an issue, such as `[afkd-flow state]`.
+const AFKD_MARK: &str = "[afkd-";
+
 /// Marker prefix on a failed-attempt comment.
 const ATTEMPT_MARKER: &str = "[afkd-attempt]";
 
@@ -1546,10 +1550,12 @@ fn delivered_upto(comments: &[Comment], me: &SelfIds, feedback: &[Comment]) -> S
         .unwrap_or(UNIX_EPOCH)
 }
 
-/// Whether a comment is one of afkd's bookkeeping **control markers** (claim / attempt /
-/// ran / park), dropped from the brief entirely.
+/// Whether a comment is one of afkd's **control markers**: any that opens on [`AFKD_MARK`],
+/// the plugin's bookkeeping (claim / attempt / ran / park) and the notes a config keeps
+/// under a mark of its own alike. None is speech, so each is dropped from the brief
+/// entirely.
 pub(crate) fn is_control_marker(text: &str) -> bool {
-    is_claim(text) || starts_with_marker(text, ATTEMPT_MARKER) || is_ran(text) || is_park(text)
+    starts_with_marker(text, AFKD_MARK)
 }
 
 /// Whether a comment is afkd's own: authored under one of its ids, or a control marker,
@@ -2001,6 +2007,42 @@ mod tests {
         );
         f.tracker.add_issue("Todo", "ENG-2", "Bare", "");
         assert_eq!(brief_text(&f.tracker.issue("ENG-2"), &[], &me()), "Bare");
+    }
+
+    /// A note a config keeps on the issue under a mark of its own opening `[afkd-` is afkd's
+    /// like a control marker: left out of the brief whoever posted it, and never delivered
+    /// as a human's comment, escaped or as written.
+    #[test]
+    fn a_configs_own_note_is_left_out_of_the_brief() {
+        let f = fx(json!({}));
+        f.tracker.add_issue("Todo", "ENG-7", TITLE, BODY);
+        let comments = [
+            comment("h1", "u-phil", "Please cap it.", 1_000),
+            comment(
+                "n1",
+                SELF_ID,
+                "[afkd-flow state]\n\n```json\n{}\n```",
+                2_000,
+            ),
+            comment(
+                "n2",
+                "app-other-machine",
+                r"\[afkd\-flow build\] red",
+                3_000,
+            ),
+            comment("h2", "u-chen", "30s.", 4_000),
+        ];
+        assert_eq!(
+            brief_text(&f.tracker.issue("ENG-7"), &comments, &me()),
+            format!(
+                "{TITLE}\n\n{BODY}\n\n## New comments\n\n**u-phil (name):** Please cap it.\n\n\
+                 **u-chen (name):** 30s.\n"
+            )
+        );
+        for text in ["[afkd-flow plan]", r"  \[afkd\-flow plan\]"] {
+            assert!(is_control_marker(text), "{text}");
+        }
+        assert!(!is_control_marker("[afkd] a word on afkd"));
     }
 
     /// An issue is blocked while any `blocks` blocker is in a state not done; a completed,

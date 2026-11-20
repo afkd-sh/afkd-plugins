@@ -43,8 +43,8 @@ hold fails naming it.
 
 It prints the issue's comments, oldest first, each reply right after the comment it
 answers: each one's `body` verbatim, its `author`, `created_at`, `edited_at`, `resolved_at`,
-and `reply_to`, the id of the comment it answers. afkd's own bookkeeping comments, opening
-`[afkd-claim]`, `[afkd-ran]`, `[afkd-attempt]` or `[afkd-park]`, are among them.
+and `reply_to`, the id of the comment it answers. afkd's own comments, each opening `[afkd-`,
+such as `[afkd-claim]`, `[afkd-ran]` or a config's `[afkd-flow state]` note, are among them.
 
 ## Find issues
 
