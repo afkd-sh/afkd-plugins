@@ -438,9 +438,9 @@ fn the_action_names_are_odin_style() {
     }
 }
 
-/// A plugin's kinds, actions, withables and handle types share one namespace (lang-v2
-/// §16.3), and afkd's install refuses a collision; so no name is declared twice across
-/// them.
+/// A plugin's kinds, actions, withables and handle types share one namespace
+/// (reference §13.3), and afkd's install refuses a collision; so no name is declared twice
+/// across them.
 #[test]
 fn no_kind_action_or_handle_shares_a_name() {
     let tables = tables(MANIFEST);

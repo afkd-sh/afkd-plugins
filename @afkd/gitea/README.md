@@ -16,7 +16,7 @@ recognised, renewed and released by the plugin, and the other way round, so swit
 one to the other strands nothing. The few places the plugin behaves differently are listed
 [at the end](#where-it-differs-from-the-built-in). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -44,7 +44,7 @@ $ afkd install /tmp/afkd-release/afkd-gitea
 
 Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
 sends with a claim: this is a manifest v2 plugin, which a
-[config in the afk language](https://afkd.sh/docs/lang-v2/) imports; afkd passes its slots the
+[config in the afk language](https://afkd.sh/docs/reference/) imports; afkd passes its slots the
 claimed issue as a `gitea.Issue`, or the pull request as a `gitea.Pull_Request`, and sends
 each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and run it too,
 but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
@@ -419,7 +419,7 @@ reviews :: service(gitea.pr) {
 
 ## Slots, handles and actions
 
-Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
+Both kinds' slots are code ([reference §10.3](https://afkd.sh/docs/reference/#103-slots)), each passed
 the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
 run its outcome — by position, and a slot writes every one of them, in order, each with its
 type:

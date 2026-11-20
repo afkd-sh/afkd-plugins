@@ -1302,7 +1302,7 @@ function groupRollup(members, path) {
 /// The visible row sequence — `DashboardModel::build_rows`. Unless `grouped` is set (`v`; the
 /// board boots **flat**, the ADR-0066 amendment) every surviving card is its own top-level
 /// row, flush to column 0 and spelling its whole qualified name, in config order. The
-/// **grouped** arm emits one header per package — packages are flat (lang-v2 §20.3), so a
+/// **grouped** arm emits one header per package — packages are flat (reference §12.1), so a
 /// group is one level — its members beneath it in config order, and a bare service in `main`
 /// as a root peer row, headers and bare services in first-appearance config order. Either way
 /// every visible service appears exactly once.

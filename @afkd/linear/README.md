@@ -21,7 +21,7 @@ claim, watermark, attempt and park comments on the issue, the same brief and the
 environment, mapped onto Linear's states, labels, assignees and sub-issues. The places it
 behaves differently are listed [at the end](#where-it-differs-from-afkdtrello). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -196,7 +196,7 @@ read as that filter is, and refused at arming as `issues` refuses it, ``trigger 
 setting `only_parent`: only_parent "the epic" is neither an identifier (ENG-123) nor a
 uuid``.
 
-The service's slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each a `proc`
+The service's slots are code ([reference §10.3](https://afkd.sh/docs/reference/#103-slots)), each a `proc`
 passed the run (all but `on_claim`, which runs before one exists), the workspace, the claimed
 issue, and after the run its outcome — by position, and a slot writes every one of them, in
 order, each with its type:

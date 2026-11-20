@@ -836,7 +836,7 @@ fn the_writes_take_a_workspace_and_return_what_they_change() {
 }
 
 /// A plugin's kinds, actions, withables, handle types, enums and structs share one namespace
-/// (lang-v2 §16.3), and afkd's install refuses a collision; so no name is declared twice
+/// (reference §13.3), and afkd's install refuses a collision; so no name is declared twice
 /// across them.
 #[test]
 fn no_kind_action_handle_enum_or_struct_shares_a_name() {

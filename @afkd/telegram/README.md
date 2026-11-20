@@ -9,7 +9,7 @@ does the same through.
 A message the bot received and a message it sent are one type, `telegram.Message`, so
 `telegram.edit(msg, …)` takes what `telegram.send` gave back as readily as `telegram.reply`
 takes what the service was passed. See [`docs/plugins.md`](https://afkd.sh/docs/plugins/)
-for the wire it speaks, and [the afk language](https://afkd.sh/docs/lang-v2/) for the
+for the wire it speaks, and [the afk language](https://afkd.sh/docs/reference/) for the
 configs that use it.
 
 It is a Rust program, released as a finished binary.

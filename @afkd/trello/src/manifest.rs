@@ -324,9 +324,9 @@ fn the_actions_are_the_ones_the_code_answers() {
     assert_eq!(ME, "me", "the member default is Trello's own alias");
 }
 
-/// A plugin's kinds, actions, withables and handle types share one namespace (lang-v2
-/// §16.3), and afkd's install refuses a collision; so no name is declared twice across
-/// them.
+/// A plugin's kinds, actions, withables and handle types share one namespace
+/// (reference §13.3), and afkd's install refuses a collision; so no name is declared twice
+/// across them.
 #[test]
 fn no_kind_action_or_handle_shares_a_name() {
     let tables = tables(MANIFEST);

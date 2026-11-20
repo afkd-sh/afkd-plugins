@@ -189,7 +189,7 @@ fn v2_home_with(tree: &Tree) -> TempDir {
 }
 
 /// A home holding `tree`, with the shipped relay installed and `settings` as its settings
-/// file: under a v2 config installing is what runs it (lang-v2 §16.1), so this is the whole of
+/// file: under a v2 config installing is what runs it (reference §13.1), so this is the whole of
 /// what a daemon spawned here needs.
 fn relay_home(tree: &Tree, settings: &str) -> TempDir {
     let home = v2_home_with(tree);
@@ -1069,7 +1069,7 @@ fn the_verbs_accept_the_shipped_manifest() {
 // --- manifest v2 -------------------------------------------------------------------------
 
 /// A v2 `daemon.afk` with two services and **no line about the companion**: under a v2
-/// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
+/// config installing is what runs it (reference §13.1), so nothing here names it.
 const V2_MAIN: &str = "\
      import \"afkd\"\nimport \"svc:interval\"\nimport \"svc:manual\"\n\n\
      tick :: service(interval) {\n  every 1h\n\n  on_run proc(run: afkd.Run) {\n    $ true\n  }\n}\n\n\
@@ -5384,7 +5384,7 @@ fn intent_at(entry: &Divergence) -> String {
 }
 
 /// The lane [`ledger_ops`] declares, in the `ops` package — a package service cannot name a
-/// lane in `main`, which no package imports (lang-v2 §3.2) — so its identity is `ops.heavy`.
+/// lane in `main`, which no package imports (reference §12.2) — so its identity is `ops.heavy`.
 /// A bare `queue heavy` resolves to the `normal` priority, which neither surface's `Queues`
 /// section prints.
 const LANE: &str = "heavy";
