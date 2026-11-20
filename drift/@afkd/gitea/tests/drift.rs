@@ -196,7 +196,7 @@ widgets :: service(gitea) {{
     for label in issue.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
 "#,
@@ -339,7 +339,7 @@ fn drive_one_issue(home: &Path) {
                 dir.file_name()
                     .is_some_and(|name| name.to_string_lossy().ends_with(&run_suffix))
             })
-            .map(|dir| dir.join("task.md"))
+            .map(|dir| dir.join("task/README.md"))
             .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, &fake, &daemon, "the issue's run starts", || {
@@ -347,7 +347,10 @@ fn drive_one_issue(home: &Path) {
     });
     let task = read(&brief().expect("waited for"));
     for part in [TITLE, "> \"backoff\" — nobody", "```\nretry: 0\n```"] {
-        assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
+        assert!(
+            task.contains(part),
+            "task/README.md carries {part:?}:\n{task}"
+        );
     }
 
     std::fs::write(home.join("release"), "").expect("release the run");
@@ -724,7 +727,7 @@ issues :: service(gitea) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitea.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 
@@ -750,7 +753,7 @@ reviews :: service(gitea.pr) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, pr: gitea.Pull_Request) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 "##;

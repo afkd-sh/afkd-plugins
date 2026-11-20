@@ -54,8 +54,11 @@ use std::io::{BufRead, Write};
 use crate::common::{StderrDiag, SystemClock};
 use crate::plugin::{Answer, Plugin};
 
-/// The brief at the scratch directory's root, which afkd writes framed.
-pub(crate) const TASK_FILE: &str = "task.md";
+/// The brief, which afkd writes framed.
+pub(crate) const TASK_FILE: &str = "task/README.md";
+
+/// The folder the brief and the issue's files are in, at the scratch directory's root.
+pub(crate) const TASK_DIR: &str = "task";
 
 /// The park marker an agent's ask writes into the attempt's scratch directory, which
 /// `classify` reads.

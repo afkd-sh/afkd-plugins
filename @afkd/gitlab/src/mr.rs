@@ -13,7 +13,7 @@
 //! clarification gate.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
+//! bound, the mid-run watch's cursor, and the framing of `task/README.md` — so what is here is
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side. The poll's scan
 //! budget is checked where the issue kind checks it: after a candidate passes eligibility,
 //! before its claim attempt.
@@ -200,7 +200,7 @@ impl MrUnits {
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim identity's username as
     /// `self`, the claim-time note ids as `seen` and the MR's handle fields. The brief is
-    /// unframed — afkd frames `task.md` itself.
+    /// unframed — afkd frames `task/README.md` itself.
     pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_PROJECT.to_string(), unit.project.raw().to_string());
@@ -391,7 +391,7 @@ pub(crate) fn mr_has_new_feedback(notes: &[Note], me: &str) -> bool {
     !mr_feedback_delta(notes, me).is_empty()
 }
 
-/// The brief written to `task.md`: a header naming the MR, then the feedback delta
+/// The brief written to `task/README.md`: a header naming the MR, then the feedback delta
 /// (oldest-first, each line attributed to its author). Empty feedback still writes the
 /// header.
 fn brief_text(iid: u64, feedback: &[FeedbackItem]) -> String {
@@ -424,7 +424,7 @@ mod tests {
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief, the
     //! env, the end of a round and the hooks' actions. The drive around it (attempt
     //! counting, the claim journal, the run-name mint, the cadence, the framing of
-    //! `task.md`) is afkd's, on the far side of the wire; the wire itself is
+    //! `task/README.md`) is afkd's, on the far side of the wire; the wire itself is
     //! `tests/wire.rs`.
 
     use super::*;
@@ -753,7 +753,7 @@ mod tests {
 
     /// The brief a two-human thread produces: each line is attributed by name, over a
     /// multi-line body with trailing whitespace and non-ASCII text — the shapes a real
-    /// review thread carries. Unframed: afkd frames `task.md` itself.
+    /// review thread carries. Unframed: afkd frames `task/README.md` itself.
     #[test]
     fn the_brief_attributes_each_note_to_its_author() {
         let h = Harness::new(cfg());
@@ -868,7 +868,7 @@ mod tests {
             wire.files,
             [
                 WireFile {
-                    path: "task.md".into(),
+                    path: "task/README.md".into(),
                     text: "Address review feedback on MR !7.\n\n## New feedback\n\n\
                            **陳大文:** 看起来不对 🚨\n\nthe cap is still 0\n"
                         .into(),

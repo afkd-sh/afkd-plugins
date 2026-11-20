@@ -37,7 +37,7 @@ use crate::common::{StderrDiag, SystemClock};
 use crate::plugin::{Answer, Plugin};
 
 /// The brief at the scratch directory's root, which afkd writes framed.
-pub(crate) const TASK_FILE: &str = "task.md";
+pub(crate) const TASK_FILE: &str = "task/README.md";
 
 /// The park marker the trello skill's ask action writes into the attempt's scratch
 /// directory, which `classify` reads.

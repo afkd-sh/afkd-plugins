@@ -9,7 +9,7 @@
 //! against [`MockClient`](crate::client::MockClient) and a fake clock.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
+//! bound, the mid-run watch's cursor, and the framing of `task/README.md` — so what is here is
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side.
 //!
 //! Work is only ever claimed from the source-labelled, unclaimed set; an issue already
@@ -183,7 +183,7 @@ impl IssueUnits {
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim identity's login as
     /// `self` and the issue's handle fields. `seen` is empty: the issue claim reads no
     /// comments, so afkd's watch takes its own baseline on its first read. The brief is
-    /// unframed — afkd frames `task.md` itself.
+    /// unframed — afkd frames `task/README.md` itself.
     pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
@@ -304,7 +304,7 @@ impl Units for IssueUnits {
     }
 }
 
-/// The brief written to `task.md`: the title, or the title, a blank line, then the body.
+/// The brief written to `task/README.md`: the title, or the title, a blank line, then the body.
 fn brief_text(title: &str, body: &str) -> String {
     if body.trim().is_empty() {
         title.to_string()
@@ -319,7 +319,7 @@ mod tests {
     //!
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief, the
     //! env, the end of a run and the hooks' actions. The drive around it (attempt counting,
-    //! the claim journal, the run-name mint, the cadence, the framing of `task.md`) is
+    //! the claim journal, the run-name mint, the cadence, the framing of `task/README.md`) is
     //! afkd's, on the far side of the wire; the wire itself is `tests/wire.rs`.
 
     use super::*;
@@ -791,12 +791,12 @@ mod tests {
                 ("GITHUB_TOKEN".to_string(), "PAT".to_string()),
             ])
         );
-        // `scratch_layout`, the brief unframed: afkd frames `task.md` itself.
+        // `scratch_layout`, the brief unframed: afkd frames `task/README.md` itself.
         assert_eq!(
             wire.files,
             [
                 WireFile {
-                    path: "task.md".into(),
+                    path: "task/README.md".into(),
                     text: "修复 the retry storm 🚨\n\nIt retries forever.\n\n```rust\nlet backoff = 0;\n```"
                         .into(),
                 },

@@ -231,7 +231,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
                 "GITEA_TOKEN": TOKEN,
             },
             "files": [
-                {"path": "task.md", "text": format!("{TITLE}\n\n{BODY}")},
+                {"path": "task/README.md", "text": format!("{TITLE}\n\n{BODY}")},
                 {"path": "issue/number", "text": "7"},
             ],
         })
@@ -996,7 +996,7 @@ fn a_won_pr_race_hands_over_the_built_ins_unit() {
                 "GITEA_TOKEN": TOKEN,
             },
             "files": [
-                {"path": "task.md", "text": format!(
+                {"path": "task/README.md", "text": format!(
                     "Address review feedback on PR #7.\n\n## New feedback\n\n**陳大文:** {}\n\n\
                      **carol:** (review {review})\n",
                     ASK.trim_end()

@@ -39,7 +39,7 @@ use crate::common::{StderrDiag, SystemClock};
 use crate::plugin::{Answer, Plugin};
 
 /// The brief at the scratch directory's root, which afkd writes framed.
-pub(crate) const TASK_FILE: &str = "task.md";
+pub(crate) const TASK_FILE: &str = "task/README.md";
 
 /// The scratch sub-location holding the bare issue number, so the bundled skill can find
 /// which issue a run belongs to.

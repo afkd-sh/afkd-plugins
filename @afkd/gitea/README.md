@@ -30,7 +30,8 @@ afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
 is: the manifest, the `afkd-gitea` binary and its `skills/`, nothing else. Nothing is
 compiled on your host, and no Rust toolchain is needed there. Installing by name needs
-**afkd 0.2.414 or newer**, the first that fills in the platform; with it, `afkd update
+**afkd 0.2.714 or newer**, the first whose unit brief is the folder `task/`, where this
+plugin's `task/README.md` is framed; with it, `afkd update
 @afkd/gitea` also moves a copy an older afkd built from source onto the finished release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
@@ -65,7 +66,7 @@ GITEA_TOKEN :: env.get("GITEA_TOKEN") ?? fail("GITEA_TOKEN is unset")
 BOT :: "autocoder"
 
 task :: proc() {
-  $ cat $AFKD_SCRATCH_DIR/task.md
+  $ cat $AFKD_SCRATCH_DIR/task/README.md
 }
 
 develop :: service(gitea) {
@@ -203,7 +204,7 @@ widgets :: service(gitea) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitea.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -300,7 +301,7 @@ groom :: service(gitea) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitea.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -325,12 +326,12 @@ widgets :: service(gitea) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitea.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-Every delivered message is **also appended to the run's `task.md`**, so the next agent of a
+Every delivered message is **also appended to the run's `task/README.md`**, so the next agent of a
 multi-agent run reads the correction in the task itself, and a retry keeps it. The agent
 picks a delivered message up at its next tool boundary. Comments are delivered once each,
 oldest-first, attributed exactly as a brief's `## New comments` section is; afkd's own
@@ -380,7 +381,7 @@ whether a PR is claimed again, so the label stays on the PR between rounds and n
 needs to remove it. There is no park and no clarification gate: a round either finishes
 (`on_done`) or fails (`on_fail`).
 
-**The brief.** A run's `task.md` names the PR and carries the new feedback, oldest first,
+**The brief.** A run's `task/README.md` names the PR and carries the new feedback, oldest first,
 each item attributed to its author; a review appears as its id, for the agent to read with
 the skill:
 
@@ -412,7 +413,7 @@ reviews :: service(gitea.pr) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, pr: gitea.Pull_Request) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -527,7 +528,7 @@ few things. Each is deliberate, and none changes what a config means.
   poll, so an org-wide scan against a slow forge stops after 20 and leaves the rest of the
   repositories for the next poll. And every call the plugin answers comes back within 45
   seconds: a forge too slow to answer in that time is treated as if it were down.
-- **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
+- **afkd frames the brief as a plugin's.** A run's `task/README.md` opens `# Work item from plugin
   unit acme/widgets#7`, a review round's too, where the built-in's named the vendor and the
   kind in place of `plugin unit` — and a comment delivered mid-run calls the issue or PR
   "this work item" rather than "this issue" or "this pull request".

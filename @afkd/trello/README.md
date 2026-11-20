@@ -29,7 +29,8 @@ afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
 is: the manifest, the `afkd-trello` binary and its `skills/`, nothing else. Nothing is
 compiled on your host, and no Rust toolchain is needed there. Installing by name needs
-**afkd 0.2.414 or newer**, the first that fills in the platform; with it, `afkd update
+**afkd 0.2.714 or newer**, the first whose unit brief is the folder `task/`, where this
+plugin's `task/README.md` is framed; with it, `afkd update
 @afkd/trello` also moves a copy an older afkd built from source onto the finished release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
@@ -64,7 +65,7 @@ TRELLO_API_KEY :: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset")
 TRELLO_TOKEN   :: env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset")
 
 task :: proc() {
-  $ cat $AFKD_SCRATCH_DIR/task.md
+  $ cat $AFKD_SCRATCH_DIR/task/README.md
 }
 
 develop :: service(trello) {
@@ -245,7 +246,7 @@ develop :: service(trello) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, card: trello.Card) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -314,7 +315,7 @@ implement :: service(trello) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, card: trello.Card) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -356,7 +357,7 @@ groom :: service(trello) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, card: trello.Card) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -378,7 +379,7 @@ discuss :: service(trello) {
 
   work_dir "/srv/acme/videos"
   on_run proc(run: afkd.Run, card: trello.Card) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -482,7 +483,7 @@ widgets :: service(trello) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, card: trello.Card) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -515,12 +516,12 @@ widgets :: service(trello) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, card: trello.Card) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-Every delivered message is **also appended to the run's `task.md`**, so the next agent of a
+Every delivered message is **also appended to the run's `task/README.md`**, so the next agent of a
 multi-agent run reads the correction in the task itself, and a retry keeps it. Comments are
 delivered once each, oldest-first, attributed exactly as a brief's `## New comments` section
 is; afkd's own comments and claim markers are never delivered back, and the comments the
@@ -563,6 +564,6 @@ few things. Each is deliberate, and none changes what a config means.
   that keeps losing races stops after seven and leaves the rest of the list for the next
   poll. And every call the plugin answers comes back within 45 seconds: a board too slow to
   answer in that time is treated as if it were down.
-- **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
+- **afkd frames the brief as a plugin's.** A run's `task/README.md` opens `# Work item from plugin
   card Qb7eLy2w` where the built-in's opens `# Work item from trello card Qb7eLy2w`, and a
   comment delivered mid-run calls the card "this work item" rather than "this card".

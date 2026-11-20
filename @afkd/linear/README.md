@@ -35,8 +35,9 @@ afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
 is: the manifest, the `afkd-linear` binary and its `skills/`, nothing else. Nothing is
 compiled on your host, and no Rust toolchain is needed there. Installing it needs **afkd
-0.2.693 or newer**, the first whose manifests declare a `list[str]` an action returns;
-`afkd update @afkd/linear` moves an installed copy onto the next release.
+0.2.714 or newer**, the first whose unit brief is the folder `task/`, where a plugin's
+`task/README.md` is framed and its files are copied in from a `from` path; `afkd update
+@afkd/linear` moves an installed copy onto the next release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:
@@ -59,7 +60,7 @@ import "std:env"
 import "@afkd/linear"
 
 task :: proc() {
-  $ cat $AFKD_SCRATCH_DIR/task.md
+  $ cat $AFKD_SCRATCH_DIR/task/README.md
 }
 
 develop :: service(linear) {
@@ -243,7 +244,7 @@ triage :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -305,7 +306,7 @@ implement :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -338,15 +339,22 @@ develop :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-**Files on the issue.** A Linear file is a link in an issue's markdown. `update_issue`'s
-`description` and `create_comment` take `files=[…]`, absolute paths, each read when the slot
-calls and embedded after the text, and `files` and `download_file` read them back; see
-[the writes](#the-writes) and [the reads](#the-reads).
+**Files on the issue.** A Linear file is a link in an issue's markdown. The files an
+issue's description and comments link arrive with the claim, in the run's `task/` folder:
+the plugin downloads each one Linear hosts (the urls `linear.files` gives) when it wins the
+claim, and `task/README.md` links each by its relative path, `![shot.png](<shot.png>)`,
+instead of the Linear url. The handle's `description` is still Linear's own text. A file
+that cannot be downloaded never fails the claim: its README link keeps the Linear url, the
+service log says why, and the agent can fetch it with `download_file`. The downloads live in
+the plugin's own state directory until the unit finishes or is released, and are deleted
+then. `update_issue`'s `description` and `create_comment` take `files=[…]`, absolute paths,
+each read when the slot calls and embedded after the text, and `files` and `download_file`
+read them back; see [the writes](#the-writes) and [the reads](#the-reads).
 
 ```conf
 import "afkd"
@@ -385,7 +393,7 @@ develop :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -412,7 +420,7 @@ groom :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -775,7 +783,7 @@ develop :: service(linear) {
   }
 
   on_run proc(run, workspace, issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```

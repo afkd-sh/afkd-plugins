@@ -2,7 +2,7 @@
 //! card kind re-seated on teams' issues.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt loop,
-//! the framing of `task.md`, the mid-run watch. What lives here is what only the tracker can
+//! the framing of `task/README.md`, the mid-run watch. What lives here is what only the tracker can
 //! answer: the comment-lock claim, the eligibility gates, the blocked-by rule, the
 //! parked-issue sweep and its ownership rule, the brief, the attempt markers, the park badge
 //! and owner marker at the end of a run, and the owed-finish retry a `held` finish leaves
@@ -34,7 +34,7 @@
 //! one back escaped.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -46,15 +46,17 @@ use crate::claim::{
 };
 use crate::client::GRAPHQL_PATH;
 use crate::common::{
-    lock, Clock, Diag, ScanBudget, ENV_API_URL, ENV_AUTHORIZATION, ENV_ISSUE, ENV_ISSUE_ID,
+    lock, write_whole, Clock, Diag, ScanBudget, ENV_API_URL, ENV_AUTHORIZATION, ENV_ISSUE,
+    ENV_ISSUE_ID,
 };
+use crate::file::{files_linked_by, relink, task_file_name};
 use crate::reads::issue_filter;
 use crate::settings::{DiscussWith, IntakeConfig};
 use crate::tracker::{
     state_named, Child, Comment, Issue, LinearError, Organization, State, Team, Tracker,
 };
 use crate::wire::{Facts, IssueFields, UnitOutcome, WireFile, WireUnit};
-use crate::{PARK_FILE, TASK_FILE};
+use crate::{PARK_FILE, TASK_DIR, TASK_FILE};
 
 /// What every control marker opens with: each of the plugin's own, and the mark of any note a
 /// config keeps on an issue, such as `[afkd-flow state]`.
@@ -147,13 +149,24 @@ impl Unit {
     }
 
     /// The claim-journal key afkd keeps this unit under ([`issue_key`]).
-    fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         issue_key(
             &self.issue.id,
             &self.claim_id,
             self.source.as_ref().map(|s| s.id.as_str()),
         )
     }
+}
+
+/// A file the issue links, downloaded to be handed over in the task folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FetchedFile {
+    /// Its name in the task folder.
+    pub(crate) name: String,
+    /// The Linear url it was linked at.
+    pub(crate) url: String,
+    /// Where it was written.
+    pub(crate) path: PathBuf,
 }
 
 /// The author ids afkd's own comments come back under: the viewer's, and the one Linear
@@ -1062,9 +1075,25 @@ impl LinearUnits {
     /// - `self`: the viewer's id;
     /// - `env`: the endpoint, the credential, and the issue's id and identifier;
     /// - `args`: the `linear.Workspace` every slot is passed, as `workspace`;
-    /// - `files`: the brief, unframed — afkd frames `task.md` itself.
-    pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
+    /// - `files`: the brief, unframed — afkd frames `task/README.md` itself — with each link to
+    ///   a file in `fetched` written as its name, then each of those files, which afkd copies
+    ///   in from where [`fetch_files`](Self::fetch_files) wrote it.
+    pub(crate) fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
         let issue = &unit.issue;
+        let brief = relink(&brief_text(issue, &unit.comments, &unit.me), &|url| {
+            fetched
+                .iter()
+                .find(|file| file.url == url)
+                .map(|file| file.name.clone())
+        });
+        let files = std::iter::once(WireFile::text(TASK_FILE, brief))
+            .chain(fetched.iter().map(|file| {
+                WireFile::from_path(
+                    format!("{TASK_DIR}/{}", file.name),
+                    file.path.to_string_lossy(),
+                )
+            }))
+            .collect();
         WireUnit {
             id: sanitize(&issue.identifier),
             key: unit.key(),
@@ -1085,11 +1114,56 @@ impl LinearUnits {
                 (ENV_ISSUE.to_string(), issue.identifier.clone()),
             ]),
             args: Map::from_iter([("workspace".to_string(), self.workspace.clone())]),
-            files: vec![WireFile {
-                path: TASK_FILE.to_string(),
-                text: brief_text(issue, &unit.comments, &unit.me),
-            }],
+            files,
         }
+    }
+
+    /// Download every file Linear hosts that the issue's description and the comments its
+    /// claim read ([`files_linked_by`]) link into a fresh `dir`, each under the call's
+    /// deadline, and return what landed: the name, the url and the path of each. A file that
+    /// cannot be downloaded or written is said, with the issue, its url and why, and left out:
+    /// the brief keeps its Linear url for the agent to fetch with `download_file`.
+    pub(crate) fn fetch_files(&self, unit: &Unit, dir: &Path, diag: &dyn Diag) -> Vec<FetchedFile> {
+        let issue = &unit.issue;
+        let links = files_linked_by(&issue.description, &unit.comments, &|url| {
+            self.tracker.is_linear_file(url)
+        });
+        // Whatever a crashed child left under this key is not this claim's.
+        let _ = std::fs::remove_dir_all(dir);
+        if links.is_empty() {
+            return Vec::new();
+        }
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            diag.err(&format!(
+                "{}: no file it links is downloaded, {} cannot be made — {e}",
+                issue_words(issue),
+                dir.display()
+            ));
+            return Vec::new();
+        }
+        let mut fetched: Vec<FetchedFile> = Vec::new();
+        for (text, url) in links {
+            let names: Vec<String> = fetched.iter().map(|file| file.name.clone()).collect();
+            let name = task_file_name(&text, &url, &names);
+            let path = dir.join(&name);
+            let written = self
+                .tracker
+                .download(&url)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    write_whole(&path, &bytes, 0o600)
+                        .map_err(|e| format!("{} cannot be written — {e}", path.display()))
+                });
+            match written {
+                Ok(()) => fetched.push(FetchedFile { name, url, path }),
+                Err(e) => diag.err(&format!(
+                    "{}: the file at {url} is not downloaded, and stays a Linear link in the \
+                     brief — {e}",
+                    issue_words(issue)
+                )),
+            }
+        }
+        fetched
     }
 
     /// The clarification gate's read: a [`PARK_FILE`] marker under the attempt's scratch
@@ -1600,7 +1674,7 @@ fn render_comments(comments: &[&Comment], me: &SelfIds) -> String {
         .join("\n")
 }
 
-/// The brief afkd writes to `task.md`: the task text, the issue's parent and sub-issues,
+/// The brief afkd writes to `task/README.md`: the task text, the issue's parent and sub-issues,
 /// then the **full comment thread** — prior conversation and the new, actionable comments,
 /// each under its own heading, both oldest-first. Control markers are dropped.
 fn brief_text(issue: &Issue, comments: &[Comment], me: &SelfIds) -> String {
@@ -1671,9 +1745,10 @@ mod tests {
     use crate::common::{CaptureDiag, FakeClock, TempDir};
     use crate::settings::intake_config;
     use crate::tracker::{
-        Action, Blocker, Child, MockTracker, Priority, Related, StateType, FILED_AT, SELF_ID,
-        TEAM_ID,
+        Action, Blocker, Child, MockTracker, Priority, Related, StateType, FILED_AT, MOCK_UPLOADS,
+        SELF_ID, TEAM_ID,
     };
+    use crate::wire::FileSource;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1717,7 +1792,7 @@ mod tests {
 
         fn wire(&self) -> WireUnit {
             let unit = self.poll().expect("a unit");
-            self.units.wire_unit(&unit)
+            self.units.wire_unit(&unit, &[])
         }
 
         fn finish(&self, unit: &Unit, outcome: UnitOutcome) -> bool {
@@ -1790,6 +1865,14 @@ mod tests {
 
     fn me() -> SelfIds {
         SelfIds::viewer(SELF_ID.into())
+    }
+
+    /// The brief a wire unit hands over: the text of its first file.
+    fn brief(wire: &WireUnit) -> &str {
+        match &wire.files[0].source {
+            FileSource::Text(text) => text,
+            FileSource::From(from) => panic!("the brief is copied from {from}"),
+        }
     }
 
     /// The mock's one team.
@@ -2172,19 +2255,170 @@ mod tests {
             ])
         );
         assert_eq!(
-            Value::Object(wire.args),
+            Value::Object(wire.args.clone()),
             json!({"workspace": {"api_key": "lin_api_k", "client_id": null,
                                  "client_secret": null, "base_url": "https://api.linear.app"}})
         );
+        assert_eq!(wire.files.len(), 1);
+        assert_eq!(wire.files[0].path, "task/README.md");
         assert_eq!(wire.files[0].path, TASK_FILE);
-        assert!(wire.files[0]
-            .text
-            .ends_with("## New comments\n\n**u-chen:** 看起来不对 🚨\n"));
+        assert!(brief(&wire).ends_with("## New comments\n\n**u-chen:** 看起来不对 🚨\n"));
         assert_eq!(
             f.diag.narrated(),
             [format!("[linear] claimed issue ENG-7 \"{TITLE}\"")]
         );
         assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+    }
+
+    /// A won claim's files: the one the description embeds and the one a comment links are
+    /// written byte for byte into a fresh folder, one a control marker links is not fetched,
+    /// and one Linear answers 404 for is said — with the issue, its url and why — and left
+    /// out. The wire unit then hands over the brief with each fetched link written as its
+    /// relative name and the 404's kept as its url, one `from` entry per file, and the handle's
+    /// `description` as Linear has it.
+    #[test]
+    fn a_claimed_issues_linked_files_are_fetched_and_handed_over() {
+        let f = fx(json!({}));
+        let (png, pdf, gone, marked) = (
+            format!("{MOCK_UPLOADS}acme/1/shot"),
+            format!("{MOCK_UPLOADS}acme/2/report"),
+            format!("{MOCK_UPLOADS}acme/3/gone"),
+            format!("{MOCK_UPLOADS}acme/4/marked"),
+        );
+        let png_bytes = b"\x89PNG\r\n\x1a\n\0\xff\xfe--png--\r\n";
+        let pdf_bytes = b"%PDF-1.7\r\n\0\xfe\xff--pdf--\r\n";
+        f.tracker.seed_file(&png, png_bytes);
+        f.tracker.seed_file(&pdf, pdf_bytes);
+        f.tracker.seed_file(&marked, b"never read");
+        let description = format!("{BODY}\n\n![shot.png]({png})");
+        f.tracker.add_issue("Todo", "ENG-7", TITLE, &description);
+        let at = |ago: u64| SystemTime::now() - Duration::from_secs(ago);
+        f.tracker.push_comment(
+            "ENG-7",
+            "c1",
+            &format!("See [report 修复.pdf](<{pdf}>) and [gone.log]({gone})."),
+            "u-chen",
+            at(60),
+        );
+        f.tracker.push_comment(
+            "ENG-7",
+            "m1",
+            &format!("[afkd-flow state] [log]({marked})"),
+            SELF_ID,
+            at(50),
+        );
+        let unit = f.poll().expect("a unit");
+        let root = TempDir::new("fetch");
+        let dir = root.path().join("task-files");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stale.txt"), "left by a crashed child").unwrap();
+
+        let fetched = f.units.fetch_files(&unit, &dir, &f.diag);
+        assert_eq!(
+            fetched,
+            [
+                FetchedFile {
+                    name: "shot.png".into(),
+                    url: png.clone(),
+                    path: dir.join("shot.png"),
+                },
+                FetchedFile {
+                    name: "report 修复.pdf".into(),
+                    url: pdf.clone(),
+                    path: dir.join("report 修复.pdf"),
+                },
+            ]
+        );
+        assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), png_bytes);
+        assert_eq!(
+            std::fs::read(dir.join("report 修复.pdf")).unwrap(),
+            pdf_bytes
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            2,
+            "a fresh folder holding the two files and nothing else"
+        );
+        let errs = f.diag.errs();
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(
+            errs[0].contains("issue ENG-7") && errs[0].contains(&gone) && errs[0].contains("404"),
+            "{}",
+            errs[0]
+        );
+
+        let wire = f.units.wire_unit(&unit, &fetched);
+        assert_eq!(wire.files.len(), 3);
+        assert_eq!(wire.files[0].path, "task/README.md");
+        let text = brief(&wire);
+        assert!(text.contains("![shot.png](<shot.png>)"), "{text}");
+        assert!(
+            text.contains("[report 修复.pdf](<report 修复.pdf>)"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("[gone.log]({gone})")), "{text}");
+        assert!(!text.contains(&png) && !text.contains(&pdf), "{text}");
+        assert_eq!(
+            wire.files[1],
+            WireFile::from_path("task/shot.png", dir.join("shot.png").to_str().unwrap())
+        );
+        assert_eq!(
+            wire.files[2],
+            WireFile::from_path(
+                "task/report 修复.pdf",
+                dir.join("report 修复.pdf").to_str().unwrap()
+            )
+        );
+        assert_eq!(wire.fields.description, description, "Linear's own text");
+    }
+
+    /// Two files linked under one name are two files, the second numbered; an issue linking
+    /// nothing leaves no folder and no line; and a folder that cannot be made is said once, the
+    /// brief keeping every url.
+    #[test]
+    fn fetched_files_are_numbered_and_a_missing_folder_is_said() {
+        let f = fx(json!({}));
+        let (a, b) = (
+            format!("{MOCK_UPLOADS}acme/1/a"),
+            format!("{MOCK_UPLOADS}acme/2/b"),
+        );
+        f.tracker.seed_file(&a, b"first");
+        f.tracker.seed_file(&b, b"second");
+        f.tracker.add_issue(
+            "Todo",
+            "ENG-7",
+            TITLE,
+            &format!("[README.md]({a}) [README.md]({b})"),
+        );
+        f.tracker
+            .add_issue("Todo", "ENG-8", "Nothing linked", "Just words.");
+        let root = TempDir::new("fetch-numbered");
+        let unit = f.poll().expect("a unit");
+        assert_eq!(unit.identifier(), "ENG-7");
+        let dir = root.path().join("task-files");
+        let names: Vec<_> = f
+            .units
+            .fetch_files(&unit, &dir, &f.diag)
+            .into_iter()
+            .map(|file| file.name)
+            .collect();
+        assert_eq!(names, ["README-2.md", "README-3.md"]);
+        assert_eq!(std::fs::read(dir.join("README-3.md")).unwrap(), b"second");
+
+        let other = f.poll().expect("the next issue");
+        assert_eq!(other.identifier(), "ENG-8");
+        let none = root.path().join("none");
+        assert!(f.units.fetch_files(&other, &none, &f.diag).is_empty());
+        assert!(!none.exists());
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+
+        let blocked = dir.join("README-2.md").join("below");
+        let wire_files = f.units.fetch_files(&unit, &blocked, &f.diag);
+        assert!(wire_files.is_empty());
+        assert_eq!(f.diag.errs().len(), 1, "{:?}", f.diag.errs());
+        let wire = f.units.wire_unit(&unit, &wire_files);
+        assert_eq!(wire.files.len(), 1);
+        assert!(brief(&wire).contains(&format!("[README.md]({a})")));
     }
 
     /// A full read of the won issue that fails is a tracker fault, not a claim: the claim
@@ -2892,8 +3126,7 @@ mod tests {
             f.texts("ENG-1").iter().all(|t| !is_park(t)),
             "the marker is gone"
         );
-        assert!(f.units.wire_unit(&unit).files[0]
-            .text
+        assert!(brief(&f.units.wire_unit(&unit, &[]))
             .ends_with("## New comments\n\n**u-phil:** Appen — webben får en egen video.\n"));
     }
 
@@ -2991,7 +3224,8 @@ mod tests {
             SystemTime::now() - Duration::from_secs(60),
         );
         let unit = f.poll().unwrap();
-        let brief = f.units.wire_unit(&unit).files[0].text.clone();
+        let wire = f.units.wire_unit(&unit, &[]);
+        let brief = brief(&wire);
         assert!(
             brief.ends_with(
                 "## Earlier conversation\n\n**afkd:** Which header?\n\n\n## New \

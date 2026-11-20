@@ -30,7 +30,8 @@ afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
 is: the manifest, the `afkd-gitlab` binary and its `skills/`, nothing else. Nothing is
 compiled on your host, and no Rust toolchain is needed there. Installing by name needs
-**afkd 0.2.414 or newer**, the first that fills in the platform; with it, `afkd update
+**afkd 0.2.714 or newer**, the first whose unit brief is the folder `task/`, where this
+plugin's `task/README.md` is framed; with it, `afkd update
 @afkd/gitlab` also moves a copy an older afkd built from source onto the finished release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
@@ -65,7 +66,7 @@ GITLAB_TOKEN :: env.get("GITLAB_TOKEN") ?? fail("GITLAB_TOKEN is unset")
 BOT :: "autocoder"
 
 task :: proc() {
-  $ cat $AFKD_SCRATCH_DIR/task.md
+  $ cat $AFKD_SCRATCH_DIR/task/README.md
 }
 
 develop :: service(gitlab) {
@@ -203,7 +204,7 @@ widgets :: service(gitlab) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitlab.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -228,12 +229,12 @@ widgets :: service(gitlab) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitlab.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-Every delivered message is **also appended to the run's `task.md`**, so the next agent of a
+Every delivered message is **also appended to the run's `task/README.md`**, so the next agent of a
 multi-agent run reads the correction in the task itself, and a retry keeps it. Notes are
 delivered once each, oldest-first; afkd's own notes and `[afkd-claim]` markers are never
 delivered back. The issue claim reads no notes, so the first read takes the thread as it
@@ -282,7 +283,7 @@ is claimed again, so the label stays on the MR between rounds and nothing needs 
 it. There is no park and no clarification gate: a round either finishes (`on_done`) or
 fails (`on_fail`).
 
-**The brief.** A run's `task.md` names the MR and carries the new feedback, oldest first,
+**The brief.** A run's `task/README.md` names the MR and carries the new feedback, oldest first,
 each note attributed to its author:
 
 ```markdown
@@ -320,7 +321,7 @@ reviews :: service(gitlab.mr) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, mr: gitlab.Merge_Request) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -437,7 +438,7 @@ few things. Each is deliberate, and none changes what a config means.
   that keeps losing races stops after seven and leaves the rest of the issues or merge
   requests for the next poll. And every call the plugin answers comes back within 45
   seconds: a forge too slow to answer in that time is treated as if it were down.
-- **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
+- **afkd frames the brief as a plugin's.** A run's `task/README.md` opens `# Work item from plugin
   unit group/widgets#7`, a review round's too, where the built-in's named the vendor and
   the kind in place of `plugin unit` — and a note delivered mid-run calls the issue or
   merge request "this work item" rather than "this issue" or "this merge request".

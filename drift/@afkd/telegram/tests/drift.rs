@@ -431,7 +431,7 @@ fn install_leg_places_the_plugin_and_runs_one_message_through_it() {
     let brief = || {
         run_dirs(home, "ops")
             .into_iter()
-            .map(|dir| dir.join("task.md"))
+            .map(|dir| dir.join("task/README.md"))
             .find(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, &fake, &daemon, "the message's run starts", || {
@@ -445,7 +445,10 @@ fn install_leg_places_the_plugin_and_runs_one_message_through_it() {
         "デプロイ failed here — see the log ⬇",
         &format!("- photo, 1280x960, 102400 bytes: {PHOTO}"),
     ] {
-        assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
+        assert!(
+            task.contains(part),
+            "task/README.md carries {part:?}:\n{task}"
+        );
     }
     wait_for(home, &fake, &daemon, "the message is done", || {
         home.join(DONE).exists()

@@ -341,7 +341,7 @@ fn a_won_race_hands_over_the_unit() {
             },
             "args": {"workspace": {"api_key": API_KEY, "client_id": null, "client_secret": null,
                                    "base_url": t.fake.base_url()}},
-            "files": [{"path": "task.md", "text": format!(
+            "files": [{"path": "task/README.md", "text": format!(
                 "{TITLE}\n\n{BODY}\n\n## New comments\n\n**Phil Ek:** {PHIL}\n\n**陳大文:** {CHEN}\n"
             )}],
         })
@@ -359,6 +359,83 @@ fn a_won_race_hands_over_the_unit() {
     assert_eq!(ops[post + 1], "IssueComments");
     // The claimed issue, its claim live, is not claimed again.
     assert_eq!(plugin.poll(), json!({"fire": false}));
+    end(plugin, &t.fake);
+}
+
+/// The files a claimed issue links come with it: a PNG its description embeds and a PDF a
+/// comment links are downloaded under the plugin's directory, and the `poll` reply's files are
+/// the README and one `from` entry for each, whose files hold the seeded bytes exactly. The
+/// README links each by its relative name, no Linear url left, the handle's `description` is
+/// Linear's own text, and the folder is gone once the unit is finished.
+#[test]
+fn a_claimed_issues_linked_files_come_with_it_in_the_task_folder() {
+    let t = team();
+    let shot = t
+        .fake
+        .seed_file("screen shot — 修复.png", "image/png", &png());
+    let pdf = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\r\n\0\xff--afkd--\r\n1 0 obj\n".to_vec();
+    let report = t.fake.seed_file("Q3 report.pdf", "application/pdf", &pdf);
+    let description = format!("{BODY}\n\n![screen shot — 修复.png]({shot})");
+    t.fake.describe(&t.issue, &description);
+    t.fake.comment(
+        &t.issue,
+        Author::User(t.chen.clone()),
+        &format!("The numbers: [Q3 report.pdf]({report})"),
+        60,
+    );
+    let state = TempDir::new("wire-task-files");
+    let mut plugin = Plugin::armed_in(settings(&t.fake), state.path());
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let unit = reply["unit"].clone();
+    let files = unit["files"].as_array().unwrap();
+    assert_eq!(files.len(), 3, "{files:?}");
+    assert_eq!(files[0]["path"], "task/README.md");
+    assert_eq!(files[1]["path"], "task/screen shot — 修复.png");
+    assert_eq!(files[2]["path"], "task/Q3 report.pdf");
+    for (entry, bytes) in [(&files[1], png()), (&files[2], pdf)] {
+        assert_eq!(
+            entry.as_object().unwrap().len(),
+            2,
+            "path and from: {entry}"
+        );
+        let from = std::path::Path::new(entry["from"].as_str().unwrap());
+        assert!(
+            from.is_absolute() && from.starts_with(state.path()),
+            "{from:?}"
+        );
+        assert_eq!(std::fs::read(from).unwrap(), bytes);
+    }
+    let readme = files[0]["text"].as_str().unwrap();
+    assert!(
+        readme.contains("![screen shot — 修复.png](<screen shot — 修复.png>)"),
+        "{readme}"
+    );
+    assert!(
+        readme.contains("[Q3 report.pdf](<Q3 report.pdf>)"),
+        "{readme}"
+    );
+    assert!(
+        !readme.contains(&shot) && !readme.contains(&report),
+        "no Linear url is left: {readme}"
+    );
+    assert_eq!(unit["fields"]["description"], description);
+    assert!(
+        !plugin.stderr().contains("not downloaded"),
+        "{}",
+        plugin.stderr()
+    );
+
+    let dir = std::path::Path::new(files[1]["from"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(dir.starts_with(state.path().join("task-files")));
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    assert!(!dir.exists(), "the folder is deleted at finish");
     end(plugin, &t.fake);
 }
 

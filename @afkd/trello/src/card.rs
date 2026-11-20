@@ -3,7 +3,7 @@
 //! and re-seated on the plugin wire.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! loop, the framing of `task.md`, the mid-run watch. What lives here is what only a board
+//! loop, the framing of `task/README.md`, the mid-run watch. What lives here is what only a board
 //! can answer: the comment-lock claim, the eligibility gates, the parked-card sweep and
 //! its ownership rule, the brief, the attempt markers, the park badge and owner marker
 //! at the end of a run, the owed-finish retry a `held` finish leaves for `release`, and
@@ -1020,7 +1020,7 @@ impl TrelloUnits {
     /// - `seen`: the claim-read comment ids, which the brief already carries;
     /// - `self`: afkd's own member id;
     /// - `env`: the credentials and the card id the skill reads;
-    /// - `files`: the brief, unframed — afkd frames `task.md` itself.
+    /// - `files`: the brief, unframed — afkd frames `task/README.md` itself.
     pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
         WireUnit {
             id: sanitize(&unit.card.short_link),
@@ -1600,7 +1600,7 @@ fn render_comment(c: &Comment, self_id: &str) -> String {
     format!("**{speaker}:** {}", c.text.trim())
 }
 
-/// The brief afkd writes to `task.md`: the task text, the checklists, then the **full
+/// The brief afkd writes to `task/README.md`: the task text, the checklists, then the **full
 /// comment thread** — prior conversation and the new, actionable comments, each under
 /// its own heading, both oldest-first. Control markers are dropped.
 fn brief_text(card: &Card, comments: &[Comment], self_id: &str) -> String {
@@ -1693,7 +1693,7 @@ mod tests {
     //! drive loop and its attempt count, the claim journal's `claim`/`release`/`abandon`
     //! call sequences, the stop token's abandons (a settle interrupt, a stop after the
     //! win, a stop mid-scan), the panic abandon, the `service_error`/fire events, the
-    //! framing of `task.md`, the mid-run watch and its follow-up rounds, and the
+    //! framing of `task/README.md`, the mid-run watch and its follow-up rounds, and the
     //! cross-claim "failed twice" cap. Where one of them also asserted a board effect,
     //! that half is kept — a crash victim's reversal through `release_stale`, say.
 
@@ -4671,7 +4671,7 @@ mod tests {
         assert_eq!(
             wire.files,
             [WireFile {
-                path: "task.md".into(),
+                path: "task/README.md".into(),
                 text:
                     "Fix\n\ndo x\n\n## New comments\n\n**Dana Rivera:** also handle empty input\n"
                         .into(),

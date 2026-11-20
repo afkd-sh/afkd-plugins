@@ -23,8 +23,9 @@ $ afkd install @afkd/telegram
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
 is: the manifest, the `afkd-telegram` binary and its `skills/`, nothing else. Nothing is
-compiled on your host, and no Rust toolchain is needed there. It needs **afkd 0.2.575 or
-newer**, the first whose plugin actions give back the handle they made; `afkd update
+compiled on your host, and no Rust toolchain is needed there. It needs **afkd 0.2.714 or
+newer**, the first whose unit brief is the folder `task/`, where this plugin's
+`task/README.md` is framed; `afkd update
 @afkd/telegram` moves an installed copy onto the next release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
@@ -70,7 +71,7 @@ ops :: service(telegram) {
 
   on_run proc(run: afkd.Run, message: telegram.Message) {
     match helper(
-      "Do what #{message.sender_name} asks in #{run.scratch_dir}/task.md, and answer them with the telegram skill's reply.py.",
+      "Do what #{message.sender_name} asks in #{run.scratch_dir}/task/README.md, and answer them with the telegram skill's reply.py.",
     ) {
       .ok(_) => { }
       .err(e) => fail("helper: #{e.message}")
@@ -185,7 +186,7 @@ message does not carry:
 | `files`       | `list[str]` | the file ids of its document, photo (the largest size), video, audio or voice |
 
 **What a run gets.** The run's thread is `telegram:<chat>`, so an agent with
-`session=.per_item` carries a chat's conversation on. Its brief, `task.md`, holds who sent
+`session=.per_item` carries a chat's conversation on. Its brief, `task/README.md`, holds who sent
 the message, in which chat, when, what it replies to, its text, and a line per file with its
 kind, name, size and file id. Its env holds what the skill reads:
 

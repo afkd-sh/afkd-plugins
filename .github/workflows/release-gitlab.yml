@@ -135,8 +135,10 @@ jobs:
           assets="assets/afkd-gitlab-x86_64-linux.tar.gz assets/afkd-gitlab-aarch64-linux.tar.gz"
           ls -l $assets
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
-          # the notes name the afkd it needs: 0.2.414 is the first that fills in `{platform}`
-          # and refuses a `build` line (0.2.241 brought the handle fields a claim carries).
-          printf '`afkd install @afkd/gitlab`, or `afkd update @afkd/gitlab` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.414 or newer (the platform archive, no build step; the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          # the notes name the afkd it needs: 0.2.714 is the first whose unit brief is the
+          # folder `task/`, where this plugin's brief, `task/README.md`, is framed (0.2.414
+          # filled in `{platform}` and refused a `build` line, and 0.2.241 brought the handle
+          # fields a claim carries).
+          printf '`afkd install @afkd/gitlab`, or `afkd update @afkd/gitlab` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.714 or newer (the unit brief as the folder task/, with its task/README.md; the platform archive, no build step; the handle fields a claim carries, handle types and slot signatures, plugin protocol 2).\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete gitlab --yes --cleanup-tag || true
           gh release create gitlab --target "$GITHUB_SHA" --title "@afkd/gitlab $version" --notes-file notes.md $assets

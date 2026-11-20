@@ -36,7 +36,7 @@ use serde_json::{json, Map, Value};
 
 use crate::auth::Auth;
 use crate::client::LinearClient;
-use crate::common::{Clock, Diag, CALL_BUDGET};
+use crate::common::{file_safe, Clock, Diag, CALL_BUDGET};
 use crate::issue::{is_afkd, Identity, LinearUnits, Unit};
 use crate::reads::{self, Claimed, ReadContext, READS};
 use crate::rfc3339::format_utc;
@@ -319,7 +319,36 @@ fn idle() -> Answer {
     Answer::Reply(json!({"fire": false}).to_string())
 }
 
+/// Where the files the unit under `key` links are downloaded: `<state_dir>/task-files/`
+/// and the key written as one file name ([`file_safe`]). Afkd copies them in from there on
+/// each attempt, so they stay until the unit is finished or released, and a child restarted
+/// in between finds the folder by the key alone.
+pub(crate) fn task_files_dir(state_dir: &Path, key: &str) -> PathBuf {
+    state_dir.join("task-files").join(file_safe(key))
+}
+
 impl Armed {
+    /// Where the files of the unit under `key` are downloaded, when the plugin has a
+    /// directory of its own.
+    fn task_files_dir(&self, key: &str) -> Option<PathBuf> {
+        self.state_dir
+            .as_deref()
+            .map(|state_dir| task_files_dir(state_dir, key))
+    }
+
+    /// Delete the folder of the files the unit under `key` was handed over with, if there is
+    /// one. One that cannot be deleted is said and left.
+    fn remove_task_files(&self, key: &str, diag: &dyn Diag) {
+        let Some(dir) = self.task_files_dir(key) else {
+            return;
+        };
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => diag.err(&format_args!("cannot delete {}: {e}", dir.display())),
+        }
+    }
+
     /// One beat: the parked sweep, then the claim race. A tracker failure is an idle beat,
     /// diagnosed.
     fn poll(&mut self, clock: &dyn Clock, diag: &dyn Diag) -> Answer {
@@ -331,7 +360,13 @@ impl Armed {
                 return idle();
             }
         };
-        let wire = self.units.wire_unit(&unit);
+        // The files are downloaded once the claim is won, under the plugin's own directory,
+        // which outlives this child; with none, every link stays Linear's.
+        let fetched = match self.task_files_dir(&unit.key()) {
+            Some(dir) => self.units.fetch_files(&unit, &dir, diag),
+            None => Vec::new(),
+        };
+        let wire = self.units.wire_unit(&unit, &fetched);
         let line = if let Some(Fitted {
             line,
             description_cut,
@@ -356,6 +391,7 @@ impl Armed {
             // line reaches this: nothing can be handed over, so the claim is taken back
             // before the service ends.
             self.units.release_stale(&wire.key, clock.now(), diag);
+            self.remove_task_files(&wire.key, diag);
             return Answer::Fatal(format!(
                 "{} cannot be handed to afkd: even with its description and brief cut away, \
                  the unit is over afkd's 64 KiB plugin line",
@@ -376,6 +412,7 @@ impl Armed {
     fn release(&mut self, key: &str, handed_back: bool, now: Instant, diag: &dyn Diag) -> Answer {
         let live = self.live.remove(key).is_some();
         self.finished.retain(|(finished, _)| finished != key);
+        self.remove_task_files(key, diag);
         let released = if handed_back && live {
             self.units.hand_back(key, diag)
         } else {
@@ -487,6 +524,8 @@ impl Armed {
         clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
+        // The run is over, and afkd copies no more of its files in.
+        self.remove_task_files(key, diag);
         let Some(live) = self.live.remove(key) else {
             diag.err(&format_args!(
                 "finish for {key}, which this plugin holds no claim on"
@@ -560,7 +599,7 @@ mod tests {
     use crate::claim::{claim_text, is_claim};
     use crate::common::{CaptureDiag, FakeClock, TempDir};
     use crate::issue::RETRY_FOR;
-    use crate::tracker::{Action, LinearError, MockTracker, SELF_ID};
+    use crate::tracker::{Action, LinearError, MockTracker, MOCK_UPLOADS, SELF_ID};
     use crate::wire::MAX_REPLY;
     use serde_json::Value;
     use std::time::{Duration, SystemTime};
@@ -860,6 +899,136 @@ mod tests {
                                  "client_secret": "app-secret/&=",
                                  "base_url": "http://127.0.0.1:9"}})
         );
+    }
+
+    /// An armed fixture whose issue `ENG-1` links the file at `url` (holding `bytes`) from its
+    /// description, in the plugin directory `state_dir` when there is one.
+    fn armed_with_file(state_dir: Option<&Path>, url: &str, bytes: &[u8]) -> Fixture {
+        let mut f = Fixture::new();
+        f.tracker.seed_file(url, bytes);
+        f.tracker.edit_issue("ENG-1", |i| {
+            i.description = format!("Body ![shot.png]({url})")
+        });
+        let mut request = hello(settings());
+        if let Some(dir) = state_dir {
+            request["state_dir"] = json!(dir.to_str().unwrap());
+        }
+        assert_eq!(f.call(request)["ok"], true, "{:?}", f.diag.errs());
+        f
+    }
+
+    /// A won issue's linked files are downloaded under the plugin's directory, in a folder
+    /// named by the unit's key, and handed over as `from` entries beside the README whose
+    /// links name them; the folder is there until the unit is finished or released — handed
+    /// back or stale — and gone after. The handle's `description` is Linear's own text.
+    #[test]
+    fn a_units_files_are_kept_until_it_finishes_or_is_released() {
+        let url = format!("{MOCK_UPLOADS}acme/1/shot");
+        let bytes = b"\x89PNG\r\n\x1a\n\0\xff--png--";
+        for end in ["finish", "release", "handed back"] {
+            let state = TempDir::new("task-files");
+            let mut f = armed_with_file(Some(state.path()), &url, bytes);
+            let unit = f.poll()["unit"].clone();
+            let key = unit["key"].clone();
+            let dir = task_files_dir(state.path(), key.as_str().unwrap());
+            assert_eq!(
+                dir,
+                state
+                    .path()
+                    .join("task-files")
+                    .join(file_safe(key.as_str().unwrap()))
+            );
+            assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), bytes, "{end}");
+            assert_eq!(
+                unit["files"],
+                json!([
+                    {"path": "task/README.md",
+                     "text": "Fix \"the\" café — 修复 🚨\n\nBody ![shot.png](<shot.png>)"},
+                    {"path": "task/shot.png", "from": dir.join("shot.png").to_str().unwrap()},
+                ]),
+                "{end}"
+            );
+            assert_eq!(
+                unit["fields"]["description"],
+                format!("Body ![shot.png]({url})"),
+                "Linear's own text"
+            );
+            assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+            match end {
+                "finish" => {
+                    f.finish(&key, "clean");
+                }
+                "release" => {
+                    f.call(json!({"call": "release", "key": key}));
+                }
+                _ => {
+                    f.call(json!({"call": "release", "key": key, "handed_back": true}));
+                }
+            }
+            assert!(!dir.exists(), "{end}: the folder is deleted");
+        }
+    }
+
+    /// A restarted child, which holds no unit, finds a leftover folder by its key alone: the
+    /// `release` afkd sends for the key deletes it, and so does a `finish`.
+    #[test]
+    fn a_restarted_child_deletes_a_leftover_folder_by_its_key() {
+        let url = format!("{MOCK_UPLOADS}acme/1/shot");
+        let state = TempDir::new("task-files-left");
+        let mut f = armed_with_file(Some(state.path()), &url, b"x");
+        let key = "0f6c1d2e#5e2a9c71#";
+        let dir = task_files_dir(state.path(), key);
+        for end in ["release", "finish"] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("shot.png"), b"x").unwrap();
+            if end == "release" {
+                f.call(json!({"call": "release", "key": key}));
+            } else {
+                f.finish(&json!(key), "clean");
+            }
+            assert!(!dir.exists(), "{end}");
+        }
+    }
+
+    /// A plugin with no directory of its own downloads nothing: the unit's brief keeps the
+    /// Linear url, there is no `from` entry, and Linear is not asked for the file.
+    #[test]
+    fn with_no_state_dir_no_file_is_downloaded() {
+        let url = format!("{MOCK_UPLOADS}acme/1/shot");
+        let mut f = armed_with_file(None, &url, b"x");
+        let unit = f.poll()["unit"].clone();
+        assert_eq!(
+            unit["files"],
+            json!([{"path": "task/README.md",
+                    "text": format!("Fix \"the\" café — 修复 🚨\n\nBody ![shot.png]({url})")}])
+        );
+        assert!(!f.tracker.calls().contains(&"fetch file"));
+    }
+
+    /// A won issue that cannot be handed over at all — its fields besides the brief overflow
+    /// afkd's line — has its claim taken back and its downloaded folder deleted before the
+    /// service ends.
+    #[test]
+    fn a_unit_that_cannot_be_handed_over_leaves_no_folder() {
+        let url = format!("{MOCK_UPLOADS}acme/1/shot");
+        let state = TempDir::new("task-files-fatal");
+        let mut f = armed_with_file(Some(state.path()), &url, b"x");
+        for n in 0..2_500 {
+            f.tracker.seed_comment(
+                "ENG-1",
+                &format!("c3a1e8f0-6b2d-4e7a-9f1c-2d3e4f5a{n:04}"),
+                "Chatter",
+                1,
+            );
+        }
+        let Answer::Fatal(reason) = f.plugin.answer(Request::Poll) else {
+            panic!("the unit fits");
+        };
+        assert!(reason.contains("cannot be handed to afkd"), "{reason}");
+        let left = std::fs::read_dir(state.path().join("task-files"))
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(left, 0, "no folder is left");
     }
 
     /// A slot's read or write reaches the issue the service claimed, by its handle's key, while

@@ -1,5 +1,5 @@
 name = "@afkd/gitea"
-version = "0.12.1"
+version = "0.13.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"

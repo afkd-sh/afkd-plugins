@@ -14,7 +14,7 @@
 //! clarification gate.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
+//! bound, the mid-run watch's cursor, and the framing of `task/README.md` — so what is here is
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side.
 
 use std::collections::BTreeMap;
@@ -221,7 +221,7 @@ impl Units for PrUnits {
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim-time comment ids as
     /// `seen`, the claim identity as `self` and the PR's handle fields. The PR number and
     /// head branch ride the env so a prompted `git fetch`/checkout reconstructs the
-    /// branch. The brief is unframed — afkd frames `task.md` itself (ADR-0081).
+    /// branch. The brief is unframed — afkd frames `task/README.md` itself (ADR-0081).
     fn wire_unit(&self, unit: &Unit) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
@@ -327,7 +327,7 @@ mod tests {
     //!
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief,
     //! the env, the end of a round. The drive around it (attempt counting, the claim
-    //! journal, the run-name mint, the cadence, the framing of `task.md`) is afkd's, on
+    //! journal, the run-name mint, the cadence, the framing of `task/README.md`) is afkd's, on
     //! the far side of the wire; the wire itself is `tests/wire.rs`.
 
     use super::*;
@@ -440,7 +440,7 @@ mod tests {
 
     /// The brief this kind hands over is the **shared** renderer's text (parity, not a
     /// second hand-written string): `wire_unit` is driven for real over the adversarial
-    /// `review_thread` fixture, and what lands in `task.md` must equal
+    /// `review_thread` fixture, and what lands in `task/README.md` must equal
     /// `feedback::pr_brief` over the same thread, which is where that text is pinned.
     #[test]
     fn the_brief_in_the_wire_unit_is_the_shared_renderers_text() {
@@ -817,7 +817,7 @@ mod tests {
                 ]),
                 files: vec![
                     WireFile {
-                        path: "task.md".into(),
+                        path: "task/README.md".into(),
                         text: "Address review feedback on PR #7.\n\n## New feedback\n\n\
                                **alice:** please rename the flag\n"
                             .into(),
