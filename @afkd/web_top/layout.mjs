@@ -310,7 +310,7 @@ function selectRow(cells) {
 
 // --- the palette's roles -----------------------------------------------------------
 
-/// Every foreground role a cell may name: `palette.rs`'s 24-bit arm, `Hue` and `Night` alike,
+/// Every foreground role a cell may name: `palette.rs`'s night arm, `Hue` and `Tone` alike,
 /// kebab-cased. The stylesheet spells each one and nothing else, so the palette scan is an
 /// equality rather than a containment: a role that stops being emitted is as much a drift as a
 /// hex that appears from nowhere.
@@ -1089,7 +1089,7 @@ const ACTIVITY_FRESH_WINDOW = 5 * 60 * 1000;
 /// must be for its countdown to keep full weight.
 const NEXT_SOON_WINDOW = 10 * 60 * 1000;
 
-/// `layout::Mark::text` — the one-cell text glyph the 24-bit board draws for each mark
+/// `layout::Mark::glyph` — the one-cell text glyph the 24-bit board draws for each mark
 /// [`cardMark`] names: a hollow diamond parked, a filled one while it executes, a small square
 /// while it is stopped. Trouble is the alarm hue [`MARK_ROLE`] paints, never a glyph of its own.
 export const MARK_TEXT = {
@@ -1465,7 +1465,7 @@ function identityText(row) {
 // does **not** ride the list's grid: a lane is not a service, so its five columns are laid
 // from column 0 on their own ladder, with the same `COLUMN_SPACING` gutter between them.
 
-/// `layout::QUEUE_LANE_GLYPH_NIGHT` and its one space (`queue_prefix_w`) — the *lead, one
+/// `layout::QUEUE_LANE_GLYPH` and its one space (`queue_prefix_w`) — the *lead, one
 /// space, name* shape every identity cell above it spends.
 export const QUEUE_LANE_GLYPH = "≡";
 const QUEUE_LANE_PREFIX_W = textWidth(QUEUE_LANE_GLYPH) + 1;

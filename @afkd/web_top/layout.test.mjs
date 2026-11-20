@@ -529,24 +529,35 @@ test("every right-flushed run ends where its header ends", () => {
 
 // --- AC4: the palette ---------------------------------------------------------------
 
-/// The page's own tones: the dark ground `palette.rs`'s 24-bit arm assumes and never spells.
+/// The page's own tones: the dark ground `palette.rs`'s night arm assumes and never spells.
 const PAGE_TONES = ["#0d1117"];
+
+/// The night arm of `palette.rs` `rust` — the bodies of `night` (`Hue`) and `night_tone`
+/// (`Tone`) — and nothing of the day arm, which is tuned for a light ground the page is not on.
+/// `null` when either function cannot be found.
+function nightArm(rust) {
+  const bodies = [/const fn night\(role: Hue\) -> Color \{[\s\S]*?\n\}/, /const fn night_tone\(role: Tone\) -> Color \{[\s\S]*?\n\}/].map((fn) => rust.match(fn)?.[0]);
+  return bodies.every((body) => body !== undefined) ? bodies.join("\n") : null;
+}
 
 /// A `palette.rs` role's name as the stylesheet's variable spells it: `PreRun` → `pre-run`.
 function roleVariable(name) {
   return `--term-${name.replace(/(?<!^)([A-Z])/g, "-$1").toLowerCase()}`;
 }
 
-/// Every way the stylesheet `css` departs from `palette.rs`'s 24-bit arm `rust`, one sentence
+/// Every way the stylesheet `css` departs from `palette.rs`'s night arm in `rust`, one sentence
 /// each, or none. The relation, not a count: the hexes the stylesheet spends (comments
-/// stripped) are exactly the arm's tones plus [`PAGE_TONES`], and each `Hue::`/`Night::` arm's
-/// variable holds that arm's own hex, so a respelling on either side reddens and a new role in
-/// the Rust asks for its variable here.
+/// stripped) are exactly the night arm's tones plus [`PAGE_TONES`], and each `Hue::`/`Tone::`
+/// arm's variable holds that arm's own hex, so a respelling on either side reddens and a new
+/// role in the Rust asks for its variable here. The day arm is not read: it is tuned for a
+/// light ground, and the page keeps its night look.
 function paletteMismatches(rust, css) {
   const problems = [];
   const hex = (hi, lo) => `#${hi}${lo}`.toLowerCase();
+  const night = nightArm(rust);
+  if (night === null) return ["palette.rs has no `night` and `night_tone` to read the night arm from"];
   const spelling = /Color::from_u32\(0x00([0-9a-fA-F]{2})_([0-9a-fA-F]{4})\)/g;
-  const tones = [...new Set([...rust.matchAll(spelling)].map(([, hi, lo]) => hex(hi, lo)))];
+  const tones = [...new Set([...night.matchAll(spelling)].map(([, hi, lo]) => hex(hi, lo)))];
   if (tones.length === 0) problems.push("palette.rs spells no 24-bit tone");
   // Comments first: the stylesheet's own prose may name a hex it does not spend.
   const sheet = css.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -554,8 +565,8 @@ function paletteMismatches(rust, css) {
   const want = new Set([...tones, ...PAGE_TONES]);
   for (const h of found) if (!want.has(h)) problems.push(`dashboard.css spends ${h}, which palette.rs does not spell`);
   for (const h of want) if (!found.has(h)) problems.push(`dashboard.css never spends ${h}`);
-  const arm = /\b(Hue|Night)::(\w+) => Color::from_u32\(0x00([0-9a-fA-F]{2})_([0-9a-fA-F]{4})\)/g;
-  for (const [, family, name, hi, lo] of rust.matchAll(arm)) {
+  const arm = /\b(Hue|Tone)::(\w+) => Color::from_u32\(0x00([0-9a-fA-F]{2})_([0-9a-fA-F]{4})\)/g;
+  for (const [, family, name, hi, lo] of night.matchAll(arm)) {
     const variable = roleVariable(name);
     const spelled = sheet.match(new RegExp(`${variable}:\\s*(#[0-9a-fA-F]{3,8})\\s*;`))?.[1].toLowerCase();
     if (spelled !== hex(hi, lo)) problems.push(`${variable} is ${spelled ?? "unset"}, where ${family}::${name} is ${hex(hi, lo)}`);
@@ -570,11 +581,11 @@ function restyled(board, name, fields) {
 
 test("the stylesheet spends only the product's palette", { skip: NO_AFKD_SRC }, () => {
   const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
-  // The arm is read **out of the Rust** rather than transcribed — the same relation
+  // The night arm is read **out of the Rust** rather than transcribed — the same relation
   // afkd.sh's `scripts/check-dist.mjs` holds for the site's window, so a respelling in
   // `palette.rs` reddens here.
   const rust = afkdSource("crates", "tui", "src", "palette.rs");
-  assert.deepEqual(paletteMismatches(rust, css), [], "dashboard.css spells palette.rs's 24-bit arm and the ground");
+  assert.deepEqual(paletteMismatches(rust, css), [], "dashboard.css spells palette.rs's night arm and the ground");
 
   // Every role the layout can emit is spelled, and nothing else is: a role the stylesheet
   // forgot would paint as unstyled text, and one it spells for nobody is dead weight.
@@ -610,13 +621,16 @@ test("the stylesheet spends only the product's palette", { skip: NO_AFKD_SRC }, 
 });
 
 test("a respelled 24-bit tone reddens the palette relation", { skip: NO_AFKD_SRC }, () => {
-  // The relation bites on **every** spelling, not one: each distinct tone of the real arm is
+  // The relation bites on **every** spelling, not one: each distinct tone of the night arm is
   // respelled in turn, to a hex the stylesheet does not hold, and each respelling alone must
-  // leave a mismatch.
+  // leave a mismatch. Only the night arm's spellings: the day arm is not the page's look, so
+  // respelling one of its hexes leaves the relation as it was.
   const css = readFileSync(join(HERE, "dashboard.css"), "utf8");
   const rust = afkdSource("crates", "tui", "src", "palette.rs");
-  const spellings = [...new Set([...rust.matchAll(/Color::from_u32\(0x00[0-9a-fA-F]{2}_[0-9a-fA-F]{4}\)/g)].map(([m]) => m))];
-  assert.ok(spellings.length > 0, "palette.rs spells its 24-bit arm with Color::from_u32");
+  const night = nightArm(rust);
+  assert.ok(night !== null, "`night` and `night_tone` in palette.rs");
+  const spellings = [...new Set([...night.matchAll(/Color::from_u32\(0x00[0-9a-fA-F]{2}_[0-9a-fA-F]{4}\)/g)].map(([m]) => m))];
+  assert.ok(spellings.length > 0, "palette.rs spells its night arm with Color::from_u32");
   for (const spelling of spellings) {
     const respelled = rust.replace(spelling, "Color::from_u32(0x0012_3456)");
     assert.notEqual(respelled, rust);
@@ -731,7 +745,7 @@ test("the night board paints each role where afkd top does", () => {
 });
 
 test("the row marks and the lane lead are one-cell text glyphs", () => {
-  // `layout::Mark::text` and `QUEUE_LANE_GLYPH_NIGHT`: the 24-bit board draws a service's
+  // `layout::Mark::glyph` and `QUEUE_LANE_GLYPH`: the 24-bit board draws a service's
   // mark and a lane's lead as one text cell each, so a name starts two cells in. The board
   // carries every mark: `flaky` parked and clean, `sleeper` executing, `noisy` parked with a
   // fault since it armed, `vacuum` executing with one, and `spare` and `janitor` stopped.
@@ -807,19 +821,19 @@ test("a page attached after a failed run draws the troubled mark, and the re-arm
   assert.deepEqual(live("broken"), [MARK_TEXT.parked, "mark"], "the recorded re-arm clears it");
 });
 
-test("the marks and the lane lead are layout.rs's night glyphs", { skip: NO_AFKD_SRC }, () => {
-  // `Mark::text`'s arms and `QUEUE_LANE_GLYPH_NIGHT`, read out of the Rust, so a respelling in
+test("the marks and the lane lead are layout.rs's glyphs", { skip: NO_AFKD_SRC }, () => {
+  // `Mark::glyph`'s arms and `QUEUE_LANE_GLYPH`, read out of the Rust, so a respelling in
   // afkd reddens the page.
   const rust = afkdSource("crates", "tui", "src", "layout.rs");
-  const body = rust.match(/fn text\(self\) -> &'static str \{\s*match self \{([\s\S]*?)\n\s*\}\s*\}/);
-  assert.ok(body !== null, "Mark::text's match in layout.rs");
+  const body = rust.match(/fn glyph\(self\) -> &'static str \{\s*match self \{([\s\S]*?)\n\s*\}\s*\}/);
+  assert.ok(body !== null, "Mark::glyph's match in layout.rs");
   const arms = {};
   for (const [, variants, glyph] of body[1].matchAll(/((?:Self::\w+\s*\|\s*)*Self::\w+)\s*=>\s*"([^"]+)"/g)) {
     for (const [, variant] of variants.matchAll(/Self::(\w+)/g)) arms[variant[0].toLowerCase() + variant.slice(1)] = glyph;
   }
   assert.deepEqual(arms, MARK_TEXT);
-  const lead = rust.match(/const QUEUE_LANE_GLYPH_NIGHT: char = '([^']+)';/);
-  assert.ok(lead !== null, "QUEUE_LANE_GLYPH_NIGHT in layout.rs");
+  const lead = rust.match(/const QUEUE_LANE_GLYPH: char = '([^']+)';/);
+  assert.ok(lead !== null, "QUEUE_LANE_GLYPH in layout.rs");
   assert.equal(lead[1], QUEUE_LANE_GLYPH);
 });
 

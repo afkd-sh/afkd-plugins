@@ -1,14 +1,15 @@
 /* The dashboard's own stylesheet: the product's palette, and a character grid to spend it on.
  *
- * The tones below are `crates/tui/src/palette.rs`'s 24-bit arm, read off that file rather than
- * invented: `afkd top`'s night look, every `Hue` and every `Night` role it paints a terminal
- * with, plus the `#0d1117` ground the arm assumes and every contrast figure in
- * `docs/tui-style.md` §5 is measured against. That ground is the page's own one tone; every
- * other cell, text included, wears a role the Rust spells.
+ * The tones below are `crates/tui/src/palette.rs`'s night arm (`night` and `night_tone`), read
+ * off that file rather than invented: `afkd top`'s night look, every `Hue` and every `Tone`
+ * role it paints a terminal with, plus the `#0d1117` ground the arm assumes and every contrast
+ * figure in `docs/tui-style.md` §5 is measured against. That ground is the page's own one
+ * tone; every other cell, text included, wears a role the Rust spells. The day arm (`day` and
+ * `day_tone`) is tuned for a light ground and is not the page's look.
  *
- * `layout.test.mjs` reads the tones straight out of the Rust and holds this file to exactly
- * those plus the ground, each role's variable to its own arm, so a respelling there reddens
- * here.
+ * `layout.test.mjs` reads the night tones straight out of the Rust and holds this file to
+ * exactly those plus the ground, each role's variable to its own arm, so a respelling there
+ * reddens here.
  *
  * Nothing in here decides anything. `layout.mjs` names a palette **role** per cell and
  * `paint.mjs` turns that into a class; this file is the only place a role becomes a colour,
@@ -16,11 +17,11 @@
  * can answer by reading one file. */
 
 :root {
-  /* The screen: the dark ground the 24-bit arm is tuned on. */
+  /* The screen: the dark ground the night arm is tuned on. */
   --term-bg: #0d1117;
 
-  /* The `Hue` roles at 24-bit, in `palette.rs`'s own order. The selection bar is a blue-black
-     a step above the ground, so every status fg stays legible on it. */
+  /* The `Hue` roles of the night arm (`night`), in `palette.rs`'s own order. The selection bar
+     is a blue-black a step above the ground, so every status fg stays legible on it. */
   --term-accent: #7aa2f7;
   --term-pre-run: #bb9af7;
   --term-caution: #e0af68;
@@ -31,9 +32,10 @@
   --term-bright: #f0f6fc;
   --term-selection: #232a45;
 
-  /* The `Night` roles, which only the 24-bit arm paints: the text every unhued cell wears, the
-     muted labels, the rules and the footer's key badges, a plugin trigger's name, the parked
-     mark, a lane's free cells and the chip each host-load lane sits on. */
+  /* The `Tone` roles of the night arm (`night_tone`), which only 24-bit paints: the text
+     every unhued cell wears, the muted labels, the rules and the footer's key badges, a
+     plugin trigger's name, the parked mark, a lane's free cells and the chip each host-load
+     lane sits on. */
   --term-text: #c0caf5;
   --term-muted: #737aa2;
   --term-rule: #292e42;
