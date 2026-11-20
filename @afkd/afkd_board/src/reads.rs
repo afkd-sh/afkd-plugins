@@ -1,5 +1,6 @@
 //! The **reads** a config calls with an `afkd_board.Board` first: one card by its number, the cards
-//! a set of filters keeps, a card's comments, and the board's lists and labels.
+//! a set of filters keeps, a card's comments and its checklist, and the board's lists and
+//! labels.
 //!
 //! A read reaches the board only through the `afkd_board.Board` it is passed: it reads no
 //! service's settings, and the plugin keeps nothing between calls. Each read
@@ -28,7 +29,7 @@ use crate::rfc3339::unix_millis;
 use crate::wire::{fit_call, ok_handle, ok_handles, ok_value, refusal, WireHandle};
 
 /// The reads, in the order the manifest declares them.
-pub(crate) const READS: &[&str] = &["card", "cards", "comments", "lists", "labels"];
+pub(crate) const READS: &[&str] = &["card", "cards", "comments", "checklist", "lists", "labels"];
 
 /// How many cards `cards` reads when its `limit` is left out.
 const DEFAULT_LIMIT: i64 = 50;
@@ -128,6 +129,11 @@ pub(crate) enum ReadCall {
         number: i64,
         board: String,
     },
+    /// `checklist` of the card a handle names: its number and its board's uuid.
+    Checklist {
+        number: i64,
+        board: String,
+    },
     Lists,
     Labels,
 }
@@ -165,26 +171,34 @@ pub(crate) fn decode(action: &str, args: &Map<String, Value>) -> Result<(Board, 
         },
         "cards" => ReadCall::Cards(card_query(args)?),
         "comments" => {
-            let card = required(action, args, "card", Value::as_object, "an afkd_board.Card")?;
-            let (id, key) = (
-                card.get("id").and_then(Value::as_str).unwrap_or(""),
-                card.get("key").and_then(Value::as_str).unwrap_or(""),
-            );
-            let (Some((board, _)), Ok(number)) = (parse_key(key), id.parse::<i64>()) else {
-                return Err(format!(
-                    "{action}: card is no afkd_board.Card: its id is `{id}` and its key `{key}`"
-                ));
-            };
-            ReadCall::Comments {
-                number,
-                board: board.to_string(),
-            }
+            let (number, board) = card_of(action, args)?;
+            ReadCall::Comments { number, board }
+        }
+        "checklist" => {
+            let (number, board) = card_of(action, args)?;
+            ReadCall::Checklist { number, board }
         }
         "lists" => ReadCall::Lists,
         "labels" => ReadCall::Labels,
         _ => return Err(format!("no action `{action}`")),
     };
     Ok((board, call))
+}
+
+/// The number and the board's uuid of the card handle `action`'s `card` argument is, or the
+/// sentence refusing a `card` that is no card's handle.
+fn card_of(action: &str, args: &Map<String, Value>) -> Result<(i64, String), String> {
+    let card = required(action, args, "card", Value::as_object, "an afkd_board.Card")?;
+    let (id, key) = (
+        card.get("id").and_then(Value::as_str).unwrap_or(""),
+        card.get("key").and_then(Value::as_str).unwrap_or(""),
+    );
+    let (Some((board, _)), Ok(number)) = (parse_key(key), id.parse::<i64>()) else {
+        return Err(format!(
+            "{action}: card is no afkd_board.Card: its id is `{id}` and its key `{key}`"
+        ));
+    };
+    Ok((number, board.to_string()))
 }
 
 /// What `cards`'s arguments keep, or the sentence refusing them.
@@ -292,6 +306,17 @@ fn run(action: &str, call: &ReadCall, client: &BoardClient) -> Result<(String, S
                 .collect::<Result<Vec<_>, _>>()?;
             let said = format!("{} on #{number}", count(comments.len(), "comment"));
             Ok((ok_handles(&comments), said))
+        }
+        ReadCall::Checklist {
+            number,
+            board: theirs,
+        } => {
+            if *theirs != board.id {
+                return Err(other_board(action, &number.to_string(), theirs, &board.id));
+            }
+            let card = client.card(action, *number)?;
+            let said = format!("{} on #{number}", count(card.checklist.len(), "item"));
+            Ok((ok_value(&card.checklist), said))
         }
     }
 }
@@ -455,6 +480,7 @@ mod tests {
             blocked_by: Vec::new(),
             blocking: Vec::new(),
             archived,
+            checklist: Vec::new(),
             url: String::new(),
             created_at: String::new(),
             updated_at: String::new(),
@@ -540,6 +566,28 @@ mod tests {
             let e = decode("comments", &args(json!({ "card": card }))).unwrap_err();
             assert!(
                 e.starts_with("comments: card is no afkd_board.Card: "),
+                "{e}"
+            );
+        }
+        let (_, call) = decode(
+            "checklist",
+            &args(json!({"card": {"id": "17", "key": "afkd_board:b-1/c-17"}})),
+        )
+        .unwrap();
+        assert_eq!(
+            call,
+            ReadCall::Checklist {
+                number: 17,
+                board: "b-1".to_string()
+            }
+        );
+        for card in [
+            json!({"id": "ENG-17", "key": "afkd_board:b-1/c-17"}),
+            json!({"id": "17", "key": "linear:b-1/c-17"}),
+        ] {
+            let e = decode("checklist", &args(json!({ "card": card }))).unwrap_err();
+            assert!(
+                e.starts_with("checklist: card is no afkd_board.Card: "),
                 "{e}"
             );
         }

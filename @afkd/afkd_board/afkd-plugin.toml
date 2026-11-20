@@ -1,5 +1,5 @@
 name = "@afkd/afkd_board"
-version = "0.1.0"
+version = "0.2.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -22,7 +22,7 @@ name = "Board"
   type = "str"
   default = "https://app.afkd.sh"
 
-# One item of a card's checklist.
+# One item of a card's checklist, read with `checklist`.
 [[struct]]
 name = "Item"
 
@@ -238,6 +238,21 @@ returns = "list[Card]"
 [[action]]
 name = "comments"
 returns = "list[Comment]"
+
+  [[action.param]]
+  name = "b"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  type = "Card"
+  required = true
+
+# The card's checklist: its items in the card's order, none when it has none.
+[[action]]
+name = "checklist"
+returns = "list[Item]"
 
   [[action.param]]
   name = "b"

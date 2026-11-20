@@ -55,8 +55,15 @@ pub(crate) struct LabelAnswer {
     pub(crate) colour: String,
 }
 
-/// A card as the API answers it. Its `checklist` is left unread: a handle's field is never a
-/// struct, so `afkd_board.Card` has none.
+/// A checklist item as the API names it: its text and whether it is done.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct ItemAnswer {
+    pub(crate) text: String,
+    pub(crate) done: bool,
+}
+
+/// A card as the API answers it. Its `checklist` is read by `checklist` alone: a handle's
+/// field is never a struct, so `afkd_board.Card` has none.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct CardAnswer {
     pub(crate) id: String,
@@ -70,6 +77,7 @@ pub(crate) struct CardAnswer {
     pub(crate) blocked_by: Vec<i64>,
     pub(crate) blocking: Vec<i64>,
     pub(crate) archived: bool,
+    pub(crate) checklist: Vec<ItemAnswer>,
     pub(crate) url: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,

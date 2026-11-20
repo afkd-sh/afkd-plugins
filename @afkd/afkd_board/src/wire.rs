@@ -68,7 +68,7 @@ pub(crate) fn answer(request: Request) -> Answer {
     }
     if !READS.contains(&request.action.as_str()) {
         return Answer::Reply(refusal(&format!(
-            "no action `{}`; @afkd/afkd_board has card, cards, comments, lists and labels",
+            "no action `{}`; @afkd/afkd_board has card, cards, comments, checklist, lists and labels",
             request.action
         )));
     }
@@ -168,7 +168,7 @@ mod tests {
         )));
         assert_eq!(
             unknown["error"],
-            "no action `create_card`; @afkd/afkd_board has card, cards, comments, lists and labels"
+            "no action `create_card`; @afkd/afkd_board has card, cards, comments, checklist, lists and labels"
         );
     }
 

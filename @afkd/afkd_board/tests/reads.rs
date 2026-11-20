@@ -247,6 +247,41 @@ fn comments_come_oldest_first_with_their_author() {
     no_invalid(&fake);
 }
 
+/// A card's checklist comes in the card's order as a value, `[]` for a card with none, and a
+/// card the board no longer has is the API's own refusal.
+#[test]
+fn checklist_comes_in_the_cards_order() {
+    let fake = world();
+    let handle = |n: i64| {
+        json!({"id": n.to_string(),
+               "key": format!("afkd_board:{}/{}", fake.board_id(), fake.card_id(n))})
+    };
+    let (reply, stderr) = once("checklist", json!({"b": board(&fake), "card": handle(1)}));
+    assert_eq!(
+        reply,
+        json!({"ok": true, "value": [
+            {"text": "Reproduce it", "done": true},
+            {"text": "Bound the backoff", "done": false},
+        ]})
+    );
+    assert_eq!(stderr, "afkd-afkd_board: checklist: 2 items on #1\n");
+    assert_eq!(paths(&fake.seen()), ["/api/board", "/api/board/cards/1"]);
+
+    let (reply, stderr) = once("checklist", json!({"b": board(&fake), "card": handle(2)}));
+    assert_eq!(reply, json!({"ok": true, "value": []}));
+    assert_eq!(stderr, "afkd-afkd_board: checklist: 0 items on #2\n");
+
+    let gone = handle(2);
+    fake.delete(2);
+    let (reply, stderr) = once("checklist", json!({"b": board(&fake), "card": gone}));
+    assert_eq!(refused(&reply), "checklist: The board has no card #2.");
+    assert_eq!(
+        stderr,
+        "afkd-afkd_board: checklist: The board has no card #2.\n"
+    );
+    no_invalid(&fake);
+}
+
 /// The lists come in order, each with its id, and the labels with their colours.
 #[test]
 fn lists_and_labels_come_with_the_board() {
@@ -285,6 +320,7 @@ fn an_empty_key_is_refused_by_every_read() {
         ("card", json!({"b": b, "number": 1})),
         ("cards", json!({"b": b})),
         ("comments", json!({"b": b, "card": card})),
+        ("checklist", json!({"b": b, "card": card})),
         ("lists", json!({"b": b})),
         ("labels", json!({"b": b})),
     ] {
@@ -332,7 +368,7 @@ fn a_refused_key_and_an_unreachable_board_are_told() {
     no_invalid(&fake);
 }
 
-/// A card of another board is refused by `comments`, naming both boards, once the board's own
+/// A card of another board is refused by `comments` and `checklist`, naming both boards, once the board's own
 /// id is read and before any card is.
 #[test]
 fn a_card_of_another_board_is_refused() {
@@ -360,6 +396,27 @@ fn a_card_of_another_board_is_refused() {
         refused(&reply),
         "comments: card is no afkd_board.Card: its id is `1` and its key `linear:org/issue`"
     );
+    let before = acme.seen().len();
+    let (reply, _) = once("checklist", json!({"b": board(&acme), "card": card}));
+    assert_eq!(
+        refused(&reply),
+        format!(
+            "checklist: card is #1 of board {}, and the afkd_board.Board reaches board {}",
+            globex.board_id(),
+            acme.board_id()
+        )
+    );
+    assert_eq!(paths(&acme.seen()[before..]), ["/api/board"]);
+
+    let (reply, _) = once(
+        "checklist",
+        json!({"b": board(&acme), "card": {"id": "1", "key": "linear:org/issue"}}),
+    );
+    assert_eq!(
+        refused(&reply),
+        "checklist: card is no afkd_board.Card: its id is `1` and its key `linear:org/issue`"
+    );
+    assert_eq!(acme.seen().len(), before + 1);
     no_invalid(&acme);
     no_invalid(&globex);
 }
@@ -587,7 +644,7 @@ fn the_wire_serves_one_call_of_protocol_2() {
     let (reply, _) = once("create_card", json!({"b": board(&fake)}));
     assert_eq!(
         refused(&reply),
-        "no action `create_card`; @afkd/afkd_board has card, cards, comments, lists and labels"
+        "no action `create_card`; @afkd/afkd_board has card, cards, comments, checklist, lists and labels"
     );
     let mut plugin = Plugin::spawn();
     let line = plugin.call_raw(json!({"call": "call", "proto": 1, "action": "lists",

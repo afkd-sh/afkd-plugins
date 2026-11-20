@@ -1,7 +1,8 @@
 # `@afkd/afkd_board`
 
 A **provider** plugin that reads a board on [app.afkd.sh](https://app.afkd.sh): one card by
-its number, the cards any filters keep, a card's comments, and the board's lists and labels.
+its number, the cards any filters keep, a card's comments and its checklist, and the board's
+lists and labels.
 Each read reaches the board through the [`afkd_board.Board`](#afkd_boardboard) it is passed, by
 one of the board's API keys, so a config reads two boards side by side with two of them. It
 declares no trigger kind: every call a config makes is a child afkd starts for that one call.
@@ -113,8 +114,9 @@ A handle, its `id` the card's number as its digits (`"17"` for `#17`):
 | `created_at`  | `time`      |                                                                |
 | `updated_at`  | `time`      | the newest of when it was made, its changes and its comments   |
 
-A card's checklist is not among its fields: afkd refuses a handle's field typed as a struct,
-and an item, an [`afkd_board.Item`](#the-values), is one.
+A card's checklist is read through [`afkd_board.checklist`](#the-reads), not from the handle:
+afkd keeps structs out of a handle's fields, and an item, an [`afkd_board.Item`](#the-values),
+is one.
 
 ### `afkd_board.Comment`
 
@@ -137,7 +139,7 @@ Plain structs, read with the board:
 |--------------------|-------------------------------|
 | `afkd_board.List`  | `id: str`, `name: str`        |
 | `afkd_board.Label` | `name: str`, `colour: str`    |
-| `afkd_board.Item`  | `text: str`, `done: bool`: an item of a card's checklist |
+| `afkd_board.Item`  | `text: str`, `done: bool`: an item of a card's checklist, what `afkd_board.checklist` gives |
 
 ### The reads
 
@@ -146,6 +148,7 @@ Plain structs, read with the board:
 | `afkd_board.card(b, number)` | `Card`, archived or not; a number the board has no card of is an `.err`, ``card: The board has no card #17.`` |
 | `afkd_board.cards(b, ~list, ~labels, ~without_labels, ~done, ~blocked, ~text, ~include_archived, ~limit)` | `list[Card]` in the board's order, [filtered](#afkd_boardcardss-filters) |
 | `afkd_board.comments(b, card)` | `list[Comment]`, oldest first |
+| `afkd_board.checklist(b, card)` | `list[Item]` in the card's order, `[]` when it has none |
 | `afkd_board.lists(b)` | `list[List]` in the board's order |
 | `afkd_board.labels(b)` | `list[Label]` |
 
@@ -180,8 +183,9 @@ Every refusal is an `.err` whose message names the read, `<read>: <what is wrong
 - A list the board does not have, before any card is read, naming the lists it has:
   ``cards: The board has no list `Doing`; it has `Todo`, `In progress` and `Done`.``. A label
   it does not have is refused by the board the same way.
-- A card of another board than the `afkd_board.Board` reaches, passed to `comments`, naming both
-  boards: ``comments: card is #17 of board <its board's uuid>, and the afkd_board.Board reaches board <the other's uuid>``.
+- A card of another board than the `afkd_board.Board` reaches, passed to `comments` or `checklist`,
+  naming both boards: ``comments: card is #17 of board <its board's uuid>, and the afkd_board.Board reaches board <the other's uuid>``.
+  A card the board no longer has is the board's own ``checklist: The board has no card #17.``
 - What the board refuses, with its own sentence: a key it does not know is
   ``lists: the board key is missing, unknown or revoked``.
 - A board it cannot reach names the host, and never the key:
@@ -191,7 +195,7 @@ Every refusal is an `.err` whose message names the read, `<read>: <what is wrong
 ## Two boards side by side
 
 Two keys are two boards, each an `afkd_board.Board` of its own. A card of one passed with the other
-is refused, naming both:
+is refused, naming both. Each card's comments and its checklist's done items are read:
 
 ```conf
 import "afkd"
@@ -226,6 +230,16 @@ digest :: service(interval) {
                 }
               }
               .err(e) => fail("afkd_board.comments: #{e.message}")
+            }
+            match afkd_board.checklist(b, card) {
+              .ok(items) => {
+                for item in items {
+                  if item.done {
+                    $ echo "#{card.id} done: #{item.text}"
+                  }
+                }
+              }
+              .err(e) => fail("afkd_board.checklist: #{e.message}")
             }
           }
         }

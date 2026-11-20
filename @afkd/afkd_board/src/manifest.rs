@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use crate::client::{LabelAnswer, ListAnswer};
+use crate::client::{ItemAnswer, LabelAnswer, ListAnswer};
 use crate::reads::{decode, CardFields, CommentFields, READS};
 
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
@@ -142,6 +142,7 @@ fn the_actions_are_the_reads() {
             ("card", "Card"),
             ("cards", "list[Card]"),
             ("comments", "list[Comment]"),
+            ("checklist", "list[Item]"),
             ("lists", "list[List]"),
             ("labels", "list[Label]"),
         ]
@@ -231,6 +232,10 @@ fn the_handles_and_the_structs_carry_the_codes_fields() {
         id: String::new(),
         name: String::new(),
     };
+    let item = ItemAnswer {
+        text: String::new(),
+        done: false,
+    };
     let label = LabelAnswer {
         name: String::new(),
         colour: String::new(),
@@ -240,7 +245,7 @@ fn the_handles_and_the_structs_carry_the_codes_fields() {
         ["Board", "Item", "Label", "List"]
     );
     assert_eq!(structs["Board"], ["key", "base_url"]);
-    assert_eq!(structs["Item"], ["text", "done"]);
+    assert_eq!(set(&structs["Item"]), keys(&item));
     assert_eq!(set(&structs["List"]), keys(&list));
     assert_eq!(set(&structs["Label"]), keys(&label));
 }
