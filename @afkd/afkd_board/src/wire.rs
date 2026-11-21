@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::reads::{self, READS};
+use crate::writes::{self, WRITES};
 
 /// The plugin protocol version this plugin speaks.
 pub(crate) const PROTO: u32 = 2;
@@ -50,7 +51,8 @@ pub(crate) struct WireHandle<F> {
 
 /// Answer `request`. Only a `call` is served: anything else is a call of a kind, and this
 /// plugin declares none, so afkd sending one is a bug the child ends on. A call of another
-/// protocol, or of an action the manifest does not declare, is refused.
+/// protocol, or of an action the manifest does not declare, is refused; a read or a write is
+/// answered by [`reads`] or [`writes`].
 pub(crate) fn answer(request: Request) -> Answer {
     if request.call != "call" {
         return Answer::Fatal(format!(
@@ -66,13 +68,21 @@ pub(crate) fn answer(request: Request) -> Answer {
             "afkd sent a call of {proto}, and this plugin speaks plugin protocol {PROTO}"
         )));
     }
-    if !READS.contains(&request.action.as_str()) {
-        return Answer::Reply(refusal(&format!(
-            "no action `{}`; @afkd/afkd_board has card, cards, comments, lists and labels",
-            request.action
-        )));
+    if READS.contains(&request.action.as_str()) {
+        return Answer::Reply(reads::answer(&request.action, &request.args));
     }
-    Answer::Reply(reads::answer(&request.action, &request.args))
+    if WRITES.contains(&request.action.as_str()) {
+        return Answer::Reply(writes::answer(&request.action, &request.args));
+    }
+    let names: Vec<&str> = READS.iter().chain(WRITES).copied().collect();
+    let has = match names.split_last() {
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    Answer::Reply(refusal(&format!(
+        "no action `{}`; @afkd/afkd_board has {has}",
+        request.action
+    )))
 }
 
 /// The `ok:false` reply refusing a call with `error`, which is diagnosed too.
@@ -91,9 +101,14 @@ pub(crate) fn ok_handles<F: Serialize>(handles: &[WireHandle<F>]) -> String {
     json!({ "ok": true, "handles": handles }).to_string()
 }
 
-/// The ok reply carrying a value: a list of the plugin's structs.
+/// The ok reply carrying a value: a list of the plugin's structs, or one.
 pub(crate) fn ok_value<T: Serialize>(value: &T) -> String {
     json!({ "ok": true, "value": value }).to_string()
+}
+
+/// The ok reply of an action that returns nothing.
+pub(crate) fn ok_nothing() -> String {
+    json!({ "ok": true }).to_string()
 }
 
 /// `line`, the ok reply to `action`, when it fits the 8 MiB afkd reads of a call's reply; or
@@ -164,11 +179,14 @@ mod tests {
             "afkd sent a call of no protocol, and this plugin speaks plugin protocol 2"
         );
         let unknown = refused(answer(request(
-            json!({"call": "call", "proto": 2, "action": "create_card"}),
+            json!({"call": "call", "proto": 2, "action": "block_card"}),
         )));
         assert_eq!(
             unknown["error"],
-            "no action `create_card`; @afkd/afkd_board has card, cards, comments, lists and labels"
+            "no action `block_card`; @afkd/afkd_board has card, cards, comments, lists, labels, \
+             create_card, update_card, move_card, add_label, remove_label, add_item, check_item, \
+             remove_item, mark_done, add_blocked_by, remove_blocked_by, create_comment, \
+             archive_card, unarchive_card, delete_card, create_list, update_list and delete_list"
         );
     }
 

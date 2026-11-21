@@ -22,7 +22,7 @@ use std::time::Instant;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::board::{handle_key, other_board, parse_key, Board};
+use crate::board::{card_arg, handle_key, other_board, Board};
 use crate::client::{BoardAnswer, BoardClient, CardAnswer, CommentAnswer, ListAnswer, CALL_BUDGET};
 use crate::rfc3339::unix_millis;
 use crate::wire::{fit_call, ok_handle, ok_handles, ok_value, refusal, WireHandle};
@@ -165,20 +165,8 @@ pub(crate) fn decode(action: &str, args: &Map<String, Value>) -> Result<(Board, 
         },
         "cards" => ReadCall::Cards(card_query(args)?),
         "comments" => {
-            let card = required(action, args, "card", Value::as_object, "an afkd_board.Card")?;
-            let (id, key) = (
-                card.get("id").and_then(Value::as_str).unwrap_or(""),
-                card.get("key").and_then(Value::as_str).unwrap_or(""),
-            );
-            let (Some((board, _)), Ok(number)) = (parse_key(key), id.parse::<i64>()) else {
-                return Err(format!(
-                    "{action}: card is no afkd_board.Card: its id is `{id}` and its key `{key}`"
-                ));
-            };
-            ReadCall::Comments {
-                number,
-                board: board.to_string(),
-            }
+            let (number, board) = card_arg(action, args, "card")?;
+            ReadCall::Comments { number, board }
         }
         "lists" => ReadCall::Lists,
         "labels" => ReadCall::Labels,
@@ -190,7 +178,7 @@ pub(crate) fn decode(action: &str, args: &Map<String, Value>) -> Result<(Board, 
 /// What `cards`'s arguments keep, or the sentence refusing them.
 fn card_query(args: &Map<String, Value>) -> Result<CardQuery, String> {
     let names = |param| -> Result<Option<Vec<String>>, String> {
-        let Some(items) = optional(args, param, Value::as_array, "a list[str]")? else {
+        let Some(items) = optional("cards", args, param, Value::as_array, "a list[str]")? else {
             return Ok(None);
         };
         items
@@ -212,7 +200,7 @@ fn card_query(args: &Map<String, Value>) -> Result<CardQuery, String> {
         });
         lists
     });
-    let limit = optional(args, "limit", Value::as_i64, "an int")?.unwrap_or(DEFAULT_LIMIT);
+    let limit = optional("cards", args, "limit", Value::as_i64, "an int")?.unwrap_or(DEFAULT_LIMIT);
     if !(1..=MAX_LIMIT).contains(&limit) {
         return Err(format!("cards: limit is 1 to {MAX_LIMIT}, not {limit}"));
     }
@@ -220,10 +208,10 @@ fn card_query(args: &Map<String, Value>) -> Result<CardQuery, String> {
         lists,
         labels: names("labels")?.unwrap_or_default(),
         without_labels: names("without_labels")?.unwrap_or_default(),
-        done: optional(args, "done", Value::as_bool, "a bool")?,
-        blocked: optional(args, "blocked", Value::as_bool, "a bool")?,
-        text: optional(args, "text", Value::as_str, "a str")?.map(str::to_string),
-        include_archived: optional(args, "include_archived", Value::as_bool, "a bool")?
+        done: optional("cards", args, "done", Value::as_bool, "a bool")?,
+        blocked: optional("cards", args, "blocked", Value::as_bool, "a bool")?,
+        text: optional("cards", args, "text", Value::as_str, "a str")?.map(str::to_string),
+        include_archived: optional("cards", args, "include_archived", Value::as_bool, "a bool")?
             .unwrap_or(false),
         limit: usize::try_from(limit).unwrap_or(0),
     })
@@ -231,7 +219,7 @@ fn card_query(args: &Map<String, Value>) -> Result<CardQuery, String> {
 
 /// The argument `param` of `action` read by `read`, or the sentence refusing its absence or a
 /// value that is not `what`.
-fn required<'a, T>(
+pub(crate) fn required<'a, T>(
     action: &str,
     args: &'a Map<String, Value>,
     param: &str,
@@ -244,9 +232,10 @@ fn required<'a, T>(
     read(value).ok_or_else(|| format!("{action}: parameter {param} must be {what}"))
 }
 
-/// The argument `param` of `cards` read by `read`, `None` when it is left out or `nil`, or the
+/// The argument `param` of `action` read by `read`, `None` when it is left out or `nil`, or the
 /// sentence refusing a value that is not `what`.
-fn optional<'a, T>(
+pub(crate) fn optional<'a, T>(
+    action: &str,
     args: &'a Map<String, Value>,
     param: &str,
     read: impl Fn(&'a Value) -> Option<T>,
@@ -256,7 +245,7 @@ fn optional<'a, T>(
         None | Some(Value::Null) => Ok(None),
         Some(value) => read(value)
             .map(Some)
-            .ok_or_else(|| format!("cards: parameter {param} must be {what}")),
+            .ok_or_else(|| format!("{action}: parameter {param} must be {what}")),
     }
 }
 
@@ -315,7 +304,7 @@ fn cards(
                 .iter()
                 .find(|name| !board.lists.iter().any(|l| &l.name == *name))
             {
-                return Err(no_list(missing, &board.lists));
+                return Err(no_list("cards", missing, &board.lists));
             }
             names.iter().map(|name| Some(name.as_str())).collect()
         }
@@ -354,16 +343,16 @@ pub(crate) fn merge(
     cards
 }
 
-/// The sentence refusing the list `name`, which the board lacks, naming the lists it has as
-/// the API names them.
-fn no_list(name: &str, lists: &[ListAnswer]) -> String {
+/// The sentence refusing the list `name` passed to `action`, which the board lacks, naming the
+/// lists it has as the API names them.
+pub(crate) fn no_list(action: &str, name: &str, lists: &[ListAnswer]) -> String {
     let has: Vec<String> = lists.iter().map(|l| format!("`{}`", l.name)).collect();
     let has = match has.as_slice() {
         [] => "none".to_string(),
         [one] => one.clone(),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     };
-    format!("cards: The board has no list `{name}`; it has {has}.")
+    format!("{action}: The board has no list `{name}`; it has {has}.")
 }
 
 /// The instant `at` an answer of the board gave, in unix milliseconds.
@@ -373,7 +362,7 @@ fn millis(action: &str, at: &str) -> Result<u64, String> {
 }
 
 /// The handle of the card `card` of the board whose uuid is `board`: its number as its id.
-fn card_handle(
+pub(crate) fn card_handle(
     action: &str,
     board: &str,
     card: &CardAnswer,
@@ -401,7 +390,7 @@ fn card_handle(
 
 /// The handle of the comment `comment` on the card `card` of the board whose uuid is `board`:
 /// its author the person who made it, never a key, and its url its card's.
-fn comment_handle(
+pub(crate) fn comment_handle(
     action: &str,
     board: &str,
     card: &CardAnswer,
@@ -585,16 +574,20 @@ mod tests {
             name: name.to_string(),
         };
         assert_eq!(
-            no_list("Doing", &[list("Todo"), list("In progress"), list("Done")]),
+            no_list(
+                "cards",
+                "Doing",
+                &[list("Todo"), list("In progress"), list("Done")]
+            ),
             "cards: The board has no list `Doing`; it has `Todo`, `In progress` and `Done`."
         );
         assert_eq!(
-            no_list("Doing", &[list("Todo")]),
+            no_list("cards", "Doing", &[list("Todo")]),
             "cards: The board has no list `Doing`; it has `Todo`."
         );
         assert_eq!(
-            no_list("Doing", &[]),
-            "cards: The board has no list `Doing`; it has none."
+            no_list("move_card", "Doing", &[]),
+            "move_card: The board has no list `Doing`; it has none."
         );
     }
 }

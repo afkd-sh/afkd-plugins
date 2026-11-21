@@ -10,6 +10,10 @@
 //! set of filters keeps, a card's comments, and the board's lists and labels — are
 //! [`reads`]'s. Each reaches the board only through the `afkd_board.Board` it is passed
 //! ([`board`]), by its API key under its `base_url`, over the board's HTTP API ([`client`]).
+//!
+//! The writes a config makes to it — cards, checklists, comments and lists — are [`writes`]'s.
+//! Each write of a card, its checklist or a comment is made under the `afkd.Run` it is passed,
+//! which the board shows beside the change; one passed none is shown under the key's name.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -21,6 +25,7 @@ mod manifest;
 mod reads;
 mod rfc3339;
 mod wire;
+mod writes;
 
 use std::io::{BufRead, Write};
 

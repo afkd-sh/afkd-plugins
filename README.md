@@ -19,7 +19,7 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   triggers, the calls a config sends, replies, reacts, edits and fetches with, and
   the skill an agent does the same through.
 - [`@afkd/afkd_board`](@afkd/afkd_board) — the cards, comments, lists and labels of a board
-  on app.afkd.sh, read through an `afkd_board.Board`.
+  on app.afkd.sh, read and written through an `afkd_board.Board`.
 
 Each plugin carries its own README, its own `node --test` suite and its own
 fixtures. A script a plugin is built with but does not ship lives under
