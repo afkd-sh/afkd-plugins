@@ -33,6 +33,7 @@
 //! `x.500` a second time. Every marker is read through [`unescape`], in case Linear hands
 //! one back escaped.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
@@ -126,6 +127,9 @@ pub(crate) struct Unit {
     /// The `claim_from` state the issue returns to, when it is not the first team's first
     /// one; `None` for that one.
     source: Option<State>,
+    /// The `claim_from` state the claim came from, always: what a park's marker records, and
+    /// where a resume handed back unbuilt returns the issue to.
+    claimed_from: State,
     /// The `Authorization` the run reaches Linear with, as of the claim.
     authorization: String,
 }
@@ -203,6 +207,9 @@ struct PendingFinish {
     issue: Issue,
     /// The team the issue was claimed in, whose label the badge is.
     team: Team,
+    /// The id of the `claim_from` state the issue was claimed from, which the owed
+    /// [`PARK_MARKER`] records.
+    from_state_id: String,
     /// Whether the [`NEEDS_INFO_LABEL`] **badge** a park owes is still unwritten. The badge is
     /// what the next beat's sweep re-finds the issue by, so a park whose label write failed
     /// is *not* delivered.
@@ -247,6 +254,14 @@ struct Gates {
     /// The viewer: the tail boundary's and the brief's self.
     me: SelfIds,
     discuss: Option<DiscussGate>,
+}
+
+/// The `claim_from` state a claim comes from, as a [`Unit`] keeps it.
+struct Origin {
+    /// The state itself, always.
+    claimed_from: State,
+    /// The state as the claim-journal key keeps it ([`LinearUnits::keyed`]).
+    source: Option<State>,
 }
 
 /// One `claim_from` scan's context, shared by every candidate it considers.
@@ -510,7 +525,9 @@ impl LinearUnits {
     /// while the issue was parked holds it back as one there at the first claim would.
     ///
     /// An issue's [`PARK_MARKER`] names who parked it, and only that service resumes it; an
-    /// issue naming a service off the roster is an orphan, taken over with one narrated line.
+    /// issue naming a service off the roster is an orphan, taken over with one narrated line
+    /// by a service claiming from the state the marker records, and passed over in silence by
+    /// every other — a marker that records none is resumed by its own parker alone.
     fn scan_parked(
         &self,
         teams: &[Team],
@@ -570,14 +587,30 @@ impl LinearUnits {
                 continue;
             }
             let team = &teams[*team_at];
-            let source = self.sweep_source(*team_at, team, issue, &mut sources)?;
+            let from = park_from(&comments);
+            // One whose parker the config no longer runs is taken over only by a service
+            // claiming from the state it was parked from; any other passes it over.
+            let orphan = match park_owner(&comments) {
+                Some(owner) if instance_base(&owner).unwrap_or(&owner) != self.service => {
+                    let states = self.team_sources(*team_at, team, &mut sources)?;
+                    if !from
+                        .as_deref()
+                        .is_some_and(|id| states.iter().any(|state| state.id == id))
+                    {
+                        continue;
+                    }
+                    Some(owner)
+                }
+                _ => None,
+            };
+            let origin = self.sweep_source(*team_at, team, issue, from.as_deref(), &mut sources)?;
             if budget.claim_reserve_short() {
                 return Ok(ParkScan::Spent);
             }
-            if let Some(line) = self.orphan_takeover(issue, &comments) {
-                diag.narrate(&line);
+            if let Some(owner) = orphan {
+                diag.narrate(&orphan_line(issue, instance_base(&owner).unwrap_or(&owner)));
             }
-            match self.attempt_claim(team, issue.clone(), source.as_ref(), &me, diag, clock)? {
+            match self.attempt_claim(team, issue.clone(), &origin, &me, diag, clock)? {
                 ClaimRound::Won(unit) => return Ok(ParkScan::Claimed(unit)),
                 ClaimRound::Lost => continue,
             }
@@ -585,31 +618,46 @@ impl LinearUnits {
         Ok(ParkScan::Nothing)
     }
 
+    /// The `claim_from` states of `team`, the team at `team_at`, resolved once a beat: read
+    /// through `sources`, the beat's cache.
+    fn team_sources<'a>(
+        &self,
+        team_at: usize,
+        team: &Team,
+        sources: &'a mut BTreeMap<usize, Vec<State>>,
+    ) -> Result<&'a [State], LinearError> {
+        if let Entry::Vacant(vacant) = sources.entry(team_at) {
+            vacant.insert(self.sources(team)?);
+        }
+        Ok(&sources[&team_at])
+    }
+
     /// The `claim_from` state an issue the sweep claims in `team`, the team at `team_at`,
-    /// returns to, as its key keeps it ([`Self::keyed`]): the state it sits in when that is
-    /// one of them, else the team's first. The first team's states are read only when there
-    /// is more than one.
+    /// came from, and as its key keeps it ([`Self::keyed`]): the state `from`, the one its
+    /// park marker names, when that is one of them, else the state it sits in when that is,
+    /// else the team's first.
     fn sweep_source(
         &self,
         team_at: usize,
         team: &Team,
         issue: &Issue,
+        from: Option<&str>,
         sources: &mut BTreeMap<usize, Vec<State>>,
-    ) -> Result<Option<State>, LinearError> {
-        if team_at == 0 && self.claim_from.len() < 2 {
-            return Ok(None);
-        }
-        let states = match sources.get(&team_at) {
-            Some(states) => states,
-            None => sources.entry(team_at).or_insert(self.sources(team)?),
-        };
-        let at = states
-            .iter()
-            .position(|source| source.id == issue.state.id)
+    ) -> Result<Origin, LinearError> {
+        let states = self.team_sources(team_at, team, sources)?;
+        let position = |id: &str| states.iter().position(|state| state.id == id);
+        let at = from
+            .and_then(position)
+            .or_else(|| position(&issue.state.id))
             .unwrap_or(0);
-        Ok(states
-            .get(at)
-            .and_then(|state| Self::keyed(team_at, at, state)))
+        let state = states.get(at).ok_or_else(|| LinearError::NoSuch {
+            stage: "resolve state",
+            what: format!("a claim_from state in team {}", team.key),
+        })?;
+        Ok(Origin {
+            claimed_from: state.clone(),
+            source: Self::keyed(team_at, at, state),
+        })
     }
 
     /// Whether a parked issue is **another live service's**: its newest [`PARK_MARKER`]
@@ -620,14 +668,6 @@ impl LinearUnits {
         };
         let owner = instance_base(&owner).unwrap_or(&owner).to_string();
         owner != self.service && self.roster.contains(&owner)
-    }
-
-    /// The handover line owed for a parked issue this service is about to take over from a
-    /// parker the config no longer runs — `None` when nothing is owed.
-    fn orphan_takeover(&self, issue: &Issue, comments: &[Comment]) -> Option<String> {
-        let owner = park_owner(comments)?;
-        let owner = instance_base(&owner).unwrap_or(&owner);
-        (owner != self.service).then(|| orphan_line(issue, owner))
     }
 
     /// Claim the next issue via the comment lock: the parked sweep first, then each team in
@@ -671,7 +711,10 @@ impl LinearUnits {
         };
         for (team_at, (team, states)) in teams.iter().zip(&sources).enumerate() {
             for (state_at, source) in states.iter().enumerate() {
-                let keyed = Self::keyed(team_at, state_at, source);
+                let origin = Origin {
+                    claimed_from: source.clone(),
+                    source: Self::keyed(team_at, state_at, source),
+                };
                 let mut after: Option<String> = None;
                 loop {
                     if budget.spent() {
@@ -687,7 +730,7 @@ impl LinearUnits {
                         if budget.spent() {
                             return Ok(None);
                         }
-                        match self.consider(&beat, team, issue, keyed.as_ref())? {
+                        match self.consider(&beat, team, issue, &origin)? {
                             Considered::Claimed(unit) => return Ok(Some(*unit)),
                             Considered::Passed => {}
                             Considered::OutOfTime => return Ok(None),
@@ -710,7 +753,7 @@ impl LinearUnits {
         beat: &Beat,
         team: &Team,
         issue: Issue,
-        source: Option<&State>,
+        origin: &Origin,
     ) -> Result<Considered, LinearError> {
         let gates = &beat.gates;
         if self.skip_labels.iter().any(|l| issue.labels.contains(l)) {
@@ -739,7 +782,7 @@ impl LinearUnits {
         if beat.budget.claim_reserve_short() {
             return Ok(Considered::OutOfTime);
         }
-        let round = self.attempt_claim(team, issue, source, &gates.me, beat.diag, beat.clock)?;
+        let round = self.attempt_claim(team, issue, origin, &gates.me, beat.diag, beat.clock)?;
         Ok(match round {
             ClaimRound::Won(unit) => Considered::Claimed(unit),
             ClaimRound::Lost => Considered::Passed,
@@ -758,7 +801,7 @@ impl LinearUnits {
         &self,
         team: &Team,
         issue: Issue,
-        source: Option<&State>,
+        origin: &Origin,
         me: &SelfIds,
         diag: &dyn Diag,
         clock: &dyn Clock,
@@ -825,7 +868,8 @@ impl LinearUnits {
             delivered_upto: delivered,
             me,
             team: team.clone(),
-            source: source.cloned(),
+            source: origin.source.clone(),
+            claimed_from: origin.claimed_from.clone(),
             authorization,
         })))
     }
@@ -917,10 +961,10 @@ impl LinearUnits {
             }
         }
         if owed.park_marker {
-            match self
-                .tracker
-                .post_comment(&owed.issue.id, &park_text(&self.service))
-            {
+            match self.tracker.post_comment(
+                &owed.issue.id,
+                &park_text(&self.service, &owed.from_state_id),
+            ) {
                 Ok(_) => {
                     owed.park_marker = false;
                     self.prune_park_priors(&mut owed.park_priors, diag);
@@ -1024,13 +1068,19 @@ impl LinearUnits {
     /// Give back a claim afkd handed back before its run started — the `release` call marked
     /// `handed_back`: prune the `[afkd-claim]` comment and leave the issue where it is. The
     /// claim never moved it, and nothing ran on it, so it keeps its place at the head of its
-    /// state. Best-effort, as [`Self::release_stale`].
-    ///
-    /// `None` for a key with no `#`, which names nothing releasable.
-    pub(crate) fn hand_back(&self, key: &str, diag: &dyn Diag) -> Option<bool> {
-        let (_, claim_id, _) = split_issue_key(key)?;
-        self.prune_claim(claim_id, diag);
-        Some(true)
+    /// state. A resumed issue that sat elsewhere than the state it was claimed from (parked
+    /// In Progress) is not kept in place: it goes to the bottom of that state. Best-effort,
+    /// as [`Self::release_stale`].
+    pub(crate) fn hand_back(&self, unit: &Unit, diag: &dyn Diag) {
+        self.prune_claim(&unit.claim_id, diag);
+        if unit.issue.state.id != unit.claimed_from.id {
+            if let Err(e) =
+                self.tracker
+                    .move_to_bottom(&unit.team.id, &unit.issue.id, &unit.claimed_from.id)
+            {
+                diag.err(&e);
+            }
+        }
     }
 
     /// Delete a claim's `[afkd-claim]` comment, diagnosing a failure.
@@ -1191,7 +1241,7 @@ impl LinearUnits {
         if marker_owed {
             match self
                 .tracker
-                .post_comment(&issue.id, &park_text(&self.service))
+                .post_comment(&issue.id, &park_text(&self.service, &unit.claimed_from.id))
             {
                 Ok(_) => {
                     marker_owed = false;
@@ -1219,6 +1269,7 @@ impl LinearUnits {
                 ),
                 issue: issue.clone(),
                 team: unit.team.clone(),
+                from_state_id: unit.claimed_from.id.clone(),
                 park: park_owed,
                 park_marker: marker_owed,
                 park_priors,
@@ -1464,10 +1515,11 @@ fn is_ran(text: &str) -> bool {
     starts_with_marker(text, RAN_MARKER)
 }
 
-/// Text of the park owner comment: the marker and the **configured service** that parked
-/// the issue — never the claim owner, which changes on every restart.
-fn park_text(service: &str) -> String {
-    format!("{PARK_MARKER} service={service}")
+/// Text of the park owner comment: the marker, the **configured service** that parked the
+/// issue — never the claim owner, which changes on every restart — and the id of the
+/// `claim_from` state it claimed the issue from.
+fn park_text(service: &str, from_state_id: &str) -> String {
+    format!("{PARK_MARKER} service={service} from={from_state_id}")
 }
 
 /// Whether a comment is the park owner marker — the prefix test, so a marker whose
@@ -1494,11 +1546,22 @@ fn marker_field(text: &str, marker: &str, key: &str) -> Option<String> {
 /// the prune that should leave exactly one is best-effort. A newest marker whose value is
 /// garbled names *nobody* rather than deferring to an older one.
 fn park_owner(comments: &[Comment]) -> Option<String> {
+    newest_park_field(comments, "service")
+}
+
+/// The id of the `claim_from` state named on the issue's **newest** `[afkd-park]` marker, if
+/// any, read as [`park_owner`] reads the service. A marker with no `from=` names no state.
+fn park_from(comments: &[Comment]) -> Option<String> {
+    newest_park_field(comments, "from")
+}
+
+/// The value of `key=` on the issue's newest `[afkd-park]` marker.
+fn newest_park_field(comments: &[Comment], key: &str) -> Option<String> {
     comments
         .iter()
         .filter(|c| is_park(&c.text))
         .max_by_key(|c| (c.posted_at, c.id.as_str()))
-        .and_then(|c| marker_field(&c.text, PARK_MARKER, "service"))
+        .and_then(|c| marker_field(&c.text, PARK_MARKER, key))
 }
 
 /// The authors of the issue's `[afkd-park]` markers: afkd's own ids, since only the plugin
@@ -1732,6 +1795,42 @@ mod tests {
                 .map(|c| c.text)
                 .collect()
         }
+
+        /// A second service armed on this very tracker, as `service` beside a daemon running
+        /// `roster`, over `settings`: what the config the issues were parked under becomes
+        /// once it is edited and the daemon restarted.
+        fn rearm(&self, service: &str, roster: &[&str], settings: Value) -> Fx {
+            Fx {
+                tracker: Arc::clone(&self.tracker),
+                units: arm(&self.tracker, service, roster, settings),
+                clock: FakeClock::new(),
+                diag: CaptureDiag::default(),
+            }
+        }
+    }
+
+    /// A service armed over `tracker` as `service`, beside a daemon running `roster`, over
+    /// `settings` on top of the required ones.
+    fn arm(
+        tracker: &Arc<MockTracker>,
+        service: &str,
+        roster: &[&str],
+        settings: Value,
+    ) -> LinearUnits {
+        let mut block = json!({"team": ["ENG"], "api_key": "lin_api_k", "claim_from": ["Todo"]});
+        for (k, v) in settings.as_object().unwrap() {
+            block[k] = v.clone();
+        }
+        let cfg = intake_config(&block).expect("valid settings");
+        LinearUnits::new(
+            Box::new(Arc::clone(tracker)),
+            &cfg,
+            Identity {
+                owner: "afkd-4242".into(),
+                service: service.into(),
+                roster: roster.iter().map(|name| name.to_string()).collect(),
+            },
+        )
     }
 
     /// A team with a state of each category, every comment the plugin posts stamped ten
@@ -1743,6 +1842,7 @@ mod tests {
             ("Todo", "unstarted"),
             ("Backlog", "backlog"),
             ("In Progress", "started"),
+            ("In Review", "started"),
             ("Done", "completed"),
             ("Canceled", "canceled"),
             ("Duplicate", "duplicate"),
@@ -1750,26 +1850,23 @@ mod tests {
             tracker.add_state(state, kind);
         }
         tracker.set_clock(now_secs() - 600);
-        let mut block = json!({"team": ["ENG"], "api_key": "lin_api_k", "claim_from": ["Todo"]});
-        for (k, v) in settings.as_object().unwrap() {
-            block[k] = v.clone();
-        }
-        let cfg = intake_config(&block).expect("valid settings");
-        let units = LinearUnits::new(
-            Box::new(Arc::clone(&tracker)),
-            &cfg,
-            Identity {
-                owner: "afkd-4242".into(),
-                service: service.into(),
-                roster: vec![DEVELOP.into(), DISCUSS.into()],
-            },
-        );
+        let units = arm(&tracker, service, &[DEVELOP, DISCUSS], settings);
         Fx {
             tracker,
             units,
             clock: FakeClock::new(),
             diag: CaptureDiag::default(),
         }
+    }
+
+    /// The mock team's state named `name`.
+    fn state(f: &Fx, name: &str) -> State {
+        f.tracker
+            .states(TEAM_ID)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == name)
+            .expect("a seeded state")
     }
 
     fn fx(settings: Value) -> Fx {
@@ -2356,7 +2453,10 @@ mod tests {
             .attempt_claim(
                 &eng(),
                 f.tracker.issue("ENG-1"),
-                None,
+                &Origin {
+                    claimed_from: state(&f, "Todo"),
+                    source: None,
+                },
                 &me(),
                 &f.diag,
                 &f.clock,
@@ -2691,7 +2791,7 @@ mod tests {
         f.tracker.add_issue("Todo", "ENG-3", "queued too", "");
         let unit = f.poll().unwrap();
         assert_eq!(unit.identifier(), "ENG-1");
-        assert_eq!(f.units.hand_back(&unit.key(), &f.diag), Some(true));
+        f.units.hand_back(&unit, &f.diag);
         assert!(f.texts("ENG-1").iter().all(|t| !is_claim(t)));
         assert_eq!(f.tracker.in_state("Todo"), ["ENG-1", "ENG-2", "ENG-3"]);
 
@@ -2704,7 +2804,7 @@ mod tests {
                 reason: "mock failure".into(),
             },
         );
-        assert_eq!(f.units.hand_back(&unit.key(), &f.diag), Some(true));
+        f.units.hand_back(&unit, &f.diag);
         assert_eq!(
             f.diag.errs(),
             ["linear delete comment: no response (mock failure)"]
@@ -2717,7 +2817,6 @@ mod tests {
                 .any(|a| matches!(a, Action::Move { .. })),
             "a hand-back moves nothing"
         );
-        assert_eq!(f.units.hand_back("garbage", &f.diag), None);
     }
 
     #[test]
@@ -2866,7 +2965,7 @@ mod tests {
         assert_eq!(f.tracker.issue("ENG-1").labels, [NEEDS_INFO_LABEL]);
         assert!(f
             .texts("ENG-1")
-            .contains(&"[afkd-park] service=afkd::develop".to_string()));
+            .contains(&"[afkd-park] service=afkd::develop from=Todo".to_string()));
         assert!(f.texts("ENG-1").iter().all(|t| !is_claim(t)));
         assert!(f.diag.narrated().contains(&format!(
             "[linear] parked issue ENG-1 \"{TITLE}\" awaiting a reply (label \"Needs Info\")"
@@ -2898,42 +2997,156 @@ mod tests {
     }
 
     /// Another live service's parked issue is swept past in silence, and one naming a
-    /// service the config no longer runs is taken over with one line.
+    /// service the config no longer runs is taken over with one line — when its marker
+    /// records a state this service claims from, else it is passed over in silence too. The
+    /// takeover claims the issue from that state, though it sits In Progress.
     #[test]
     fn a_parked_issue_is_resumed_only_by_its_parker_or_as_an_orphan() {
-        let parked = |service: &str| {
+        let parked = |marker: &str| {
             let f = fx(json!({}));
             f.tracker.add_issue("In Progress", "ENG-1", "t", "");
             f.tracker.seed_label("ENG-1", NEEDS_INFO_LABEL);
             let at = |ago: u64| SystemTime::now() - Duration::from_secs(ago);
             f.tracker
                 .push_comment("ENG-1", "q", "Which one?", SELF_ID, at(120));
-            f.tracker.push_comment(
-                "ENG-1",
-                "p",
-                &format!("[afkd-park] service={service}"),
-                SELF_ID,
-                at(110),
-            );
+            f.tracker
+                .push_comment("ENG-1", "p", marker, SELF_ID, at(110));
             f.tracker
                 .push_comment("ENG-1", "h", "This one.", "u-phil", at(60));
             f
         };
-        let f = parked(DISCUSS);
+        let untouched = |f: &Fx| {
+            assert!(f
+                .tracker
+                .comments_on("ENG-1")
+                .iter()
+                .all(|c| !is_claim(&c.text)));
+            assert!(f.diag.narrated().is_empty(), "{:?}", f.diag.narrated());
+        };
+        let f = parked("[afkd-park] service=afkd::discuss from=Todo");
         assert!(f.poll().is_none(), "the discusser's");
-        assert!(f
-            .tracker
-            .comments_on("ENG-1")
-            .iter()
-            .all(|c| !is_claim(&c.text)));
+        untouched(&f);
 
-        let f = parked("afkd::gone+2");
-        assert_eq!(f.poll().unwrap().identifier(), "ENG-1");
+        for marker in [
+            "[afkd-park] service=afkd::gone+2",
+            "[afkd-park] service=afkd::gone+2 from=In Review",
+        ] {
+            let f = parked(marker);
+            assert!(
+                f.poll().is_none(),
+                "{marker}: no state this service claims from"
+            );
+            untouched(&f);
+        }
+
+        let f = parked("[afkd-park] service=afkd::gone+2 from=Todo");
+        let unit = f.poll().expect("the orphan is taken over");
+        assert_eq!(unit.identifier(), "ENG-1");
+        assert_eq!(unit.claimed_from, state(&f, "Todo"));
+        assert_eq!(unit.issue().state.name, "In Progress");
+        assert_eq!(unit.source, None, "its key names the first state: Todo");
         assert!(f.diag.narrated().contains(
             &"[linear] resuming issue ENG-1 \"t\", parked by \
              service \"afkd::gone\" which this config no longer runs"
                 .to_string()
         ));
+
+        // Its own parker's marker, from an older version, names no state: it still resumes.
+        let f = parked("[afkd-park] service=afkd::develop");
+        let unit = f.poll().expect("the parker resumes it");
+        assert_eq!(unit.claimed_from, state(&f, "Todo"));
+        assert!(f
+            .diag
+            .narrated()
+            .iter()
+            .all(|l| !l.contains("no longer runs")));
+    }
+
+    /// An issue parked under a develop service that has since been renamed is taken, once
+    /// its question is answered, by the renamed develop service, which claims from the state
+    /// it was parked from — never by a review service, which claims from another.
+    #[test]
+    fn a_renamed_develop_service_takes_the_issue_and_a_review_service_leaves_it() {
+        let f = fx(json!({}));
+        f.tracker.add_issue("Todo", "ENG-1", TITLE, "");
+        park(&f, "ENG-1");
+        assert!(f
+            .texts("ENG-1")
+            .contains(&"[afkd-park] service=afkd::develop from=Todo".to_string()));
+        f.tracker.push_comment(
+            "ENG-1",
+            "h1",
+            "Appen.",
+            "u-phil",
+            SystemTime::now() - Duration::from_secs(30),
+        );
+        let roster = ["afkx::develop", "afkx::review"];
+        let review = f.rearm(
+            "afkx::review",
+            &roster,
+            json!({"claim_from": ["In Review"]}),
+        );
+        assert!(review.poll().is_none(), "a review does not build");
+        assert!(review.diag.narrated().is_empty());
+        assert!(
+            f.texts("ENG-1").iter().all(|t| !is_claim(t)),
+            "it left no claim"
+        );
+        assert!(f.tracker.issue("ENG-1").labels == [NEEDS_INFO_LABEL]);
+
+        let develop = f.rearm("afkx::develop", &roster, json!({}));
+        let unit = develop
+            .poll()
+            .expect("the renamed develop service takes it");
+        assert_eq!(unit.identifier(), "ENG-1");
+        assert_eq!(unit.claimed_from, state(&f, "Todo"));
+        assert!(develop.diag.narrated().contains(&format!(
+            "[linear] resuming issue ENG-1 \"{TITLE}\", parked by service \"afkd::develop\" \
+             which this config no longer runs"
+        )));
+        assert!(f.tracker.issue("ENG-1").labels.is_empty());
+    }
+
+    /// A parked issue sitting In Progress and resumed, then handed back unbuilt or released
+    /// after a failed `on_claim`, lands in Todo, at the bottom, not In Progress.
+    #[test]
+    fn a_resume_that_runs_nothing_returns_the_issue_to_todo() {
+        let resumed = || {
+            let f = fx(json!({}));
+            f.tracker.add_issue("Todo", "ENG-1", TITLE, "");
+            park(&f, "ENG-1");
+            let in_progress = state(&f, "In Progress");
+            f.tracker.edit_issue("ENG-1", |i| i.state = in_progress);
+            f.tracker.add_issue("Todo", "ENG-2", "queued", "");
+            f.tracker.push_comment(
+                "ENG-1",
+                "h1",
+                "Appen.",
+                "u-phil",
+                SystemTime::now() - Duration::from_secs(30),
+            );
+            let unit = f.poll().expect("the answer resumes it");
+            assert_eq!(unit.identifier(), "ENG-1");
+            assert_eq!(f.tracker.in_state("In Progress"), ["ENG-1"]);
+            (f, unit)
+        };
+
+        let (f, unit) = resumed();
+        f.units.hand_back(&unit, &f.diag);
+        assert_eq!(f.tracker.in_state("Todo"), ["ENG-2", "ENG-1"]);
+        assert!(f.tracker.in_state("In Progress").is_empty());
+        assert!(f.texts("ENG-1").iter().all(|t| !is_claim(t)));
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+
+        let (f, unit) = resumed();
+        assert_eq!(
+            f.units.release_stale(&unit.key(), f.clock.now(), &f.diag),
+            Some(true)
+        );
+        assert_eq!(f.tracker.in_state("Todo"), ["ENG-2", "ENG-1"]);
+        assert!(f.tracker.in_state("In Progress").is_empty());
+        assert!(f.texts("ENG-1").iter().all(|t| !is_claim(t)));
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
     }
 
     /// A blocker added while an issue was parked holds it back as one at the first claim
