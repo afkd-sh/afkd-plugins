@@ -22,7 +22,7 @@ import test from "node:test";
 
 import { fold, queues, rowCards, seed } from "./fold.mjs";
 import { DEFAULT_KEYS, DESCRIPTIONS, REFUSED_WHILE_QUITTING, SCOPES, all, glyphs, idOf, primary } from "./keymap.mjs";
-import { BANDS, COL_WIDTH, COPIES_MARK, KIND_GLYPH, MARK_TEXT, QUEUE_LANE_GLYPH, cell, TREND_LADDER, bodyHeight as bodyHeightOf, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, ROLES, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
+import { BANDS, COL_WIDTH, COPIES_MARK, HELP_SIGILS, KIND_GLYPH, MARK_TEXT, QUEUE_CELL_FREE, QUEUE_CELL_HELD, QUEUE_LANE_GLYPH, QUEUE_PIP_WAITING, cell, TREND_LADDER, bodyHeight as bodyHeightOf, copiesBreakdown, formatElapsed, infoScrollMax, infoView, layout as layoutOf, noticeRow, peekFloorOffset, ROLES, runMetrics, scrollOffset, textWidth, visibleRows as visibleRowsOf } from "./layout.mjs";
 import { URGENCY, copiesOf, rowRecord } from "./fold.mjs";
 import { newSession as bootSession, press } from "./session.mjs";
 import { BASE, NO_AFKD_SRC, STEP, afkdSource, assertGolden, assertGrid, drainedBoard, foldCapture, foldFrames, liveBoard, nodeKindWireName, paneBody, readCapture, readRecording, screenText } from "./testkit.mjs";
@@ -174,7 +174,7 @@ test("renders the whole overview at 100x30", () => {
   }
   // The lane by its name alone, as the terminal's section reads it: its `high` priority is
   // the info view's `Queue` row's to print, not this row's.
-  assert.match(lines[queueHeader + 1], /^≡ heavy +▮▮ ╎ ∙ +2 +2 +1/, "the `heavy` lane, held and waited on");
+  assert.match(lines[queueHeader + 1], /^≡ heavy +◆◆ ╎ ◇ +2 +2 +1/, "the `heavy` lane, held and waited on");
   // The footer, with its five keys on it.
   assert.equal(lines.at(-1).trimEnd(), " t  run now    o  output    Enter  peek    x  stop    ?  help", "the footer's badges");
 });
@@ -419,7 +419,7 @@ test("the glyph vocabulary measures as the tui measures it", () => {
   for (const glyph of ["🔸", "🔷", "🔶", "▪️", "🪦", "🕸️", "📦", "📜", "🧵", "🔒", "🚦", "⏳"]) {
     assert.equal(textWidth(glyph), 2, `${glyph} is two cells`);
   }
-  for (const glyph of ["◇", "◆", "▫", "≡", "●", "▷", "◎", "▶", "■", "□", "✕", "◌", "⊟", "⊞", "▮", "▯", "∙", "╎", "│", "─", "↓", "↑", "·", "…", "▁", "█"]) {
+  for (const glyph of ["◇", "◆", "▫", "≡", "●", "▷", "◎", "▶", "■", "□", "✕", "◌", "⊟", "⊞", "▯", "╎", "│", "─", "↓", "↑", "·", "…", "▁", "█"]) {
     assert.equal(textWidth(glyph), 1, `${glyph} is one cell`);
   }
   assert.equal(textWidth("監視"), 4, "CJK is two cells a glyph");
@@ -835,6 +835,28 @@ test("the marks and the lane lead are layout.rs's glyphs", { skip: NO_AFKD_SRC }
   const lead = rust.match(/const QUEUE_LANE_GLYPH: char = '([^']+)';/);
   assert.ok(lead !== null, "QUEUE_LANE_GLYPH in layout.rs");
   assert.equal(lead[1], QUEUE_LANE_GLYPH);
+  // The lane's three cells: the held and waiting ones *are* marks, the free one is a glyph of
+  // its own.
+  const cellConst = (name) => rust.match(new RegExp(`const ${name}: &str = ([^;]+);`));
+  assert.equal(cellConst("QUEUE_CELL_HELD")?.[1], "Mark::Executing.glyph()", "a held cell is the executing mark");
+  assert.equal(cellConst("QUEUE_PIP_WAITING")?.[1], "Mark::Parked.glyph()", "a waiting pip is the parked mark");
+  assert.equal(cellConst("QUEUE_CELL_FREE")?.[1], '"\\u{25AF}"', "a free cell is U+25AF");
+  assert.deepEqual([QUEUE_CELL_HELD, QUEUE_PIP_WAITING, QUEUE_CELL_FREE], [MARK_TEXT.executing, MARK_TEXT.parked, "▯"]);
+});
+
+test("the legend's sigils are help.rs's notes and mark notes", { skip: NO_AFKD_SRC }, () => {
+  // `help_lines`' `Hint::note` and `Hint::mark_note` rows, read out of the Rust in order: a
+  // plain note carries its own glyph and no mark, a mark note the glyph of the mark it names.
+  const rust = afkdSource("crates", "tui", "src", "help.rs");
+  const rows = [...rust.matchAll(/Hint::(note|mark_note)\(\s*([^,]+?),\s*"([^"]+)",?\s*\)/g)].map(([, kind, first, label]) => {
+    if (kind === "note") return [JSON.parse(first), label, null];
+    const mark = first.match(/^Mark::(\w+)$/)?.[1];
+    assert.ok(mark !== undefined, `a mark note names a Mark: ${first}`);
+    const name = mark[0].toLowerCase() + mark.slice(1);
+    return [MARK_TEXT[name], label, name];
+  });
+  assert.equal(rows.length, 4, "the list's legend ends in four sigil rows");
+  assert.deepEqual(HELP_SIGILS, rows);
 });
 
 test("the night header spells a faint 0 down", () => {
@@ -862,9 +884,9 @@ test("the night Queues hue a lane's runs and counts", () => {
   const busy = laneOf(liveBoard());
   assert.equal(cellNamed(busy, "≡").fg, "faint", "the lead is faint");
   assert.equal(cellNamed(busy, "heavy").fg, "text", "the name is in the ground");
-  assert.deepEqual(lookOf(cellNamed(busy, "▮▮")), { fg: "accent", bold: true, dim: false }, "the held run is Busy's");
+  assert.deepEqual(lookOf(cellNamed(busy, "◆◆")), { fg: "accent", bold: true, dim: false }, "the held run is Busy's");
   assert.equal(cellNamed(busy, " ╎ ").fg, "faint", "the fence is faint");
-  assert.deepEqual(lookOf(cellNamed(busy, "∙")), { fg: "pre-run", bold: false, dim: false }, "the pips are Queued's");
+  assert.deepEqual(lookOf(cellNamed(busy, "◇")), { fg: "pre-run", bold: false, dim: false }, "the pips are Queued's");
   const counts = busy.filter((c) => /^\d+$/.test(c.text)).map((c) => [c.text, c.fg]);
   assert.deepEqual(counts, [["2", "text"], ["2", "accent"], ["1", "pre-run"]], "Capacity in the ground, Held and Waiting hued above 0");
   const idle = laneOf(liveBoard("fire.jsonl"));
@@ -922,9 +944,11 @@ function footerOf(rows, height) {
   return screenText(rows).split("\n").slice(-height);
 }
 
-/// The list footer's key badges, read off the frame's last row **structurally**: a key is a
+/// The list footer's key badges, read off the frame's last row **structurally**. A live key is a
 /// non-blank cell on the rule band, closed by one blank rule cell either side, and its label is
-/// the cell after the plain space that follows. `live` is the key's bold, `at` its first column.
+/// the cell after the plain space that follows. A receded one is the same shape off the band:
+/// blank ends and a plain space around a key and a label in the `free` tone. `live` is the
+/// badge's own, `at` the first column of its key's cell less the end.
 function badgesOf(rows) {
   const row = rows.at(-1);
   const out = [];
@@ -936,7 +960,10 @@ function badgesOf(rows) {
       }
       const label = row[i + 3];
       assert.deepEqual([row[i + 2]?.text, row[i + 2]?.bg], [" ", null], `a plain space parts ${c.text} from its label`);
-      out.push({ key: c.text, label: label?.text ?? "", live: c.bold, at: x - 1 });
+      out.push({ key: c.text, label: label?.text ?? "", live: true, at: x - 1 });
+    } else if (c.fg === "free" && c.bg === null && row[i - 1]?.text === " " && row[i + 1]?.text === " " && row[i + 2]?.text === " " && row[i + 3]?.fg === "free") {
+      for (const end of [row[i - 1], row[i + 1]]) assert.equal(end.bg, null, `${c.text}'s end is off the band`);
+      out.push({ key: c.text, label: row[i + 3].text, live: false, at: x - 1 });
     }
     x += c.width;
   });
@@ -1077,21 +1104,28 @@ test("the badge gap and the drop edges are legend.rs's", { skip: NO_AFKD_SRC }, 
   assert.deepEqual(edges, BLANK_BADGE_EDGES, "the drop test's edges are afkd's own for blank ends");
 });
 
-test("a dead key is faint on the band and holds its live slot", () => {
-  // `shell::badge_line` at 24-bit: a live key is bold text on the rule band, a dead one faint
-  // and not bold, and the label is muted either way. Nothing is dimmed: the faint is the gate.
+test("a dead key recedes whole off the band and holds its live slot", () => {
+  // `shell::badge_line` at 24-bit: a live key is bold text on the rule band beside a muted
+  // label; a dead badge recedes whole — its ends blank cells off the band, its key and label in
+  // the free tone. Nothing is dimmed: the free tone is the gate.
   const { board, at } = liveBoard();
   const at100 = (selected) => layout(board, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", selected });
   const dead = at100(0).at(-1);
   const live = at100(6).at(-1);
-  const keyCell = (row, key) => row.find((c) => c.bg === "rule" && c.text === key);
-  const labelCell = (row, label) => row.find((c) => c.fg === "muted" && c.text === label);
+  const keyCell = (row, key) => row.find((c) => c.text === key && (c.bg === "rule" || c.fg === "free"));
+  const labelCell = (row, label) => row.find((c) => c.text === label);
   const look = (c) => ({ fg: c.fg, bg: c.bg, bold: c.bold, dim: c.dim });
   assert.deepEqual(look(keyCell(live, "t")), { fg: "text", bg: "rule", bold: true, dim: false }, "a live key");
-  assert.deepEqual(look(keyCell(dead, "t")), { fg: "faint", bg: "rule", bold: false, dim: false }, "a dead key");
-  for (const row of [live, dead]) {
-    assert.deepEqual(look(labelCell(row, "run now")), { fg: "muted", bg: null, bold: false, dim: false }, "the label");
-  }
+  assert.deepEqual(look(keyCell(dead, "t")), { fg: "free", bg: null, bold: false, dim: false }, "a dead key is free, with no band");
+  assert.deepEqual(look(labelCell(live, "run now")), { fg: "muted", bg: null, bold: false, dim: false }, "a live label");
+  assert.deepEqual(look(labelCell(dead, "run now")), { fg: "free", bg: null, bold: false, dim: false }, "a dead label is free too");
+  const at_ = dead.findIndex((c) => c.text === "t");
+  assert.deepEqual(
+    [dead[at_ - 1], dead[at_ + 1]].map((c) => [c.text, c.bg, c.dim]),
+    [[" ", null, false], [" ", null, false]],
+    "a dead badge's ends are blank cells off the band",
+  );
+  assert.ok(dead.every((c) => c.fg !== "faint" && !c.dim), "the gate is the free tone, never dim or faint");
   // The shape is the point: dead or live, every cell is the same width in the same column.
   assert.deepEqual(
     dead.map((c) => [c.text, c.width]),
@@ -1143,7 +1177,8 @@ test("the footer advertises no unpressable key", () => {
     ["global.help", "?"],
   ]) {
     assert.ok(!REFUSED_WHILE_QUITTING.includes(action), `the drain does not refuse ${action}`);
-    assert.ok(footer.some((c) => c.bg === "rule" && c.text === key), `the drained footer keeps ${key}`);
+    // On the rule band when the selection can take it, receded off the band when it cannot.
+    assert.ok(footer.some((c) => c.text === key && (c.bg === "rule" || c.fg === "free")), `the drained footer keeps ${key}`);
   }
   // The `?` legend is the table's other display reader: the refused row goes, the operator
   // verbs and both scopes' lane keys stay.
@@ -1448,6 +1483,25 @@ test("the force modal states what force does before it asks", () => {
   // page, and the accept label is the bare verb.
   assert.ok(text.includes("y force  n cancel"), "y force  n cancel");
   assert.ok(!text.includes("[y]") && !text.includes("[n]"), "no bracket dresses a key");
+  // `render_popup` styles the frame by nothing: the borders and the title are in the ground, the
+  // title bold, and no popup cell is dim (the backdrop's receded cells are).
+  const popupCells = rows.flat().filter((c) => !c.dim);
+  const title = popupCells.find((c) => c.text.includes("Force-stop") && c.text.startsWith(" "));
+  assert.deepEqual(lookOf(title), { fg: "text", bold: true, dim: false }, "the title is the ground, bold");
+  for (const glyph of ["┌", "┐", "└", "┘", "│"]) {
+    const border = popupCells.find((c) => c.text === glyph);
+    assert.deepEqual(lookOf(border), { fg: "text", bold: false, dim: false }, `the ${glyph} border is the ground`);
+  }
+  // The body is the ground too, and `y force  n cancel` lights whole: both keys and both
+  // labels `bright`, the gap between them the ground's.
+  const body = popupCells.find((c) => c.text === "Force kills the running work & abandons the wedged thread");
+  assert.equal(body.fg, "text", "dialog prose is the ground, not muted");
+  const hints = popupCells.findIndex((c) => c.text === "y" && c.fg === "bright");
+  assert.deepEqual(
+    popupCells.slice(hints, hints + 7).map((c) => [c.text, c.fg]),
+    [["y", "bright"], [" ", "bright"], ["force", "bright"], ["  ", "text"], ["n", "bright"], [" ", "bright"], ["cancel", "bright"]],
+    "a live key and its label light whole",
+  );
 });
 
 test("the fan-out modal names its verb, its count and what it skipped", () => {
@@ -1468,6 +1522,10 @@ test("the fan-out modal names its verb, its count and what it skipped", () => {
   for (const name of eligible) assert.ok(text.includes(name), `${name} is listed`);
   assert.ok(text.includes(`${confirm.skipped} skipped`), "the ineligible are counted, not silently dropped");
   assert.ok(text.includes("y stop  n cancel"), "the accept label is the bare verb");
+  const frame = rows.flat().filter((c) => !c.dim && "┌┐└┘│".includes(c.text));
+  assert.ok(frame.length > 0 && frame.every((c) => c.fg === "text"), "the fan-out's frame is the ground");
+  const stop = rows.flat().find((c) => !c.dim && c.text === "stop" && c.fg === "bright");
+  assert.notEqual(stop, undefined, "the accept label lights with its key");
   // The name cap lives in the **content**, not in the clipping: past ten targets the modal says
   // how many it did not list.
   const many = Array.from({ length: 14 }, (_, i) => `service-${i}`);
@@ -1556,9 +1614,9 @@ const LIST_HELP_GROUPED = [
   "?            Close help",
   "",
   "🪦           Orphan (removed from config)",
-  "🕸️           Stale (new config; restart to adopt)",
-  "🔷           Executing now (init/run/cleanup)",
-  "🔸           Failed runs or crashed (clears on restart)",
+  "🕸️           Stale (restarts on its new config after this run)",
+  "◆            Executing now (on_start/on_run/on_stop)",
+  "◇            Failed runs or crashed (clears on restart)",
 ];
 const LIST_HELP_FLAT = LIST_HELP_GROUPED.filter((line) => !/Collapse group|Expand group|collapse all groups/u.test(line)).map(
   (line) =>
@@ -1597,10 +1655,21 @@ test("the overlay is the terminal's own legend for the view underneath", () => {
   const flat = layoutOf(board, { ...options, grouped: false });
   assertGrid(flat, 160, 44);
   assert.deepEqual(popupLines(flat), ["", ...LIST_HELP_FLAT, ""], "the flat list's legend");
-  // Only keys whiten: a sigil's glyph and every label paint at the body's own ink.
+  // Only keys whiten: a sigil's glyph and every label paint at the body's own ink — but for a
+  // mark note's glyph, which wears its mark's hue as the list draws it (`note_glyph_style`):
+  // the executing ◆ in the accent, the troubled ◇ in the alarm. The reconcile notes stay plain.
   const keyCells = grouped.flat().filter((c) => c.fg === "bright" && c.text.trim() !== "").map((c) => c.text.trim());
   for (const key of ["k/↑  j/↓", "Enter/Space", "Ctrl+R", "?"]) assert.ok(keyCells.includes(key), `${key} is a whitened key`);
-  assert.ok(!keyCells.includes("🪦"), "a sigil is not a key");
+  for (const glyph of ["🪦", "🕸️", "◆", "◇"]) assert.ok(!keyCells.includes(glyph), `${glyph} is not a key`);
+  // The backdrop behind the box is dim, and carries its own marks; the box's cells are not.
+  const sigils = grouped.flatMap((row) =>
+    row.flatMap((c, i) => (!c.dim && ["🪦", "🕸️", "◆", "◇"].includes(c.text) ? [[c.text, c.fg, row[i + 1].fg]] : [])),
+  );
+  assert.deepEqual(
+    sigils,
+    [["🪦", "text", "text"], ["🕸️", "text", "text"], ["◆", "accent", "text"], ["◇", "alarm", "text"]],
+    "the two mark notes wear their marks' hues, the reconcile notes and every label the ground",
+  );
   // The info page's own three rows, and each run-view pane's.
   const info = layout(board, infoAt("ops.nightly", 160, 44, at, { help: true }));
   assert.deepEqual(popupLines(info), ["", "i/Esc  Back to list", "q      Quit", "?      Close help", ""]);
@@ -1666,7 +1735,7 @@ test("a popup recedes the frame behind it and changes nothing else", () => {
   const withPopup = layout(board, { ...options, confirm: { verb: "abandon", targets: ["janitor"], skipped: 0 } });
   assertGrid(withPopup, 100, 30);
   // The rows above and below the box are the backdrop whole, so they are the clean comparison.
-  const boxed = withPopup.map((row) => row.some((c) => c.fg === "faint" && c.text.startsWith("│")));
+  const boxed = withPopup.map((row) => row.some((c) => !c.dim && c.text.startsWith("│")));
   let compared = 0;
   let bold = 0;
   withPopup.forEach((row, i) => {
@@ -1706,7 +1775,7 @@ test("every popup owns exactly one gutter row and two gutter columns at each end
     const confirm = { verb: "run", targets: [name], skipped: 0 };
     const rows = layout(moved, { cols: 100, rows: 30, now: at + 1000, version: "0.2.123", confirm });
     assertGrid(rows, 100, 30);
-    const corner = (glyph) => rows.findIndex((row) => row.some((c) => c.fg === "faint" && c.text === glyph));
+    const corner = (glyph) => rows.findIndex((row) => row.some((c) => !c.dim && c.fg === "text" && c.text === glyph));
     const top = corner("┌");
     const bottom = corner("└");
     assert.ok(top !== -1 && bottom > top, `${name}: the box has both borders`);
@@ -1716,7 +1785,7 @@ test("every popup owns exactly one gutter row and two gutter columns at each end
       let atCell = 0;
       const edges = [];
       for (const c of row) {
-        if (c.fg === "faint" && c.text === "│") edges.push(atCell);
+        if (!c.dim && c.fg === "text" && c.text === "│") edges.push(atCell);
         atCell += c.width;
       }
       assert.equal(edges.length, 2, `${name}: a body row has exactly two vertical borders`);
@@ -2005,6 +2074,15 @@ test("i opens a service's page with all five sections", () => {
     `${all("info.back")} back  ${primary("global.help")} help  ${primary("global.quit")} quit`,
     "the footer is `infoview::footer`'s three hints, sourced from the keymap",
   );
+  // `shell::hint_line`: a live key lights whole — its label `bright` with it — and the gap
+  // between two hints is the footer's muted base.
+  const cells = rows.at(-1);
+  const back = cells.findIndex((c) => c.text === all("info.back"));
+  assert.deepEqual(
+    cells.slice(back, back + 4).map((c) => [c.text, c.fg, c.dim]),
+    [[all("info.back"), "bright", false], [" ", "bright", false], ["back", "bright", false], ["  ", "muted", false]],
+    "a live hint is bright whole, its gap the footer's base",
+  );
 });
 
 test("two columns when the surface is wide, one when it is narrow", () => {
@@ -2199,6 +2277,8 @@ test("orphan and stale each read their own tag under Health", () => {
   }
   assert.ok(tags[0].startsWith("orphan "), `the orphan's own tag: ${tags[0]}`);
   assert.ok(tags[1].startsWith("stale "), `the stale one's: ${tags[1]}`);
+  assert.equal(tags[1], "stale - restarts on its new config after this run", "the 🕸️ legend note's vocabulary: when, not a key");
+  assert.ok(!tags[1].includes("restart to"), "…and no restart instruction (`docs/tui-style.md` §2)");
   assert.notEqual(tags[0], tags[1], "each carries its own sentence, not the other's");
   for (const value of tags) assert.match(value, / - .*[a-z]/, "…and an actionable sentence after it");
 

@@ -227,7 +227,7 @@ are.
 Its suites are `layout.test.mjs` — fixture-driven the same way and gated by the same `cargo
 test` bridge — plus `keymap.test.mjs`, `session.test.mjs` and `input.test.mjs` beside it. A golden holds the screen as **three planes** — what it says, the palette role
 each cell says it in, and its weight-or-band, one letter per cell so the planes read under the
-text in any terminal. A cell's look is half its meaning here (the footer's faint badges, the
+text in any terminal. A cell's look is half its meaning here (the footer's receded badges, the
 load chips, the muted column header, the selection bar), and a text-only golden
 would pass over a page painted flat. They are regenerated deliberately — `node
 @afkd/web_top/layout.test.mjs --write-goldens` — never by the test run.
@@ -337,8 +337,10 @@ and never updated the doc. The divergences are:
 One row is here that `infoview.rs` has nowhere: a **stale** service's `Config` row.
 `docs/tui-style.md` §7 already says the `(orphan)`/`(stale)` words live in the help legend and
 the info view's `Config` row, and the Rust carries only the orphan half; the stale sentence is
-written to the same `tag - actionable sentence` shape from the same vocabulary the 🕸️ legend
-note uses. Reconciling the terminal's own two surfaces is not this page's to do.
+written to the same `tag - actionable sentence` shape from the vocabulary the 🕸️ legend note
+uses, `stale - restarts on its new config after this run`: it says when the service takes up
+its new config (§2), never a key, because the service does it by itself and the operator presses
+nothing. Reconciling the terminal's own two surfaces is not this page's to do.
 
 ## The run view
 
