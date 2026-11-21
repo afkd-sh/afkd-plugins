@@ -99,6 +99,8 @@ pub(crate) struct PullRequest {
     pub(crate) title: String,
     /// The PR's page on GitHub (`html_url`); empty when GitHub sent none.
     pub(crate) url: String,
+    /// The PR description; empty when absent.
+    pub(crate) body: String,
     /// The PR's head branch (the pushed branch the iteration run checks out).
     pub(crate) head_branch: String,
     /// The PR author (matched against the bot's own login for `author_me`).
@@ -135,6 +137,32 @@ pub(crate) struct IssueComment {
     pub(crate) created_at: SystemTime,
     /// When the comment was last updated, as GitHub reports it.
     pub(crate) updated_at: SystemTime,
+}
+
+/// The most one file may hold: what `@afkd/linear` takes, and ureq's own cap on a body.
+pub(crate) const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// A file GitHub hosts, as [`GithubClient::download`] fetched it: its bytes, and the two
+/// headers that tell what to call it when its link gave no extension.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Download {
+    pub(crate) bytes: Vec<u8>,
+    /// The `Content-Type` the file was served with.
+    pub(crate) content_type: Option<String>,
+    /// The `Content-Disposition` the file was served with.
+    pub(crate) content_disposition: Option<String>,
+}
+
+/// The type, the disposition and the length, never the bytes: a download can be a whole
+/// screenshot, and a log line may print it.
+impl std::fmt::Debug for Download {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Download")
+            .field("content_type", &self.content_type)
+            .field("content_disposition", &self.content_disposition)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
 }
 
 /// A failure reaching GitHub, tagged with the stage it struck so a swallowed poll error
@@ -289,6 +317,15 @@ pub(crate) trait GithubClient {
     /// List a PR's reviews — `GET /repos/{o}/{r}/pulls/{number}/reviews`.
     fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError>;
 
+    /// Whether `url` is a file GitHub hosts, which [`download`](Self::download) fetches: an
+    /// attachment on the forge's own web host (`/user-attachments/…`, or a repository's
+    /// `/files/…` and `/assets/…`), or an image on GitHub's user-images host.
+    fn is_github_file(&self, url: &str) -> bool;
+
+    /// Download the file GitHub hosts at `url`, under [`MAX_FILE_BYTES`]. The token goes
+    /// only to the forge's own web host, and no redirect carries it on.
+    fn download(&self, url: &str) -> Result<Download, GithubError>;
+
     /// Hand over the current call's deadline, which every request until the next
     /// hand-over must finish by — set before a call, cleared with `None` after it. A
     /// client that sends no requests has nothing to bound and ignores it.
@@ -361,6 +398,12 @@ impl<T: GithubClient> GithubClient for std::sync::Arc<T> {
     fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GithubError> {
         (**self).list_pull_reviews(repo, index)
     }
+    fn is_github_file(&self, url: &str) -> bool {
+        (**self).is_github_file(url)
+    }
+    fn download(&self, url: &str) -> Result<Download, GithubError> {
+        (**self).download(url)
+    }
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         (**self).set_call_deadline(deadline)
     }
@@ -373,6 +416,23 @@ impl<T: GithubClient> GithubClient for std::sync::Arc<T> {
 /// Enterprise Server, whose API lives under `/api/v3` of the host: the scheme is preserved
 /// when present, else `https://` is prepended, and a trailing slash is trimmed.
 pub(crate) fn github_api_base(host: &str) -> String {
+    match ghes_root(host) {
+        None => "https://api.github.com".to_string(),
+        Some(root) => format!("{root}/api/v3"),
+    }
+}
+
+/// Resolve a configured `host` to the forge's own web host, where its pages and its
+/// attachments live: `https://github.com` for the cloud spellings
+/// ([`github_api_base`]'s), and for a GHES host the host as configured, scheme preserved
+/// (else `https://`), a trailing slash trimmed.
+pub(crate) fn github_web_base(host: &str) -> String {
+    ghes_root(host).unwrap_or_else(|| "https://github.com".to_string())
+}
+
+/// The root of a GHES `host` — its scheme, else `https://`, and its authority — or `None`
+/// for the cloud, which is empty, `github.com` or `http(s)://github.com`.
+fn ghes_root(host: &str) -> Option<String> {
     let host = host.trim();
     // Compare scheme-insensitively against the cloud hostname.
     let bare = host
@@ -380,19 +440,70 @@ pub(crate) fn github_api_base(host: &str) -> String {
         .trim_start_matches("http://")
         .trim_end_matches('/');
     if host.is_empty() || bare == "github.com" {
-        return "https://api.github.com".to_string();
+        return None;
     }
-    let with_scheme = if host.starts_with("http://") || host.starts_with("https://") {
-        host.trim_end_matches('/').to_string()
-    } else {
-        format!("https://{bare}")
+    Some(
+        if host.starts_with("http://") || host.starts_with("https://") {
+            host.trim_end_matches('/').to_string()
+        } else {
+            format!("https://{bare}")
+        },
+    )
+}
+
+/// The hosts GitHub serves a pasted image from beside its web host: public and, with a
+/// signed url, private. Never sent the token.
+const IMAGE_HOSTS: [&str; 2] = [
+    "https://user-images.githubusercontent.com",
+    "https://private-user-images.githubusercontent.com",
+];
+
+/// Where a file GitHub hosts lives, which decides what is sent with its request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileHost {
+    /// The forge's own web host: the token goes with the request.
+    Web,
+    /// An image host beside it: the url alone is the credential.
+    Image,
+}
+
+/// Where the file at `url` lives, if it is one GitHub hosts: on `web` (the forge's web host,
+/// [`github_web_base`]) a path of `/user-attachments/assets/<id>`,
+/// `/user-attachments/files/<id>/<name>` or `/<owner>/<repo>/files|assets/<…>`; or any path
+/// on one of [`IMAGE_HOSTS`]. The host is matched whole, so no lookalike
+/// (`github.com.evil.example`, `github.com@evil.example`, another port) is one, and a path
+/// that climbs (`.`, `..`) or runs an empty segment is none.
+fn file_host(web: &str, url: &str) -> Option<FileHost> {
+    let under = |root: &str| {
+        url.strip_prefix(root)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .map(|rest| rest.split(['?', '#']).next().unwrap_or_default())
+            .map(|path| path.split('/').collect::<Vec<_>>())
+            .filter(|segments| {
+                segments
+                    .iter()
+                    .all(|s| !s.is_empty() && *s != "." && *s != "..")
+            })
     };
-    format!("{with_scheme}/api/v3")
+    if let Some(segments) = under(web) {
+        let is_file = match segments.as_slice() {
+            ["user-attachments", "assets", _] | ["user-attachments", "files", _, _] => true,
+            [owner, _, "files" | "assets", _, ..] => *owner != "user-attachments",
+            _ => false,
+        };
+        return is_file.then_some(FileHost::Web);
+    }
+    IMAGE_HOSTS
+        .iter()
+        .any(|root| under(root).is_some())
+        .then_some(FileHost::Image)
 }
 
 /// A [`GithubClient`] backed by the GitHub REST API.
 pub(crate) struct Github {
     http: HttpClient<GithubError>,
+    /// The forge's own web host ([`github_web_base`]), the one the token may visit.
+    web: String,
 }
 
 impl Github {
@@ -401,6 +512,7 @@ impl Github {
     /// is resolved once here via [`github_api_base`].
     pub(crate) fn new(host: &str, token: &str) -> Self {
         Self {
+            web: github_web_base(host),
             http: HttpClient::new(
                 // The API root is resolved here, once; the spine neither trims nor
                 // suffixes what it is handed.
@@ -618,6 +730,38 @@ impl GithubClient for Github {
         parse_reviews(stage, &body)
     }
 
+    fn is_github_file(&self, url: &str) -> bool {
+        file_host(&self.web, url).is_some()
+    }
+
+    fn download(&self, url: &str) -> Result<Download, GithubError> {
+        let stage = "fetch file";
+        // GET <the file's own url>. The token is stamped only on the forge's web host: an
+        // image host takes none, and a url anywhere else is no file of GitHub's and is
+        // never requested, so a link in an issue cannot pull the token off the forge. A
+        // redirect — an attachment's hop to storage — is followed without it.
+        let Some(host) = file_host(&self.web, url) else {
+            return Err(GithubError::Decode {
+                stage,
+                reason: "not a file this forge hosts".to_string(),
+            });
+        };
+        let reply = self
+            .http
+            .get_bytes(stage, url, host == FileHost::Web, MAX_FILE_BYTES)?;
+        if !(200..300).contains(&reply.status) {
+            return Err(GithubError::Status {
+                stage,
+                status: reply.status,
+            });
+        }
+        Ok(Download {
+            bytes: reply.body,
+            content_type: reply.content_type,
+            content_disposition: reply.content_disposition,
+        })
+    }
+
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         self.http.set_deadline(deadline)
     }
@@ -761,6 +905,11 @@ fn value_to_pull(v: &Value) -> Option<PullRequest> {
             .to_string(),
         url: v
             .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        body: v
+            .get("body")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
@@ -943,6 +1092,10 @@ mod mock {
         /// Every call deadline the client was handed, in order. Recorded only: the mock's
         /// requests stay instant.
         call_deadlines: Mutex<Vec<Option<Instant>>>,
+        /// The files the forge hosts, by url.
+        files: Mutex<HashMap<String, Download>>,
+        /// Every url `download` was asked for, in order.
+        downloads: Mutex<Vec<String>>,
     }
 
     /// The id/timestamp base a `post_comment` mints from: far above the small ids and
@@ -996,6 +1149,7 @@ mod mock {
                 number,
                 title: format!("PR {number}"),
                 url: format!("https://github.com/acme/widgets/pull/{number}"),
+                body: String::new(),
                 head_branch: head.to_string(),
                 user: User {
                     login: author.to_string(),
@@ -1013,6 +1167,37 @@ mod mock {
                 assignees: Vec::new(),
                 pull: true,
             });
+        }
+
+        /// Give a seeded PR a description, as its author wrote it.
+        pub(crate) fn set_pull_body(&self, number: u64, body: &str) {
+            if let Some(pull) = lock(&self.pulls).iter_mut().find(|p| p.number == number) {
+                pull.body = body.to_string();
+            }
+        }
+
+        /// Seed a file GitHub hosts at `url`: its bytes and the two headers it is served
+        /// with. A url nothing seeded answers `404`.
+        pub(crate) fn add_file(
+            &self,
+            url: &str,
+            bytes: &[u8],
+            content_type: Option<&str>,
+            content_disposition: Option<&str>,
+        ) {
+            lock(&self.files).insert(
+                url.to_string(),
+                Download {
+                    bytes: bytes.to_vec(),
+                    content_type: content_type.map(str::to_string),
+                    content_disposition: content_disposition.map(str::to_string),
+                },
+            );
+        }
+
+        /// Every url `download` was asked for, in order.
+        pub(crate) fn downloads(&self) -> Vec<String> {
+            lock(&self.downloads).clone()
         }
 
         /// Close a seeded issue (or merge or close a PR), as a human does.
@@ -1409,6 +1594,22 @@ mod mock {
             Ok(lock(&self.reviews).get(&index).cloned().unwrap_or_default())
         }
 
+        /// The files of the real client's own reach: the rule is [`file_host`]'s, over the
+        /// cloud's web host.
+        fn is_github_file(&self, url: &str) -> bool {
+            file_host(&github_web_base(""), url).is_some()
+        }
+
+        fn download(&self, url: &str) -> Result<Download, GithubError> {
+            let stage = "fetch file";
+            lock(&self.downloads).push(url.to_string());
+            self.guard(stage)?;
+            lock(&self.files)
+                .get(url)
+                .cloned()
+                .ok_or(GithubError::Status { stage, status: 404 })
+        }
+
         fn set_call_deadline(&self, deadline: Option<Instant>) {
             lock(&self.call_deadlines).push(deadline);
         }
@@ -1665,6 +1866,103 @@ mod parse_tests {
         );
     }
 
+    /// The web host is the cloud's `https://github.com` for every cloud spelling, and a
+    /// GHES host as configured, scheme preserved (else `https://`), with no `/api/v3`.
+    #[test]
+    fn github_web_base_resolves_cloud_and_ghes() {
+        for cloud in [
+            "",
+            " ",
+            "github.com",
+            "https://github.com",
+            "http://github.com/",
+        ] {
+            assert_eq!(github_web_base(cloud), "https://github.com", "{cloud:?}");
+        }
+        assert_eq!(
+            github_web_base("ghe.example.com"),
+            "https://ghe.example.com"
+        );
+        assert_eq!(
+            github_web_base("http://ghe.example.com/"),
+            "http://ghe.example.com"
+        );
+        assert_eq!(
+            github_web_base("http://127.0.0.1:8080"),
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    /// Every url form GitHub hosts a file at is a file, and a lookalike host or path is
+    /// not: the host is matched whole (a suffix, a userinfo, a port, a scheme), and so is
+    /// the shape of the path.
+    #[test]
+    fn a_github_file_is_a_known_path_on_the_web_host_or_an_image_host() {
+        let web = "https://github.com";
+        let uuid = "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+        for url in [
+            format!("{web}/user-attachments/assets/{uuid}"),
+            format!("{web}/user-attachments/assets/{uuid}?raw=1"),
+            format!("{web}/user-attachments/files/123456/report%20final.pdf"),
+            format!("{web}/acme/widgets/files/123456/trace.zip"),
+            format!("{web}/acme/widgets/assets/123456/{uuid}"),
+            "https://user-images.githubusercontent.com/583231/12345-abc.png".to_string(),
+            "https://private-user-images.githubusercontent.com/1/2.png?jwt=eyJ.x.y".to_string(),
+        ] {
+            assert!(
+                file_host(web, &url).is_some(),
+                "{url} is a file GitHub hosts"
+            );
+        }
+        for url in [
+            format!("{web}/acme/widgets/issues/7"),
+            format!("{web}/acme/widgets/files"),
+            format!("{web}/acme/widgets/files/"),
+            format!("{web}/user-attachments/assets"),
+            format!("{web}/user-attachments/assets/"),
+            format!("{web}/user-attachments/assets/{uuid}/extra"),
+            format!("{web}/user-attachments/files/123456"),
+            format!("{web}/user-attachments/x/files/1"),
+            format!("{web}/user-attachments/assets/../../../settings/tokens"),
+            format!("{web}/acme/widgets/files/../../x"),
+            format!("{web}//user-attachments/assets/{uuid}"),
+            format!("http://github.com/user-attachments/assets/{uuid}"),
+            format!("https://github.com.evil.example/user-attachments/assets/{uuid}"),
+            format!("https://github.com@evil.example/user-attachments/assets/{uuid}"),
+            format!("https://github.com:8443/user-attachments/assets/{uuid}"),
+            format!("https://evil.github.com/user-attachments/assets/{uuid}"),
+            format!("https://evil.example/?https://github.com/user-attachments/assets/{uuid}"),
+            "https://user-images.githubusercontent.com".to_string(),
+            "https://user-images.githubusercontent.com/".to_string(),
+            "https://user-images.githubusercontent.com.evil.example/1/2.png".to_string(),
+            "https://evil.githubusercontent.com/1/2.png".to_string(),
+            "http://user-images.githubusercontent.com/1/2.png".to_string(),
+            "https://example.com/x.png".to_string(),
+            String::new(),
+        ] {
+            assert_eq!(file_host(web, &url), None, "{url} is no file of GitHub's");
+        }
+        assert_eq!(
+            file_host(web, &format!("{web}/user-attachments/assets/{uuid}")),
+            Some(FileHost::Web)
+        );
+        assert_eq!(
+            file_host(web, "https://user-images.githubusercontent.com/1/2.png"),
+            Some(FileHost::Image),
+            "an image host is no web host: it is sent no token"
+        );
+        // A GHES web host is the host as configured, and github.com is then no web host.
+        let ghes = "http://127.0.0.1:8080";
+        assert_eq!(
+            file_host(ghes, &format!("{ghes}/user-attachments/assets/{uuid}")),
+            Some(FileHost::Web)
+        );
+        assert_eq!(
+            file_host(ghes, &format!("{web}/user-attachments/assets/{uuid}")),
+            None
+        );
+    }
+
     #[test]
     fn parse_issues_reads_number_state_title_and_labels() {
         let body = r#"[
@@ -1844,7 +2142,7 @@ mod parse_tests {
 
     #[test]
     fn parse_pulls_reads_title_url_head_branch_and_author() {
-        let body = r#"[{"number":12,"title":"PR","body":"","head":{"ref":"feature/x"},
+        let body = r#"[{"number":12,"title":"PR","body":"Fixes #3 ✅","head":{"ref":"feature/x"},
                         "url":"https://api.github.com/repos/acme/widgets/pulls/12",
                         "html_url":"https://github.com/acme/widgets/pull/12",
                         "user":{"login":"bot"}},
@@ -1859,6 +2157,7 @@ mod parse_tests {
                     number: 12,
                     title: "PR".into(),
                     url: "https://github.com/acme/widgets/pull/12".into(),
+                    body: "Fixes #3 ✅".into(),
                     head_branch: "feature/x".into(),
                     user: User {
                         login: "bot".into()
@@ -1868,6 +2167,7 @@ mod parse_tests {
                     number: 13,
                     title: "Rätta 🐛".into(),
                     url: String::new(),
+                    body: String::new(),
                     head_branch: "fix/åäö".into(),
                     user: User {
                         login: "björn-öst[bot]".into()
@@ -1879,6 +2179,7 @@ mod parse_tests {
                     number: 14,
                     title: String::new(),
                     url: String::new(),
+                    body: String::new(),
                     head_branch: String::new(),
                     user: User {
                         login: String::new()
@@ -2058,7 +2359,11 @@ mod http_tests {
 
     impl Stub {
         fn serve(response: impl Into<String>) -> Self {
-            let response = response.into();
+            Self::serve_bytes(response.into().into_bytes())
+        }
+
+        /// As [`serve`](Self::serve), for a reply that is not text: a file's bytes.
+        fn serve_bytes(response: Vec<u8>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
             let port = listener.local_addr().unwrap().port();
             let (tx, rx) = mpsc::channel();
@@ -2089,7 +2394,7 @@ mod http_tests {
                 if content_length > 0 {
                     reader.read_exact(&mut body).expect("read body");
                 }
-                stream.write_all(response.as_bytes()).expect("write reply");
+                stream.write_all(&response).expect("write reply");
                 stream.flush().ok();
                 tx.send(Captured {
                     method,
@@ -2478,6 +2783,211 @@ mod http_tests {
             "a 500 on the reviews GET must propagate out of list_pull_reviews, got {err:?}"
         );
         let _ = stub.captured();
+    }
+
+    /// A reply of `status` with `headers` and `body`, as a file is served: the body as
+    /// bytes, since a file is not text.
+    fn file_reply(status: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
+        let mut reply = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\n", body.len());
+        for header in headers {
+            reply.push_str(header);
+            reply.push_str("\r\n");
+        }
+        reply.push_str("Connection: close\r\n\r\n");
+        let mut reply = reply.into_bytes();
+        reply.extend_from_slice(body);
+        reply
+    }
+
+    const ASSET: &str = "/user-attachments/assets/0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+
+    /// A file on the web host is fetched with the token, and its bytes — a NUL, a CR LF
+    /// and invalid UTF-8 among them — come back whole beside the headers that name it.
+    #[test]
+    fn download_sends_the_token_to_the_web_host_and_keeps_every_byte() {
+        let png = b"\x89PNG\r\n\x1a\n\0\xff\xfe--end\r\n";
+        let stub = Stub::serve_bytes(file_reply(
+            "200 OK",
+            &[
+                "Content-Type: image/png",
+                "Content-Disposition: inline; filename=\"shot.png\"",
+            ],
+            png,
+        ));
+        let client = stub.client("SECRET");
+        let got = client.download(&format!("{}{ASSET}", stub.host)).unwrap();
+        assert_eq!(got.bytes, png);
+        assert_eq!(got.content_type.as_deref(), Some("image/png"));
+        assert_eq!(
+            got.content_disposition.as_deref(),
+            Some("inline; filename=\"shot.png\"")
+        );
+        let req = stub.captured();
+        assert_eq!((req.method.as_str(), req.path()), ("GET", ASSET));
+        assert_eq!(
+            req.header("authorization").as_deref(),
+            Some("Bearer SECRET")
+        );
+    }
+
+    /// An attachment's hop to storage is followed, and the token does not make it: the
+    /// web host saw it, the storage host — another origin — saw no `Authorization` at all.
+    #[test]
+    fn download_follows_a_redirect_without_the_token() {
+        let png = b"\x89PNG\r\n\x1a\n\0\xff";
+        let storage = Stub::serve_bytes(file_reply("200 OK", &["Content-Type: image/png"], png));
+        let web = Stub::serve(format!(
+            "HTTP/1.1 302 Found\r\nLocation: {}/storage/blob?sig=abc\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+            storage.host
+        ));
+        let client = web.client("SECRET");
+        let got = client.download(&format!("{}{ASSET}", web.host)).unwrap();
+        assert_eq!(got.bytes, png);
+        assert_eq!(got.content_type.as_deref(), Some("image/png"));
+        assert_eq!(
+            web.captured().header("authorization").as_deref(),
+            Some("Bearer SECRET")
+        );
+        let hop = storage.captured();
+        assert_eq!(hop.path(), "/storage/blob");
+        assert_eq!(hop.header("authorization"), None, "{:?}", hop.headers);
+        assert!(
+            !hop.headers.iter().any(|h| h.contains("SECRET")),
+            "{:?}",
+            hop.headers
+        );
+    }
+
+    /// A url on another host, even one that lists a path of the right shape, is no file of
+    /// this forge's: nothing is requested, so the token reaches nobody — not another
+    /// loopback port, not a lookalike of github.com.
+    #[test]
+    fn download_never_sends_the_token_to_another_host() {
+        let other = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        other.set_nonblocking(true).unwrap();
+        let other_url = format!(
+            "http://127.0.0.1:{}{ASSET}",
+            other.local_addr().unwrap().port()
+        );
+        let ghes = Github::new("http://127.0.0.1:1", "SECRET");
+        let cloud = Github::new("github.com", "SECRET");
+        for (client, url) in [
+            (&ghes, other_url.as_str()),
+            (
+                &cloud,
+                "https://github.com.evil.example/user-attachments/assets/x",
+            ),
+            (
+                &cloud,
+                "https://github.com@evil.example/user-attachments/assets/x",
+            ),
+            (&cloud, "https://evil.example/user-attachments/assets/x"),
+            (&cloud, "https://github.com/acme/widgets/issues/7"),
+        ] {
+            assert!(!client.is_github_file(url), "{url}");
+            let err = client.download(url).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "github fetch file: undecodable response (not a file this forge hosts)",
+                "{url}"
+            );
+        }
+        assert_eq!(
+            other.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "no request reached the other host"
+        );
+    }
+
+    /// The spine stamps the credential only when asked: a request without it carries no
+    /// `Authorization` header, which is what an image host is sent.
+    #[test]
+    fn get_bytes_sends_the_credential_only_when_asked() {
+        for (with_credential, want) in [(true, Some("Bearer SECRET")), (false, None)] {
+            let stub = Stub::serve_bytes(file_reply("200 OK", &[], b"x"));
+            let client = stub.client("SECRET");
+            let url = format!("{}/x.png", stub.host);
+            let reply = client
+                .http
+                .get_bytes("fetch file", &url, with_credential, 8)
+                .unwrap();
+            assert_eq!((reply.status, reply.body), (200, b"x".to_vec()));
+            assert_eq!(
+                stub.captured().header("authorization").as_deref(),
+                want,
+                "with_credential: {with_credential}"
+            );
+        }
+    }
+
+    /// A body is read to the cap and no further: the cap itself is taken, one byte more
+    /// is an undecodable reply — through the spine at a small cap, and through `download`
+    /// at the real one.
+    #[test]
+    fn a_body_over_the_cap_is_refused() {
+        for (len, ok) in [(8, true), (9, false)] {
+            let stub = Stub::serve_bytes(file_reply("200 OK", &[], &vec![7; len]));
+            let url = format!("{}/x.bin", stub.host);
+            let got = stub
+                .client("t")
+                .http
+                .get_bytes("fetch file", &url, false, 8);
+            assert_eq!(got.is_ok(), ok, "{len} bytes");
+            if let Err(e) = got {
+                assert_eq!(
+                    e.to_string(),
+                    "github fetch file: undecodable response (over the 8 bytes a file may hold)"
+                );
+            }
+        }
+        let big = vec![0u8; MAX_FILE_BYTES as usize + 1];
+        let stub = Stub::serve_bytes(file_reply("200 OK", &[], &big));
+        let err = stub
+            .client("t")
+            .download(&format!("{}{ASSET}", stub.host))
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GithubError::Decode {
+                    stage: "fetch file",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// A status past 2xx is the download's error, whatever body it carried, and a request
+    /// that reached nobody is a transport failure that names no url.
+    #[test]
+    fn download_maps_a_refusal_to_its_status_and_a_dead_host_to_transport() {
+        let stub = Stub::serve_bytes(file_reply("404 Not Found", &[], b"<html>nope</html>"));
+        let err = stub
+            .client("t")
+            .download(&format!("{}{ASSET}", stub.host))
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "github fetch file: forge returned status 404"
+        );
+
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let host = format!("http://127.0.0.1:{port}");
+        let err = Github::new(&host, "SECRET")
+            .download(&format!("{host}{ASSET}"))
+            .unwrap_err();
+        let GithubError::Transport { reason, .. } = &err else {
+            panic!("expected a transport error, got {err:?}");
+        };
+        assert!(
+            !reason.contains("SECRET") && !reason.contains(ASSET),
+            "{reason}"
+        );
     }
 
     #[test]

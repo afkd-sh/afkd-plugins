@@ -28,10 +28,17 @@ Pass `--issue N` to post to a different issue or pull request than the active on
 
 ## Attachments (inbound only)
 
+The files your brief links are already downloaded: the images and files a human pasted
+or attached to the issue/PR, in its body and its comments, sit in the `task/` folder
+beside `task/README.md`, which links each by its relative path — open them there with
+the `Read` tool. A file only a comment links, which the brief does not carry, is listed
+at the end of `task/README.md` the same way. A link in the brief that is still a GitHub
+url is a file that could not be downloaded; fetch it with `fetch_attachment.py`, below.
+
 An image a human pasted into the issue/PR — a screenshot, a stack trace, a diagram
 — lands on GitHub as an embedded image URL in the body/comment markdown, so
-`list_comments.py` shows only the URL, not the picture. To see it, fetch every
-embedded image and `Read` the downloaded file:
+`list_comments.py` shows only the URL, not the picture. To see one that is not already
+in `task/`, fetch every embedded image and `Read` the downloaded file:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/github/fetch_attachment.py"`
 
