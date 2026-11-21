@@ -2,6 +2,7 @@
 name = "afkd-gitea"
 version = "0.12.1"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 publish = false
 description = "The @afkd/gitea trigger plugin: Gitea issues and pull-request reviews as afkd units, over the plugin wire"
 

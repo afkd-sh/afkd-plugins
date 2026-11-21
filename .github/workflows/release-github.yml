@@ -5,10 +5,11 @@
 # fills `{platform}` with the host's `<arch>-<os>` before the download. So this workflow ships
 # a finished binary per platform, never source: each archive holds the manifest, a static musl
 # build of the plugin for one CPU (it runs on any Linux of that CPU, whatever its glibc) and
-# the skill, and nothing else. afkd never builds a plugin and places what the archive holds,
-# so no operator's host needs a toolchain. afkd cannot install a subdirectory of a monorepo —
-# its git leg requires the manifest at the clone root, and its tarball leg steps through
-# exactly one wrapper directory — so each archive's single top-level directory is the plugin.
+# the skill and the two licence texts, `LICENSE-MIT` and `LICENSE-APACHE`, and nothing else.
+# afkd never builds a plugin and places what the archive holds, so no operator's host needs a
+# toolchain. afkd cannot install a subdirectory of a monorepo — its git leg requires the
+# manifest at the clone root, and its tarball leg steps through exactly one wrapper
+# directory — so each archive's single top-level directory is the plugin.
 #
 # The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
 # `{platform}` URL it recorded at install time and never re-reads the index, so the fixed tag
@@ -87,12 +88,14 @@ jobs:
           tools/pack-release github out "@afkd/github/target/$TARGET/release/afkd-github"
           tar czf "$ASSET" -C out afkd-github
           # Assert the shape exactly rather than trust it: the expected listing is built from
-          # the repository, not from what was packed — the manifest, the binary, and every
-          # file git tracks under `skills/` with its directories, under one top-level
-          # `afkd-github/` — so a stray file and a missing one are both red.
+          # the repository, not from what was packed — the manifest, the binary, the two
+          # licence texts and every file git tracks under `skills/` with its directories, under
+          # one top-level `afkd-github/` — so a stray file and a missing one are both red.
           {
             echo 'afkd-github/afkd-plugin.toml'
             echo 'afkd-github/afkd-github'
+            echo 'afkd-github/LICENSE-MIT'
+            echo 'afkd-github/LICENSE-APACHE'
             git ls-files -- '@afkd/github/skills' | sed 's|^@afkd/github/|afkd-github/|'
           } | awk -F/ '{ dir = ""; for (i = 1; i < NF; i++) { dir = dir $i "/"; print dir } print }' \
             | LC_ALL=C sort -u > expected

@@ -71,8 +71,14 @@ fn built_binary() -> &'static Path {
     })
 }
 
-/// What a release holds, relative and sorted: the manifest and the binary, nothing else.
-const RELEASE_TREE: &[&str] = &["afkd-afkd_board", "afkd-plugin.toml"];
+/// What a release holds, relative and sorted: the manifest, the binary and the two licence
+/// texts, nothing else.
+const RELEASE_TREE: &[&str] = &[
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "afkd-afkd_board",
+    "afkd-plugin.toml",
+];
 
 /// Stage the release `tools/pack-release` packs under `dst` and return the staged root,
 /// `<dst>/afkd-afkd_board`, failing unless it holds exactly [`RELEASE_TREE`].
@@ -88,7 +94,7 @@ fn stage(dst: &Path) -> PathBuf {
     assert_eq!(
         tree_of(&staged),
         RELEASE_TREE,
-        "the release holds the manifest and the binary alone"
+        "the release holds the manifest, the binary and the licence texts alone"
     );
     staged
 }
