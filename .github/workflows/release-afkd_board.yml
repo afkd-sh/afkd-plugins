@@ -90,8 +90,9 @@ jobs:
           tar czf "$ASSET" -C out afkd-afkd_board
           # Assert the shape exactly rather than trust it: the expected listing is built from
           # the repository, not from what was packed — the manifest, the binary, the two
-          # licence texts and every file git tracks under `skills/` with its directories, which is none, under one
-          # top-level `afkd-afkd_board/` — so a stray file and a missing one are both red.
+          # licence texts and every file git tracks under `skills/` with its directories,
+          # which is none, under one top-level `afkd-afkd_board/` — so a stray file and a
+          # missing one are both red.
           {
             echo 'afkd-afkd_board/afkd-plugin.toml'
             echo 'afkd-afkd_board/afkd-afkd_board'
