@@ -35,6 +35,8 @@ const CHEN: &str = "看起来不对 🚨 — it resets on every 401:\n\n```\nPOS
 /// in Todo with a two-person thread.
 struct Team {
     fake: FakeLinear,
+    /// The id of the Todo state, which the park marker records.
+    todo: String,
     issue: String,
     phil: String,
     chen: String,
@@ -44,6 +46,7 @@ struct Team {
 
 fn team() -> Team {
     let fake = FakeLinear::start();
+    let mut todo = String::new();
     for (state, kind) in [
         ("Triage", "triage"),
         ("Todo", "unstarted"),
@@ -52,7 +55,10 @@ fn team() -> Team {
         ("Done", "completed"),
         ("Canceled", "canceled"),
     ] {
-        fake.state(state, kind);
+        let id = fake.state(state, kind);
+        if state == "Todo" {
+            todo = id;
+        }
     }
     let phil = fake.user("Phil Ek", "phil", "phil@acme.example");
     let chen = fake.user("陳大文", "chen", "chen@acme.example");
@@ -64,6 +70,7 @@ fn team() -> Team {
     ];
     Team {
         fake,
+        todo,
         issue,
         phil,
         chen,
@@ -1695,7 +1702,8 @@ fn a_clean_finish_leaves_one_watermark() {
 }
 
 /// A park badges the issue — creating the team's label when there is none — posts the owner
-/// marker naming the configured service, and only then releases the claim.
+/// marker naming the configured service and the state it claimed from, and only then
+/// releases the claim.
 #[test]
 fn a_park_finish_labels_marks_and_releases() {
     let t = team();
@@ -1715,7 +1723,7 @@ fn a_park_finish_labels_marks_and_releases() {
     );
     assert_eq!(
         said(&t.fake, &t.issue, "[afkd-park]"),
-        ["[afkd-park] service=afkd::develop"]
+        [format!("[afkd-park] service=afkd::develop from={}", t.todo)]
     );
     assert!(claims(&t.fake, &t.issue).is_empty());
     let writes: Vec<String> = operations(&t.fake)

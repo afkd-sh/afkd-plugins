@@ -407,16 +407,20 @@ impl Armed {
     /// straight back, or one whose `on_claim` failed — and forget it.
     ///
     /// A unit afkd marks `handed_back` while this plugin still holds it live keeps its place:
-    /// nothing ran on it, so only its claim is pruned. Every other key goes through
+    /// nothing ran on it, so only its claim is pruned — unless it is a resumed issue that sat
+    /// outside the state it was claimed from, which goes back to that state. Every other key
+    /// goes through
     /// [`LinearUnits::release_stale`], to the bottom of its state.
     fn release(&mut self, key: &str, handed_back: bool, now: Instant, diag: &dyn Diag) -> Answer {
-        let live = self.live.remove(key).is_some();
+        let live = self.live.remove(key);
         self.finished.retain(|(finished, _)| finished != key);
         self.remove_task_files(key, diag);
-        let released = if handed_back && live {
-            self.units.hand_back(key, diag)
-        } else {
-            self.units.release_stale(key, now, diag)
+        let released = match live {
+            Some(live) if handed_back => {
+                self.units.hand_back(&live.unit, diag);
+                Some(true)
+            }
+            _ => self.units.release_stale(key, now, diag),
         };
         Answer::Reply(json!({ "released": released }).to_string())
     }

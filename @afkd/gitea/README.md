@@ -28,11 +28,12 @@ $ afkd install @afkd/gitea
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest, the `afkd-gitea` binary and its `skills/`, nothing else. Nothing is
-compiled on your host, and no Rust toolchain is needed there. Installing by name needs
-**afkd 0.2.714 or newer**, the first whose unit brief is the folder `task/`, where this
-plugin's `task/README.md` is framed; with it, `afkd update
-@afkd/gitea` also moves a copy an older afkd built from source onto the finished release.
+is: the manifest, the `afkd-gitea` binary, its `skills/` and the `LICENSE-MIT` and
+`LICENSE-APACHE` texts, nothing else. Nothing is compiled on your host, and no Rust
+toolchain is needed there. Installing by name needs **afkd 0.2.714 or newer**, the first
+whose unit brief is the folder `task/`, where this plugin's `task/README.md` is framed;
+with it, `afkd update @afkd/gitea` also moves a copy an older afkd built from source onto
+the finished release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:

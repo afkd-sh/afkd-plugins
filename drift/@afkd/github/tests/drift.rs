@@ -72,7 +72,8 @@ fn built_binary() -> &'static Path {
 }
 
 /// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
-/// the skill, exactly what the release archive holds — and return the staged root.
+/// the skill and the two licence texts, exactly what the release archive holds — and return
+/// the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("github")
@@ -82,7 +83,13 @@ fn stage(dst: &Path) -> PathBuf {
         .expect("run tools/pack-release");
     assert!(status.success(), "tools/pack-release github");
     let staged = dst.join("afkd-github");
-    for present in ["afkd-plugin.toml", "afkd-github", "skills/github/SKILL.md"] {
+    for present in [
+        "afkd-plugin.toml",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "afkd-github",
+        "skills/github/SKILL.md",
+    ] {
         assert!(staged.join(present).exists(), "the release holds {present}");
     }
     for absent in [

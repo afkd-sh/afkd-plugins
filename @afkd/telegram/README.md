@@ -22,10 +22,10 @@ $ afkd install @afkd/telegram
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest, the `afkd-telegram` binary and its `skills/`, nothing else. Nothing is
-compiled on your host, and no Rust toolchain is needed there. It needs **afkd 0.2.714 or
-newer**, the first whose unit brief is the folder `task/`, where this plugin's
-`task/README.md` is framed; `afkd update
+is: the manifest, the `afkd-telegram` binary, its `skills/` and the `LICENSE-MIT` and
+`LICENSE-APACHE` texts, nothing else. Nothing is compiled on your host, and no Rust
+toolchain is needed there. It needs **afkd 0.2.714 or newer**, the first whose unit brief
+is the folder `task/`, where this plugin's `task/README.md` is framed; `afkd update
 @afkd/telegram` moves an installed copy onto the next release.
 
 From a checkout of this repository, build and pack it the way the release does, then name

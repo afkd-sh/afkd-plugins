@@ -87,7 +87,8 @@ fn built_binary() -> &'static Path {
 }
 
 /// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
-/// the skill, exactly what the release archive holds — and return the staged root.
+/// the skill and the two licence texts, exactly what the release archive holds — and return
+/// the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("linear")
@@ -99,6 +100,8 @@ fn stage(dst: &Path) -> PathBuf {
     let staged = dst.join("afkd-linear");
     for present in [
         "afkd-plugin.toml",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
         "afkd-linear",
         "skills/linear/SKILL.md",
         "skills/linear/lib/linear_api.py",
@@ -635,7 +638,12 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     let staged = stage(stage_dir.path());
-    let mut shipped = vec!["afkd-linear".to_string(), "afkd-plugin.toml".to_string()];
+    let mut shipped = vec![
+        "afkd-linear".to_string(),
+        "afkd-plugin.toml".to_string(),
+        "LICENSE-MIT".to_string(),
+        "LICENSE-APACHE".to_string(),
+    ];
     shipped.extend(
         tree_of(&plugin_root().join("skills"))
             .into_iter()
@@ -647,7 +655,7 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
     assert_eq!(
         tree_of(&staged),
         shipped,
-        "the release holds the manifest, the binary and the skill, and nothing else"
+        "the release holds the manifest, the binary, the skill and the licence texts, and nothing else"
     );
     install(home.path(), &staged);
     let placed = plugins_root(home.path()).join(NAME);

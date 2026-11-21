@@ -200,8 +200,11 @@ fn relay_home(tree: &Tree, settings: &str) -> TempDir {
 }
 
 /// What the release ships, every path relative to the plugin: [`staged_release`] stages
-/// exactly these, and the workflow's archive listing is the same list.
-const RELEASE_TREE: [&str; 11] = [
+/// exactly these, and the workflow's archive listing is the same list. The two licence texts
+/// sort first, because uppercase sorts before lowercase bytewise.
+const RELEASE_TREE: [&str; 13] = [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
     "afkd-plugin.toml",
     "dashboard.css",
     "fold.mjs",
@@ -216,8 +219,8 @@ const RELEASE_TREE: [&str; 11] = [
 ];
 
 /// Stage the release `tools/pack-release` packs under `dst` — the relay, the page, its
-/// stylesheet and the modules it loads, and none of the suites, fixtures or goldens — and
-/// return the staged `afkd-web_top/`.
+/// stylesheet and the modules it loads, the two licence texts, and none of the suites,
+/// fixtures or goldens — and return the staged `afkd-web_top/`.
 fn staged_release(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("web_top")
@@ -997,7 +1000,8 @@ fn the_verbs_accept_the_shipped_manifest() {
     // Exactly the release is placed, two levels down, with the program still executable —
     // and there is no build step, so what is placed is what runs. The fold, the keymap, the
     // layout, the session, the key seam, the painter and the stylesheet travel with it: a
-    // page whose `import` lands on a 404 is a blank screen. The suites, the recorded
+    // page whose `import` lands on a 404 is a blank screen, and the two licence texts go
+    // with it, as every release carries them. The suites, the recorded
     // captures, the golden screens and the README do not: they are this repository's, and
     // an operator's plugins directory is not where they belong.
     let placed = plugins_root(dir.path()).join("@afkd").join("web_top");

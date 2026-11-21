@@ -2,6 +2,7 @@
 name = "afkd-gitlab"
 version = "0.13.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 publish = false
 description = "The @afkd/gitlab trigger plugin: GitLab issues as afkd units, over the plugin wire"
 
