@@ -65,14 +65,14 @@ def connection(url):
 
 def issue_number():
     """The issue/PR number: GITEA_PR_NUMBER, then GITEA_ISSUE_NUMBER, then the
-    <scratch>/pr/number → <scratch>/issue/number file fallbacks, else None."""
+    <scratch>/task/pr/number → <scratch>/task/issue/number file fallbacks, else None."""
     number = os.environ.get("GITEA_PR_NUMBER") or os.environ.get("GITEA_ISSUE_NUMBER")
     if number:
         return number
     scratch = os.environ.get("AFKD_SCRATCH_DIR")
     if scratch:
         for rel in ("pr", "issue"):
-            path = os.path.join(scratch, rel, "number")
+            path = os.path.join(scratch, "task", rel, "number")
             if os.path.isfile(path):
                 with open(path, encoding="utf-8") as f:
                     return f.read().strip()
@@ -179,7 +179,7 @@ def main():
     if not number:
         print(
             "fetch_attachment.py: no issue/PR number (set GITEA_PR_NUMBER or "
-            "GITEA_ISSUE_NUMBER, or AFKD_SCRATCH_DIR/{pr,issue}/number)",
+            "GITEA_ISSUE_NUMBER, or AFKD_SCRATCH_DIR/task/{pr,issue}/number)",
             file=sys.stderr,
         )
         sys.exit(1)

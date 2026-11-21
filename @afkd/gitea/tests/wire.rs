@@ -232,7 +232,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
             },
             "files": [
                 {"path": "task/README.md", "text": format!("{TITLE}\n\n{BODY}")},
-                {"path": "issue/number", "text": "7"},
+                {"path": "task/issue/number", "text": "7"},
             ],
         })
     );
@@ -962,7 +962,7 @@ fn a_pr_hello_arms_and_lists_release_renew_comments() {
 /// The won race over a PR with new human feedback hands over exactly the unit the
 /// built-in would have run: its journal key and session thread, every field the
 /// manifest's `Pull_Request` declares, the claim-time comment ids, its identity, the five
-/// env names, and the review brief beside `pr/number`. The
+/// env names, and the review brief beside `task/pr/number`. The
 /// forge then carries the claim's status — only `afkd/claimed` is created, since a PR
 /// never parks — and a second poll does not claim the same PR again.
 #[test]
@@ -1001,7 +1001,7 @@ fn a_won_pr_race_hands_over_the_built_ins_unit() {
                      **carol:** (review {review})\n",
                     ASK.trim_end()
                 )},
-                {"path": "pr/number", "text": "7"},
+                {"path": "task/pr/number", "text": "7"},
             ],
         })
     );

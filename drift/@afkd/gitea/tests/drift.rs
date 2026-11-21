@@ -203,6 +203,7 @@ widgets :: service(gitea) {{
     for label in issue.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
+    $ echo file $(cat $AFKD_SCRATCH_DIR/task/issue/number) >> {FIELDS}
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
@@ -382,7 +383,7 @@ fn drive_one_issue(home: &Path) {
     assert_eq!(
         read(&home.join(FIELDS)),
         format!(
-            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd/ready\nlabel 優先/high\n",
+            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd/ready\nlabel 優先/high\nfile {ISSUE}\n",
             fake.url(REPO, ISSUE)
         )
     );
@@ -430,6 +431,7 @@ reviews :: service(gitea.pr) {{
     $ echo url #{{pr.url}} >> {FIELDS}
     $ echo number #{{pr.number}} >> {FIELDS}
     $ echo branch #{{pr.branch}} >> {FIELDS}
+    $ echo file $(cat $AFKD_SCRATCH_DIR/task/pr/number) >> {FIELDS}
   }}
 }}
 "#,
@@ -494,7 +496,7 @@ fn drive_one_pr(home: &Path) {
     assert_eq!(
         read(&fields),
         format!(
-            "title {PR_TITLE}\nurl {}\nnumber {PR}\nbranch {HEAD}\n",
+            "title {PR_TITLE}\nurl {}\nnumber {PR}\nbranch {HEAD}\nfile {PR}\n",
             fake.url(REPO, PR)
         ),
         "{}",

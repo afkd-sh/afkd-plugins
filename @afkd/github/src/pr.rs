@@ -791,7 +791,7 @@ mod tests {
     /// The whole wire unit: the number as `id`, the claim-journal key, the PR's handle
     /// fields, the stable thread, the claim-time comments as `seen`, the claim identity
     /// as `self`, the PR number and head branch merged over the credentials, and the
-    /// brief beside the bare number under `pr/number`.
+    /// brief beside the bare number under `task/pr/number`.
     #[test]
     fn the_wire_unit_carries_pr_number_branch_thread_and_layout() {
         let h = Harness::new(cfg("acme/widgets"));
@@ -842,7 +842,7 @@ mod tests {
                             .into(),
                     },
                     WireFile {
-                        path: "pr/number".into(),
+                        path: "task/pr/number".into(),
                         text: "7".into(),
                     },
                 ],
