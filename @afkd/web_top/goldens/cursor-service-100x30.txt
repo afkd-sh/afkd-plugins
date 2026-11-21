@@ -15,7 +15,7 @@ Service                          State                 Trigger              Last
   ◇ spare                        ● Idle                Every 1h                              59m 47s
                                                                                                     
 Queue     Usage                                                            Capacity   Held   Waiting
-≡ heavy   ▮▮ ╎ ∙                                                           2          2      1      
+≡ heavy   ◆◆ ╎ ◇                                                           2          2      1      
                                                                                                     
                                                                                                     
                                                                                                     

@@ -15,7 +15,7 @@ Service                          State                 Trigger              Last
   ◇ spare                        ● Idle│                    │1h                              59m 47s
                                        │  1 skipped         │                                       
 Queue     Usage                        │                    │              Capacity   Held   Waiting
-≡ heavy   ▮▮ ╎ ∙                       │  y stop  n cancel  │              2          2      1      
+≡ heavy   ◆◆ ╎ ◇                       │  y stop  n cancel  │              2          2      1      
                                        │                    │                                       
                                        └────────────────────┘                                       
                                                                                                     
@@ -39,17 +39,17 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnpppppppppppnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 nnnannnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaaaaannnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
 nnnxnnnnnnnnnnnnnnnnnnnnnnnnnnnnnxxxxxxxxxnnnnnnnnnnnnnssssssssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnannnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaafbbbbbbbbbbbbbbbbbbfffssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
-nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssfnnnnnnnnnnnnnnnnnnnnfssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
-nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssfnnnnnnnnnnnnnnnnnnnnfssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
-nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssfnnnnnnnnnnnnnnnnnnnnfssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
-nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssfnnnnnnnnnnnnnnnnnnnnfssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnfffffff
-nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssfnnnnnnnnnnnnnnnnnnnnfssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnnmmmmmmmmmnnnnnnnnnfnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-mmmmmnnnnnmmmmmnnnnnnnnnnnnnnnnnnnnnnnnfnnnnnnnnnnnnnnnnnnnnfnnnnnnnnnnnnnnmmmmmmmmnnnmmmmnnnmmmmmmm
-fnnnnnnnnnaafffpnnnnnnnnnnnnnnnnnnnnnnnfnnbnmmmmnnbnmmmmmmnnfnnnnnnnnnnnnnnnnnnnnnnnnnannnnnnpnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfnnnnnnnnnnnnnnnnnnnnfnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
-nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnffffffffffffffffffffffnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnannnnnnnnnnnnnnnnnnnnnnnnnnnnnaaaaaannnnnnnnnnnnnnnnnnnnnnssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnnnnnnnn
+nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnnnnnnnssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnnnnnnnssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnnnnnnnssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnnnnnnnssnnnnnnnnnnnnnnnnnnnnnnnnmmnnnnfffffff
+nnonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnksssssnnnnnnnnnnnnnnnnnnnnnnssnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnfffffff
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+mmmmmnnnnnmmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnmmmmmmmmnnnmmmmnnnmmmmmmm
+fnnnnnnnnnaafffpnnnnnnnnnnnnnnnnnnnnnnnnnnbbbbbbnnbbbbbbbbnnnnnnnnnnnnnnnnnnnnnnnnnnnnannnnnnpnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
@@ -59,7 +59,7 @@ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
-nfnnmmmmmmmnnnnnnnmmmmmmnnnnnnnnnnnmmmmnnnnfnnmmmmnnnnnnnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+nenneeeeeeennnnnnnmmmmmmnnnnnnnnnnnmmmmnnnnenneeeennnnnnnmmmmnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
 ── weight · . plain · d dim · b bold · i dim italic · h chip band · H chip band, dim · r rule band · R rule band, dim · g rule band, bold · s selection band · D band, dim · B band, bold
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
@@ -71,7 +71,7 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddddddddddddddddddddddddddd.bbbbbbbbbbbbbbbbbb...ddddddddddddddddddddddddddddddddddddddd
 ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
 ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
 ddddddddddddddddddddddddddddddddddddddd......................ddddddddddddddddddddddddddddddddddddddd
@@ -91,4 +91,4 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-RRRdddddddddddRRRddddddddddRRRRRRRddddddddRRRddddddddRRRdddddddddddddddddddddddddddddddddddddddddddd
+ddddddddddddddRRRddddddddddRRRRRRRdddddddddddddddddddRRRdddddddddddddddddddddddddddddddddddddddddddd
