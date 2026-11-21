@@ -20,8 +20,9 @@ $ afkd install @afkd/afkd_board
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest and the `afkd-afkd_board` binary, nothing else. Nothing is compiled on your
-host, and no Rust toolchain is needed there. Installing it needs **afkd 0.2.679 or newer**,
+is: the manifest, the `afkd-afkd_board` binary and the `LICENSE-MIT` and `LICENSE-APACHE`
+texts, nothing else. Nothing is compiled on your host, and no Rust toolchain is needed
+there. Installing it needs **afkd 0.2.679 or newer**,
 the first whose manifests type a handle's field as a `time` and a parameter as optional;
 `afkd update @afkd/afkd_board` moves an installed copy onto the next release.
 

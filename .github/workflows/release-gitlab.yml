@@ -5,8 +5,9 @@
 # fills `{platform}` with the host's `<arch>-<os>` before the download. So this workflow ships
 # a finished binary per platform, never source: each archive holds the manifest, a static musl
 # build of the plugin for one CPU (it runs on any Linux of that CPU, whatever its glibc) and
-# the skill, and nothing else. afkd never builds a plugin and places what the archive holds,
-# so no operator's host needs a toolchain. afkd cannot install a subdirectory of a monorepo —
+# the skill and the two licence texts, `LICENSE-MIT` and `LICENSE-APACHE`, and nothing else.
+# afkd never builds a plugin and places what the archive holds, so no operator's host needs a
+# toolchain. afkd cannot install a subdirectory of a monorepo —
 # its git leg requires the manifest at the clone root, and its tarball leg steps through
 # exactly one wrapper directory — so each archive's single top-level directory is the plugin.
 #
@@ -87,12 +88,14 @@ jobs:
           tools/pack-release gitlab out "@afkd/gitlab/target/$TARGET/release/afkd-gitlab"
           tar czf "$ASSET" -C out afkd-gitlab
           # Assert the shape exactly rather than trust it: the expected listing is built from
-          # the repository, not from what was packed — the manifest, the binary, and every
-          # file git tracks under `skills/` with its directories, under one top-level
+          # the repository, not from what was packed — the manifest, the binary, the two
+          # licence texts and every file git tracks under `skills/` with its directories, under one top-level
           # `afkd-gitlab/` — so a stray file and a missing one are both red.
           {
             echo 'afkd-gitlab/afkd-plugin.toml'
             echo 'afkd-gitlab/afkd-gitlab'
+            echo 'afkd-gitlab/LICENSE-MIT'
+            echo 'afkd-gitlab/LICENSE-APACHE'
             git ls-files -- '@afkd/gitlab/skills' | sed 's|^@afkd/gitlab/|afkd-gitlab/|'
           } | awk -F/ '{ dir = ""; for (i = 1; i < NF; i++) { dir = dir $i "/"; print dir } print }' \
             | LC_ALL=C sort -u > expected

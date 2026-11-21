@@ -6,8 +6,9 @@
 # the clone root, and its tarball leg steps through exactly one wrapper directory — so the
 # installable artifact is this per-plugin tarball, whose single top-level directory is the
 # plugin itself. It holds only what the relay serves and runs — the manifest, the relay, the
-# page, its stylesheet and the modules the page loads — and none of the suites, fixtures,
-# goldens or README: afkd places what the archive holds, as it is, and builds nothing.
+# page, its stylesheet and the modules the page loads — and the two licence texts,
+# `LICENSE-MIT` and `LICENSE-APACHE`, and none of the suites, fixtures, goldens or README:
+# afkd places what the archive holds, as it is, and builds nothing.
 #
 # The tag is FIXED and moves onto each new release on purpose: `afkd update` re-fetches the
 # source URL it recorded at install time and never re-reads the index, so one unchanging
@@ -50,8 +51,8 @@ jobs:
 
       # `tools/pack-release` stages what ships, keeping the mode bits: afkd places what the
       # archive holds and there is no build step, so `web_top` has to arrive executable or
-      # the daemon cannot start it. One top-level directory and no more — that is what afkd
-      # steps through.
+      # the daemon cannot start it, and copying the two licence texts into the archive.
+      # One top-level directory and no more — that is what afkd steps through.
       - name: Pack
         run: |
           tools/pack-release web_top out
@@ -60,7 +61,7 @@ jobs:
           # placed verbatim instead of unwrapped, a stray file is a suite or a fixture shipped
           # to every operator, and a missing module is a page that never loads.
           printf '%s\n' afkd-web_top/ afkd-web_top/afkd-plugin.toml afkd-web_top/web_top \
-            afkd-web_top/index.html afkd-web_top/dashboard.css afkd-web_top/top.mjs \
+            afkd-web_top/LICENSE-MIT afkd-web_top/LICENSE-APACHE afkd-web_top/index.html afkd-web_top/dashboard.css afkd-web_top/top.mjs \
             afkd-web_top/fold.mjs afkd-web_top/input.mjs afkd-web_top/keymap.mjs \
             afkd-web_top/layout.mjs afkd-web_top/paint.mjs afkd-web_top/session.mjs \
             | LC_ALL=C sort > expected

@@ -7,7 +7,8 @@
 # drift gates, which install it. A compiled plugin ships its manifest, its binary (given
 # here, built for one platform, placed as `afkd-<leaf>`) and its `skills/` when it has one;
 # web_top ships its manifest, the relay, the page, its stylesheet and the modules the page
-# loads. Sources, tests, fixtures, goldens, Cargo files, READMEs and build output stay behind.
+# loads. Every release also carries `LICENSE-MIT` and `LICENSE-APACHE`, copied from the root.
+# Sources, tests, fixtures, goldens, Cargo files, READMEs and build output stay behind.
 #
 # Mode bits ride (`cp -p`): a skill's scripts are run as they arrive, and so is the relay.
 set -eu
@@ -52,6 +53,7 @@ if [ -e "$dst" ]; then
 fi
 mkdir -p "$dst"
 cp -p "$src/afkd-plugin.toml" "$dst/"
+cp -p "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$dst/"
 
 case $leaf in
 web_top)
