@@ -92,15 +92,15 @@ def ok(status):
 
 def source_number():
     """The issue/PR this run works on, for the provenance footer: GITEA_PR_NUMBER,
-    then GITEA_ISSUE_NUMBER, then the <scratch>/pr/number → <scratch>/issue/number
-    file fallbacks, else None. Same resolution order as post_comment.py."""
+    then GITEA_ISSUE_NUMBER, then the <scratch>/task/pr/number →
+    <scratch>/task/issue/number file fallbacks, else None. Same resolution order as post_comment.py."""
     number = os.environ.get("GITEA_PR_NUMBER") or os.environ.get("GITEA_ISSUE_NUMBER")
     if number:
         return number
     scratch = os.environ.get("AFKD_SCRATCH_DIR")
     if scratch:
         for rel in ("pr", "issue"):
-            path = os.path.join(scratch, rel, "number")
+            path = os.path.join(scratch, "task", rel, "number")
             if os.path.isfile(path):
                 with open(path, encoding="utf-8") as handle:
                     return handle.read().strip()

@@ -95,10 +95,10 @@ ADR-0017). The helpers need `python3` on the host (and `git`, for `open_mr`):
   base (empty → `https://gitlab.com`; any other value → its `/api/v4` root, cloud or
   self-managed). `GITLAB_PROJECT` is a numeric id or a `group/name` path.
 - The active issue/MR number — `GITLAB_MR_NUMBER`, then `GITLAB_ISSUE_NUMBER`,
-  falling back to the number under `$AFKD_SCRATCH_DIR/mr/number` or
-  `$AFKD_SCRATCH_DIR/issue/number` (the comment and attachment helpers use both;
+  falling back to the number under `$AFKD_SCRATCH_DIR/task/mr/number` or
+  `$AFKD_SCRATCH_DIR/task/issue/number` (the comment and attachment helpers use both;
   the MR helper's `Closes #N` linkage uses `GITLAB_ISSUE_NUMBER` then
-  `$AFKD_SCRATCH_DIR/issue/number`). `list_comments.py`/`post_comment.py` accept
+  `$AFKD_SCRATCH_DIR/task/issue/number`). `list_comments.py`/`post_comment.py` accept
   `--issue N` / `--mr N` to override it for a different issue/MR (`list_issues.py`
   needs no number — it lists the whole project).
 - `AFKD_SCRATCH_DIR` — additionally required by `fetch_attachment.py` (the

@@ -272,7 +272,7 @@ mod tests {
             env: BTreeMap::from([("GITHUB_ISSUE_NUMBER".to_string(), "7".to_string())]),
             files: vec![
                 WireFile::text(crate::TASK_FILE, text),
-                WireFile::text("issue/number", "7"),
+                WireFile::text("task/issue/number", "7"),
             ],
         }
     }

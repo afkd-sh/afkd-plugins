@@ -1243,7 +1243,7 @@ mod tests {
                 json!([
                     {"path": "task/README.md",
                      "text": "Crash 💥\n\nBody <img alt=\"Image\" src=\"Image.png\">"},
-                    {"path": "issue/number", "text": "7"},
+                    {"path": "task/issue/number", "text": "7"},
                     {"path": "task/Image.png", "from": dir.join("Image.png").to_str().unwrap()},
                 ]),
                 "{end}"
@@ -1289,7 +1289,7 @@ mod tests {
             json!([
                 {"path": "task/README.md",
                  "text": format!("Crash 💥\n\nBody <img alt=\"Image\" src=\"{SHOT}\">")},
-                {"path": "issue/number", "text": "7"},
+                {"path": "task/issue/number", "text": "7"},
             ])
         );
         assert!(f.mock.downloads().is_empty(), "{:?}", f.mock.downloads());
@@ -1382,7 +1382,7 @@ mod tests {
             paths,
             [
                 "task/README.md",
-                "pr/number",
+                "task/pr/number",
                 "task/Image.png",
                 "task/log.txt"
             ]

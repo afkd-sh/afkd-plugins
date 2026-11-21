@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(
             wire.files[1..],
             [
-                WireFile::text("pr/number", "7"),
+                WireFile::text("task/pr/number", "7"),
                 WireFile::from_path("task/Image.png", path("Image.png")),
                 WireFile::from_path("task/spec.pdf", path("spec.pdf")),
                 WireFile::from_path("task/trace.zip", path("trace.zip")),
@@ -911,7 +911,7 @@ mod tests {
     /// The whole wire unit: the number as `id`, the claim-journal key, the PR's handle
     /// fields, the stable thread, the claim-time comments as `seen`, the claim identity
     /// as `self`, the PR number and head branch merged over the credentials, and the
-    /// brief beside the bare number under `pr/number`.
+    /// brief beside the bare number under `task/pr/number`.
     #[test]
     fn the_wire_unit_carries_pr_number_branch_thread_and_layout() {
         let h = Harness::new(cfg("acme/widgets"));
@@ -960,7 +960,7 @@ mod tests {
                         "Address review feedback on PR #7.\n\n## New feedback\n\n\
                          **alice:** please rename the flag\n"
                     ),
-                    WireFile::text("pr/number", "7"),
+                    WireFile::text("task/pr/number", "7"),
                 ],
             }
         );

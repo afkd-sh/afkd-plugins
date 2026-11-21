@@ -839,7 +839,7 @@ mod tests {
                     "task/README.md",
                     "修复 the retry storm 🚨\n\nIt retries forever.\n\n```rust\nlet backoff = 0;\n```"
                 ),
-                WireFile::text("issue/number", "4"),
+                WireFile::text("task/issue/number", "4"),
             ]
         );
     }
@@ -884,7 +884,7 @@ mod tests {
         assert_eq!(
             wire.files[1..],
             [
-                WireFile::text("issue/number", "7"),
+                WireFile::text("task/issue/number", "7"),
                 WireFile::from_path("task/Image.png", dir.join("Image.png").to_str().unwrap()),
                 WireFile::from_path(
                     "task/Spec v2.pdf",
@@ -907,7 +907,7 @@ mod tests {
             wire.files,
             [
                 WireFile::text("task/README.md", "T\n\nB"),
-                WireFile::text("issue/number", "4"),
+                WireFile::text("task/issue/number", "4"),
             ]
         );
     }

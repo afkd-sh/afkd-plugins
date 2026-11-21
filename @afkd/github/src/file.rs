@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use crate::claim::is_claim;
 use crate::client::{Download, GithubClient, IssueComment};
 use crate::common::{write_whole, Diag};
+use crate::{ISSUE_DIR, PR_DIR, TASK_DIR};
 
 /// The longest link text [`linked_files`] reads before it gives the bracket up: what keeps a
 /// body of a thousand unclosed `[` from costing a scan per bracket of the whole text.
@@ -301,7 +302,8 @@ fn extension_of(name: &str) -> Option<&str> {
 /// leading `.` written `_`, so it is one plain file that links safely as `<name>`. A name
 /// with no extension — a pasted image's `alt` is just "Image" — gets `extension`, as the
 /// response named it, when there is one. It is cut at a char boundary, keeping an extension,
-/// and is never `README.md` in any case, the one file afkd frames. A name in `taken`
+/// and is never `README.md` in any case, the one file afkd frames, nor the name of the
+/// `issue` or `pr` folder that holds the number beside the downloads. A name in `taken`
 /// (compared without case) gets `-2`, `-3` before its extension, the first free.
 pub(crate) fn task_file_name(
     text: &str,
@@ -354,6 +356,10 @@ pub(crate) fn task_file_name(
     let stem = &stem[..cap];
     let is_taken = |candidate: &str| {
         candidate.eq_ignore_ascii_case("README.md")
+            || [ISSUE_DIR, PR_DIR]
+                .iter()
+                .filter_map(|dir| dir.strip_prefix(TASK_DIR)?.strip_prefix('/'))
+                .any(|dir| dir.eq_ignore_ascii_case(candidate))
             || taken.iter().any(|t| t.eq_ignore_ascii_case(candidate))
     };
     let mut candidate = format!("{stem}{extension}");
@@ -935,7 +941,8 @@ mod tests {
 
     /// A name is one plain file name: the link's text with `/ \ < >`, control characters and
     /// a leading `.` written `_`, the url's last segment when the text is empty, cut at a
-    /// char boundary with its extension kept, never `README.md` in any case, and a duplicate
+    /// char boundary with its extension kept, never `README.md` or the `issue` and `pr`
+    /// folders' names in any case, and a duplicate
     /// numbered from 2 before its extension, whatever its case.
     #[test]
     fn a_task_file_name_is_one_safe_name_and_never_a_duplicate() {
@@ -971,6 +978,10 @@ mod tests {
         assert_eq!(name("README.md", &[]), "README-2.md");
         assert_eq!(name("readme.MD", &[]), "readme-2.MD");
         assert_eq!(name("README.md", &["README-2.md"]), "README-3.md");
+        assert_eq!(name("issue", &[]), "issue-2");
+        assert_eq!(name("PR", &[]), "PR-2");
+        assert_eq!(name("pr", &["pr-2"]), "pr-3");
+        assert_eq!(name("issue.png", &[]), "issue.png");
         assert_eq!(name("shot.png", &["shot.png"]), "shot-2.png");
         assert_eq!(name("shot.png", &["shot.png", "shot-2.png"]), "shot-3.png");
         assert_eq!(name("shot.png", &["SHOT.PNG"]), "shot-2.png");

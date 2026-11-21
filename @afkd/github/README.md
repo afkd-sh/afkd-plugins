@@ -134,9 +134,9 @@ fixer :: agent(claude) {
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
 `GITHUB_TOKEN`, `GITHUB_HOST`, `GITHUB_REPO` and `GITHUB_ISSUE_NUMBER` every
 `service(github)` run carries, and falls back to the bare issue number under
-`issue/number` in the run's scratch directory. A `service(github.pr)` run carries
+`task/issue/number` in the run's scratch directory. A `service(github.pr)` run carries
 `GITHUB_PR_NUMBER` and `GITHUB_PR_BRANCH` (the PR's head branch) in place of the issue
-number, and the bare number under `pr/number`; the skill reads and posts on the pull
+number, and the bare number under `task/pr/number`; the skill reads and posts on the pull
 request's conversation the same way.
 
 ## `service(github)` (issues)
@@ -255,7 +255,9 @@ images. The files the issue's body and comments link arrive with the claim, in t
 `task/` folder: the plugin downloads each one when it wins the claim, byte for byte, and
 `task/README.md` links each by its relative path, `<img alt="Image" src="Image.png">` or
 `![shot.png](<shot.png>)`, instead of the GitHub url. An image whose name has no extension
-(GitHub's alt text is just "Image") takes one from the response. The brief carries the
+(GitHub's alt text is just "Image") takes one from the response. The bare issue number is
+`task/issue/number`, beside the downloads, so a link named `issue` (or `pr`) is downloaded
+as `issue-2` (`pr-2`), never over that folder. The brief carries the
 issue's body but no comment, so a file only a comment links is listed in a closing section
 of the README, by its relative path too. The downloads live in the plugin's own state
 directory until the unit finishes or is released, and are deleted then; with no state
@@ -329,7 +331,9 @@ while a round runs. The comments the brief was built from are never delivered ag
 downloaded when the claim is won, exactly as for [an issue](#servicegithub-issues): into the
 run's `task/` folder, byte for byte, and deleted when the unit finishes or is released; the
 token goes only to the forge's own web host; a file that cannot be downloaded is not fatal,
-and keeps its GitHub link and a line in the service log. The brief carries only the new
+and keeps its GitHub link and a line in the service log. The bare PR number is
+`task/pr/number`, beside the downloads, which a link named `pr` or `issue` never takes. The
+brief carries only the new
 feedback, so `task/README.md` links, by relative path, the files that feedback links, and
 lists in a closing section the files only the description or an older comment links.
 

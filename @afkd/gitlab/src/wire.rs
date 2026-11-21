@@ -239,7 +239,7 @@ mod tests {
                     text: text.into(),
                 },
                 WireFile {
-                    path: "issue/number".into(),
+                    path: "task/issue/number".into(),
                     text: "7".into(),
                 },
             ],

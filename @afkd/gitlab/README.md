@@ -136,7 +136,7 @@ Nothing hands it to an agent on its own; a `skills` list has to name it. It read
 `GITLAB_TOKEN`, `GITLAB_BASE_URL`, `GITLAB_PROJECT` and `GITLAB_ISSUE_NUMBER` every
 `service(gitlab)` run carries — `GITLAB_MR_NUMBER` and `GITLAB_MR_BRANCH` in place of the
 issue number on a `service(gitlab.mr)` run — and falls back to the bare number under
-`issue/number` or `mr/number` in the run's scratch directory.
+`task/issue/number` or `task/mr/number` in the run's scratch directory.
 
 ## `service(gitlab)` (issues)
 

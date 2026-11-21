@@ -251,7 +251,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
             },
             "files": [
                 {"path": "task/README.md", "text": format!("{TITLE}\n\n{BODY}")},
-                {"path": "issue/number", "text": "7"},
+                {"path": "task/issue/number", "text": "7"},
             ],
         })
     );
@@ -1022,7 +1022,7 @@ fn an_issues_image_and_pdf_land_in_task_byte_for_byte_and_the_readme_links_them(
         paths,
         [
             "task/README.md",
-            "issue/number",
+            "task/issue/number",
             "task/Image.png",
             "task/Spec-v2.pdf"
         ]
@@ -1127,7 +1127,7 @@ fn a_prs_image_and_log_land_in_task_byte_for_byte_and_the_readme_links_them() {
         paths,
         [
             "task/README.md",
-            "pr/number",
+            "task/pr/number",
             "task/Image.png",
             "task/run.log"
         ]
@@ -1198,7 +1198,7 @@ fn without_a_state_dir_nothing_is_downloaded_and_a_missing_file_only_logs() {
         unit["files"],
         json!([
             {"path": "task/README.md", "text": format!("{TITLE}\n\n{body}")},
-            {"path": "issue/number", "text": "7"},
+            {"path": "task/issue/number", "text": "7"},
         ])
     );
     assert!(
@@ -1335,7 +1335,7 @@ fn pr_a_won_race_hands_over_the_built_ins_unit() {
                 {"path": "task/README.md", "text": "Address review feedback on PR #7.\n\n\
                     ## New feedback\n\n**陳大文:** 看起来不对 🚨 — the cap never applies:\n\n    \
                     max_backoff = 0\n"},
-                {"path": "pr/number", "text": "7"},
+                {"path": "task/pr/number", "text": "7"},
             ],
         })
     );
