@@ -133,9 +133,9 @@ fixer :: agent(claude) {
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
 `GITHUB_TOKEN`, `GITHUB_HOST`, `GITHUB_REPO` and `GITHUB_ISSUE_NUMBER` every
 `service(github)` run carries, and falls back to the bare issue number under
-`issue/number` in the run's scratch directory. A `service(github.pr)` run carries
+`task/issue/number` in the run's scratch directory. A `service(github.pr)` run carries
 `GITHUB_PR_NUMBER` and `GITHUB_PR_BRANCH` (the PR's head branch) in place of the issue
-number, and the bare number under `pr/number`; the skill reads and posts on the pull
+number, and the bare number under `task/pr/number`; the skill reads and posts on the pull
 request's conversation the same way.
 
 ## `service(github)` (issues)

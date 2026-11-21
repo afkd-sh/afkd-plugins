@@ -874,7 +874,7 @@ mod tests {
                         .into(),
                 },
                 WireFile {
-                    path: "mr/number".into(),
+                    path: "task/mr/number".into(),
                     text: "7".into(),
                 },
             ]

@@ -68,9 +68,10 @@ ADR-0017). The helpers need `python3` on the host (and `git`, for `open_pr`):
   (empty or `github.com` → GitHub cloud; any other host → GitHub Enterprise
   Server).
 - The active issue/PR number — `GITHUB_PR_NUMBER`, then `GITHUB_ISSUE_NUMBER`,
-  falling back to the number under `$AFKD_SCRATCH_DIR/pr/number` or
-  `$AFKD_SCRATCH_DIR/issue/number` (read/post/fetch use both; the PR helper's
-  `Closes #N` linkage uses `GITHUB_ISSUE_NUMBER` then `$AFKD_SCRATCH_DIR/issue/number`).
+  falling back to the number under `$AFKD_SCRATCH_DIR/task/pr/number` or
+  `$AFKD_SCRATCH_DIR/task/issue/number` (read/post/fetch use both; the PR helper's
+  `Closes #N` linkage uses `GITHUB_ISSUE_NUMBER` then
+  `$AFKD_SCRATCH_DIR/task/issue/number`).
   `list_comments.py`/`post_comment.py` accept `--issue N` to override it for a
   different issue/PR.
 - `AFKD_SCRATCH_DIR` — additionally required by `fetch_attachment.py` (the

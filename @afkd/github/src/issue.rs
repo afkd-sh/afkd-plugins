@@ -801,7 +801,7 @@ mod tests {
                         .into(),
                 },
                 WireFile {
-                    path: "issue/number".into(),
+                    path: "task/issue/number".into(),
                     text: "4".into(),
                 },
             ]

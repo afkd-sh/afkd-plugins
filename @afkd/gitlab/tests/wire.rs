@@ -272,7 +272,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
             },
             "files": [
                 {"path": "task/README.md", "text": format!("{TITLE}\n\n{BODY}")},
-                {"path": "issue/number", "text": "7"},
+                {"path": "task/issue/number", "text": "7"},
             ],
         })
     );
@@ -1013,7 +1013,7 @@ fn mr_a_won_race_hands_over_the_built_ins_unit() {
                 {"path": "task/README.md", "text": "Address review feedback on MR !7.\n\n\
                     ## New feedback\n\n**陳大文:** 看起来不对 🚨 — the cap never applies:\n\n    \
                     max_backoff = 0\n"},
-                {"path": "mr/number", "text": "7"},
+                {"path": "task/mr/number", "text": "7"},
             ],
         })
     );

@@ -41,13 +41,14 @@ use crate::plugin::{Answer, Plugin};
 /// The brief at the scratch directory's root, which afkd writes framed.
 pub(crate) const TASK_FILE: &str = "task/README.md";
 
-/// The scratch sub-location holding the bare issue iid, so the bundled skill can find
-/// which issue a run belongs to.
-pub(crate) const ISSUE_DIR: &str = "issue";
+/// The scratch sub-location holding the bare issue iid (`task/issue/number`), inside
+/// `task/` where afkd requires every handed-over file, so the bundled skill can find which
+/// issue a run belongs to.
+pub(crate) const ISSUE_DIR: &str = "task/issue";
 
-/// The scratch sub-location holding the bare MR iid, so the bundled skill can find which
-/// merge request a run belongs to.
-pub(crate) const MR_DIR: &str = "mr";
+/// The scratch sub-location holding the bare MR iid (`task/mr/number`), so the bundled
+/// skill can find which merge request a run belongs to.
+pub(crate) const MR_DIR: &str = "task/mr";
 
 /// The file under [`ISSUE_DIR`] or [`MR_DIR`] holding the bare iid.
 pub(crate) const NUMBER_FILE: &str = "number";
