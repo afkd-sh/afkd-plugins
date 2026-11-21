@@ -24,6 +24,9 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Display;
+use std::io::{self, Write as _};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -78,6 +81,56 @@ pub(crate) const CLAIM_RESERVE: Duration = Duration::from_secs(10);
 /// elsewhere must not take every later caller down with it.
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `text` as a part of a file name: every byte but `A-Z a-z 0-9 _ -` written `%XX`, so no
+/// text, a unit's key among it, can name another path or hide a file.
+pub(crate) fn file_safe(text: &str) -> String {
+    let mut safe = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+            safe.push(char::from(b));
+        } else {
+            safe.push_str(&format!("%{b:02X}"));
+        }
+    }
+    safe
+}
+
+/// Write `bytes` to `dest` whole: to a temp file beside it, `.<name>.afkd-gitlab-<pid>`, made
+/// with `mode` (less the umask), then renamed onto it. A reader, another child of this plugin
+/// among them, sees the old file or the new one and never half of either, and when two
+/// children race the later rename wins. The temp file goes when the write fails.
+///
+/// # Errors
+///
+/// Returns the I/O error of the first step that failed: a `dest` that names no file, a
+/// directory that is not there or cannot be written, or a rename onto a directory.
+pub(crate) fn write_whole(dest: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    let Some(name) = dest.file_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the path names no file",
+        ));
+    };
+    let temp = dest.with_file_name(format!(
+        ".{}.afkd-gitlab-{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    // A temp file a crashed write of this pid left behind would keep its own mode.
+    let _ = std::fs::remove_file(&temp);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(&temp)
+        .and_then(|mut file| file.write_all(bytes))
+        .and_then(|()| std::fs::rename(&temp, dest));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// The time the claim settles on and the poll budget is measured with.
@@ -272,9 +325,15 @@ fn unassign(
 /// What one claim attempt decided.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Claimed {
-    /// We hold the unit; the payload is our claim marker's note id (the thing released at
-    /// run end and reaped after a crash).
-    Won(u64),
+    /// We hold the unit.
+    Won {
+        /// Our claim marker's note id (the thing released at run end and reaped after a
+        /// crash).
+        marker: u64,
+        /// The thread the claim's re-read saw, markers included: what the unit's files are
+        /// read from, as the claim found it.
+        notes: Vec<Note>,
+    },
     /// A rival's marker out-orders ours. Our marker is gone; the next candidate may be
     /// tried.
     Lost,
@@ -310,7 +369,10 @@ pub(crate) fn claim_item(
         delete_marker(client, project, kind, iid, marker.id, diag);
         return Ok(Claimed::Lost);
     }
-    Ok(Claimed::Won(marker.id))
+    Ok(Claimed::Won {
+        marker: marker.id,
+        notes,
+    })
 }
 
 /// Map an item's notes into the view the claim decision reads: **creation orders**, the
@@ -476,6 +538,38 @@ impl Diag for CaptureDiag {
     }
 }
 
+/// A scratch directory for tests, removed on drop — the crate carries no `tempfile`.
+#[cfg(test)]
+pub(crate) struct TempDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TempDir {
+    /// A fresh, empty directory under the system temp dir, unique to this process and
+    /// call.
+    pub(crate) fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "afkd-gitlab-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).expect("create a scratch dir");
+        Self(dir)
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! No network: these drive the in-memory `MockClient`.
@@ -483,6 +577,45 @@ mod tests {
     use super::*;
     use crate::claim::is_claim;
     use crate::client::{Action, MockClient};
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A file is written whole in the mode asked for, over an older one, and no temp file is
+    /// left beside it; a write into a directory that is not there fails and leaves nothing.
+    #[test]
+    fn a_file_is_written_whole_in_its_mode() {
+        let dir = TempDir::new("whole");
+        let dest = dir.path().join("shot 修复.png");
+        std::fs::write(&dest, "old").unwrap();
+        write_whole(&dest, b"\x89PNG\r\n\x1a\n\0\xff", 0o600).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"\x89PNG\r\n\x1a\n\0\xff");
+        assert_eq!(
+            std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["shot 修复.png"], "no temp file is left");
+        let missing = dir.path().join("gone").join("x.png");
+        assert!(write_whole(&missing, b"x", 0o600).is_err());
+        assert!(!dir.path().join("gone").exists());
+        assert!(write_whole(Path::new("/"), b"x", 0o600).is_err());
+    }
+
+    /// Every byte outside `A-Z a-z 0-9 _ -` is escaped, each byte of a wide character
+    /// alone, so a unit's key is one plain file name and no other path.
+    #[test]
+    fn a_file_safe_name_is_one_plain_segment() {
+        assert_eq!(file_safe("afkd_ready-1"), "afkd_ready-1");
+        assert_eq!(
+            file_safe("acme/widgets#7#1000001"),
+            "acme%2Fwidgets%237%231000001"
+        );
+        assert_eq!(file_safe("../x"), "%2E%2E%2Fx");
+        assert_eq!(file_safe("修"), "%E4%BF%AE");
+        assert_eq!(file_safe(""), "");
+    }
 
     fn project() -> Project {
         Project::new("group/widgets")
@@ -575,10 +708,10 @@ mod tests {
 
         // Exactly one win, and it is the earlier id — the tie-break, not the order of the
         // calls (both markers carry second `T`).
-        assert_eq!(
-            first,
-            Claimed::Won(surviving_marker(&c, ItemKind::Issue, 7, "bot-a"))
-        );
+        let Claimed::Won { marker, .. } = first else {
+            panic!("the first marker wins: {first:?}");
+        };
+        assert_eq!(marker, surviving_marker(&c, ItemKind::Issue, 7, "bot-a"));
         assert_eq!(second, Claimed::Lost);
         // One marker survives on the thread, and it is the *winner's*.
         assert_eq!(
@@ -619,7 +752,7 @@ mod tests {
             "{outcomes:?}"
         );
         assert!(
-            matches!(outcomes[0], Claimed::Won(_)),
+            matches!(outcomes[0], Claimed::Won { .. }),
             "the first-posted (smallest id) wins: {outcomes:?}"
         );
         assert_eq!(
@@ -650,8 +783,38 @@ mod tests {
             &CaptureDiag::default(),
         )
         .unwrap();
-        assert!(matches!(won, Claimed::Won(_)));
+        assert!(matches!(won, Claimed::Won { .. }));
         assert_eq!(clock.sleeps(), [CLAIM_SETTLE]);
+    }
+
+    /// A won claim hands over the thread its re-read saw — the notes a human wrote and our
+    /// own marker, in the order the forge listed them — beside the marker's id, so the
+    /// unit's files are read from what the claim found, with no read of their own.
+    #[test]
+    fn a_won_claim_carries_the_thread_its_reread_saw() {
+        let c = MockClient::new(1, "me");
+        c.add_issue(7, "T", "B", &["afkd::ready"]);
+        c.add_note_body(
+            ItemKind::Issue,
+            7,
+            1,
+            9,
+            "alice",
+            "see ![a](/uploads/x/a.png)",
+            100,
+        );
+        c.add_note_body(ItemKind::Issue, 7, 2, 10, "bob", "and the log", 200);
+
+        let Claimed::Won { marker, notes } = claim(&c, ItemKind::Issue, 7, &me()) else {
+            panic!("an uncontested claim is won");
+        };
+        assert_eq!(
+            notes.iter().map(|n| n.id).collect::<Vec<_>>(),
+            [1, 2, marker]
+        );
+        assert_eq!(notes[2].body, claim_text("me"));
+        assert_eq!(notes[0].body, "see ![a](/uploads/x/a.png)");
+        assert_eq!(notes, c.list_notes(&project(), ItemKind::Issue, 7).unwrap());
     }
 
     /// The decision is a pure function of the **re-read**: our own post succeeded and
@@ -704,7 +867,7 @@ mod tests {
         );
 
         assert!(
-            matches!(claim(&c, ItemKind::Issue, 7, &me()), Claimed::Won(_)),
+            matches!(claim(&c, ItemKind::Issue, 7, &me()), Claimed::Won { .. }),
             "the MR's marker never reaches the issue's claim"
         );
         assert_eq!(claim(&c, ItemKind::MergeRequest, 7, &me()), Claimed::Lost);
@@ -747,7 +910,7 @@ mod tests {
         );
         assert!(matches!(
             claim(&c, ItemKind::Issue, 7, &me()),
-            Claimed::Won(_)
+            Claimed::Won { .. }
         ));
     }
 

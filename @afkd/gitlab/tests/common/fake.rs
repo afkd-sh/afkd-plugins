@@ -14,6 +14,13 @@
 //! only the second; an item or a note that does not exist is a `404`. Every request is
 //! recorded, and any route can be made to answer a status instead — or the whole fake
 //! taken out of reach, every connection closed unanswered.
+//!
+//! Beside the issues it hosts the uploads an item links, on the same address: a file at
+//! `/api/v4/projects/:id/uploads/:secret/:filename`, which wants the token and serves its
+//! bytes with their type — or, once [`FakeGitlab::upload_to_storage`] has moved it, answers
+//! `302` to a `/storage/:secret` path that wants none. Each request for one is recorded in
+//! [`FakeGitlab::file_requests`], with the `PRIVATE-TOKEN` it carried, so a test can tell
+//! what the hop to storage was sent.
 
 #![allow(dead_code)]
 
@@ -40,6 +47,8 @@ pub struct Seen {
     /// The decoded query pairs.
     pub query: Vec<(String, String)>,
     pub body: String,
+    /// The `PRIVATE-TOKEN` the request carried; empty when it carried none.
+    pub token: String,
 }
 
 /// An issue, its assignees by username.
@@ -91,6 +100,16 @@ struct Stored {
     source_branch: String,
 }
 
+/// An upload the fake hosts, by project path, secret and filename.
+#[derive(Clone)]
+struct Hosted {
+    bytes: Vec<u8>,
+    content_type: String,
+    /// Whether the API hands it to `/storage/<secret>` with a `302`, where it is served
+    /// without the token.
+    in_storage: bool,
+}
+
 #[derive(Default)]
 struct State {
     /// The token's own username.
@@ -107,6 +126,10 @@ struct State {
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
     seen: Vec<Seen>,
+    /// The uploads hosted, keyed by `(project path, secret, filename)`.
+    uploads: BTreeMap<(String, String, String), Hosted>,
+    /// Every request for an upload or its storage, in order.
+    file_seen: Vec<Seen>,
     /// Whether the fake is out of reach: every request is read, recorded in `dropped`,
     /// and its connection closed with no reply.
     down: bool,
@@ -305,6 +328,15 @@ impl FakeGitlab {
         );
     }
 
+    /// Give a seeded merge request a description, as its author writes one.
+    pub fn describe_mr(&self, project: &str, iid: u64, description: &str) {
+        lock(&self.state)
+            .mrs
+            .get_mut(&(project.to_string(), iid))
+            .expect("a seeded merge request")
+            .body = description.to_string();
+    }
+
     /// Give a seeded merge request a new title, as its author edits one.
     pub fn retitle(&self, project: &str, iid: u64, title: &str) {
         lock(&self.state)
@@ -465,6 +497,49 @@ impl FakeGitlab {
     pub fn seen(&self) -> Vec<Seen> {
         lock(&self.state).seen.clone()
     }
+
+    /// Host an upload of `project`, as GitLab hosts a pasted one at
+    /// `/api/v4/projects/:id/uploads/:secret/:filename`: served straight, with its type, to
+    /// the token alone. `filename` must need no percent-encoding. Returns the path a
+    /// description links it at, `/uploads/<secret>/<filename>`.
+    pub fn upload(
+        &self,
+        project: &str,
+        secret: &str,
+        filename: &str,
+        bytes: &[u8],
+        content_type: &str,
+    ) -> String {
+        lock(&self.state).uploads.insert(
+            (
+                project.to_string(),
+                secret.to_string(),
+                filename.to_string(),
+            ),
+            Hosted {
+                bytes: bytes.to_vec(),
+                content_type: content_type.to_string(),
+                in_storage: false,
+            },
+        );
+        format!("/uploads/{secret}/{filename}")
+    }
+
+    /// Move every upload with `secret` to storage, as GitLab's object storage does: the
+    /// API route answers `302` to `/storage/<secret>`, which serves the bytes to anyone.
+    pub fn upload_to_storage(&self, secret: &str) {
+        for ((_, s, _), hosted) in lock(&self.state).uploads.iter_mut() {
+            if s == secret {
+                hosted.in_storage = true;
+            }
+        }
+    }
+
+    /// Every request for an upload — its API route, or the storage it redirects to — in
+    /// order, each with the `PRIVATE-TOKEN` header it carried (empty when none).
+    pub fn file_requests(&self) -> Vec<Seen> {
+        lock(&self.state).file_seen.clone()
+    }
 }
 
 fn push_note(
@@ -593,47 +668,136 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
         })
         .collect();
 
-    let (status, reply) = {
+    let reply = {
         let mut s = lock(state);
         let seen = Seen {
             method: method.clone(),
             path: path.clone(),
             query: query.clone(),
             body: body.clone(),
+            token: token.clone(),
         };
         if s.down {
             // Out of reach: the stream drops here, closed with no reply.
             s.dropped.push(seen);
             return;
         }
-        s.seen.push(seen);
-        if token != TOKEN {
-            (401, json!({ "message": "401 Unauthorized" }))
+        if is_file_path(&path) {
+            serve_file(&mut s, seen)
         } else {
-            route(&mut s, &method, &path, &query, &body)
+            s.seen.push(seen);
+            if token != TOKEN {
+                Reply::json(401, &json!({ "message": "401 Unauthorized" }))
+            } else {
+                let (status, value) = route(&mut s, &method, &path, &query, &body);
+                Reply::json(status, &value)
+            }
         }
     };
-    let text = if status == 204 {
-        String::new()
-    } else {
-        reply.to_string()
-    };
-    let reason = match status {
+    let reason = match reply.status {
         200 => "OK",
         201 => "Created",
         204 => "No Content",
+        302 => "Found",
         401 => "Unauthorized",
         404 => "Not Found",
         _ => "Status",
     };
+    let mut head = format!("HTTP/1.1 {} {reason}\r\n", reply.status);
+    for (name, value) in &reply.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        reply.body.len()
+    ));
     let mut stream = stream;
-    let _ = write!(
-        stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n{text}",
-        text.len()
-    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&reply.body);
     let _ = stream.flush();
+}
+
+/// One reply: a status, its headers beside the length, and a body that may be bytes.
+struct Reply {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    /// A JSON reply — the REST API's — with no body for a `204`.
+    fn json(status: u16, value: &Value) -> Self {
+        let body = if status == 204 {
+            Vec::new()
+        } else {
+            value.to_string().into_bytes()
+        };
+        Self {
+            status,
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body,
+        }
+    }
+}
+
+/// Whether `path` is a request for an upload: its API route, or the storage it redirects
+/// to.
+fn is_file_path(path: &str) -> bool {
+    if let Some(rest) = path.strip_prefix("/api/v4/") {
+        let segs: Vec<&str> = rest.split('/').collect();
+        return matches!(segs.as_slice(), ["projects", _, "uploads", _, _]);
+    }
+    path.starts_with("/storage/")
+}
+
+/// Answer a request for an upload, recording it first in [`FakeGitlab::file_requests`] and
+/// never in [`FakeGitlab::seen`]. The API route wants the token, and a hosted upload moved
+/// to storage answers `302` to `/storage/<secret>`; storage is open, as a signed storage
+/// url is.
+fn serve_file(s: &mut State, seen: Seen) -> Reply {
+    let path = seen.path.clone();
+    let authorized = seen.token == TOKEN;
+    s.file_seen.push(seen);
+    let not_found = || Reply::json(404, &json!({ "message": "404 File Not Found" }));
+    if let Some(rest) = path.strip_prefix("/api/v4/") {
+        if !authorized {
+            return Reply::json(401, &json!({ "message": "401 Unauthorized" }));
+        }
+        let segs: Vec<String> = rest.split('/').map(percent_decode).collect();
+        let [_, project, _, secret, filename] = segs.as_slice() else {
+            return not_found();
+        };
+        if let Some(status) = s.faults.get("fetch upload") {
+            return Reply::json(*status, &json!({ "message": "injected" }));
+        }
+        let key = (project.clone(), secret.clone(), filename.clone());
+        return match s.uploads.get(&key) {
+            Some(file) if file.in_storage => Reply {
+                status: 302,
+                headers: vec![("Location".to_string(), format!("/storage/{secret}"))],
+                body: Vec::new(),
+            },
+            Some(file) => Reply {
+                status: 200,
+                headers: vec![("Content-Type".to_string(), file.content_type.clone())],
+                body: file.bytes.clone(),
+            },
+            None => not_found(),
+        };
+    }
+    let secret = path.strip_prefix("/storage/").unwrap_or_default();
+    match s
+        .uploads
+        .iter()
+        .find(|((_, hosted, _), file)| hosted == secret && file.in_storage)
+    {
+        Some((_, file)) => Reply {
+            status: 200,
+            headers: vec![("Content-Type".to_string(), file.content_type.clone())],
+            body: file.bytes.clone(),
+        },
+        None => not_found(),
+    }
 }
 
 /// Split a comma-listed labels value into its names, as GitLab does.
