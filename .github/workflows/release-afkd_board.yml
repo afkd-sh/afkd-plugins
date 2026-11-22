@@ -38,9 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # A red suite must not publish, so the plugin's own suite — its unit tests, the reads
-      # suite against the loopback fake board, and the check that the release notes name the
-      # afkd the README requires — runs here, `--locked` as the release build below is. The
+      # A red suite must not publish, so the plugin's own suite — its unit tests, the reads and
+      # writes suites against the loopback fake board, and the check that the release notes name
+      # the afkd the README requires — runs here, `--locked` as the release build below is. The
       # drift gate under `drift/` needs an afkd on PATH, so it runs on a host that has one,
       # not here.
       - name: The plugin's own suite
@@ -115,9 +115,39 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
+  # A write passes the run it is made in as an `afkd.Run?` on an action's parameter, which an
+  # afkd reads from AFKD_FLOOR on, the README's floor. A plugin published before a stable afkd
+  # release carries that would be refused by every stable afkd, so the release below waits until
+  # a stable `vX.Y.Z` release of afkd, no prerelease and no draft, is at or past the floor. A
+  # search that finds no stable release is `ready=false`, a notice and no release; a `gh` that
+  # fails fails the job rather than vanishing inside a pipe.
+  # `@afkd/afkd_board/tests/release_notes.rs` fails when AFKD_FLOOR and the README differ.
+  afkd_floor:
+    runs-on: ubuntu-latest
+    env:
+      AFKD_FLOOR: 0.2.714
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      ready: ${{ steps.floor.outputs.ready }}
+    steps:
+      - name: A stable afkd release is at or past the floor
+        id: floor
+        run: |
+          set -euo pipefail
+          tags=$(gh release list --repo afkd-sh/afkd --exclude-pre-releases --exclude-drafts --json tagName --jq '.[].tagName')
+          stable=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tags" || true)
+          newest=$(sort -V <<<"$stable" | tail -n 1)
+          ready=false
+          if [ -n "$newest" ] && [ "$(printf '%s\n' "v$AFKD_FLOOR" "$newest" | sort -V | head -n 1)" = "v$AFKD_FLOOR" ]; then
+            ready=true
+          else
+            echo "::notice::No stable afkd release is at or past v$AFKD_FLOOR yet, so @afkd/afkd_board is not published"
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
   release:
-    needs: build
-    if: github.ref == 'refs/heads/main'
+    needs: [build, afkd_floor]
+    if: github.ref == 'refs/heads/main' && needs.afkd_floor.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -140,11 +170,11 @@ jobs:
           ls -l $assets
           # An operator's `afkd update` lands the new manifest on whatever afkd they run, so
           # the notes name the afkd it needs, the floor the README's "Install it" states:
-          # 0.2.679 is the first whose manifests type a handle's field as a `time` and a
-          # parameter as optional, as this manifest's `Card`, `Comment` and `cards` do. Every
-          # older floor (the platform archive, no build step, lists of structs and of handles
-          # an action returns) comes with it.
+          # 0.2.714 is the first whose manifests take an `afkd.Run?` on an action's parameter,
+          # as every write's `run` does. Every older floor (a handle's field typed as a `time`,
+          # a parameter typed as optional, the platform archive, no build step, lists of structs
+          # and of handles an action returns) comes with it.
           # `@afkd/afkd_board/tests/release_notes.rs` fails when the notes and the README differ.
-          printf '`afkd install @afkd/afkd_board`, or `afkd update @afkd/afkd_board` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.679 or newer, the first whose manifests type a handle field as a `time` and a parameter as optional; an older afkd refuses this manifest.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
+          printf '`afkd install @afkd/afkd_board`, or `afkd update @afkd/afkd_board` if you already have it.\n\nA finished static binary for x86_64 and aarch64 Linux: nothing is built on your host.\n\nNeeds afkd 0.2.714 or newer, the first whose manifests take an `afkd.Run?` on a parameter of an action; an older afkd refuses this manifest.\n\nCut from %s.\n' "$GITHUB_SHA" > notes.md
           gh release delete afkd_board --yes --cleanup-tag || true
           gh release create afkd_board --target "$GITHUB_SHA" --title "@afkd/afkd_board $version" --notes-file notes.md $assets
