@@ -3137,6 +3137,7 @@ test("the rail glyphs measure as the tui measures them", { skip: NO_AFKD_SRC }, 
     Fs: ["✎︎", 1],
     Lifecycle: ["⚑︎", 1],
     Http: ["🌐", 2],
+    Call: ["🔌", 2],
   };
   const status = { Ok: ["✓︎", 1], Failed: ["✗︎", 1], Skipped: ["⊘︎", 1], Running: ["⋯︎", 1], recovered: ["↻︎", 1] };
   for (const [arm, [glyph, want]] of [...Object.entries(kind), ...Object.entries(status)]) {
