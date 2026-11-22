@@ -206,6 +206,7 @@ widgets :: service(gitlab) {{
     for label in issue.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
+    $ echo file $(cat $AFKD_SCRATCH_DIR/task/issue/number) >> {FIELDS}
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
@@ -385,7 +386,7 @@ fn drive_one_issue(home: &Path) {
     assert_eq!(
         read(&home.join(FIELDS)),
         format!(
-            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd::ready\nlabel 優先::high\n",
+            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd::ready\nlabel 優先::high\nfile {ISSUE}\n",
             fake.issue_url(PROJECT, ISSUE)
         )
     );
@@ -438,6 +439,7 @@ reviews :: service(gitlab.mr) {{
     $ echo url #{{mr.url}} >> {FIELDS}
     $ echo number #{{mr.number}} >> {FIELDS}
     $ echo branch #{{mr.branch}} >> {FIELDS}
+    $ echo file $(cat $AFKD_SCRATCH_DIR/task/mr/number) >> {FIELDS}
   }}
 }}
 "#,
@@ -502,7 +504,7 @@ fn drive_one_mr(home: &Path) {
     assert_eq!(
         read(&fields),
         format!(
-            "title {MR_TITLE}\nurl {}\nnumber {MR}\nbranch {BRANCH}\n",
+            "title {MR_TITLE}\nurl {}\nnumber {MR}\nbranch {BRANCH}\nfile {MR}\n",
             fake.mr_url(PROJECT, MR)
         ),
         "{}",

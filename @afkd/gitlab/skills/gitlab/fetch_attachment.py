@@ -36,7 +36,7 @@
 # afkd gitlab trigger already merges into the worker child (crates/gitlab/src/common.rs:
 # GITLAB_TOKEN / GITLAB_BASE_URL / GITLAB_PROJECT / GITLAB_MR_NUMBER / GITLAB_ISSUE_NUMBER,
 # and AFKD_SCRATCH_DIR holding the per-run scratch dir; the number is also written
-# to <scratch>/mr/number or <scratch>/issue/number). It does NOT read its own path
+# to <scratch>/task/mr/number or <scratch>/task/issue/number). It does NOT read its own path
 # from the env (CLAUDE_PLUGIN_ROOT is not exported into Bash-tool subprocesses —
 # ADR-0017 Revision §5); SKILL.md passes the path on the command line, so this
 # helper owns only the API mechanics.
@@ -114,9 +114,10 @@ def connection(api_base):
 
 def resolve_number():
     """The active number and its item kind: GITLAB_MR_NUMBER → `merge_requests`,
-    then GITLAB_ISSUE_NUMBER → `issues`, then the <scratch>/mr/number → `merge_requests`
-    and <scratch>/issue/number → `issues` file fallbacks, else (None, None). MR wins
-    over an issue at every tier, mirroring gitea's PR-over-issue precedence."""
+    then GITLAB_ISSUE_NUMBER → `issues`, then the <scratch>/task/mr/number →
+    `merge_requests` and <scratch>/task/issue/number → `issues` file fallbacks, else
+    (None, None). MR wins over an issue at every tier, mirroring gitea's PR-over-issue
+    precedence."""
     for var, kind in (("GITLAB_MR_NUMBER", "merge_requests"), ("GITLAB_ISSUE_NUMBER", "issues")):
         number = os.environ.get(var)
         if number:
@@ -124,7 +125,7 @@ def resolve_number():
     scratch = os.environ.get("AFKD_SCRATCH_DIR")
     if scratch:
         for rel, kind in (("mr", "merge_requests"), ("issue", "issues")):
-            path = os.path.join(scratch, rel, "number")
+            path = os.path.join(scratch, "task", rel, "number")
             if os.path.isfile(path):
                 with open(path, encoding="utf-8") as f:
                     return f.read().strip(), kind
@@ -198,7 +199,7 @@ def main():
     if not number:
         print(
             "fetch_attachment.py: no issue/MR number (set GITLAB_MR_NUMBER or "
-            "GITLAB_ISSUE_NUMBER, or AFKD_SCRATCH_DIR/{mr,issue}/number)",
+            "GITLAB_ISSUE_NUMBER, or AFKD_SCRATCH_DIR/task/{mr,issue}/number)",
             file=sys.stderr,
         )
         sys.exit(1)

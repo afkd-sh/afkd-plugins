@@ -28,10 +28,17 @@ Pass `--issue N` to post to a different issue or pull request than the active on
 
 ## Attachments (inbound only)
 
+The files your brief links are already downloaded: the images and files a human pasted
+or attached to the issue/PR, in its body and its comments, sit in the `task/` folder
+beside `task/README.md`, which links each by its relative path — open them there with
+the `Read` tool. A file only a comment links, which the brief does not carry, is listed
+at the end of `task/README.md` the same way. A link in the brief that is still a GitHub
+url is a file that could not be downloaded; fetch it with `fetch_attachment.py`, below.
+
 An image a human pasted into the issue/PR — a screenshot, a stack trace, a diagram
 — lands on GitHub as an embedded image URL in the body/comment markdown, so
-`list_comments.py` shows only the URL, not the picture. To see it, fetch every
-embedded image and `Read` the downloaded file:
+`list_comments.py` shows only the URL, not the picture. To see one that is not already
+in `task/`, fetch every embedded image and `Read` the downloaded file:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/github/fetch_attachment.py"`
 
@@ -68,9 +75,10 @@ ADR-0017). The helpers need `python3` on the host (and `git`, for `open_pr`):
   (empty or `github.com` → GitHub cloud; any other host → GitHub Enterprise
   Server).
 - The active issue/PR number — `GITHUB_PR_NUMBER`, then `GITHUB_ISSUE_NUMBER`,
-  falling back to the number under `$AFKD_SCRATCH_DIR/pr/number` or
-  `$AFKD_SCRATCH_DIR/issue/number` (read/post/fetch use both; the PR helper's
-  `Closes #N` linkage uses `GITHUB_ISSUE_NUMBER` then `$AFKD_SCRATCH_DIR/issue/number`).
+  falling back to the number under `$AFKD_SCRATCH_DIR/task/pr/number` or
+  `$AFKD_SCRATCH_DIR/task/issue/number` (read/post/fetch use both; the PR helper's
+  `Closes #N` linkage uses `GITHUB_ISSUE_NUMBER` then
+  `$AFKD_SCRATCH_DIR/task/issue/number`).
   `list_comments.py`/`post_comment.py` accept `--issue N` to override it for a
   different issue/PR.
 - `AFKD_SCRATCH_DIR` — additionally required by `fetch_attachment.py` (the

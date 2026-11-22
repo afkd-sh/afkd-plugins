@@ -133,10 +133,10 @@ ADR-0017):
 - `GITEA_TOKEN` / `GITEA_BASE_URL` / `GITEA_REPO` — credentials and the target
   repo, required by every helper.
 - The active issue/PR number — `GITEA_PR_NUMBER`, then `GITEA_ISSUE_NUMBER`,
-  falling back to the number under `$AFKD_SCRATCH_DIR/pr/number` or
-  `$AFKD_SCRATCH_DIR/issue/number` (the comment and attachment helpers use both;
+  falling back to the number under `$AFKD_SCRATCH_DIR/task/pr/number` or
+  `$AFKD_SCRATCH_DIR/task/issue/number` (the comment and attachment helpers use both;
   the PR helper's `Closes #N` linkage uses `GITEA_ISSUE_NUMBER` then
-  `$AFKD_SCRATCH_DIR/issue/number`). `list_comments.py`/`post_comment.py` accept
+  `$AFKD_SCRATCH_DIR/task/issue/number`). `list_comments.py`/`post_comment.py` accept
   `--issue N` to override it for a different issue/PR.
 - `AFKD_SCRATCH_DIR` — additionally required by `fetch_attachment.py` (the
   download destination) and by `ask.py` (where its park marker, `park`, is

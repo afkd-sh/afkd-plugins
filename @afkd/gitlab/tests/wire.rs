@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use common::fake::{FakeGitlab, TOKEN};
-use common::{Plugin, MAX_LINE};
+use common::{Plugin, TempDir, MAX_LINE};
 
 /// The token's user: non-ASCII and bracketed, as the built-in's own fixtures are.
 const ME: &str = "björn-öst[bot]";
@@ -272,7 +272,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
             },
             "files": [
                 {"path": "task/README.md", "text": format!("{TITLE}\n\n{BODY}")},
-                {"path": "issue/number", "text": "7"},
+                {"path": "task/issue/number", "text": "7"},
             ],
         })
     );
@@ -903,6 +903,297 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
     plugin.finish();
 }
 
+// --- the files an item links ---
+
+/// A PNG's signature and then every byte value, so a copy that is text — one that trims,
+/// decodes or normalizes a line end — cannot match.
+fn png() -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend(0..=255u8);
+    bytes.extend_from_slice(b"\r\n\0\xff--IEND");
+    bytes
+}
+
+/// A PDF's header and trailer around binary comment bytes and NULs.
+fn pdf() -> Vec<u8> {
+    let mut bytes = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\r\n".to_vec();
+    bytes.extend((0..=255u8).rev());
+    bytes.extend_from_slice(b"\n%%EOF\r\n");
+    bytes
+}
+
+/// A 32-digit upload secret, each digit pair the byte `n`.
+fn secret(n: u8) -> String {
+    format!("{n:02x}").repeat(16)
+}
+
+/// The `from` path of the file a reply hands over at `path`, which must sit in the plugin's
+/// own directory, under `task-files` and a folder of the unit's.
+fn copied_from(unit: &Value, path: &str, state: &TempDir) -> std::path::PathBuf {
+    let file = unit["files"]
+        .as_array()
+        .and_then(|files| files.iter().find(|f| f["path"] == path))
+        .unwrap_or_else(|| panic!("no {path} in {}", unit["files"]));
+    assert!(file.get("text").is_none(), "{file}");
+    let from = std::path::PathBuf::from(file["from"].as_str().expect("a from path"));
+    assert!(
+        from.starts_with(state.path().join("task-files")),
+        "{} is not under the state dir",
+        from.display()
+    );
+    from
+}
+
+/// The paths of the files a unit is handed over with, in order.
+fn paths_of(unit: &Value) -> Vec<&str> {
+    unit["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect()
+}
+
+/// The closing section a brief gets for the files only the description or the notes link.
+const ELSEWHERE: &str = "## Files linked elsewhere on the item\n\n\
+                         These are linked from the item's description or its notes, which this \
+                         brief does not carry, and are downloaded beside it:\n\n";
+
+/// The claimed item with an image and a PDF runs with both files in `task/`, byte for byte,
+/// and its README.md links them by relative path. The issue's description pastes the PNG as
+/// GitLab writes it — `![screen_shot](/uploads/<secret>/screen_shot.png)`, alt text with no
+/// extension — at an upload GitLab hands to storage with a redirect; a note links the PDF,
+/// which the issue brief — it carries no note — lists in a closing section. No `/uploads/`
+/// url is left in the README, the token went to the API and the storage hop saw none, and
+/// the folder is gone after the `finish`.
+#[test]
+fn an_issues_image_and_pdf_land_in_task_byte_for_byte_and_the_readme_links_them() {
+    let (png, pdf) = (png(), pdf());
+    let (s1, s2) = (secret(0xab), secret(0xcd));
+    let fake = FakeGitlab::start(ME_ID, ME);
+    fake.user(99, HUMAN);
+    let image = fake.upload(PROJECT, &s1, "screen_shot.png", &png, "image/png");
+    fake.upload_to_storage(&s1);
+    let spec = fake.upload(PROJECT, &s2, "spec.pdf", &pdf, "application/pdf");
+    let body = format!("Crash on start:\n\n![screen_shot]({image})\n\n— reported by 陳大文");
+    fake.issue(PROJECT, 7, TITLE, &body, &["afkd::ready"], &[HUMAN]);
+    fake.note(
+        PROJECT,
+        7,
+        HUMAN,
+        &format!("The spec: [spec.pdf]({spec})"),
+        120,
+    );
+    let state = TempDir::new("issue-files");
+    let mut plugin = Plugin::armed_in(settings(&fake), state.path());
+
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let unit = reply["unit"].clone();
+    let readme = format!(
+        "{TITLE}\n\nCrash on start:\n\n![screen_shot](<screen_shot.png>)\n\n— reported by \
+         陳大文\n\n{ELSEWHERE}- [spec.pdf](<spec.pdf>)\n"
+    );
+    assert_eq!(
+        paths_of(&unit),
+        [
+            "task/README.md",
+            "task/issue/number",
+            "task/screen_shot.png",
+            "task/spec.pdf"
+        ]
+    );
+    assert_eq!(unit["files"][0]["text"], readme);
+    assert!(
+        !readme.contains("/uploads/") && !readme.contains(fake.base_url()),
+        "a GitLab url is left in the README"
+    );
+    let (image_at, spec_at) = (
+        copied_from(&unit, "task/screen_shot.png", &state),
+        copied_from(&unit, "task/spec.pdf", &state),
+    );
+    assert_eq!(
+        std::fs::read(&image_at).unwrap(),
+        png,
+        "the image, byte for byte"
+    );
+    assert_eq!(
+        std::fs::read(&spec_at).unwrap(),
+        pdf,
+        "the PDF, byte for byte"
+    );
+    let folder = image_at.parent().unwrap().to_path_buf();
+    assert_eq!(spec_at.parent(), Some(folder.as_path()));
+
+    // The token went to the API, and the hop to storage saw none.
+    let hops = fake.file_requests();
+    let wanted: Vec<(String, bool)> = hops
+        .iter()
+        .map(|r| (r.path.clone(), r.token == TOKEN))
+        .collect();
+    assert_eq!(
+        wanted,
+        [
+            (
+                format!("/api/v4/projects/{ENCODED}/uploads/{s1}/screen_shot.png"),
+                true
+            ),
+            (format!("/storage/{s1}"), false),
+            (
+                format!("/api/v4/projects/{ENCODED}/uploads/{s2}/spec.pdf"),
+                true
+            ),
+        ]
+    );
+    for hop in hops.iter().filter(|r| r.path.starts_with("/storage/")) {
+        assert_eq!(hop.token, "", "the storage hop was sent a credential");
+    }
+
+    // The files stay until the run is over: afkd copies them in on each attempt.
+    assert!(folder.is_dir());
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    assert!(!folder.exists(), "the folder is deleted at finish");
+    let stderr = plugin.finish();
+    assert_eq!(stderr, "", "nothing to say about a clean fetch");
+}
+
+/// The same for an MR: the description's image and the file the new feedback links are
+/// downloaded, the README links the one its feedback carries by name and lists the one only
+/// the description links, and nothing is left behind once the unit is released instead.
+#[test]
+fn an_mrs_image_and_log_land_in_task_byte_for_byte_and_the_readme_links_them() {
+    let (png, log) = (png(), b"line 1\r\n\0line 2\xff\n".to_vec());
+    let (s1, s2) = (secret(0x5e), secret(0x9c));
+    let (fake, _review) = mr_forge();
+    let image = fake.upload(PROJECT, &s1, "screen_shot.png", &png, "image/png");
+    let run_log = fake.upload(PROJECT, &s2, "run.log", &log, "text/plain");
+    fake.describe_mr(
+        PROJECT,
+        7,
+        &format!("Caps the backoff.\n\n![screen_shot]({image})"),
+    );
+    fake.mr_note(
+        PROJECT,
+        7,
+        HUMAN,
+        &format!("看起来不对 🚨 — the log: [run.log]({run_log})"),
+        100,
+    );
+    let state = TempDir::new("mr-files");
+    let mut plugin = Plugin::armed_as_in("mr", mr_settings(&fake), state.path());
+
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let unit = reply["unit"].clone();
+    let readme = format!(
+        "Address review feedback on MR !7.\n\n## New feedback\n\n**{HUMAN}:** {}\n\n\
+         **{HUMAN}:** 看起来不对 🚨 — the log: [run.log](<run.log>)\n\n{ELSEWHERE}\
+         - [screen_shot.png](<screen_shot.png>)\n",
+        REVIEW.trim_end()
+    );
+    assert_eq!(
+        paths_of(&unit),
+        [
+            "task/README.md",
+            "task/mr/number",
+            "task/screen_shot.png",
+            "task/run.log"
+        ]
+    );
+    assert_eq!(unit["files"][0]["text"], readme);
+    assert!(
+        !readme.contains("/uploads/"),
+        "a GitLab url is left in the README"
+    );
+    let (image_at, log_at) = (
+        copied_from(&unit, "task/screen_shot.png", &state),
+        copied_from(&unit, "task/run.log", &state),
+    );
+    assert_eq!(
+        std::fs::read(&image_at).unwrap(),
+        png,
+        "the image, byte for byte"
+    );
+    assert_eq!(
+        std::fs::read(&log_at).unwrap(),
+        log,
+        "the log, byte for byte"
+    );
+    assert_eq!(
+        fake.file_requests()
+            .iter()
+            .filter(|r| r.token == TOKEN)
+            .count(),
+        2,
+        "the token reached the two uploads"
+    );
+
+    let folder = image_at.parent().unwrap().to_path_buf();
+    assert!(folder.is_dir());
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": unit["key"]})),
+        json!({"released": true})
+    );
+    assert!(!folder.exists(), "the folder is deleted at release");
+    assert_eq!(plugin.finish(), "");
+}
+
+/// A plugin that is sent no `state_dir` downloads nothing: the README keeps the GitLab url,
+/// the unit has no `from` entry, and the forge's upload side is never asked for the file. A
+/// file that is not there — an upload that answers `404` — never fails the claim: its link
+/// stays GitLab's and the log says so.
+#[test]
+fn without_a_state_dir_nothing_is_downloaded_and_a_missing_upload_only_logs() {
+    let fake = forge();
+    let s = secret(0xab);
+    let image = fake.upload(PROJECT, &s, "screen_shot.png", &png(), "image/png");
+    let body = format!("![screen_shot]({image})");
+    fake.issue(PROJECT, 7, TITLE, &body, &["afkd::ready"], &[HUMAN]);
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(
+        unit["files"],
+        json!([
+            {"path": "task/README.md", "text": format!("{TITLE}\n\n{body}")},
+            {"path": "task/issue/number", "text": "7"},
+        ])
+    );
+    assert!(
+        fake.file_requests().is_empty(),
+        "{:?}",
+        fake.file_requests()
+    );
+    plugin.finish();
+
+    // With a directory, but an upload GitLab does not serve: the claim is still won.
+    let fake = forge();
+    let missing = format!("/uploads/{}/gone.pdf", secret(0xcd));
+    let body = format!("See [gone.pdf]({missing})");
+    fake.issue(PROJECT, 7, TITLE, &body, &["afkd::ready"], &[]);
+    let state = TempDir::new("missing-file");
+    let mut plugin = Plugin::armed_in(settings(&fake), state.path());
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    assert_eq!(
+        reply["unit"]["files"][0]["text"],
+        format!("{TITLE}\n\n{body}"),
+        "the link stays GitLab's"
+    );
+    assert_eq!(reply["unit"]["files"].as_array().unwrap().len(), 2);
+    let stderr = plugin.finish();
+    assert!(
+        stderr.contains(&format!(
+            "afkd-gitlab: issue \"{TITLE}\" ({PROJECT}#7): the file at {missing} is not \
+             downloaded, and stays a GitLab link in the brief for the skill's \
+             fetch_attachment.py — gitlab fetch upload: forge returned status 404"
+        )),
+        "{stderr}"
+    );
+}
+
 // --- mr ---
 
 /// The MR's source branch: non-ASCII, and crossing to the run verbatim.
@@ -1013,7 +1304,7 @@ fn mr_a_won_race_hands_over_the_built_ins_unit() {
                 {"path": "task/README.md", "text": "Address review feedback on MR !7.\n\n\
                     ## New feedback\n\n**陳大文:** 看起来不对 🚨 — the cap never applies:\n\n    \
                     max_backoff = 0\n"},
-                {"path": "mr/number", "text": "7"},
+                {"path": "task/mr/number", "text": "7"},
             ],
         })
     );

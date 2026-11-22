@@ -138,8 +138,8 @@ Nothing hands it to an agent on its own; a `skills` list has to name it. It read
 `GITEA_TOKEN`, `GITEA_BASE_URL`, `GITEA_REPO` and `GITEA_ISSUE_NUMBER` every
 `service(gitea)` run carries. A `service(gitea.pr)` run carries `GITEA_PR_NUMBER` and
 `GITEA_PR_BRANCH` (the PR's head branch, to fetch and check out) in place of
-`GITEA_ISSUE_NUMBER`, and the bare PR number under `pr/number` in its scratch directory, so
-the same skill reads and answers the PR.
+`GITEA_ISSUE_NUMBER`, and the bare PR number under `task/pr/number` in its scratch directory,
+so the same skill reads and answers the PR.
 
 ## `service(gitea)` (issues)
 
