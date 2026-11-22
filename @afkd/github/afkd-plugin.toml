@@ -1,5 +1,5 @@
 name = "@afkd/github"
-version = "0.12.2"
+version = "0.14.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"

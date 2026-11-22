@@ -12,7 +12,7 @@
 # env the afkd github trigger already merges into the worker child
 # (crates/github/src/common.rs: GITHUB_TOKEN / GITHUB_HOST / GITHUB_REPO /
 # GITHUB_ISSUE_NUMBER, and AFKD_SCRATCH_DIR holding the per-run scratch dir; the
-# issue number is also written to <scratch>/issue/number). It does NOT read its own
+# issue number is also written to <scratch>/task/issue/number). It does NOT read its own
 # path from the env (CLAUDE_PLUGIN_ROOT is not exported into Bash-tool subprocesses
 # — ADR-0017 Revision §5); SKILL.md passes the path on the command line, so this
 # helper owns only the push + API mechanics.
@@ -97,14 +97,14 @@ def connection(api_base):
 
 
 def issue_number():
-    """The originating issue: GITHUB_ISSUE_NUMBER, else <scratch>/issue/number if
+    """The originating issue: GITHUB_ISSUE_NUMBER, else <scratch>/task/issue/number if
     present, else None."""
     issue = os.environ.get("GITHUB_ISSUE_NUMBER")
     if issue:
         return issue
     scratch = os.environ.get("AFKD_SCRATCH_DIR")
     if scratch:
-        path = os.path.join(scratch, "issue", "number")
+        path = os.path.join(scratch, "task", "issue", "number")
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as f:
                 return f.read().strip()

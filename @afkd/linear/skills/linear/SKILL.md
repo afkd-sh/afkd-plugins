@@ -103,6 +103,11 @@ It fetches only from Linear, and refuses a file over 10 MiB. To put a file of yo
 the issue, post it with a comment (`create_comment.py --files`, below) or the description
 (`update_issue.py --files`).
 
+The files your brief links are already downloaded: they sit in the `task/` folder beside
+`task/README.md`, which links each by its relative path, so open them there. A link in the
+brief that is still a Linear url is a file that could not be downloaded; fetch it with
+`download_file.py`.
+
 ## Post a comment
 
 Run it yourself, **substituting your real message** for the placeholder — the script

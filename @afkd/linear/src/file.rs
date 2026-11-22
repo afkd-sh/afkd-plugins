@@ -15,10 +15,11 @@
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
+use std::ops::Range;
 use std::path::Path;
 
 use crate::issue::is_control_marker;
-use crate::tracker::{LinearError, Tracker};
+use crate::tracker::{Comment, LinearError, Tracker};
 
 /// The most one file may hold, either way: what `@afkd/trello` takes, and ureq's own cap on
 /// a body.
@@ -194,6 +195,18 @@ pub(crate) fn linked_files(
     markdown: &str,
     is_linear: &dyn Fn(&str) -> bool,
 ) -> Vec<(String, String)> {
+    links_to(markdown, is_linear)
+        .into_iter()
+        .map(|(text, url, _)| (text, url))
+        .collect()
+}
+
+/// Every link [`linked_files`] reads, as its text, its url and the byte range of its
+/// destination in `markdown`, a `<url>`'s brackets included.
+fn links_to(
+    markdown: &str,
+    is_linear: &dyn Fn(&str) -> bool,
+) -> Vec<(String, String, Range<usize>)> {
     let mut found = Vec::new();
     let mut from = 0;
     while let Some(open) = markdown[from..].find('[') {
@@ -207,9 +220,9 @@ pub(crate) fn linked_files(
             from = start + 1;
             continue;
         }
-        if let Some((text, url)) = link_at(markdown, start) {
+        if let Some((text, url, destination)) = link_at(markdown, start) {
             if is_linear(&url) {
-                found.push((text, url));
+                found.push((text, url, destination));
             }
         }
         from = start + 1;
@@ -217,9 +230,91 @@ pub(crate) fn linked_files(
     found
 }
 
+/// `markdown` with the destination of every link [`linked_files`] reads whose url `to` maps
+/// — to a file name — written `<name>` in its place. Every other byte stays as it was
+/// written: a link `to` does not map, a title, the text of a link and an image inside it.
+/// A destination inside another's (a `<url>` that holds a whole link) is left as written.
+pub(crate) fn relink(markdown: &str, to: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    let mut done = 0;
+    let mut links = links_to(markdown, &|url| to(url).is_some());
+    links.sort_by_key(|(_, _, destination)| destination.start);
+    for (_, url, destination) in links {
+        let (Some(name), true) = (to(&url), destination.start >= done) else {
+            continue;
+        };
+        out.push_str(&markdown[done..destination.start]);
+        out.push('<');
+        out.push_str(&name);
+        out.push('>');
+        done = destination.end;
+    }
+    out.push_str(&markdown[done..]);
+    out
+}
+
+/// The longest file name [`task_file_name`] gives, in bytes, before a duplicate's suffix:
+/// well under the 255 a file system takes, with the temp name a write adds.
+const MAX_NAME_BYTES: usize = 100;
+
+/// The longest extension [`task_file_name`] keeps when it cuts a name, in bytes.
+const MAX_EXTENSION_BYTES: usize = 16;
+
+/// The file name a link to `url` with the text `text` is downloaded under: the text, or with
+/// none the url's last path segment, with `/`, `\`, `<`, `>`, every control character and a
+/// leading `.` written `_`, so it is one plain file that links safely as `<name>`. It is cut
+/// at a char boundary, keeping an extension, and is never `README.md` in any case, the one
+/// file afkd frames. A name in `taken` (compared without case) gets `-2`, `-3` before its
+/// extension, the first free.
+pub(crate) fn task_file_name(text: &str, url: &str, taken: &[String]) -> String {
+    let text = text.trim();
+    let from_url = || {
+        let path = url.split(['?', '#']).next().unwrap_or_default();
+        path.rsplit('/').find(|s| !s.is_empty()).unwrap_or_default()
+    };
+    let named = if text.is_empty() { from_url() } else { text };
+    let named = if named.is_empty() { "file" } else { named };
+    let mut name: String = named
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | '<' | '>' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    if name.starts_with('.') {
+        name.replace_range(..1, "_");
+    }
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) if extension.len() <= MAX_EXTENSION_BYTES => {
+            (stem.to_string(), format!(".{extension}"))
+        }
+        _ => (name, String::new()),
+    };
+    let mut cap = MAX_NAME_BYTES
+        .saturating_sub(extension.len())
+        .min(stem.len());
+    while !stem.is_char_boundary(cap) {
+        cap -= 1;
+    }
+    let stem = &stem[..cap];
+    let is_taken = |candidate: &str| {
+        candidate.eq_ignore_ascii_case("README.md")
+            || taken.iter().any(|t| t.eq_ignore_ascii_case(candidate))
+    };
+    let mut candidate = format!("{stem}{extension}");
+    let mut n = 1;
+    while is_taken(&candidate) {
+        n += 1;
+        candidate = format!("{stem}-{n}{extension}");
+    }
+    candidate
+}
+
 /// The link whose text opens at the `[` at byte `start` of `md`: its text with escapes
-/// undone, and its url.
-fn link_at(md: &str, start: usize) -> Option<(String, String)> {
+/// undone, its url, and the byte range of its destination — the `<url>` with its brackets, or
+/// the bare url.
+fn link_at(md: &str, start: usize) -> Option<(String, String, Range<usize>)> {
     let mut text = String::new();
     let (mut depth, mut escaped, mut close) = (0usize, false, None);
     let mut last = '[';
@@ -251,6 +346,7 @@ fn link_at(md: &str, start: usize) -> Option<(String, String)> {
         }
     }
     let rest = md[close? + 1..].strip_prefix('(')?;
+    let rest_at = close? + 2;
     let mut cap = rest.len().min(MAX_LINK_DESTINATION);
     while !rest.is_char_boundary(cap) {
         cap -= 1;
@@ -259,13 +355,13 @@ fn link_at(md: &str, start: usize) -> Option<(String, String)> {
     // Stop each scan where CommonMark ends the part it reads: a `<url>` at a second `<`, a
     // bare url past `MAX_LINK_PARENS` open parentheses, a `(title)` at a second `(`. So the
     // scan from one bracket never runs on through the brackets after it.
-    let (url, after) = match rest.strip_prefix('<') {
+    let (url, after, destination) = match rest.strip_prefix('<') {
         Some(inner) => {
             let end = inner.find(['>', '<', '\n'])?;
             if !inner[end..].starts_with('>') {
                 return None;
             }
-            (&inner[..end], &inner[end + 1..])
+            (&inner[..end], &inner[end + 1..], rest_at..rest_at + end + 2)
         }
         None => {
             let mut depth = 0usize;
@@ -286,7 +382,7 @@ fn link_at(md: &str, start: usize) -> Option<(String, String)> {
                     _ => {}
                 }
             }
-            (&rest[..end], &rest[end..])
+            (&rest[..end], &rest[end..], rest_at..rest_at + end)
         }
     };
     let after = after.trim_start();
@@ -303,12 +399,37 @@ fn link_at(md: &str, start: usize) -> Option<(String, String)> {
         }
         _ => return None,
     };
-    after.starts_with(')').then(|| (text, url.to_string()))
+    after
+        .starts_with(')')
+        .then(|| (text, url.to_string(), destination))
+}
+
+/// Every file `is_linear` takes that `description` embeds or links, then `comments` oldest
+/// first, as its name and its url: control markers left out, each url once.
+pub(crate) fn files_linked_by(
+    description: &str,
+    comments: &[Comment],
+    is_linear: &dyn Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    let mut thread: Vec<&Comment> = comments
+        .iter()
+        .filter(|c| !is_control_marker(&c.text))
+        .collect();
+    thread.sort_by(|a, b| (a.posted_at, &a.id).cmp(&(b.posted_at, &b.id)));
+    let mut files: Vec<(String, String)> = Vec::new();
+    for text in std::iter::once(description).chain(thread.iter().map(|c| c.text.as_str())) {
+        for (name, url) in linked_files(text, is_linear) {
+            if !files.iter().any(|(_, seen)| *seen == url) {
+                files.push((name, url));
+            }
+        }
+    }
+    files
 }
 
 /// Every file Linear hosts that the issue `issue_id` embeds or links, as its name and its url:
 /// in its description, then in its thread oldest first, control markers left out, each url
-/// once.
+/// once ([`files_linked_by`]).
 ///
 /// # Errors
 ///
@@ -320,21 +441,12 @@ pub(crate) fn linked_issue_files(
     let description = tracker
         .issue_description(issue_id)
         .map_err(|e| e.to_string())?;
-    let mut thread = tracker
+    let thread = tracker
         .issue_comments(issue_id)
         .map_err(|e| e.to_string())?;
-    thread.retain(|c| !is_control_marker(&c.text));
-    thread.sort_by(|a, b| (a.posted_at, &a.id).cmp(&(b.posted_at, &b.id)));
-    let is_linear = |url: &str| tracker.is_linear_file(url);
-    let mut files: Vec<(String, String)> = Vec::new();
-    for text in std::iter::once(&description).chain(thread.iter().map(|c| &c.text)) {
-        for (name, url) in linked_files(text, &is_linear) {
-            if !files.iter().any(|(_, seen)| *seen == url) {
-                files.push((name, url));
-            }
-        }
-    }
-    Ok(files)
+    Ok(files_linked_by(&description, &thread, &|url| {
+        tracker.is_linear_file(url)
+    }))
 }
 
 #[cfg(test)]
@@ -560,6 +672,100 @@ mod tests {
             let took = started.elapsed();
             assert!(took < std::time::Duration::from_secs(5), "{unit}: {took:?}");
         }
+    }
+
+    /// A relink writes `<name>` over the destination of each link whose url is mapped, in
+    /// every form a destination takes — bare, `<url>`, before a title, an image inside a
+    /// link — and leaves each other byte as it was written: a url not in the map, an
+    /// external link, a bare url, the titles and the text.
+    #[test]
+    fn relink_rewrites_each_mapped_destination_and_nothing_else() {
+        let (a, b) = (
+            "https://uploads.linear.app/o/1/a",
+            "https://uploads.linear.app/o/2/b",
+        );
+        let to = |url: &str| match url {
+            "https://uploads.linear.app/o/1/a" => Some("a 修复.png".to_string()),
+            "https://uploads.linear.app/o/2/b" => Some("b.log".to_string()),
+            _ => None,
+        };
+        let markdown = format!(
+            "![a]({a}) and [b](<{b}>)\n\
+             [c]({a} \"a title\")\n\
+             [d](<{b}> 'single' )\n\
+             [![badge]({a})]({b} (paren))\n\
+             [other](https://uploads.linear.app/o/3/c) [ext](https://example.com/x.png)\n\
+             bare {a}, [no destination] ({a})\n\
+             修复 [esc \\] aped]({a}) end"
+        );
+        assert_eq!(
+            relink(&markdown, &to),
+            "![a](<a 修复.png>) and [b](<b.log>)\n\
+             [c](<a 修复.png> \"a title\")\n\
+             [d](<b.log> 'single' )\n\
+             [![badge](<a 修复.png>)](<b.log> (paren))\n\
+             [other](https://uploads.linear.app/o/3/c) [ext](https://example.com/x.png)\n\
+             bare https://uploads.linear.app/o/1/a, [no destination] (https://uploads.linear.app/o/1/a)\n\
+             修复 [esc \\] aped](<a 修复.png>) end"
+        );
+        assert_eq!(relink(&markdown, &|_: &str| None), markdown);
+        assert_eq!(relink("", &to), "");
+        assert_eq!(relink("no links 修复", &to), "no links 修复");
+    }
+
+    /// A `<url>` destination that itself holds a whole link is one destination: the relink
+    /// writes the outer one's name and leaves the link inside it out, never a corrupt mix.
+    #[test]
+    fn relink_leaves_a_destination_inside_another_alone() {
+        let markdown = "[a](<x [b](https://uploads.linear.app/o/1/a)>) tail";
+        assert_eq!(
+            relink(markdown, &|_: &str| Some("n".to_string())),
+            "[a](<n>) tail"
+        );
+    }
+
+    /// A name is one plain file name: the link's text with `/ \ < >`, control characters and
+    /// a leading `.` written `_`, the url's last segment when the text is empty, cut at a
+    /// char boundary with its extension kept, never `README.md` in any case, and a duplicate
+    /// numbered from 2 before its extension, whatever its case.
+    #[test]
+    fn a_task_file_name_is_one_safe_name_and_never_a_duplicate() {
+        let url = "https://uploads.linear.app/o/1/asset";
+        let name = |text: &str, taken: &[&str]| {
+            let taken: Vec<String> = taken.iter().map(|t| t.to_string()).collect();
+            task_file_name(text, url, &taken)
+        };
+        assert_eq!(name("shot — 修复.png", &[]), "shot — 修复.png");
+        assert_eq!(name("a/b\\c<d>e\nf\u{7}g.png", &[]), "a_b_c_d_e_f_g.png");
+        assert_eq!(name("../../etc/passwd", &[]), "_._.._etc_passwd");
+        assert_eq!(name(".env", &[]), "_env");
+        assert_eq!(name("  report.pdf  ", &[]), "report.pdf");
+        assert_eq!(name("", &[]), "asset");
+        assert_eq!(
+            task_file_name(
+                "",
+                "https://uploads.linear.app/o/1/rep%20ort.pdf?sig=x#y",
+                &[]
+            ),
+            "rep%20ort.pdf"
+        );
+        assert_eq!(task_file_name("", "", &[]), "file");
+
+        let long = format!("a{}.png", "字".repeat(100));
+        let cut = name(&long, &[]);
+        assert_eq!(cut, format!("a{}.png", "字".repeat(31)));
+        assert!(cut.len() <= MAX_NAME_BYTES);
+        let no_extension = name(&"é".repeat(200), &[]);
+        assert_eq!(no_extension, "é".repeat(50));
+
+        assert_eq!(name("README.md", &[]), "README-2.md");
+        assert_eq!(name("readme.MD", &[]), "readme-2.MD");
+        assert_eq!(name("README.md", &["README-2.md"]), "README-3.md");
+        assert_eq!(name("shot.png", &["shot.png"]), "shot-2.png");
+        assert_eq!(name("shot.png", &["shot.png", "shot-2.png"]), "shot-3.png");
+        assert_eq!(name("shot.png", &["SHOT.PNG"]), "shot-2.png");
+        assert_eq!(name("log", &["log"]), "log-2");
+        assert_eq!(name("a.tar.gz", &["a.tar.gz"]), "a.tar-2.gz");
     }
 
     /// The writer and the reader of the embed format agree: what `embed` writes for any

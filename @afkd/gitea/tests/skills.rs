@@ -194,6 +194,28 @@ fn fetch_attachment_downloads_the_asset_into_the_scratch_dir() {
     assert_eq!(downloads(&fake, &asset).len(), 1, "{:?}", fake.seen());
 }
 
+/// With no issue in the environment, the number comes from `task/issue/number` in the
+/// scratch dir, where afkd's handed-over files sit, and the screenshot is still fetched.
+#[test]
+fn fetch_attachment_reads_the_number_from_task_issue_number_in_the_scratch_dir() {
+    let (fake, asset) = issue();
+    let scratch = TempDir::new("fetch-number-file");
+    std::fs::create_dir_all(scratch.path().join("task/issue")).unwrap();
+    std::fs::write(scratch.path().join("task/issue/number"), ISSUE.to_string()).unwrap();
+    let out = fetch_command(asset.id, &fake, &scratch)
+        .env_remove("GITEA_ISSUE_NUMBER")
+        .output()
+        .expect("run python3");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = scratch.path().join("attachments").join(NAME);
+    assert!(
+        std::fs::read(&written).unwrap() == screenshot(),
+        "the screenshot came back changed"
+    );
+    assert_eq!(downloads(&fake, &asset).len(), 1, "{:?}", fake.seen());
+}
+
 /// Behind the proxy, the asset's download rides a tunnel too, past the API reads: the file
 /// comes through byte for byte, and the token header with it, which the fake refuses a
 /// download without.

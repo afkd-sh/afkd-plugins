@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use common::fake::{FakeGithub, TOKEN};
-use common::{Plugin, MAX_LINE};
+use common::{Plugin, TempDir, MAX_LINE};
 
 /// The token's login: non-ASCII and bracketed, as a GitHub App's bot login is.
 const ME: &str = "björn-öst[bot]";
@@ -250,8 +250,8 @@ fn a_won_race_hands_over_the_built_ins_unit() {
                 "GITHUB_TOKEN": TOKEN,
             },
             "files": [
-                {"path": "task.md", "text": format!("{TITLE}\n\n{BODY}")},
-                {"path": "issue/number", "text": "7"},
+                {"path": "task/README.md", "text": format!("{TITLE}\n\n{BODY}")},
+                {"path": "task/issue/number", "text": "7"},
             ],
         })
     );
@@ -938,6 +938,302 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
     plugin.finish();
 }
 
+// --- the files an item links ---
+
+/// A PNG's signature and then every byte value, so a copy that is text — one that trims, decodes
+/// or normalizes a line end — cannot match.
+fn png() -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend(0..=255u8);
+    bytes.extend_from_slice(b"\r\n\0\xff--IEND");
+    bytes
+}
+
+/// A PDF's header and trailer around binary comment bytes and NULs.
+fn pdf() -> Vec<u8> {
+    let mut bytes = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\r\n".to_vec();
+    bytes.extend((0..=255u8).rev());
+    bytes.extend_from_slice(b"\n%%EOF\r\n");
+    bytes
+}
+
+/// The `from` path of the file a reply hands over at `path`, which must sit in the plugin's
+/// own directory, under `task-files` and a folder of the unit's.
+fn copied_from(unit: &Value, path: &str, state: &TempDir) -> std::path::PathBuf {
+    let file = unit["files"]
+        .as_array()
+        .and_then(|files| files.iter().find(|f| f["path"] == path))
+        .unwrap_or_else(|| panic!("no {path} in {}", unit["files"]));
+    assert!(file.get("text").is_none(), "{file}");
+    let from = std::path::PathBuf::from(file["from"].as_str().expect("a from path"));
+    assert!(
+        from.starts_with(state.path().join("task-files")),
+        "{} is not under the state dir",
+        from.display()
+    );
+    from
+}
+
+/// The claimed item with an image and a PDF runs with both files in `task/`, byte for byte,
+/// and its README.md links them by relative path. The issue's body pastes the PNG as an
+/// `<img>` (GitHub's own editor writes it so) at an attachment that wants the token and
+/// redirects to storage; a comment links the PDF, which the issue brief — it carries no
+/// comment — lists in a closing section. No GitHub url is left in the README, the token went
+/// to the web host and the storage hop saw none, and the folder is gone after the `finish`.
+#[test]
+fn an_issues_image_and_pdf_land_in_task_byte_for_byte_and_the_readme_links_them() {
+    let (png, pdf) = (png(), pdf());
+    let fake = FakeGithub::start(ME);
+    let uuid = "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+    let image = fake.asset(uuid, &png, "image/png", None);
+    let spec = fake.attachment(1234, "Spec-v2.pdf", &pdf, "application/pdf");
+    let body = format!(
+        "Crash on start:\n\n<img width=\"640\" height=\"480\" alt=\"Image\" src=\"{image}\" />\n\n\
+         — reported by 陳大文"
+    );
+    fake.issue(REPO, 7, TITLE, &body, &["afkd/ready"], &[HUMAN]);
+    fake.comment(
+        REPO,
+        7,
+        HUMAN,
+        &format!("The spec: [Spec-v2.pdf]({spec})"),
+        120,
+    );
+    let state = TempDir::new("issue-files");
+    let mut plugin = Plugin::armed_in(settings(&fake), state.path());
+
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let unit = reply["unit"].clone();
+    let readme = "Crash on start:\n\n<img width=\"640\" height=\"480\" alt=\"Image\" \
+                  src=\"Image.png\" />\n\n— reported by 陳大文\n\n\
+                  ## Files linked elsewhere on the item\n\n\
+                  These are linked from the item's description or its comments, which this brief \
+                  does not carry, and are downloaded beside it:\n\n\
+                  - [Spec-v2.pdf](<Spec-v2.pdf>)\n";
+    let readme = format!("{TITLE}\n\n{readme}");
+    let paths: Vec<&str> = unit["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "task/README.md",
+            "task/issue/number",
+            "task/Image.png",
+            "task/Spec-v2.pdf"
+        ]
+    );
+    assert_eq!(unit["files"][0]["text"], readme);
+    assert!(
+        !readme.contains("http") && !readme.contains(fake.host()),
+        "a GitHub url is left in the README"
+    );
+    let (image_at, spec_at) = (
+        copied_from(&unit, "task/Image.png", &state),
+        copied_from(&unit, "task/Spec-v2.pdf", &state),
+    );
+    assert_eq!(
+        std::fs::read(&image_at).unwrap(),
+        png,
+        "the image, byte for byte"
+    );
+    assert_eq!(
+        std::fs::read(&spec_at).unwrap(),
+        pdf,
+        "the PDF, byte for byte"
+    );
+    let folder = image_at.parent().unwrap().to_path_buf();
+    assert_eq!(spec_at.parent(), Some(folder.as_path()));
+
+    // The token went to the web host, and the hop to storage saw none.
+    let hops = fake.file_requests();
+    let wanted: Vec<(&str, bool)> = hops
+        .iter()
+        .map(|r| (r.path.as_str(), r.auth == format!("Bearer {TOKEN}")))
+        .collect();
+    assert_eq!(
+        wanted,
+        [
+            (
+                "/user-attachments/assets/0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5",
+                true
+            ),
+            ("/storage/0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5", false),
+            ("/user-attachments/files/1234/Spec-v2.pdf", true),
+        ]
+    );
+    for hop in hops.iter().filter(|r| r.path.starts_with("/storage/")) {
+        assert_eq!(hop.auth, "", "the storage hop was sent a credential");
+    }
+
+    // The files stay until the run is over: afkd copies them in on each attempt.
+    assert!(folder.is_dir());
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    assert!(!folder.exists(), "the folder is deleted at finish");
+    let stderr = plugin.finish();
+    assert_eq!(stderr, "", "nothing to say about a clean fetch");
+}
+
+/// The same for a PR: the description's image and the file the new feedback links are
+/// downloaded, the README links the one its feedback carries by name and lists the one only
+/// the description links, and nothing is left behind once the unit is released instead.
+#[test]
+fn a_prs_image_and_log_land_in_task_byte_for_byte_and_the_readme_links_them() {
+    let (png, log) = (png(), b"line 1\r\n\0line 2\xff\n".to_vec());
+    let fake = FakeGithub::start(ME);
+    let image = fake.asset(
+        "5e2a9c71-0f6c-4d1e-9b3a-7c8d9e0f1a2b",
+        &png,
+        "image/png",
+        Some("inline; filename=\"screenshot.png\""),
+    );
+    let run_log = fake.attachment(9001, "run.log", &log, "text/plain");
+    fake.pull(REPO, 7, ME, BRANCH, &[], &[HUMAN]);
+    fake.retitle(REPO, 7, PR_TITLE);
+    fake.describe(REPO, 7, &format!("Caps the backoff.\n\n![Image]({image})"));
+    fake.comment(
+        REPO,
+        7,
+        HUMAN,
+        &format!("看起来不对 🚨 — the log: [run.log]({run_log})"),
+        120,
+    );
+    let state = TempDir::new("pr-files");
+    let mut plugin = Plugin::armed_as_in("pr", pr_settings(&fake), state.path());
+
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let unit = reply["unit"].clone();
+    let readme = "Address review feedback on PR #7.\n\n## New feedback\n\n\
+                  **陳大文:** 看起来不对 🚨 — the log: [run.log](<run.log>)\n\n\
+                  ## Files linked elsewhere on the item\n\n\
+                  These are linked from the item's description or its comments, which this brief \
+                  does not carry, and are downloaded beside it:\n\n\
+                  - [Image.png](<Image.png>)\n";
+    let paths: Vec<&str> = unit["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "task/README.md",
+            "task/pr/number",
+            "task/Image.png",
+            "task/run.log"
+        ]
+    );
+    assert_eq!(unit["files"][0]["text"], readme);
+    assert!(
+        !readme.contains("http"),
+        "a GitHub url is left in the README"
+    );
+    let (image_at, log_at) = (
+        copied_from(&unit, "task/Image.png", &state),
+        copied_from(&unit, "task/run.log", &state),
+    );
+    assert_eq!(
+        std::fs::read(&image_at).unwrap(),
+        png,
+        "the image, byte for byte"
+    );
+    assert_eq!(
+        std::fs::read(&log_at).unwrap(),
+        log,
+        "the log, byte for byte"
+    );
+    for hop in fake
+        .file_requests()
+        .iter()
+        .filter(|r| r.path.starts_with("/storage/"))
+    {
+        assert_eq!(hop.auth, "", "the storage hop was sent a credential");
+    }
+    assert_eq!(
+        fake.file_requests()
+            .iter()
+            .filter(|r| r.auth == format!("Bearer {TOKEN}"))
+            .count(),
+        2,
+        "the token reached the two attachments"
+    );
+
+    let folder = image_at.parent().unwrap().to_path_buf();
+    assert!(folder.is_dir());
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": unit["key"]})),
+        json!({"released": true})
+    );
+    assert!(!folder.exists(), "the folder is deleted at release");
+    assert_eq!(plugin.finish(), "");
+}
+
+/// A plugin that is sent no `state_dir` downloads nothing: the README keeps the GitHub url,
+/// the unit has no `from` entry, and the forge's file side is never asked for the file. A
+/// file that is not there — an attachment that answers `404` — never fails the claim: its
+/// link stays GitHub's and the log says so.
+#[test]
+fn without_a_state_dir_nothing_is_downloaded_and_a_missing_file_only_logs() {
+    let fake = FakeGithub::start(ME);
+    let image = fake.asset(
+        "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5",
+        &png(),
+        "image/png",
+        None,
+    );
+    let body = format!("<img alt=\"Image\" src=\"{image}\">");
+    fake.issue(REPO, 7, TITLE, &body, &["afkd/ready"], &[HUMAN]);
+    let mut plugin = Plugin::armed(settings(&fake));
+    let unit = plugin.poll()["unit"].clone();
+    assert_eq!(
+        unit["files"],
+        json!([
+            {"path": "task/README.md", "text": format!("{TITLE}\n\n{body}")},
+            {"path": "task/issue/number", "text": "7"},
+        ])
+    );
+    assert!(
+        fake.file_requests().is_empty(),
+        "{:?}",
+        fake.file_requests()
+    );
+    plugin.finish();
+
+    // With a directory, but a file GitHub does not serve: the claim is still won.
+    let fake = FakeGithub::start(ME);
+    let missing = format!("{}/user-attachments/files/9/gone.pdf", fake.host());
+    let body = format!("See [gone.pdf]({missing})");
+    fake.issue(REPO, 7, TITLE, &body, &["afkd/ready"], &[]);
+    let state = TempDir::new("missing-file");
+    let mut plugin = Plugin::armed_in(settings(&fake), state.path());
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    assert_eq!(
+        reply["unit"]["files"][0]["text"],
+        format!("{TITLE}\n\n{body}"),
+        "the link stays GitHub's"
+    );
+    assert_eq!(reply["unit"]["files"].as_array().unwrap().len(), 2);
+    let stderr = plugin.finish();
+    assert!(
+        stderr.contains(&format!(
+            "afkd-github: issue \"{TITLE}\" (acme/widgets#7): the file at {missing} is not \
+             downloaded, and stays a GitHub link in the brief for the skill's \
+             fetch_attachment.py — github fetch file: forge returned status 404"
+        )),
+        "{stderr}"
+    );
+}
+
 // --- pr ---
 
 /// The PR's head branch: non-ASCII, and crossing to the run verbatim.
@@ -1036,10 +1332,10 @@ fn pr_a_won_race_hands_over_the_built_ins_unit() {
                 "GITHUB_TOKEN": TOKEN,
             },
             "files": [
-                {"path": "task.md", "text": "Address review feedback on PR #7.\n\n\
+                {"path": "task/README.md", "text": "Address review feedback on PR #7.\n\n\
                     ## New feedback\n\n**陳大文:** 看起来不对 🚨 — the cap never applies:\n\n    \
                     max_backoff = 0\n"},
-                {"path": "pr/number", "text": "7"},
+                {"path": "task/pr/number", "text": "7"},
             ],
         })
     );

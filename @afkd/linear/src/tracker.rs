@@ -827,6 +827,11 @@ mod mock {
             *lock(&self.post_author) = Some(author.to_string());
         }
 
+        /// Have the mock hold `bytes` at `url`, as a file Linear hosts there.
+        pub(crate) fn seed_file(&self, url: &str, bytes: &[u8]) {
+            lock(&self.files).push((url.to_string(), bytes.to_vec()));
+        }
+
         /// The bytes the mock holds at `url`.
         pub(crate) fn file(&self, url: &str) -> Option<Vec<u8>> {
             lock(&self.files)

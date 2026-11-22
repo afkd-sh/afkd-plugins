@@ -8,7 +8,7 @@ requires-executables: [python3]
 ## The message this run works
 
 A run of a `service(telegram)` starts on one message the bot received, and its brief,
-`task.md`, holds it: who sent it, in which chat, when, what it replies to, its text, and a
+`task/README.md`, holds it: who sent it, in which chat, when, what it replies to, its text, and a
 line per file it carries with the file id `fetch_file.py` takes. That brief is the only way
 to read an incoming message: Telegram hands a bot's messages to one reader, the service, so
 this skill reads none. The service also sets the env every script reads, so you pass no

@@ -38,10 +38,18 @@ active issue/MR. Use `list_issues.py` (below) to find an issue number to target.
 
 ## Attachments
 
+The files your brief links are already downloaded: the images and files a human pasted
+or attached to the issue/MR, in its description and its notes, sit in the `task/` folder
+beside `task/README.md`, which links each by its relative path — open them there with
+the `Read` tool. A file only a note links, which the brief does not carry, is listed
+at the end of `task/README.md` the same way. A link in the brief that still points at
+GitLab (`/uploads/…`) is a file that could not be downloaded; fetch it with
+`fetch_attachment.py`, below.
+
 A file a human pasted into the issue/MR — a screenshot, a log, a diagram — lands
 on GitLab as a markdown `/uploads/<hash>/<file>` reference in the body text, so
-`list_comments.py` shows only the reference, not the file. To see it, fetch every
-referenced upload and `Read` the downloaded file:
+`list_comments.py` shows only the reference, not the file. To see one that is not
+already in `task/`, fetch every referenced upload and `Read` the downloaded file:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/gitlab/fetch_attachment.py"`
 
@@ -95,10 +103,10 @@ ADR-0017). The helpers need `python3` on the host (and `git`, for `open_mr`):
   base (empty → `https://gitlab.com`; any other value → its `/api/v4` root, cloud or
   self-managed). `GITLAB_PROJECT` is a numeric id or a `group/name` path.
 - The active issue/MR number — `GITLAB_MR_NUMBER`, then `GITLAB_ISSUE_NUMBER`,
-  falling back to the number under `$AFKD_SCRATCH_DIR/mr/number` or
-  `$AFKD_SCRATCH_DIR/issue/number` (the comment and attachment helpers use both;
+  falling back to the number under `$AFKD_SCRATCH_DIR/task/mr/number` or
+  `$AFKD_SCRATCH_DIR/task/issue/number` (the comment and attachment helpers use both;
   the MR helper's `Closes #N` linkage uses `GITLAB_ISSUE_NUMBER` then
-  `$AFKD_SCRATCH_DIR/issue/number`). `list_comments.py`/`post_comment.py` accept
+  `$AFKD_SCRATCH_DIR/task/issue/number`). `list_comments.py`/`post_comment.py` accept
   `--issue N` / `--mr N` to override it for a different issue/MR (`list_issues.py`
   needs no number — it lists the whole project).
 - `AFKD_SCRATCH_DIR` — additionally required by `fetch_attachment.py` (the

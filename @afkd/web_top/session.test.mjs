@@ -401,14 +401,18 @@ test("the footer's gated hints track the selected row's own badge", () => {
 /// The footer's key badges at one cursor position, as `{keys, label, live}` — read off the
 /// rendered screen's own cells, so the gate observed is the gate painted. A key is a non-blank
 /// cell on the rule band, live when bold, and its label sits past its closing end and a space.
+/// A gated key recedes whole instead: off the band, its blank ends, a space and its label all
+/// in the free tone, so it is the free-toned cell with a free-toned label three cells on.
 function footerTextAt(board, at, selected) {
   const { layout } = layoutModule;
   const rows = layout(board, { cols: 140, rows: 30, now: at + 1000, version: "0.2.123", selected, grouped: true });
   const row = rows.at(-1);
   const out = [];
   row.forEach((c, i) => {
-    if (c.bg !== "rule" || c.text.trim() === "") return;
-    out.push({ keys: c.text, label: row[i + 3].text, live: c.bold });
+    if (c.bg === "rule" && c.text.trim() !== "") out.push({ keys: c.text, label: row[i + 3].text, live: c.bold });
+    else if (c.fg === "free" && c.bg === null && row[i + 1]?.text === " " && row[i + 2]?.text === " " && row[i + 3]?.fg === "free") {
+      out.push({ keys: c.text, label: row[i + 3].text, live: false });
+    }
   });
   return out;
 }

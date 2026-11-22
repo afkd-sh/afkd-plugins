@@ -417,6 +417,45 @@ impl CapturedTui {
     }
 }
 
+/// The background query afkd opens `afkd top` with (OSC 11), and the reply of a dark terminal
+/// painting the page's own ground `#0d1117`.
+const BACKGROUND_QUERY: &[u8] = b"\x1b]11;?";
+const DARK_BACKGROUND_REPLY: &[u8] = b"\x1b]11;rgb:0d0d/1111/1717\x1b\\";
+/// The primary device-attributes query sent after it (DA1), and the reply of a VT220-class
+/// terminal: afkd reads it as "the terminal is done answering", so it ends the wait early.
+const ATTRIBUTES_QUERY: &[u8] = b"\x1b[c";
+const ATTRIBUTES_REPLY: &[u8] = b"\x1b[?62c";
+
+/// Answer the queries in `unanswered`, the bytes the child painted since the last call, the way
+/// a dark truecolor terminal would, and drop what was answered. afkd asks the terminal for its
+/// background at startup and picks its night palette only on a dark reply, a day one on a light
+/// reply, and the 16-colour ansi one when nothing answers within 100 ms; a PTY with nobody on
+/// the other end would leave every colour a test reads as ansi, never the product's 24-bit hue.
+/// Only a tail too short to hold a query is kept, so one split across two reads is still seen.
+fn answer_terminal_queries(unanswered: &mut Vec<u8>, master: &PtyMaster) {
+    let find = |bytes: &[u8], query: &[u8]| bytes.windows(query.len()).position(|w| w == query);
+    loop {
+        let background = find(unanswered, BACKGROUND_QUERY).map(|at| (at, BACKGROUND_QUERY));
+        let attributes = find(unanswered, ATTRIBUTES_QUERY).map(|at| (at, ATTRIBUTES_QUERY));
+        let Some((at, query)) = [background, attributes]
+            .into_iter()
+            .flatten()
+            .min_by_key(|(at, _)| *at)
+        else {
+            break;
+        };
+        master.write_all(if query == BACKGROUND_QUERY {
+            DARK_BACKGROUND_REPLY
+        } else {
+            ATTRIBUTES_REPLY
+        });
+        unanswered.drain(..at + query.len());
+    }
+    let keep = BACKGROUND_QUERY.len() - 1;
+    let drop_to = unanswered.len().saturating_sub(keep);
+    unanswered.drain(..drop_to);
+}
+
 /// `afkd <args>` on a `cols`×`rows` PTY under the pinned `HOME`, with each `(name, value)`
 /// in `extra_env` set on it too. The `vt100::Parser` is sized to match, so `screen()` reconstructs the
 /// same geometry the child laid its frame out against — which is what lets a test observe
@@ -460,8 +499,12 @@ pub(crate) fn spawn_captured_sized(
     let read_master = master.try_clone().expect("dup pty master for reader");
     let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
     let reader_parser = Arc::clone(&parser);
+    let reply_master = PtyMaster {
+        fd: master.try_clone().expect("dup pty master for replies"),
+    };
     let reader = std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut unanswered = Vec::new();
         loop {
             let n = unsafe {
                 libc::read(
@@ -479,6 +522,8 @@ pub(crate) fn spawn_captured_sized(
                 .lock()
                 .expect("parser mutex")
                 .process(&buf[..n as usize]);
+            unanswered.extend_from_slice(&buf[..n as usize]);
+            answer_terminal_queries(&mut unanswered, &reply_master);
         }
     });
     CapturedTui {

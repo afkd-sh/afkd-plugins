@@ -172,7 +172,7 @@ pub(crate) fn comments_line(comments: &[WireComment]) -> String {
     serde_json::json!({ "comments": comments }).to_string()
 }
 
-/// Fit a `poll` reply under [`MAX_REPLY`] by cutting the unit's `task.md` text, if it has
+/// Fit a `poll` reply under [`MAX_REPLY`] by cutting the unit's `task/README.md` text, if it has
 /// to be cut at all, and return the line.
 ///
 /// The cut keeps the longest prefix — at a char boundary — that still fits beside a

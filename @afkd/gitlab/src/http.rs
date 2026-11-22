@@ -14,12 +14,17 @@
 //! global timeout is clipped to what is left of [`CALL_BUDGET`], and once it is gone no
 //! request is sent at all.
 //!
+//! Beside the endpoints, one GET of a file's bytes ([`HttpClient::get_bytes`]), which sends
+//! the credential to the API root and to no one else: a redirect is followed by hand, each
+//! hop a request of its own that carries none.
+//!
 //! The spine never trims a configured base and never names an endpoint: the caller hands
 //! it a finished API root and appends its own `.query(…)` pairs to the request
 //! [`HttpClient::request`] hands back. The failure vocabulary is the caller's, through
 //! [`HttpError`]. And a transport failure's reason is built URL-free
 //! ([`transport_reason`]), so no request line ever reaches a diagnostic.
 
+use std::io::Read;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -134,6 +139,46 @@ impl ForgeRequest {
             ForgeRequest::WithBody(r) => r.send(body),
         }
     }
+}
+
+/// What a GET of a file came back with: its status and its body as bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BytesReply {
+    pub(crate) status: u16,
+    pub(crate) body: Vec<u8>,
+}
+
+/// The most redirects [`HttpClient::get_bytes`] follows before it gives the file up.
+const MAX_FILE_HOPS: usize = 5;
+
+/// The url a redirect's `location` names, as a hop from `current`: an absolute one as it is,
+/// a `//host/…` one under `current`'s scheme, a `/path` one on `current`'s origin, and any
+/// other relative to the directory of `current`'s path. `None` for no location, or a
+/// `current` with no scheme.
+fn resolve_location(current: &str, location: &str) -> Option<String> {
+    let location = location.trim();
+    if location.is_empty() {
+        return None;
+    }
+    if location.starts_with("http://") || location.starts_with("https://") {
+        return Some(location.to_string());
+    }
+    let (scheme, rest) = current.split_once("://")?;
+    if let Some(network) = location.strip_prefix("//") {
+        return Some(format!("{scheme}://{network}"));
+    }
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let origin = format!("{scheme}://{}", &rest[..authority_end]);
+    if location.starts_with('/') {
+        return Some(format!("{origin}{location}"));
+    }
+    let path = rest[authority_end..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default();
+    let directory = &path[..path.rfind('/').map_or(0, |i| i + 1)];
+    let directory = if directory.is_empty() { "/" } else { directory };
+    Some(format!("{origin}{directory}{location}"))
 }
 
 /// The failure vocabulary a caller's error type supplies so the spine can report a fault
@@ -265,6 +310,73 @@ impl<E: HttpError> HttpClient<E> {
     /// GET `path` with the credential, returning the body text.
     pub(crate) fn get(&self, stage: &'static str, path: &str) -> Result<String, E> {
         self.send(stage, self.request("GET", path))
+    }
+
+    /// GET the base-relative `path` with the credential, under the call's budget, and read
+    /// the reply's bytes whatever its status, up to `cap`: a body past it is an undecodable
+    /// reply, read no further.
+    ///
+    /// A redirect (a 3xx naming a `Location`) is followed here, not by ureq, up to
+    /// [`MAX_FILE_HOPS`] hops, each a new request that carries **no** credential — a file
+    /// GitLab serves from object storage is fetched from there, and the token never leaves
+    /// the API root. The last reply is the one returned; a redirect that is not followed (no
+    /// `Location`) is returned as it came.
+    pub(crate) fn get_bytes(
+        &self,
+        stage: &'static str,
+        path: &str,
+        cap: u64,
+    ) -> Result<BytesReply, E> {
+        let mut url = format!("{}{path}", self.base);
+        let mut hops = 0;
+        loop {
+            let mut req = self
+                .agent()
+                .get(&url)
+                .config()
+                .http_status_as_error(false)
+                .max_redirects(0)
+                .build();
+            if hops == 0 {
+                req = req.header(&self.auth.0, &self.auth.1);
+            }
+            if let Some(global) = self.request_budget(stage)? {
+                req = req.config().timeout_global(Some(global)).build();
+            }
+            let mut resp = req
+                .call()
+                .map_err(|e| E::transport(stage, transport_reason(&e)))?;
+            let status = resp.status().as_u16();
+            let next = matches!(status, 301 | 302 | 303 | 307 | 308)
+                .then(|| resp.headers().get("location"))
+                .flatten()
+                .and_then(|location| location.to_str().ok())
+                .and_then(|location| resolve_location(&url, location));
+            if let Some(next) = next {
+                if hops == MAX_FILE_HOPS {
+                    return Err(E::transport(
+                        stage,
+                        format!("more than {MAX_FILE_HOPS} redirects"),
+                    ));
+                }
+                hops += 1;
+                url = next;
+                continue;
+            }
+            let mut body = Vec::new();
+            resp.body_mut()
+                .as_reader()
+                .take(cap + 1)
+                .read_to_end(&mut body)
+                .map_err(|e| E::decode(stage, &e.to_string()))?;
+            if body.len() as u64 > cap {
+                return Err(E::decode(
+                    stage,
+                    &format!("over the {cap} bytes a file may hold"),
+                ));
+            }
+            return Ok(BytesReply { status, body });
+        }
     }
 
     /// Execute a built request, mapping ureq's outcome onto an `E` and reading the body.
@@ -546,5 +658,195 @@ mod tests {
         http.set_deadline(Some(Instant::now()));
         http.set_deadline(None);
         assert_eq!(http.get("read", "/user"), Ok("[]".to_string()));
+    }
+
+    /// A loopback server that answers its connections in turn with `replies`, one each, and
+    /// hands back the header lines each request carried.
+    fn scripted(replies: Vec<Vec<u8>>) -> (String, std::sync::mpsc::Receiver<Vec<String>>) {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+                let mut seen = Vec::new();
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|n| n > 0) && line != "\r\n" {
+                    seen.push(line.trim_end().to_string());
+                    line.clear();
+                }
+                let _ = stream.write_all(&reply);
+                let _ = tx.send(seen);
+            }
+        });
+        (base, rx)
+    }
+
+    /// A reply of `status` with `headers` and `body`, as a file is served.
+    fn reply(status: &str, headers: &[String], body: &[u8]) -> Vec<u8> {
+        let mut reply = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\n", body.len());
+        for header in headers {
+            reply.push_str(header);
+            reply.push_str("\r\n");
+        }
+        reply.push_str("Connection: close\r\n\r\n");
+        let mut reply = reply.into_bytes();
+        reply.extend_from_slice(body);
+        reply
+    }
+
+    fn redirect(location: &str) -> Vec<u8> {
+        reply("302 Found", &[format!("Location: {location}")], b"")
+    }
+
+    fn carries_the_token(headers: &[String]) -> bool {
+        headers.iter().any(|h| h.contains("SUPERSECRET"))
+    }
+
+    /// The credential goes to the first request and to no other: a redirect to another
+    /// origin (a storage host) and one to a path of the same origin are each fetched with
+    /// none, and the last reply's bytes — a NUL, a CR LF and invalid UTF-8 among them — come
+    /// back whole with its status.
+    #[test]
+    fn get_bytes_sends_the_token_to_the_first_request_only() {
+        let bytes = b"\x89PNG\r\n\x1a\n\0\xff\xfe--end\r\n";
+        let (storage, storage_seen) = scripted(vec![reply("200 OK", &[], bytes)]);
+        // The API answers twice: a hop to a path of its own origin, which is a hop to the
+        // storage host.
+        let (api, api_seen) = scripted(vec![
+            redirect("/second?sig=abc"),
+            redirect(&format!("{storage}/blob?sig=abc")),
+        ]);
+        let got = client(api).get_bytes("fetch upload", "/projects/1/uploads/s/x.png", 1024);
+        assert_eq!(
+            got,
+            Ok(BytesReply {
+                status: 200,
+                body: bytes.to_vec()
+            })
+        );
+        let first = api_seen.recv().unwrap();
+        assert!(
+            first[0].starts_with("GET /projects/1/uploads/s/x.png "),
+            "{first:?}"
+        );
+        assert!(carries_the_token(&first), "the first request carries it");
+        let second = api_seen.recv().unwrap();
+        assert!(second[0].starts_with("GET /second?sig=abc "), "{second:?}");
+        assert!(!carries_the_token(&second), "{second:?}");
+        let last = storage_seen.recv().unwrap();
+        assert!(last[0].starts_with("GET /blob?sig=abc "), "{last:?}");
+        assert!(!carries_the_token(&last), "{last:?}");
+    }
+
+    /// A redirect with no `Location`, and a status past 2xx, come back as they are: the
+    /// status and the body, no error.
+    #[test]
+    fn get_bytes_returns_any_status_and_a_redirect_it_cannot_follow() {
+        for (status, headers) in [("404 Not Found", vec![]), ("302 Found", vec![])] {
+            let (base, _seen) = scripted(vec![reply(status, &headers, b"<html>nope</html>")]);
+            let got = client(base).get_bytes("fetch upload", "/x", 1024).unwrap();
+            assert_eq!(got.status, status[..3].parse::<u16>().unwrap());
+            assert_eq!(got.body, b"<html>nope</html>");
+        }
+    }
+
+    /// A body is read to the cap and no further: the cap itself is taken, one byte more is
+    /// an undecodable reply.
+    #[test]
+    fn a_body_over_the_cap_is_refused() {
+        for (len, ok) in [(8, true), (9, false)] {
+            let (base, _seen) = scripted(vec![reply("200 OK", &[], &vec![7; len])]);
+            let got = client(base).get_bytes("fetch upload", "/x.bin", 8);
+            assert_eq!(got.is_ok(), ok, "{len} bytes");
+            if let Err(e) = got {
+                assert_eq!(
+                    e,
+                    TestError::Decode("over the 8 bytes a file may hold".to_string())
+                );
+            }
+        }
+    }
+
+    /// A redirect that never ends is given up after [`MAX_FILE_HOPS`] hops, as a transport
+    /// failure that names no url.
+    #[test]
+    fn get_bytes_gives_up_on_a_redirect_loop() {
+        let (base, seen) = scripted(vec![redirect("/again"); MAX_FILE_HOPS + 1]);
+        let got = client(base).get_bytes("fetch upload", "/x", 1024);
+        assert_eq!(
+            got,
+            Err(TestError::Transport {
+                stage: "fetch upload",
+                reason: format!("more than {MAX_FILE_HOPS} redirects")
+            })
+        );
+        for _ in 0..=MAX_FILE_HOPS {
+            seen.recv_timeout(Duration::from_secs(5))
+                .expect("one request per hop");
+        }
+    }
+
+    /// A call with nothing left sends nothing for a file either.
+    #[test]
+    fn get_bytes_sends_nothing_past_the_call_deadline() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        listener.set_nonblocking(true).unwrap();
+        let http = client(format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().unwrap().port()
+        ));
+        http.set_deadline(Some(Instant::now()));
+        assert_eq!(
+            http.get_bytes("fetch upload", "/x", 8),
+            Err(TestError::Transport {
+                stage: "fetch upload",
+                reason: "the call's 45s budget ran out".into()
+            })
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    /// A `Location` resolves against the url it came from: absolute as written, `//host`
+    /// under its scheme, `/path` on its origin, and a bare name beside its path.
+    #[test]
+    fn a_redirect_location_resolves_against_its_url() {
+        let at = "http://gitlab.example.com:8080/api/v4/projects/1/uploads/s/x.png?a=b#c";
+        for (location, want) in [
+            (
+                "https://s3.example.com/b?sig=1",
+                Some("https://s3.example.com/b?sig=1"),
+            ),
+            ("//cdn.example.com/b", Some("http://cdn.example.com/b")),
+            (
+                "/storage/b?sig=1",
+                Some("http://gitlab.example.com:8080/storage/b?sig=1"),
+            ),
+            (
+                "y.png",
+                Some("http://gitlab.example.com:8080/api/v4/projects/1/uploads/s/y.png"),
+            ),
+            ("  /trim  ", Some("http://gitlab.example.com:8080/trim")),
+            ("", None),
+            ("   ", None),
+        ] {
+            assert_eq!(
+                resolve_location(at, location).as_deref(),
+                want,
+                "{location:?}"
+            );
+        }
+        assert_eq!(
+            resolve_location("http://host", "y").as_deref(),
+            Some("http://host/y")
+        );
+        assert_eq!(resolve_location("no scheme", "/y"), None);
     }
 }
