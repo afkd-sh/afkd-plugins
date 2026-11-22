@@ -2962,6 +2962,7 @@ export const KIND_GLYPH = {
   fs: "✎︎",
   lifecycle: "⚑︎",
   http: "🌐",
+  call: "🔌",
 };
 /// The glyph for a kind the wire may grow past this table — the `cmd` gear rather than a `?`,
 /// since an unknown step is still a step and the rail must keep its column either way.
