@@ -1553,7 +1553,7 @@ function retireSource(tree, source) {
  * a value only a renderer reads.
  *
  * It buckets by the **exact** `group` string, as `group_rollup` does: a group is one package
- * (packages are flat, lang-v2 §20.3). A service whose group is `""` is a top-level row and a
+ * (packages are flat, reference §12.1). A service whose group is `""` is a top-level row and a
  * member of no group at all.
  *
  * One thing it deliberately does **not** do, recorded here so a later diff against a real

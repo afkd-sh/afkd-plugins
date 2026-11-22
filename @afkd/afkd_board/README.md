@@ -10,7 +10,7 @@ makes is a child afkd starts for that one call.
 
 It reads the board's HTTP API, which the site's README documents (*A board's API*). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 

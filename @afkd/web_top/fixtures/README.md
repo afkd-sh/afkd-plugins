@@ -14,7 +14,9 @@ afkd 0.2.171 renamed four event tags, so `fire_started`, `fire_ok`, `fire_failed
 moved. And afkd 0.2.173 joins a namespaced name's run-dir segments with `.` rather than `__`, so
 the one service dir in each `runs*/` tree was moved from `ops__監視` to `ops.監視`, its contents
 untouched. And afkd's v2 config spells a service `package.name`, a package being one flat
-group (lang-v2 §3.6, §20.3), so the v1 identities were rewritten in place: `ops::nightly`,
+group ([reference §12.7](https://afkd.sh/docs/reference/#127-qualified-identity) for
+`package.name`, [§12.1](https://afkd.sh/docs/reference/#121-packages) for a package being one
+flat group), so the v1 identities were rewritten in place: `ops::nightly`,
 `ops::broken`, `ops::sleeper`, `tree::retried` and `ops::監視` to `ops.nightly`, `ops.broken`,
 `ops.sleeper`, `tree.retried` and `ops.監視`, and the two-level `ops::db::vacuum` (group
 `ops::db`) to `ops.vacuum` (group `ops`). Only exact JSON string values that equal an identity
