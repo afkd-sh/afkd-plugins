@@ -24,6 +24,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 /// afkd's line cap, newline included.
 pub const MAX_LINE: usize = 64 * 1024;
 
+/// afkd's cap on the reply to a `call`, newline included.
+pub const MAX_CALL_LINE: usize = 8 * 1024 * 1024;
+
 /// The service the ordinary legs arm as.
 pub const DEVELOP: &str = "afkd::develop";
 
@@ -100,8 +103,20 @@ impl Plugin {
 
     /// Spawn and greet with `settings` as `service`, asserting it arms.
     pub fn armed_as(service: &str, settings: Value) -> Self {
+        Self::armed_with(service, OWNER, None, settings)
+    }
+
+    /// Spawn and greet with `settings` as `service` and the claim owner `owner`, naming the
+    /// plugin's own directory `state_dir` when there is one — which a restarted process
+    /// shares with the one before it — asserting it arms.
+    pub fn armed_with(
+        service: &str,
+        owner: &str,
+        state_dir: Option<&Path>,
+        settings: Value,
+    ) -> Self {
         let mut plugin = Self::spawn();
-        let reply = plugin.hello_as(service, settings);
+        let reply = plugin.hello_with(service, owner, state_dir, settings);
         assert_eq!(reply["ok"], true, "hello refused: {}", plugin.stderr());
         plugin
     }
@@ -115,9 +130,43 @@ impl Plugin {
     /// the daemon's roster (both services this board runs) and the claim owner beside
     /// them.
     pub fn hello_as(&mut self, service: &str, settings: Value) -> Value {
-        self.call(json!({"call": "hello", "proto": 2, "kind": "card",
-                         "service": service, "roster": [DEVELOP, DISCUSS],
-                         "owner": OWNER, "settings": settings}))
+        self.hello_with(service, OWNER, None, settings)
+    }
+
+    /// The same, as the claim owner `owner`, naming the plugin's directory `state_dir`.
+    pub fn hello_with(
+        &mut self,
+        service: &str,
+        owner: &str,
+        state_dir: Option<&Path>,
+        settings: Value,
+    ) -> Value {
+        let mut hello = json!({"call": "hello", "proto": 2, "kind": "card",
+                               "service": service, "roster": [DEVELOP, DISCUSS],
+                               "owner": owner, "settings": settings});
+        if let Some(dir) = state_dir {
+            hello["state_dir"] = json!(dir);
+        }
+        self.call(hello)
+    }
+
+    /// Call one read as afkd does for a call no `service(trello)` is behind: the one request
+    /// a child afkd started for it gets, with no `hello` before it, naming the protocol. Its
+    /// arguments are bound by parameter name, the account first.
+    pub fn read(&mut self, action: &str, args: Value) -> Value {
+        self.call_capped(
+            json!({"call": "call", "proto": 2, "action": action, "args": args}),
+            MAX_CALL_LINE,
+        )
+    }
+
+    /// Call one read on an armed child, from a slot of the `service(trello)` it serves: the
+    /// call carries no `proto`, since the child has been greeted.
+    pub fn read_armed(&mut self, action: &str, args: Value) -> Value {
+        self.call_capped(
+            json!({"call": "call", "action": action, "args": args}),
+            MAX_CALL_LINE,
+        )
     }
 
     /// Call one action on the card of `unit`, as afkd sends each action a slot calls: its
@@ -135,9 +184,15 @@ impl Plugin {
     /// Write one request and read its reply line: under afkd's cap, newline-terminated,
     /// one JSON object.
     pub fn call(&mut self, request: Value) -> Value {
+        self.call_capped(request, MAX_LINE)
+    }
+
+    /// Write one request and read its reply line, held to `cap` bytes, newline included:
+    /// afkd's 64 KiB for every request but a `call`, whose reply it takes up to 8 MiB.
+    pub fn call_capped(&mut self, request: Value, cap: usize) -> Value {
         let line = self.call_raw(request);
         assert!(
-            line.len() <= MAX_LINE,
+            line.len() <= cap,
             "a reply line over afkd's cap: {}",
             line.len()
         );

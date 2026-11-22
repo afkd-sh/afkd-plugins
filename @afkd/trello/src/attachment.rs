@@ -172,6 +172,28 @@ pub(crate) fn newest_named<'a>(
         .max_by(|a, b| (a.date, &a.id).cmp(&(b.date, &b.id)))
 }
 
+/// Write `bytes` to `dest` through a temp file beside it, renamed onto it, so `dest` never
+/// holds part of a download and no temp file outlives a failed write. A missing parent
+/// directory is an error, not created, and so is a path that names no file.
+pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let Some(file) = dest.file_name() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the path names no file",
+        ));
+    };
+    let temp = dest.with_file_name(format!(
+        ".{}.afkd-trello-{}",
+        file.to_string_lossy(),
+        std::process::id()
+    ));
+    std::fs::write(&temp, bytes)
+        .and_then(|()| std::fs::rename(&temp, dest))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&temp);
+        })
+}
+
 /// Write the newest upload named `name` on `card` to the absolute path `to`, or say on the
 /// diagnostic channel that there is none and write nothing. The bytes go to a temp file
 /// beside `to` and are renamed onto it, so `to` never holds part of a download; a missing
@@ -187,9 +209,9 @@ pub(crate) fn fetch(
     if !dest.is_absolute() {
         return Err(format!("fetch_attachment: to must be absolute, not {to:?}"));
     }
-    let Some(file) = dest.file_name() else {
+    if dest.file_name().is_none() {
         return Err(format!("fetch_attachment: to names no file: {to}"));
-    };
+    }
     let listed = board
         .card_attachments(&card.id)
         .map_err(|e| e.to_string())?;
@@ -210,17 +232,7 @@ pub(crate) fn fetch(
     let bytes = board
         .download_attachment(&found.url)
         .map_err(|e| e.to_string())?;
-    let temp = dest.with_file_name(format!(
-        ".{}.afkd-trello-{}",
-        file.to_string_lossy(),
-        std::process::id()
-    ));
-    std::fs::write(&temp, &bytes)
-        .and_then(|()| std::fs::rename(&temp, dest))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&temp);
-            format!("fetch_attachment: cannot write {to}: {e}")
-        })?;
+    write_atomic(dest, &bytes).map_err(|e| format!("fetch_attachment: cannot write {to}: {e}"))?;
     diag.narrate(&format!(
         "{ACTION_TAG} fetching attachment {name:?} from card \"{title}\" into {to} ({} bytes)",
         bytes.len()

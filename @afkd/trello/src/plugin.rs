@@ -8,6 +8,13 @@
 //! unit's card is kept a while for that ([`FINISHED_MAX`]), since its post-run slot's
 //! calls arrive after `finish`.
 //!
+//! **Every read reaches an account, not the service** ([`crate::reads`]). It comes as a
+//! `call`: to the trigger child from a `service(trello)`'s slot, and from anywhere else to a
+//! child afkd starts for that one call, which gets no `hello` and reads its `proto` off the
+//! call itself ([`once`]). Either way the read is answered through the client built for the
+//! account it names, and a trigger child keeps the clients it has built ([`Clients`]), so
+//! `"me"` is resolved once per account for the child's life.
+//!
 //! Six things the wire forces that the built-in never had to do:
 //!
 //! - **Who is asking arrives in `hello`.** The built-in read its service, roster and
@@ -32,27 +39,34 @@
 //!   card's writes in order — once Trello is back, for up to an hour.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
+use crate::account::Clients;
 use crate::attachment::read_upload;
 use crate::board::{BoardClient, Card};
 use crate::card::{is_afkd, Identity, TrelloUnits, Unit};
 use crate::client::TrelloClient;
 use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
-use crate::lifecycle::{from_call, Call, LifecycleAction, Op};
+use crate::lifecycle::{from_call, Call, LifecycleAction, Op, ACTIONS};
 use crate::outbox::{Outbox, Write};
+use crate::reads::{self, READS};
 use crate::rfc3339::format_utc;
 use crate::settings::{board_config, BoardConfig};
 use crate::wire::{
-    fire_line, fit_comments, fit_poll, Facts, Request, UnitOutcome, WireComment, MAX_REPLY, PROTO,
+    fire_line, fit_comments, fit_poll, Facts, Fitted, Request, UnitOutcome, WireComment, MAX_REPLY,
+    PROTO,
 };
 
 /// The one kind this plugin provides, its main one: `service(trello)` in a config.
 pub(crate) const TRELLO_KIND: &str = "card";
+
+/// The sentence the process ends on when a request that is no call for a child of its own
+/// comes before a `hello` this plugin accepted: afkd is out of step.
+const BEFORE_HELLO: &str = "afkd sent a call before a `hello` this plugin accepted";
 
 /// How many finished units' cards a post-run hook's `call`s can still reach. afkd sends
 /// them straight after `finish`, one unit at a time, so a handful would do; the rest is
@@ -96,6 +110,8 @@ struct Armed {
     /// The cards of the units most recently finished, by key and oldest first, for the
     /// post-run hook's `call`s; at most [`FINISHED_MAX`].
     finished: VecDeque<(String, Card)>,
+    /// The clients the reads this child answered were made through, one per account.
+    clients: Clients,
 }
 
 /// A unit afkd is running.
@@ -156,13 +172,15 @@ impl Plugin {
                 service,
                 roster,
                 owner,
+                state_dir,
             } => {
                 let id = Identity {
                     owner,
                     service,
                     roster,
                 };
-                let arming = arm(&self.connect, proto, &kind, &settings, id)
+                let state_dir = state_dir.map(PathBuf::from);
+                let arming = arm(&self.connect, proto, &kind, &settings, id, state_dir)
                     .map_err(|problem| diag.err(&problem))
                     .ok();
                 *armed = arming.map(|(units, cfg)| {
@@ -206,9 +224,14 @@ impl Plugin {
             } => on_armed(armed, clock, |a| {
                 a.finish(&key, outcome, &facts, clock.now(), diag)
             }),
-            Request::Call { action, args } => {
-                on_armed(armed, clock, |a| a.call(&action, &args, clock.now(), diag))
-            }
+            Request::Call {
+                action,
+                args,
+                proto,
+            } => match armed {
+                Some(_) => on_armed(armed, clock, |a| a.call(&action, &args, clock, diag)),
+                None => once(&action, &args, proto, clock, diag),
+            },
             Request::Unknown => {
                 diag.err(&"afkd sent a call this plugin did not list in its `hello` reply");
                 Answer::Reply(json!({"ok": false}).to_string())
@@ -234,20 +257,66 @@ fn on_armed(
             armed.units.set_call_deadline(None);
             answer
         }
-        None => Answer::Fatal("afkd sent a call before a `hello` this plugin accepted".into()),
+        None => Answer::Fatal(BEFORE_HELLO.into()),
     }
+}
+
+/// Answer the one `call` a child afkd started for it gets, with no `hello` before it: a read,
+/// under the call's own budget. An action no one declared is refused, as is a protocol this
+/// plugin does not speak. A call with no `proto` at all is no such call: afkd is out of step,
+/// as for any request before a `hello`.
+///
+/// Today's actions are not answered here: each acts on the card a `service(trello)` claimed,
+/// which only that service's child holds.
+fn once(
+    action: &str,
+    args: &Map<String, Value>,
+    proto: Option<u32>,
+    clock: &dyn Clock,
+    diag: &dyn Diag,
+) -> Answer {
+    let Some(proto) = proto else {
+        return Answer::Fatal(BEFORE_HELLO.into());
+    };
+    let refuse = |error: String| {
+        diag.err(&error);
+        Answer::Reply(json!({"ok": false, "error": error}).to_string())
+    };
+    if proto != PROTO {
+        return refuse(format!(
+            "afkd speaks plugin protocol {proto}, and this plugin speaks {PROTO}"
+        ));
+    }
+    if ACTIONS.contains(&action) {
+        return refuse(format!(
+            "{action} acts on a card a service(trello) claimed, and this call has no service"
+        ));
+    }
+    if !READS.contains(&action) {
+        return refuse(format!("no action `{action}`"));
+    }
+    let mut clients = Clients::default();
+    Answer::Reply(reads::answer(
+        action,
+        args,
+        clock.now() + CALL_BUDGET,
+        &mut clients,
+        diag,
+    ))
 }
 
 /// Arm the kind `hello` names over its settings, as `id`, or say why not; the settings
 /// it armed with come back too, for the outbox's worker. afkd has already held the block
 /// to the manifest, so what can be wrong here is the protocol, the kind, a missing
-/// identity, or a rule the manifest cannot express.
+/// identity, or a rule the manifest cannot express. `state_dir` is the plugin's own
+/// directory, where a claim's record outlives the process.
 fn arm(
     connect: &Connect,
     proto: u32,
     kind: &str,
     settings: &serde_json::Value,
     id: Identity,
+    state_dir: Option<PathBuf>,
 ) -> Result<(Armed, BoardConfig), String> {
     if proto != PROTO {
         return Err(format!(
@@ -266,9 +335,10 @@ fn arm(
     }
     let cfg = board_config(settings).map_err(|e| format!("trigger {kind}: {e}"))?;
     let armed = Armed {
-        units: TrelloUnits::new(connect(&cfg), &cfg, id),
+        units: TrelloUnits::new(connect(&cfg), &cfg, id, state_dir),
         live: BTreeMap::new(),
         finished: VecDeque::new(),
+        clients: Clients::default(),
     };
     Ok((armed, cfg))
 }
@@ -302,12 +372,25 @@ impl Armed {
         let whole = fire_line(&wire);
         let line = if whole.len() <= MAX_REPLY {
             whole
-        } else if let Some(cut) = fit_poll(&wire) {
-            diag.err(&format_args!(
-                "the brief for {} was cut to fit afkd's 64 KiB plugin line",
-                unit.thread()
-            ));
-            cut
+        } else if let Some(Fitted {
+            line,
+            description_cut,
+            brief_cut,
+        }) = fit_poll(&wire)
+        {
+            if description_cut {
+                diag.err(&format_args!(
+                    "the description field of {} was cut to fit afkd's 64 KiB plugin line",
+                    unit.thread()
+                ));
+            }
+            if brief_cut {
+                diag.err(&format_args!(
+                    "the brief for {} was cut to fit afkd's 64 KiB plugin line",
+                    unit.thread()
+                ));
+            }
+            line
         } else {
             // Only a unit whose fields besides the brief overflow the line reaches this:
             // nothing can be handed over, so the claim is taken back before the service
@@ -468,13 +551,28 @@ impl Armed {
     /// read, or a board that refused it. A write the board could not be reached for is
     /// taken for delivery and `ok`: the outbox retries it, and the slot's next action
     /// queues behind it. A `fetch_attachment` is a read, done now or refused, never queued.
+    ///
+    /// A read ([`READS`]) reaches the `trello.Account` it is passed through this child's
+    /// client for it, and no card of this service: it is answered first, whoever claimed what.
     fn call(
-        &self,
+        &mut self,
         action: &str,
         args: &Map<String, Value>,
-        now: Instant,
+        clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
+        // A read reaches the account it is passed, and no card of this service: it is
+        // answered whoever claimed what.
+        if READS.contains(&action) {
+            return Answer::Reply(reads::answer(
+                action,
+                args,
+                clock.now() + CALL_BUDGET,
+                &mut self.clients,
+                diag,
+            ));
+        }
+        let now = clock.now();
         let refuse = |error: String| {
             diag.err(&error);
             Answer::Reply(json!({"ok": false, "error": error}).to_string())
@@ -655,7 +753,8 @@ mod tests {
     /// id is the card's, as `poll` handed it over.
     fn handle(key: &serde_json::Value) -> serde_json::Value {
         let key = key.as_str().expect("a unit key");
-        json!({"id": key.split('#').next(), "key": key})
+        let id = key.strip_prefix("trello:").unwrap_or(key);
+        json!({"id": id.split('#').next(), "key": key})
     }
 
     /// The `hello` today's afkd writes, carrying `settings`.
@@ -870,7 +969,9 @@ mod tests {
         let mut f = Fixture::armed(settings());
         seed(&f.board);
         let unit = f.poll()["unit"].clone();
-        assert_eq!(unit["key"], "card1#c1000");
+        assert_eq!(unit["key"], "trello:card1");
+        assert_eq!(unit["fields"]["list"], "Up for Grabs");
+        assert_eq!(unit["fields"]["title"], TITLE);
         assert_eq!(unit["self"], SELF_ID);
         assert_eq!(
             f.diag.narrated(),
@@ -1221,9 +1322,13 @@ mod tests {
             "{}",
             &brief[brief.len() - 120..]
         );
+        // The description sits in the brief whole, so both are cut to share the line.
         assert_eq!(
             f.diag.errs(),
-            ["the brief for card1 was cut to fit afkd's 64 KiB plugin line"]
+            [
+                "the description field of card1 was cut to fit afkd's 64 KiB plugin line",
+                "the brief for card1 was cut to fit afkd's 64 KiB plugin line"
+            ]
         );
     }
 
@@ -1516,7 +1621,7 @@ mod tests {
             json!({"ok": true})
         );
         let second = f.poll()["unit"]["key"].clone();
-        assert!(second.as_str().unwrap().starts_with("card2#"), "{second}");
+        assert_eq!(second, "trello:card2");
 
         let text = "afkd landed this card in 3m 12s.\n\n— 完了 ✅";
         assert_eq!(
@@ -1837,5 +1942,118 @@ mod tests {
             f.plugin.answer(request),
             Answer::Fatal(reason) if reason.contains("before a `hello`")
         ));
+    }
+
+    /// A reply line `f` answered `request` with, as JSON.
+    fn reply_of(f: &mut Fixture, request: serde_json::Value) -> serde_json::Value {
+        let request = serde_json::from_value(request).expect("an afkd request");
+        match f.plugin.answer(request) {
+            Answer::Reply(line) => serde_json::from_str(&line).expect("a JSON reply"),
+            Answer::Fatal(reason) => panic!("unexpected fatal: {reason}"),
+        }
+    }
+
+    /// The one call a child afkd starts for it gets, with no `hello` before it, names its
+    /// `proto`: a protocol this plugin does not speak is refused naming both, an action no one
+    /// declared is refused, and today's actions — which act on a card a service claimed — are
+    /// refused with their reason. Each is a reply, diagnosed, never the fatal a call with no
+    /// `proto` is.
+    #[test]
+    fn a_one_shot_call_is_refused_by_name() {
+        let acct = json!({"api_key": "k", "token": "t"});
+        let once = |action: &str, proto: serde_json::Value, args: serde_json::Value| json!({"call": "call", "proto": proto, "action": action, "args": args});
+        for (request, error) in [
+            (
+                once("boards", json!(1), json!({"acct": acct})),
+                "afkd speaks plugin protocol 1, and this plugin speaks 2",
+            ),
+            (once("assign", json!(2), json!({})), "no action `assign`"),
+            (
+                once(
+                    "archive",
+                    json!(2),
+                    json!({"card": {"id": "c", "key": "trello:c"}}),
+                ),
+                "archive acts on a card a service(trello) claimed, and this call has no service",
+            ),
+            (
+                once(
+                    "cards",
+                    json!(2),
+                    json!({"acct": {"api_key": "", "token": "t"}}),
+                ),
+                "cards: acct.api_key is empty",
+            ),
+            (
+                once(
+                    "boards",
+                    json!(2),
+                    json!({"acct": {"api_key": "k", "token": ""}}),
+                ),
+                "boards: acct.token is empty",
+            ),
+            (
+                once("lists", json!(2), json!({"acct": acct})),
+                "lists: parameter board is required",
+            ),
+        ] {
+            let mut f = Fixture::new();
+            assert_eq!(
+                reply_of(&mut f, request.clone()),
+                json!({"ok": false, "error": error}),
+                "{request}"
+            );
+            assert_eq!(f.diag.errs(), [error], "{request}");
+            assert!(
+                f.board.calls().is_empty(),
+                "the kind's board is never touched"
+            );
+        }
+        // No `proto`: no child of its own, so afkd is out of step — the before-hello fatal.
+        let mut f = Fixture::new();
+        let request = serde_json::from_value(json!({"call": "call", "action": "boards",
+                                                   "args": {"acct": acct}}))
+        .unwrap();
+        assert!(matches!(
+            f.plugin.answer(request),
+            Answer::Fatal(reason) if reason.contains("before a `hello`")
+        ));
+    }
+
+    /// An armed child answers a read the same way, whoever claimed what: an account with no
+    /// token is refused in a reply, while the kind's own units go on being polled.
+    #[test]
+    fn an_armed_child_answers_a_read_through_the_account_it_is_passed() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        let reply = f.call(json!({"call": "call", "action": "cards",
+            "args": {"acct": {"api_key": "k", "token": ""}, "board": "BID"}}));
+        assert_eq!(
+            reply,
+            json!({"ok": false, "error": "cards: acct.token is empty"})
+        );
+        assert_eq!(f.diag.errs(), ["cards: acct.token is empty"]);
+        assert!(
+            f.board.calls().is_empty(),
+            "the service's board is not the account"
+        );
+        assert_eq!(f.poll()["fire"], true, "the service claims on");
+    }
+
+    /// A `hello` that names the plugin's directory arms the service with it: the claim the
+    /// first poll wins is recorded in a file there before the unit is handed over.
+    #[test]
+    fn hello_hands_the_service_the_directory_claims_are_recorded_in() {
+        let dir = TempDir::new("hello-dir");
+        let mut f = Fixture::new();
+        let mut greeting = hello(settings());
+        greeting["state_dir"] = json!(dir.path());
+        assert_eq!(f.call(greeting)["ok"], true);
+        seed(&f.board);
+        let unit = f.poll()["unit"].clone();
+        assert_eq!(unit["key"], "trello:card1");
+        let record = std::fs::read_to_string(dir.path().join("claims/card1.json")).unwrap();
+        let record: serde_json::Value = serde_json::from_str(&record).unwrap();
+        assert_eq!(record["claim_id"], "c1000");
     }
 }

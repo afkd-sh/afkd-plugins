@@ -5,7 +5,9 @@
 //!
 //! - The **install** leg installs the tree the release tarball holds and runs one card
 //!   through it on a real daemon, its slots' actions crossing as `call`s on the card each
-//!   is passed and its slots reading every field the card's handle declares.
+//!   is passed and its slots reading every field the card's handle declares; its `on_claim`
+//!   reads the board with `trello.cards` and faults the run unless the card it was passed is
+//!   `==` the card read, which holds a claimed card and a read one to be one handle.
 //! - The **two lists** leg claims, on a real daemon, a card from the second of the two
 //!   lists its `pick_from` names, past a held card in the first.
 //! - The **outage** leg fails a card through both its attempts while Trello is out of
@@ -162,6 +164,10 @@ const LABELS: &[&str] = &["afkd/ready", "", "Väntar på svar"];
 /// The file, under the service's work dir, its `on_run` writes the card's handle fields to.
 const FIELDS: &str = "fields.txt";
 
+/// The file its `on_run` writes the card's description to, whole: a field of many lines, with
+/// quotes and a fence in it.
+const DESCRIPTION: &str = "description.txt";
+
 /// A human's question on the card before afkd ever looked, which the brief must carry.
 const ASK: &str = "看起来不对 🚨 — it resets on every 401:\n\n```\nGET /1/members/me 401\n```";
 
@@ -191,14 +197,53 @@ fn seed() -> (FakeTrello, String) {
 /// `member` left to its default — and whose `on_done` comment afkd interpolates from the outcome and the
 /// card's title. The run holds until the test creates `release` — bounded, so a test that
 /// never does cannot wedge it — which is what lets the test see the claim and the run
-/// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each.
+/// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each,
+/// and the description to [`DESCRIPTION`]. Its `on_claim` first reads the board's cards of
+/// the list with `trello.cards`, through a `trello.Account` of the fake's, and faults the
+/// run unless the card it was passed is `==` the one card read ([`claim_check`]) — the
+/// claimed card and the card read are one handle to a real afkd.
 fn service(home: &Path, base_url: &str) -> String {
-    service_drawing(home, base_url, r#"pick_from    "Up for Grabs""#)
+    service_with(
+        home,
+        base_url,
+        r#"pick_from    "Up for Grabs""#,
+        &claim_check(base_url),
+    )
 }
 
-/// [`service`], drawing its cards as `intake` says: the `pick_from` line, and any gate
-/// written under it.
+/// The statements an `on_claim` runs first to hold the claimed card to the card `trello.cards`
+/// reads: the board's cards of `Up for Grabs`, read through an account of the fake at
+/// `base_url`, are the one card, and it is `==` the card the slot was passed. Written
+/// before any move, so the card is read where the claim found it.
+fn claim_check(base_url: &str) -> String {
+    format!(
+        r#"    acct := trello.Account{{ api_key: "{KEY}", token: "{TOKEN}", base_url: "{base_url}" }}
+    match trello.cards(acct, "https://trello.com/b/{BOARD}/afkd-drift", list=[ "Up for Grabs" ]) {{
+      .ok(cards) => {{
+        if len(cards) != 1 {{
+          fail("trello.cards read #{{len(cards)}} cards of Up for Grabs, not the one claimed")
+        }}
+        for found in cards {{
+          if found != card {{
+            fail("the card trello.cards read is not the card claimed: #{{found.id}} and #{{card.id}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("trello.cards: #{{e.message}}")
+    }}
+"#
+    )
+}
+
+/// [`service`] without the claim check, drawing its cards as `intake` says: the `pick_from`
+/// line, and any gate written under it.
 fn service_drawing(home: &Path, base_url: &str, intake: &str) -> String {
+    service_with(home, base_url, intake, "")
+}
+
+/// A service drawing its cards as `intake` says, its `on_claim` running `check` before it
+/// adds the token's member and moves the card.
+fn service_with(home: &Path, base_url: &str, intake: &str, check: &str) -> String {
     format!(
         r#"import "afkd"
 import "@afkd/trello"
@@ -213,7 +258,7 @@ widgets :: service(trello) {{
   max_attempts 1
 
   on_claim proc(card: trello.Card) {{
-    trello.add_member(card)
+{check}    trello.add_member(card)
     trello.move_to(card, "In Progress", at=.top)
   }}
   on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
@@ -225,10 +270,29 @@ widgets :: service(trello) {{
   on_run proc(run: afkd.Run, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     $ echo title #{{card.title}} >> {FIELDS}
+    $ echo number #{{card.number}} >> {FIELDS}
+    $ echo name #{{card.name}} >> {FIELDS}
     $ echo url #{{card.url}} >> {FIELDS}
+    $ echo board #{{card.board}} >> {FIELDS}
+    $ echo list #{{card.list}} >> {FIELDS}
+    $ printf %s #{{card.description}} > {DESCRIPTION}
     for label in card.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
+    for member in card.members {{
+      $ echo member #{{member}} >> {FIELDS}
+    }}
+    if card.due != nil {{
+      $ echo due set >> {FIELDS}
+    }}
+    if card.due_complete {{
+      $ echo due_complete yes >> {FIELDS}
+    }}
+    if card.archived {{
+      $ echo archived yes >> {FIELDS}
+    }}
+    $ echo created_at #{{card.created_at}} >> {FIELDS}
+    $ echo last_activity_at #{{card.last_activity_at}} >> {FIELDS}
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
@@ -245,11 +309,14 @@ fn write_config(home: &Path, config: &str) {
 }
 
 /// The credentials a config reads from the daemon's environment
-/// (`env.get("TRELLO_API_KEY")`), as the README's lead example and §24 do, and §24's
-/// `GH_TOKEN`.
+/// (`env.get("TRELLO_API_KEY")`), as the README's lead example and §24 do, a second
+/// account's, and §24's `GH_TOKEN`.
 const CONFIG_ENV: &[(&str, &str)] = &[
     ("TRELLO_API_KEY", KEY),
     ("TRELLO_TOKEN", TOKEN),
+    // The second account the README's two-account example reads.
+    ("GLOBEX_TRELLO_API_KEY", "globex-key-drift"),
+    ("GLOBEX_TRELLO_TOKEN", "globex-token-drift"),
     ("GH_TOKEN", "gh-token-drift"),
 ];
 
@@ -364,6 +431,10 @@ fn read(path: &Path) -> String {
 /// title), and the daemon then drains clean.
 fn drive_one_card(home: &Path) {
     let (fake, card) = seed();
+    // A member already on the card, and a due date marked complete, so the fields the run
+    // reads are not all empty.
+    fake.card_member(&card, &fake.member("chen", "陳大文"));
+    fake.due(&card, 3 * 86_400, true);
     write_config(home, &service(home, fake.base_url()));
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
@@ -371,7 +442,9 @@ fn drive_one_card(home: &Path) {
     let daemon = spawn_headless_streaming(home, &[]);
 
     wait_for(home, &fake, &card, &daemon, "the card is claimed", || {
-        claimed(&fake, &card) && fake.list_of(&card) == "In Progress" && fake.members(&card) == [ME]
+        claimed(&fake, &card)
+            && fake.list_of(&card) == "In Progress"
+            && fake.members(&card) == ["chen", ME]
     });
     // The run dir is made before the spine lays the unit's files into it, so the wait is
     // for a written brief, not the bare dir.
@@ -417,14 +490,45 @@ fn drive_one_card(home: &Path) {
         "on_done's comment landed with its run fact and the title filled in:\n{}",
         dump(home, &fake, &card, &daemon)
     );
-    // Every field verbatim — the `$` lines shell-quote what they interpolate — and the
-    // labels by name, the colour-only one left out.
+    // The `on_claim` read the board with `trello.cards` and held the card it was passed to
+    // be the one card read: had they not been `==`, it faulted and the card was never moved.
+    // Every field the card's handle declares verbatim — the `$` lines shell-quote what they
+    // interpolate — the card as the claim found it (still in `Up for Grabs`, and with the
+    // member that was on it then), its labels by name with the colour-only one left out,
+    // and each time a line with a value, which only a real afkd knows how to spell.
+    let fields = read(&home.join(FIELDS));
+    let (times, rest): (Vec<&str>, Vec<&str>) = fields
+        .lines()
+        .partition(|line| line.starts_with("created_at ") || line.starts_with("last_activity_at "));
     assert_eq!(
-        read(&home.join(FIELDS)),
-        format!(
-            "title {TITLE}\nurl {}\nlabel afkd/ready\nlabel Väntar på svar\n",
-            fake.url(&card)
-        )
+        rest,
+        [
+            format!("title {TITLE}"),
+            "number 1".to_string(),
+            format!("name {TITLE}"),
+            format!("url {}", fake.url(&card)),
+            format!("board {BOARD}"),
+            "list Up for Grabs".to_string(),
+            "label afkd/ready".to_string(),
+            "label Väntar på svar".to_string(),
+            "member chen".to_string(),
+            "due set".to_string(),
+            "due_complete yes".to_string(),
+        ],
+        "fields.txt:\n{fields}"
+    );
+    assert_eq!(times.len(), 2, "both times: {fields}");
+    for (time, name) in times.iter().zip(["created_at", "last_activity_at"]) {
+        assert!(
+            time.strip_prefix(name)
+                .is_some_and(|value| value.trim().len() > 1),
+            "{name} is a line with a value: {time:?}"
+        );
+    }
+    assert_eq!(
+        read(&home.join(DESCRIPTION)),
+        BODY,
+        "the description, whole, as the card holds it"
     );
 
     daemon.signal(libc::SIGINT);

@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use crate::attachment::{multipart, Attachment, MAX_ATTACHMENT_BYTES};
 use crate::board::{BoardClient, BoardError, Card, CheckItem, Checklist, Comment};
+use crate::handles::{build_card, CardFields, Lookups};
 use crate::http::{HttpClient, HttpError, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT};
 use crate::lifecycle::ListPosition;
 use crate::rfc3339::{parse_rfc3339, parse_rfc3339_millis};
@@ -52,10 +53,10 @@ pub(crate) struct TrelloClient {
     /// The spine, holding the base, the `key`+`token` credential and the timeout
     /// budgets its requests ride.
     http: HttpClient<BoardError>,
-    /// The id of the member the credentials authenticate as, memoized on first
-    /// use. The credentials are fixed for the client's life, so the authed
-    /// identity cannot change under the memo.
-    me: OnceLock<String>,
+    /// The member the credentials authenticate as — id, username and full name —
+    /// memoized on first use. The credentials are fixed for the client's life, so the
+    /// authed identity cannot change under the memo.
+    me: OnceLock<(String, String, String)>,
     /// The credential again, as the `Authorization` header an attachment download sends,
     /// since its host refuses the query pairs. Never logged.
     authorization: String,
@@ -124,19 +125,59 @@ impl TrelloClient {
         }
     }
 
-    /// The id of the member these credentials authenticate as (`GET /members/me`),
-    /// fetched once and memoized.
+    /// This client, retrying: a 429 is tried again, and a 5xx on a read, a `PUT` and a
+    /// `DELETE` but never a `POST`, each after the wait Trello's rate-limit headers name or
+    /// else one second doubling, while the wait ends before the call's deadline. The kind's
+    /// own client is not: its writes are the outbox's to retry.
+    pub(crate) fn retrying(mut self) -> Self {
+        self.http = self.http.retrying();
+        self
+    }
+
+    /// This client, waiting through `sleep` rather than the thread's.
+    #[cfg(test)]
+    pub(crate) fn sleeping(mut self, sleep: impl Fn(Duration) + Send + Sync + 'static) -> Self {
+        self.http = self.http.sleeping(sleep);
+        self
+    }
+
+    /// The member these credentials authenticate as (`GET /members/me`): the id, the
+    /// username and the full name, fetched once and memoized.
     ///
     /// The memo is a cache, not a lock: two threads arriving before either
     /// finishes may both issue the GET, and `get_or_init` keeps one. Since the
     /// credentials are fixed the two answers are identical, so the race costs a
     /// request, never correctness.
-    fn me(&self, stage: &'static str) -> Result<String, BoardError> {
-        if let Some(id) = self.me.get() {
-            return Ok(id.clone());
+    pub(crate) fn me_member(
+        &self,
+        stage: &'static str,
+    ) -> Result<(String, String, String), BoardError> {
+        if let Some(me) = self.me.get() {
+            return Ok(me.clone());
         }
-        let id = parse_member_id(stage, &self.http.get(stage, "/members/me")?)?;
-        Ok(self.me.get_or_init(|| id).clone())
+        let me = parse_me(stage, &self.http.get(stage, "/members/me")?)?;
+        Ok(self.me.get_or_init(|| me).clone())
+    }
+
+    /// The id of the member these credentials authenticate as.
+    fn me(&self, stage: &'static str) -> Result<String, BoardError> {
+        Ok(self.me_member(stage)?.0)
+    }
+
+    /// GET `path` with the credential and the query `pairs`, read as JSON: what a read
+    /// through a `trello.Account` asks of Trello, tagged with `stage`.
+    pub(crate) fn get_json(
+        &self,
+        stage: &'static str,
+        path: &str,
+        pairs: &[(&str, &str)],
+    ) -> Result<Value, BoardError> {
+        let req = pairs
+            .iter()
+            .fold(self.http.request("GET", path), |req, (k, v)| {
+                req.query(k, v)
+            });
+        BoardError::decode_json(stage, &self.http.send(stage, req)?)
     }
 
     /// Resolve `member` to a member id, tagging any fault with `stage`.
@@ -284,6 +325,28 @@ impl BoardClient for TrelloClient {
             .query("fields", "name,labels");
         let body = self.http.send(stage, req)?;
         parse_cards(stage, &body)
+    }
+
+    fn card_handle(&self, card_id: &str) -> Result<CardFields, BoardError> {
+        let stage = "read card fields";
+        // The card with the three things its fields name by id nested in the one read: its
+        // list's name, its board's short link and its members' usernames. Trello's default
+        // card fields carry the rest.
+        let card = self.get_json(
+            stage,
+            &format!("/cards/{card_id}"),
+            &[
+                ("list", "true"),
+                ("list_fields", "name"),
+                ("board", "true"),
+                ("board_fields", "shortLink"),
+                ("members", "true"),
+                ("member_fields", "username"),
+            ],
+        )?;
+        build_card(&card, &Lookups::nested(&card))
+            .map(|handle| handle.fields)
+            .ok_or_else(|| decode_err(stage, "card missing id"))
     }
 
     fn read_card(&self, card_id: &str) -> Result<Option<Card>, BoardError> {
@@ -672,6 +735,24 @@ pub(crate) fn parse_member_id(stage: &'static str, body: &str) -> Result<String,
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| decode_err(stage, "authed member missing id"))
+}
+
+/// Parse the authed member from a `GET /members/me` response body: the id, the username
+/// and the full name, the last two `""` when Trello names none.
+pub(crate) fn parse_me(
+    stage: &'static str,
+    body: &str,
+) -> Result<(String, String, String), BoardError> {
+    let id = parse_member_id(stage, body)?;
+    let value = BoardError::decode_json(stage, body)?;
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    Ok((id, field("username"), field("fullName")))
 }
 
 /// Parse the `id` of a freshly created object (a label) from its response body.
@@ -3129,5 +3210,271 @@ mod tests {
             );
             assert!(!crate::outbox::transient(&err), "{url}");
         }
+    }
+
+    /// An answer of `code` with no body and the `headers` given, closing its connection.
+    fn status_reply(code: u16, headers: &[(&str, &str)]) -> String {
+        let headers: String = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect();
+        format!("HTTP/1.1 {code} Status\r\nContent-Length: 0\r\n{headers}Connection: close\r\n\r\n")
+    }
+
+    /// The waits a retrying client asked its sleeper for, in order.
+    type Waits = std::sync::Arc<std::sync::Mutex<Vec<Duration>>>;
+
+    /// A retrying client of `stub`, waiting through a recorder instead of the thread.
+    fn retrying_client(stub: &Stub) -> (TrelloClient, Waits) {
+        let waits = Waits::default();
+        let seen = std::sync::Arc::clone(&waits);
+        let client = stub
+            .client("KEY", "TOK")
+            .retrying()
+            .sleeping(move |d| seen.lock().unwrap().push(d));
+        (client, waits)
+    }
+
+    /// A 429 that carries rate-limit headers is waited out as long as the largest of them
+    /// says, and then the read is sent again and answers.
+    #[test]
+    fn a_429_with_rate_headers_waits_that_long_and_then_answers() {
+        let stub = Stub::serve_seq(vec![
+            status_reply(
+                429,
+                &[
+                    ("X-Rate-Limit-Api-Key-Interval-Ms", "10000"),
+                    ("X-Rate-Limit-Api-Token-Interval-Ms", "2000"),
+                    ("X-Rate-Limit-Api-Key-Remaining", "0"),
+                ],
+            ),
+            ok_json_close(r#"[{"id":"l1","name":"Bug"}]"#),
+        ]);
+        let (client, waits) = retrying_client(&stub);
+        let labels = client
+            .get_json("read labels", "/boards/BID/labels", &[("limit", "1000")])
+            .unwrap();
+        assert_eq!(labels[0]["name"], "Bug");
+        assert_eq!(*waits.lock().unwrap(), [Duration::from_secs(10)]);
+        let seen = stub.captured_seq(2);
+        for req in &seen {
+            assert_eq!(
+                (req.method.as_str(), req.path()),
+                ("GET", "/boards/BID/labels")
+            );
+            assert!(req.has_query("limit", "1000") && req.has_query("key", "KEY"));
+        }
+    }
+
+    /// A 429 with no rate-limit header waits one second, then two, and answers once it lets
+    /// go.
+    #[test]
+    fn a_429_without_rate_headers_waits_one_second_and_then_two() {
+        let stub = Stub::serve_seq(vec![
+            status_reply(429, &[]),
+            status_reply(429, &[("Retry-After", "30")]),
+            ok_json_close("[]"),
+        ]);
+        let (client, waits) = retrying_client(&stub);
+        assert_eq!(
+            client
+                .get_json("read members", "/boards/BID/members", &[])
+                .unwrap(),
+            serde_json::json!([])
+        );
+        assert_eq!(
+            *waits.lock().unwrap(),
+            [Duration::from_secs(1), Duration::from_secs(2)]
+        );
+        assert_eq!(stub.captured_seq(3).len(), 3);
+    }
+
+    /// A 5xx on a GET, a PUT and a DELETE is retried; so is a 429 on a POST, but a 5xx on a
+    /// POST is sent once and is the call's error, since Trello may have carried it out.
+    #[test]
+    fn a_5xx_is_retried_off_a_post_and_a_post_is_sent_once() {
+        for method in ["GET", "PUT", "DELETE"] {
+            let stub = Stub::serve_seq(vec![status_reply(503, &[]), ok_json_close("{}")]);
+            let (client, waits) = retrying_client(&stub);
+            let req = client.http.request(method, "/cards/c1");
+            client.http.send("t", req).unwrap();
+            assert_eq!(*waits.lock().unwrap(), [Duration::from_secs(1)], "{method}");
+            let seen = stub.captured_seq(2);
+            assert!(seen.iter().all(|r| r.method == method), "{method}");
+        }
+
+        let stub = Stub::serve_seq(vec![status_reply(502, &[])]);
+        let (client, waits) = retrying_client(&stub);
+        let err = client.post_comment("c1", "hello").unwrap_err();
+        assert!(
+            matches!(err, BoardError::Status { status: 502, .. }),
+            "{err}"
+        );
+        assert!(waits.lock().unwrap().is_empty());
+        let req = stub.captured();
+        assert_eq!(req.method, "POST");
+
+        let stub = Stub::serve_seq(vec![
+            status_reply(429, &[("x-rate-limit-api-key-interval-ms", "250")]),
+            ok_json_close(r#"{"id":"a1","data":{"text":"hello"}}"#),
+        ]);
+        let (client, waits) = retrying_client(&stub);
+        let posted = client.post_comment("c1", "hello").unwrap();
+        assert_eq!(posted.text, "hello");
+        assert_eq!(*waits.lock().unwrap(), [Duration::from_millis(250)]);
+        let seen = stub.captured_seq(2);
+        assert!(seen
+            .iter()
+            .all(|r| r.method == "POST" && r.body.contains("hello")));
+    }
+
+    /// A 429 that would be waited out past the call's deadline is not waited for: the call is
+    /// refused with the 429, after the one request.
+    #[test]
+    fn a_429_lasting_past_the_deadline_is_refused() {
+        let stub = Stub::serve_seq(vec![status_reply(
+            429,
+            &[("x-rate-limit-api-key-interval-ms", "10000")],
+        )]);
+        let (client, waits) = retrying_client(&stub);
+        client.set_call_deadline(Some(Instant::now() + Duration::from_secs(5)));
+        let err = client
+            .get_json("read labels", "/boards/BID/labels", &[])
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "trello read labels: board returned status 429"
+        );
+        assert!(waits.lock().unwrap().is_empty(), "no wait was taken");
+        assert_eq!(stub.captured().method, "GET");
+
+        // With no header, the one second and then the two fit a 2.5 s deadline's first wait
+        // only: the second would end past it.
+        let stub = Stub::serve_seq(vec![status_reply(429, &[]), status_reply(429, &[])]);
+        let (client, waits) = retrying_client(&stub);
+        client.set_call_deadline(Some(Instant::now() + Duration::from_millis(1500)));
+        let err = client
+            .get_json("read labels", "/boards/BID/labels", &[])
+            .unwrap_err();
+        assert!(
+            matches!(err, BoardError::Status { status: 429, .. }),
+            "{err}"
+        );
+        assert_eq!(*waits.lock().unwrap(), [Duration::from_secs(1)]);
+        assert_eq!(stub.captured_seq(2).len(), 2);
+    }
+
+    /// The kind's own client is not retrying: a 429 and a 5xx are the call's error at once,
+    /// for the outbox to retry, and nothing waits.
+    #[test]
+    fn the_kinds_own_client_does_not_retry() {
+        for code in [429, 503] {
+            let stub = Stub::serve_seq(vec![status_reply(code, &[])]);
+            let client = stub.client("KEY", "TOK");
+            let err = client.card_comments("c1").unwrap_err();
+            assert!(
+                matches!(&err, BoardError::Status { status, .. } if *status == code),
+                "{err}"
+            );
+            assert_eq!(stub.captured().method, "GET");
+        }
+    }
+
+    /// The member the token acts as is read once for as long as a client lives: two reads
+    /// through one account's client send one `/members/me`, and another account's own client
+    /// sends its own.
+    #[test]
+    fn two_reads_on_one_account_send_one_members_me() {
+        use crate::account::{Account, Clients};
+        let me = r#"{"id":"6a4dd5de1234abcd5678ef90","username":"afkd-bot","fullName":"afkd 🤖"}"#;
+        let stub = Stub::serve_seq(vec![ok_json_close(me), ok_json_close(me)]);
+        let acct = |key: &str| {
+            Account::from_arg(
+                "me",
+                Some(&serde_json::json!({"api_key": key, "token": "t", "base_url": stub.base})),
+            )
+            .unwrap()
+        };
+        let mut clients = Clients::default();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let first = clients
+            .client(&acct("k1"), deadline)
+            .me_member("read me")
+            .unwrap();
+        let again = clients
+            .client(&acct("k1"), deadline)
+            .me_member("read me")
+            .unwrap();
+        assert_eq!(first, again);
+        assert_eq!(
+            first,
+            (
+                "6a4dd5de1234abcd5678ef90".to_string(),
+                "afkd-bot".to_string(),
+                "afkd 🤖".to_string()
+            )
+        );
+        clients
+            .client(&acct("k2"), deadline)
+            .me_member("read me")
+            .unwrap();
+        let seen = stub.captured_seq(2);
+        assert!(seen.iter().all(|r| r.path() == "/members/me"));
+        assert!(seen[0].has_query("key", "k1") && seen[1].has_query("key", "k2"));
+    }
+
+    /// `card_handle` reads the card once, asking for its list's name, its board's short link
+    /// and its members' usernames nested, and fills every field of the handle from the answer.
+    #[test]
+    fn card_handle_reads_the_card_with_its_list_board_and_members_nested() {
+        let body = r#"{"id":"6a4dd5de1234abcd5678ef90","shortLink":"Qb7eLy2w","idShort":12,
+            "name":"Fix 修复","desc":"body","url":"https://trello.com/c/Qb7eLy2w/12-fix",
+            "idList":"l2","idMembers":["m1"],"closed":false,"dueComplete":true,
+            "due":"2026-12-24T10:00:00.000Z","dateLastActivity":"2026-11-02T08:15:30.000Z",
+            "labels":[{"id":"x","name":"afkd/ready"},{"id":"y","name":""}],
+            "list":{"id":"l2","name":"Doing"},"board":{"id":"b1","shortLink":"1Rkelydw"},
+            "members":[{"id":"m1","username":"phil"}]}"#;
+        let stub = Stub::serve(ok_json(body));
+        let client = stub.client("k", "t");
+        let fields = client.card_handle("6a4dd5de1234abcd5678ef90").unwrap();
+        assert_eq!(fields.number, 12);
+        assert_eq!(fields.list, "Doing");
+        assert_eq!(fields.board, "1Rkelydw");
+        assert_eq!(fields.members, ["phil"]);
+        assert_eq!(fields.labels, ["afkd/ready"]);
+        assert_eq!(fields.title, "Fix 修复");
+        assert_eq!(fields.due, Some(1_798_106_400_000));
+        assert!(fields.due_complete && !fields.archived);
+        assert_eq!(fields.last_activity_at, 1_793_607_330_000);
+        let req = stub.captured();
+        assert_eq!(req.path(), "/cards/6a4dd5de1234abcd5678ef90");
+        for pair in [
+            ("list", "true"),
+            ("list_fields", "name"),
+            ("board", "true"),
+            ("board_fields", "shortLink"),
+            ("members", "true"),
+            ("member_fields", "username"),
+        ] {
+            assert!(req.has_query(pair.0, pair.1), "{pair:?}: {:?}", req.query());
+        }
+    }
+
+    /// The authed member's three fields parse, the last two empty when Trello names none, and
+    /// a body with no id is a decode fault.
+    #[test]
+    fn parse_me_reads_id_username_and_full_name() {
+        assert_eq!(
+            parse_me("s", r#"{"id":"m1","username":"phil","fullName":"Phil Ek"}"#).unwrap(),
+            ("m1".into(), "phil".into(), "Phil Ek".into())
+        );
+        assert_eq!(
+            parse_me("s", r#"{"id":"m1"}"#).unwrap(),
+            ("m1".into(), String::new(), String::new())
+        );
+        assert!(matches!(
+            parse_me("s", r#"{"username":"phil"}"#),
+            Err(BoardError::Decode { .. })
+        ));
     }
 }

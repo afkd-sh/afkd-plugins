@@ -1,19 +1,57 @@
 name = "@afkd/trello"
-version = "0.15.0"
+version = "0.16.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
 exec = "afkd-trello"
 
-# The item a run claims, `trello.Card` in a config: every slot is passed it, and every
-# action takes it first. afkd carries `id` (the short link) and `key` (afkd's claim key)
-# for every handle; the fields below are the rest of what the plugin knows about a card.
+# The credentials a read reaches Trello with: the Trello app's key and a token. Two accounts
+# are two values, used side by side. The credential is sent only to `base_url`'s origin and,
+# for a download, to trello.com.
+[[struct]]
+name = "Account"
+
+  [[struct.field]]
+  name = "api_key"
+  type = "str"
+  secret = true
+
+  [[struct.field]]
+  name = "token"
+  type = "str"
+  secret = true
+
+  # A stand-in's address, in tests.
+  [[struct.field]]
+  name = "base_url"
+  type = "str"
+  default = "https://api.trello.com/1"
+
+# A card: the item a `service(trello)` run claims, and every card a read hands back. afkd
+# carries `id` (the card's short link) and `key` for every handle: `trello:<Trello's id>` for
+# every card, claimed or read, so the claimed card and the same card read are `==`. The fields
+# below are the rest of what the plugin knows about a card. Every one is always sent, since a
+# field left out is not delivered and a slot reading it would fail its run: one that holds
+# nothing as `null`, and a list with nothing in it empty. A time is unix milliseconds.
 [[handle]]
 name = "Card"
+doc = "A card on a Trello board, claimed by a service or read from a board"
 
+  # The same text as `name`, kept until the actions that claimed cards alone are removed.
   [[handle.field]]
   name = "title"
-  doc = "The card's title"
+  doc = "The card's name, kept beside name until the actions are removed"
+  type = "str"
+
+  # Trello's `idShort`, the number in the card's address.
+  [[handle.field]]
+  name = "number"
+  doc = "The card's number on its board, as in its address"
+  type = "int"
+
+  [[handle.field]]
+  name = "name"
+  doc = "The card's name"
   type = "str"
 
   [[handle.field]]
@@ -22,9 +60,250 @@ name = "Card"
   type = "str"
 
   [[handle.field]]
+  name = "description"
+  doc = "The card's description in Markdown, empty when it has none"
+  type = "str"
+
+  # The board's short link.
+  [[handle.field]]
+  name = "board"
+  doc = "The short link of the board the card is on"
+  type = "str"
+
+  [[handle.field]]
+  name = "list"
+  doc = "The name of the list the card is in now"
+  type = "str"
+
+  # A colour-only label has no name, so it is left out.
+  [[handle.field]]
   name = "labels"
   doc = "The names of the labels on the card"
   type = "list[str]"
+
+  [[handle.field]]
+  name = "members"
+  doc = "The usernames of the members on the card"
+  type = "list[str]"
+
+  [[handle.field]]
+  name = "due"
+  doc = "When the card is due, nil when it has no due date"
+  type = "time?"
+
+  [[handle.field]]
+  name = "due_complete"
+  doc = "Whether the card's due date is marked complete"
+  type = "bool"
+
+  # Trello's `closed`.
+  [[handle.field]]
+  name = "archived"
+  doc = "Whether the card is archived"
+  type = "bool"
+
+  # From the card's id, as Trello's docs say.
+  [[handle.field]]
+  name = "created_at"
+  doc = "When the card was made"
+  type = "time"
+
+  [[handle.field]]
+  name = "last_activity_at"
+  doc = "When anything last happened on the card"
+  type = "time"
+
+# A comment on a card, its `id` Trello's id for the action and its key `trello:<that id>`.
+[[handle]]
+name = "Comment"
+doc = "A comment on a card"
+
+  # The short link of the card.
+  [[handle.field]]
+  name = "card"
+  doc = "The short link of the card it is on"
+  type = "str"
+
+  [[handle.field]]
+  name = "body"
+  doc = "The text of the comment"
+  type = "str"
+
+  # The username, nil for a comment Trello names no author for.
+  [[handle.field]]
+  name = "author"
+  doc = "Its author's username, nil when Trello names none"
+  type = "str?"
+
+  [[handle.field]]
+  name = "created_at"
+  doc = "When the comment was made"
+  type = "time"
+
+  [[handle.field]]
+  name = "edited_at"
+  doc = "When it was last edited, nil unless it was"
+  type = "time?"
+
+# A checklist on a card, its `id` Trello's id and its key `trello:<that id>`.
+[[handle]]
+name = "Checklist"
+doc = "A checklist on a card"
+
+  [[handle.field]]
+  name = "card"
+  doc = "The short link of the card it is on"
+  type = "str"
+
+  [[handle.field]]
+  name = "name"
+  doc = "The checklist's name"
+  type = "str"
+
+  [[handle.field]]
+  name = "items"
+  doc = "The names of its items, in order"
+  type = "list[str]"
+
+# One item of a checklist, its `id` Trello's id and its key `trello:<that id>`.
+[[handle]]
+name = "Check_Item"
+doc = "One item of a checklist"
+
+  [[handle.field]]
+  name = "card"
+  doc = "The short link of the card it is on"
+  type = "str"
+
+  # The id of the checklist.
+  [[handle.field]]
+  name = "checklist"
+  doc = "The id of the checklist it belongs to"
+  type = "str"
+
+  [[handle.field]]
+  name = "name"
+  doc = "The item's text"
+  type = "str"
+
+  [[handle.field]]
+  name = "done"
+  doc = "Whether the item is ticked"
+  type = "bool"
+
+# A file or a link on a card, its `id` Trello's id. Trello has no route to an attachment outside
+# its card, and a handle crosses the wire as `id` and `key` alone, so its key is
+# `trello:<card id>/<attachment id>`, the one key that names two ids.
+[[handle]]
+name = "Attachment"
+doc = "A file or a link attached to a card"
+
+  [[handle.field]]
+  name = "card"
+  doc = "The short link of the card it is on"
+  type = "str"
+
+  [[handle.field]]
+  name = "name"
+  doc = "The attachment's name"
+  type = "str"
+
+  [[handle.field]]
+  name = "url"
+  doc = "Where the attachment is, a download for a file"
+  type = "str"
+
+  [[handle.field]]
+  name = "bytes"
+  doc = "The size of a file in bytes, nil for a link"
+  type = "int?"
+
+  [[handle.field]]
+  name = "mime_type"
+  doc = "The type of a file, nil when Trello names none"
+  type = "str?"
+
+  [[handle.field]]
+  name = "created_at"
+  doc = "When the attachment was put on the card"
+  type = "time"
+
+  # A file Trello holds, not a link.
+  [[handle.field]]
+  name = "is_upload"
+  doc = "Whether it is a file Trello holds rather than a link"
+  type = "bool"
+
+# A board, its `id` its short link and its key `trello:<Trello's id>`.
+[[handle]]
+name = "Board"
+doc = "A Trello board"
+
+  [[handle.field]]
+  name = "name"
+  doc = "The board's name"
+  type = "str"
+
+  [[handle.field]]
+  name = "url"
+  doc = "The link to the board on Trello"
+  type = "str"
+
+  [[handle.field]]
+  name = "archived"
+  doc = "Whether the board is closed"
+  type = "bool"
+
+# A list on a board, its `id` Trello's id and its key `trello:<that id>`.
+[[handle]]
+name = "List"
+doc = "A list on a board"
+
+  [[handle.field]]
+  name = "name"
+  doc = "The list's name"
+  type = "str"
+
+  [[handle.field]]
+  name = "board"
+  doc = "The short link of the board it is on"
+  type = "str"
+
+  [[handle.field]]
+  name = "archived"
+  doc = "Whether the list is archived"
+  type = "bool"
+
+# A label on a board, its `id` Trello's id and its key `trello:<that id>`.
+[[handle]]
+name = "Label"
+doc = "A label on a board"
+
+  # Empty for a label that is only a colour.
+  [[handle.field]]
+  name = "name"
+  doc = "The label's name, empty for a colour-only label"
+  type = "str"
+
+  [[handle.field]]
+  name = "color"
+  doc = "The label's colour, nil for a label with none"
+  type = "str?"
+
+  [[handle.field]]
+  name = "board"
+  doc = "The short link of the board it is on"
+  type = "str"
+
+# A member, its `id` their username and its key `trello:<their Trello id>`.
+[[handle]]
+name = "Member"
+doc = "A Trello member"
+
+  [[handle.field]]
+  name = "full_name"
+  doc = "The member's full name"
+  type = "str"
 
 # The one kind, `service(trello)` in a config: a Trello board whose cards are claimed one
 # per run.
@@ -350,5 +629,259 @@ doc = "Saves the newest file of a name on the card, if there is one"
   [[action.param]]
   name = "to"
   doc = "The absolute path to write the file to"
+  type = "str"
+  required = true
+
+# The reads. Each takes a `trello.Account` first and reaches Trello only through it, so a read
+# answers alike from any service's slots, and reads no service's settings. A read is done now
+# or refused, never queued: a 429 is tried again within the call's deadline, after the wait
+# Trello's rate-limit headers name or else one second doubling, and a 5xx too, since a read
+# repeats harmlessly. A reply is at most 8 MiB; a larger one is refused, naming the `limit`
+# to lower where there is one.
+
+# The cards of a board, every filter given keeping a card. The board is read whole, past
+# Trello's 1000 cards, then filtered, ordered list by list in the board's order, each list top
+# to bottom, and cut at `limit`. A name is matched exactly: a list, label or member the board
+# has none of is refused naming the ones there are, and a list name two lists share is refused
+# listing their ids.
+[[action]]
+name = "cards"
+doc = "Reads the cards of a board that every filter given keeps"
+returns = "list[Card]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  # A board's address, or its short link.
+  [[action.param]]
+  name = "board"
+  doc = "The board's address, or its short link"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "list"
+  doc = "Only cards in any of these lists, by name"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "labels"
+  doc = "Only cards carrying every one of these labels, by name"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "without_labels"
+  doc = "Only cards carrying none of these labels, by name"
+  type = "list[str]"
+  named_only = true
+
+  # A username, or "me" for the member the token acts as.
+  [[action.param]]
+  name = "members"
+  doc = "Only cards any of these members is on, by username or me"
+  type = "list[str]"
+  named_only = true
+
+  # Archived cards, and the cards of archived lists.
+  [[action.param]]
+  name = "include_archived"
+  doc = "Whether archived cards and the cards of archived lists are kept too"
+  type = "bool"
+  named_only = true
+  default = false
+
+  # 1 to 1000, Trello's largest page.
+  [[action.param]]
+  name = "limit"
+  doc = "How many cards to read at most, 1 to 1000"
+  type = "int"
+  named_only = true
+  default = 100
+
+# The card's comments, oldest first: the newest `limit`, paged with Trello's `before`.
+[[action]]
+name = "comments"
+doc = "Reads a card's newest comments, oldest first"
+returns = "list[Comment]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card whose comments to read"
+  type = "Card"
+  required = true
+
+  # 1 to 1000.
+  [[action.param]]
+  name = "limit"
+  doc = "How many comments to read at most, 1 to 1000"
+  type = "int"
+  named_only = true
+  default = 200
+
+# The card's checklists, in the card's order.
+[[action]]
+name = "checklists"
+doc = "Reads a card's checklists, in the card's order"
+returns = "list[Checklist]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card whose checklists to read"
+  type = "Card"
+  required = true
+
+# The card's check items, checklist by checklist, each in order.
+[[action]]
+name = "check_items"
+doc = "Reads a card's check items, checklist by checklist"
+returns = "list[Check_Item]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card whose check items to read"
+  type = "Card"
+  required = true
+
+# The card's attachments, files and links, oldest first.
+[[action]]
+name = "attachments"
+doc = "Reads a card's attachments, oldest first"
+returns = "list[Attachment]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card whose attachments to read"
+  type = "Card"
+  required = true
+
+# A file Trello holds, of at most 10 MiB, saved to the absolute path `to` through a temp file
+# beside it, fetched with the `Authorization` header Trello's download asks for. A link, or a
+# larger file, is refused.
+[[action]]
+name = "download_attachment"
+doc = "Saves an uploaded file of at most 10 MiB to a path"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "attachment"
+  doc = "The attachment to save, a file Trello holds"
+  type = "Attachment"
+  required = true
+
+  [[action.param]]
+  name = "to"
+  doc = "The absolute path to save the file to"
+  type = "str"
+  required = true
+
+# The member the token acts as.
+[[action]]
+name = "me"
+doc = "Reads the member the token acts as"
+returns = "Member"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+# The boards the token can reach, open ones.
+[[action]]
+name = "boards"
+doc = "Reads the open boards the token can reach"
+returns = "list[Board]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+# The board's open lists, in the board's order.
+[[action]]
+name = "lists"
+doc = "Reads a board's open lists, in the board's order"
+returns = "list[List]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "board"
+  doc = "The board's address, or its short link"
+  type = "str"
+  required = true
+
+# All the board's labels: Trello gives 50 unless asked, so the plugin asks for 1000.
+[[action]]
+name = "labels"
+doc = "Reads all of a board's labels, past Trello's first 50"
+returns = "list[Label]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "board"
+  doc = "The board's address, or its short link"
+  type = "str"
+  required = true
+
+# The board's members.
+[[action]]
+name = "members"
+doc = "Reads a board's members"
+returns = "list[Member]"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "board"
+  doc = "The board's address, or its short link"
   type = "str"
   required = true

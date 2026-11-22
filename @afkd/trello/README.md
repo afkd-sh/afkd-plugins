@@ -3,7 +3,10 @@
 A **provider** plugin with one trigger kind, [`service(trello)`](#servicetrello-cards): it
 fires when a card lands in a watched list of a Trello board, and gives the service's slots
 the actions that move the card across the board as work starts, finishes, or fails, and
-that attach a file to the card and fetch one back. It also
+that attach a file to the card and fetch one back. Beside it, a config
+[reads Trello through a `trello.Account`](#reading-trello-through-a-trelloaccount): a board's
+cards, a card's comments, checklists and attachments, and a board's lists, labels and members,
+from any service's slots or run. It also
 ships the `trello` skill an agent works the card through: read and post comments, fetch and
 attach files, tick checklist items, move and label the card, and ask a question that parks
 the card until a human replies.
@@ -157,20 +160,33 @@ each with its type:
 | `on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)` | after a run that failed                         |
 
 `run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`duration`,
-`error`). `card` is a **`trello.Card`**, the plugin's handle for the card:
+`error`). `card` is a **`trello.Card`**, the plugin's handle for the card, the same handle
+[`trello.cards`](#the-reads) hands back:
 
-| Field    | Type           | What it is                                         |
-|----------|----------------|----------------------------------------------------|
-| `id`     | `str`          | the card's short link, `Qb7eLy2w`                  |
-| `key`    | `str`          | afkd's claim key for the card                      |
-| `title`  | `str`          | the card's name                                    |
-| `url`    | `str`          | the card's address on trello.com                   |
-| `labels` | `list[str]`    | the names of the labels on the card                |
+| Field              | Type           | What it is                                         |
+|--------------------|----------------|----------------------------------------------------|
+| `id`               | `str`          | the card's short link, `Qb7eLy2w`                  |
+| `key`              | `str`          | `trello:<Trello's 24-character id>`, for every card, claimed or read |
+| `title`            | `str`          | the card's name, the same text as `name`, kept beside it until the actions above are removed |
+| `number`           | `int`          | Trello's `idShort`, the number in the card's address |
+| `name`, `url`      | `str`          | the card's name and its address on trello.com      |
+| `description`      | `str`          | markdown, `""` when empty                          |
+| `board`            | `str`          | the board's short link                             |
+| `list`             | `str`          | the name of the list the card is in                |
+| `labels`           | `list[str]`    | the names of the labels on the card                |
+| `members`          | `list[str]`    | the usernames of the members on the card           |
+| `due`              | `time.Time?`   | `nil` for a card with no due date                  |
+| `due_complete`     | `bool`         | whether the due date is marked complete            |
+| `archived`         | `bool`         | Trello's `closed`                                  |
+| `created_at`, `last_activity_at` | `time.Time` | `created_at` from the card's id, as Trello's docs say |
 
-A config passes a card around and compares it, but never builds one. The plugin sends every
-field with the claim, as the claiming poll read the card, and they hold for the whole run:
-`labels` leaves out a colour-only label, which has no name, and shows the card's labels
-before the claim takes a parked card's `Awaiting Reply` off.
+A config passes a card around and compares it, but never builds one. The plugin reads every
+field once the claim is won — after a parked card's `Awaiting Reply` badge has come off and
+the claim comment is on it — and they hold for the whole run: `list` is where the claim
+found the card, whatever `on_claim` then does, and `labels` leaves out a colour-only label,
+which has no name. The `key` is the card's own, so a claimed card and the same card read
+with `trello.cards` are `==`; the claim comment and the list a card was claimed from, which
+the key no longer carries, are the plugin's [to keep](#the-claim-the-key-no-longer-carries).
 
 afkd runs a slot's statements in the order they are written, and each action it calls is
 one request to the plugin, which does it on the card the action is passed first:
@@ -530,6 +546,248 @@ brief was built from are never delivered again. Cost: one comment read every 25-
 running card**, plus one at the end of each run, and nothing at all while no run is in
 flight. All of this is afkd's own mid-run watch; the plugin only reads the thread for it.
 
+## Reading Trello through a `trello.Account`
+
+Beside the card a service claims, a config reads a whole board: its cards, a card's comments,
+checklists, check items and attachments, the member the token acts as, the boards it
+reaches, and a board's lists, labels and members, and it saves an attachment to a path. Each
+read takes a `trello.Account` first, the credential it reaches Trello with, and reaches
+Trello through nothing else: no read takes a service's settings, so it reads the same from
+an interval service's run, from another plugin's service and from a `service(trello)`'s
+slots. Called outside the plugin's own services, a read is a child afkd starts for that one
+call.
+
+```conf
+import "afkd"
+import "std:env"
+import "svc:interval"
+import "@afkd/trello"
+
+ACME :: trello.Account{ api_key: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset"), token: env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset") }
+
+standup :: service(interval) {
+  every    1h
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {
+    match trello.cards(ACME, "https://trello.com/b/REPLACE_ME/board", list=[ "Review", "Blocked" ], without_labels=[ "Hold" ], members=[ "me" ], limit=20) {
+      .ok(cards) => {
+        for card in cards {
+          $ echo #{card.id} #{card.list} #{card.name}
+          if card.due != nil && !card.due_complete {
+            $ echo #{card.id} is due and not done
+          }
+        }
+      }
+      .err(e) => fail("trello.cards: #{e.message}")
+    }
+  }
+}
+```
+
+### `trello.Account`
+
+A struct the plugin declares, built as `trello.Account{ … }`:
+
+| Field      | Type                                | What it is                                      |
+|------------|-------------------------------------|-------------------------------------------------|
+| `api_key`  | `str`, secret                       | the Trello app's key                            |
+| `token`    | `str`, secret                       | the token the calls act with                    |
+| `base_url` | `str = "https://api.trello.com/1"`  | a stand-in's address in tests                   |
+
+- An empty `api_key` or `token` makes every call an `.err` naming the field, `cards:
+  acct.token is empty`, before anything is sent. Two accounts are two `Account` values, used
+  side by side.
+- `"me"` is resolved once per account and kept, for as long as the process that answers the
+  calls lives, since Trello allows only 100 requests to `/1/members` per 900 seconds. A
+  service's trigger child answers every read called in its slots, so it asks once per account;
+  a read called outside a service is a child of its own, which asks once.
+- The credential is sent only to `base_url`'s origin and, for a download, to trello.com,
+  where Trello's own attachments live. A link to anywhere else is never fetched.
+
+### The handles
+
+Every handle is sent with every field, filled: one that may hold nothing is `T?` and `nil`
+when it does, and a list with nothing in it is empty. Its `key` is `trello:<Trello's id>`, so
+a handle read twice, or claimed and read, is `==`, and a read finds the object by it.
+
+| Handle              | Fields |
+|---------------------|--------|
+| `trello.Card`       | `id` (the short link), `key`, and the fields [above](#servicetrello-cards) |
+| `trello.Comment`    | `id` (Trello's id for the action), `card` (the card's short link), `body`, `author: str?` (a username), `created_at: time.Time`, `edited_at: time.Time?` |
+| `trello.Checklist`  | `id` (Trello's id), `card`, `name`, `items: list[str]` (the items' names, in order) |
+| `trello.Check_Item` | `id` (Trello's id), `card`, `checklist` (its id), `name`, `done: bool` |
+| `trello.Attachment` | `id` (Trello's id), `card`, `name`, `url`, `bytes: int?`, `mime_type: str?`, `created_at: time.Time`, `is_upload: bool` (a file Trello holds, not a link) |
+| `trello.Board`      | `id` (the short link), `name`, `url`, `archived: bool` |
+| `trello.List`       | `id` (Trello's id), `name`, `board` (the short link), `archived: bool` |
+| `trello.Label`      | `id` (Trello's id), `name` (`""` for a colour-only label), `color: str?`, `board` |
+| `trello.Member`     | `id` (the username), `full_name` |
+
+An **attachment's key** is `trello:<card id>/<attachment id>`, the one key that holds two ids:
+Trello has no route to an attachment outside its card, and a handle crosses the wire as its
+`id` and `key` alone, so `download_attachment` could reach the file by nothing else. A card's
+comment is found by its action id alone.
+
+### The reads
+
+| Call                                                | Gives |
+|-----------------------------------------------------|-------|
+| `trello.cards(acct, board, ~filters…)`              | `list[trello.Card]` of the board matching every filter given, list by list in the board's order, each list top to bottom. The plugin reads the whole board, paging past Trello's 1000 cards, then filters, orders and cuts at `limit` |
+| `trello.comments(acct, card, ~limit = 200)`         | `list[trello.Comment]`: the newest `limit` (1 to 1000), oldest first, paging Trello's actions with `before` |
+| `trello.checklists(acct, card)`                     | `list[trello.Checklist]`, in the card's order |
+| `trello.check_items(acct, card)`                    | `list[trello.Check_Item]`, checklist by checklist, each in order |
+| `trello.attachments(acct, card)`                    | `list[trello.Attachment]`, oldest first, files and links |
+| `trello.download_attachment(acct, attachment, to)`  | nil; saves an uploaded file of at most 10 MiB to the absolute path `to` through a temp file beside it, sending the `Authorization` header Trello's download asks for |
+| `trello.me(acct)`                                   | the `trello.Member` the token acts as |
+| `trello.boards(acct)`                               | `list[trello.Board]` the token can reach, open ones |
+| `trello.lists(acct, board)`                         | `list[trello.List]`, open ones, in the board's order |
+| `trello.labels(acct, board)`                        | `list[trello.Label]`, all of them: Trello gives 50 unless asked, so the plugin asks for 1000 |
+| `trello.members(acct, board)`                       | `list[trello.Member]` |
+
+A **board** is named by its address or its short link, `"https://trello.com/b/Qb7eLy2w/widgets"`
+or `"Qb7eLy2w"`; a card, a comment, a checklist or an attachment is passed as the handle a read
+gave back, or the card a service claimed; a **list** or a **label** by its name on the board,
+and a **member** by username or `"me"`, each matched exactly. `trello.card(acct, id)`, a read of
+one card by its id, is not offered: the kind is named `card`.
+
+### `trello.cards`'s filters
+
+All are named-only and may be left out.
+
+| Filter             | Type            | Keeps |
+|--------------------|-----------------|-------|
+| `list`             | `list[str]`     | cards in any of these lists |
+| `labels`           | `list[str]`     | cards carrying every one |
+| `without_labels`   | `list[str]`     | cards carrying none |
+| `members`          | `list[str]`     | cards any of these members is on, `"me"` allowed |
+| `include_archived` | `bool = false`  | archived cards and the cards of archived lists too |
+| `limit`            | `int = 100`     | 1 to 1000 |
+
+- A list, label or member the board has none of is an `.err` naming the ones there are,
+  `cards: the board has no label named "Hold"; its labels are "afkd/ready", "Problem"`. A list
+  name two lists share is an `.err` listing their ids, `cards: 2 lists are named "Doing" (ids
+  <id>, <id>); name one of them by renaming the other`. Both are found before any card is
+  read. An archived list is named only with `include_archived`.
+- A filter that names nothing is refused rather than read as keeping nothing, ``cards: `list`
+  is empty; leave it out to keep every card``, and so is a `limit` outside 1 to 1000, as is a
+  `comments` `limit`.
+- A card with only a colour-only label has no label names, so `labels` never matches it and
+  `without_labels` never excludes it.
+
+### Refusals
+
+Every read is done or refused: `.ok` means Trello answered, and an `.err` carries one
+sentence, which names the call.
+
+- An empty `api_key` or `token`: `cards: acct.api_key is empty`.
+- A board Trello does not have: `lists: no board "Nowhere1" on this account: trello read
+  board: board returned status 404`; a card or an attachment it does not have likewise.
+- A handle this plugin did not hand out, such as a key of another shape: `comments: card
+  Qb7eLy2w has a key this plugin did not hand out: <key>`.
+- `download_attachment` of a link, `attachment "the spec" is a link to https://example.com/spec,
+  not a file Trello holds`, of a file over 10 MiB, `attachment "huge.bin" is 10485761 bytes,
+  over the 10 MiB the plugin fetches`, to a path that is not absolute, or to one it cannot
+  write: each before or without a partial file.
+- A reply over afkd's 8 MiB for one call. `cards` and `comments` say which `limit` to lower,
+  `cards: the reply comes to 8912345 bytes, over afkd's 8 MiB for one call; lower limit`, and
+  every other read says that its reply is too large.
+
+**Retries.** A read is done now or refused; nothing is queued. A request Trello answers
+with a 429 is tried again, on every verb, and one answered with a 5xx on every verb but
+`POST`, which Trello may already have carried out. Each wait is the largest of the
+`x-rate-limit-*-interval-ms` headers the answer carries, or, when it carries none, one
+second, then two, doubling. A wait that would end past the call's deadline, 45 seconds, is
+not taken: the call is refused with the last answer it got. The writes of the kind, the
+actions on a claimed card, are not retried this way: the outbox retries those.
+
+### Two accounts, and from a slot
+
+A read called in a slot passes the account a config builds, never the service's own settings,
+so two accounts, one per Trello, are read side by side:
+
+```conf
+import "afkd"
+import "std:env"
+import "@afkd/trello"
+
+ACME   :: trello.Account{ api_key: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset"), token: env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset") }
+GLOBEX :: trello.Account{ api_key: env.get("GLOBEX_TRELLO_API_KEY") ?? fail("GLOBEX_TRELLO_API_KEY is unset"), token: env.get("GLOBEX_TRELLO_TOKEN") ?? fail("GLOBEX_TRELLO_TOKEN is unset") }
+
+develop :: service(trello) {
+  board     "https://trello.com/b/REPLACE_ME/board"
+  api_key   env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset")
+  token     env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset")
+  pick_from "Up for Grabs"
+
+  on_claim proc(card: trello.Card) {
+    match trello.comments(ACME, card, limit=50) {
+      .ok(comments) => {
+        for comment in comments {
+          $ echo #{comment.author ?? "nobody"}: #{comment.body}
+        }
+      }
+      .err(e) => fail("trello.comments: #{e.message}")
+    }
+    match trello.attachments(ACME, card) {
+      .ok(files) => {
+        for file in files {
+          if file.is_upload {
+            match trello.download_attachment(ACME, file, "/srv/acme/widgets/#{file.name}") {
+              .ok(_) => { }
+              .err(e) => fail("trello.download_attachment: #{e.message}")
+            }
+          }
+        }
+      }
+      .err(e) => fail("trello.attachments: #{e.message}")
+    }
+    match trello.boards(GLOBEX) {
+      .ok(reachable) => {
+        for other in reachable {
+          $ echo #{other.id} #{other.name}
+        }
+      }
+      .err(e) => fail("trello.boards: #{e.message}")
+    }
+    trello.move_to(card, "In Progress", at=.top)
+  }
+
+  work_dir "/srv/acme/widgets"
+  on_run proc(run: afkd.Run, card: trello.Card) {
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
+  }
+}
+```
+
+The `card` a read is passed may be the one the service claimed or one a read handed back:
+both are `trello:<card id>`.
+
+### The claim the key no longer carries
+
+A claimed card's key was `<card id>#<claim comment id>`, with the list it was claimed from
+after a second `#` when `pick_from` names several. It is `trello:<card id>` now, the key a read
+of the card hands out, so the two are one handle. The claim comment, which a release deletes,
+and the list the card returns to are the plugin's own **record**, kept in memory and, when afkd
+names the plugin a directory to keep state in, in a file there, `claims/<card id>.json`,
+written before the poll's reply and removed once the claim is finished or released. A process
+afkd restarts reads it back, so a card claimed from a later list still returns to that list,
+and a key an older release journaled, `card#claim` or `card#claim#list`, is still released as
+it was.
+
+A `trello:` key whose record is gone — the directory is not kept, or the card was claimed
+before the record was — is released by a rule that holds without one: every `[afkd-claim]`
+comment on the card posted by the member the token acts as is deleted, except one carrying this
+process's current claim owner, which is a live claim of this process; a claim by any other
+member is kept; and the card goes to the bottom of the `pick_from` list it sits in, or the
+first. Another afkd process on the same Trello account posts claims under the same member with
+an owner of its own, so this rule can delete theirs. Such a claim can only be on the card if
+the one the plugin holds had lapsed — a live claim is stepped over, so the other process
+could only claim after the first went an hour unrenewed — and then the other run meets a 404
+on its next renewal, which it diagnoses, and the card returns to `pick_from`. **Give each afkd
+process its own Trello account**: one account is one identity to the kind, which reads every
+comment by the token's member as afkd's own in the brief, the feedback delta and the
+backstop alike.
+
 ## Where it differs from the built-in
 
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
@@ -568,3 +826,10 @@ few things. Each is deliberate, and none changes what a config means.
 - **afkd frames the brief as a plugin's.** A run's `task/README.md` opens `# Work item from plugin
   card Qb7eLy2w` where the built-in's opens `# Work item from trello card Qb7eLy2w`, and a
   comment delivered mid-run calls the card "this work item" rather than "this card".
+- **The claim key is the card's.** The built-in journaled `card#claim[#list]`; the plugin
+  journals `trello:<card id>` and keeps the claim comment and the list in a
+  [record](#the-claim-the-key-no-longer-carries) of its own. A key the built-in or an older
+  release journaled is still released, as it was.
+- **One Trello account per afkd process.** Two afkd processes on one account are one
+  identity to the plugin: a release with no record prunes every claim the account's member
+  posted but the releasing process's own.
