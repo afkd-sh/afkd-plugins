@@ -73,7 +73,8 @@ fn built_binary() -> &'static Path {
 }
 
 /// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
-/// the skill, exactly what the release archive holds — and return the staged root.
+/// the skill and the two licence texts, exactly what the release archive holds — and return
+/// the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("trello")
@@ -83,7 +84,13 @@ fn stage(dst: &Path) -> PathBuf {
         .expect("run tools/pack-release");
     assert!(status.success(), "tools/pack-release trello");
     let staged = dst.join("afkd-trello");
-    for present in ["afkd-plugin.toml", "afkd-trello", "skills/trello/SKILL.md"] {
+    for present in [
+        "afkd-plugin.toml",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "afkd-trello",
+        "skills/trello/SKILL.md",
+    ] {
         assert!(staged.join(present).exists(), "the release holds {present}");
     }
     for absent in [
@@ -222,7 +229,7 @@ widgets :: service(trello) {{
     for label in card.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
 "#,
@@ -376,7 +383,7 @@ fn drive_one_card(home: &Path) {
                 dir.file_name()
                     .is_some_and(|name| name.to_string_lossy().ends_with(&run_suffix))
             })
-            .map(|dir| dir.join("task.md"))
+            .map(|dir| dir.join("task/README.md"))
             .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, &fake, &card, &daemon, "the card's run starts", || {
@@ -391,7 +398,10 @@ fn drive_one_card(home: &Path) {
         "— reported by 陳大文",
         &asked,
     ] {
-        assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
+        assert!(
+            task.contains(part),
+            "task/README.md carries {part:?}:\n{task}"
+        );
     }
 
     std::fs::write(home.join("release"), "").expect("release the run");

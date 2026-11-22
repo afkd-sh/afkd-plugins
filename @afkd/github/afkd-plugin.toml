@@ -1,5 +1,5 @@
 name = "@afkd/github"
-version = "0.12.1"
+version = "0.14.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -14,18 +14,22 @@ name = "Issue"
 
   [[handle.field]]
   name = "title"
+  doc = "The issue's title"
   type = "str"
 
   [[handle.field]]
   name = "url"
+  doc = "The link to the issue on GitHub"
   type = "str"
 
   [[handle.field]]
   name = "number"
+  doc = "The issue's number in the repository"
   type = "int"
 
   [[handle.field]]
   name = "labels"
+  doc = "The names of the issue's labels, before the claim's own changes"
   type = "list[str]"
 
 [[handle]]
@@ -33,52 +37,63 @@ name = "Pull_Request"
 
   [[handle.field]]
   name = "title"
+  doc = "The pull request's title"
   type = "str"
 
   [[handle.field]]
   name = "url"
+  doc = "The link to the pull request on GitHub"
   type = "str"
 
   [[handle.field]]
   name = "number"
+  doc = "The pull request's number in the repository"
   type = "int"
 
   [[handle.field]]
   name = "branch"
+  doc = "The pull request's head branch"
   type = "str"
 
 # The issue kind, `service(github)` in a config: a repository's issues, claimed one per run.
 [[kind]]
 name = "issue"
+doc = "A repository's issues, claimed one per run"
 role = "trigger"
 main = true
 claims = true
 
   [[kind.setting]]
   name = "host"
+  doc = "The GitHub host, when not github.com"
   type = "str"
 
   [[kind.setting]]
   name = "repo"
+  doc = "The repository to take issues from, as owner/name"
   type = "str"
 
   [[kind.setting]]
   name = "token"
+  doc = "The personal access token the plugin acts with"
   type = "str"
   required = true
 
   [[kind.setting]]
   name = "source_label"
+  doc = "Only issues with this label"
   type = "str"
 
   # These two afkd reads itself, as it declares them for every claiming kind.
   [[kind.setting]]
   name = "max_attempts"
+  doc = "How many times an issue is tried"
   type = "int"
   default = 1
 
   [[kind.setting]]
   name = "every"
+  doc = "How often to look for an issue"
   type = "duration"
   jitter = true
   default = "30s"
@@ -87,6 +102,7 @@ claims = true
   # outcome; each action a slot calls is one `call` to this plugin.
   [[kind.slot]]
   name = "on_run"
+  doc = "Runs for a claimed issue, and does the work on it"
 
     [[kind.slot.param]]
     name = "run"
@@ -98,6 +114,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_claim"
+  doc = "Runs once an issue is claimed, before the run starts"
   when = "pre"
 
     [[kind.slot.param]]
@@ -106,6 +123,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_done"
+  doc = "Runs after the run finished the issue"
   when = "post"
 
     [[kind.slot.param]]
@@ -122,6 +140,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_fail"
+  doc = "Runs after the run failed on the issue"
   when = "post"
 
     [[kind.slot.param]]
@@ -140,35 +159,42 @@ claims = true
 # repository's pull requests. It has `author_me` in place of `source_label`.
 [[kind]]
 name = "pr"
+doc = "A repository's pull requests, reviewed one per run"
 role = "trigger"
 claims = true
 
   [[kind.setting]]
   name = "host"
+  doc = "The GitHub host, when not github.com"
   type = "str"
 
   [[kind.setting]]
   name = "repo"
+  doc = "The repository to take pull requests from, as owner/name"
   type = "str"
 
   [[kind.setting]]
   name = "token"
+  doc = "The personal access token the plugin acts with"
   type = "str"
   required = true
 
   [[kind.setting]]
   name = "author_me"
+  doc = "Only pull requests the token's own user opened"
   type = "bool"
   default = false
 
   # These two afkd reads itself, as it declares them for every claiming kind.
   [[kind.setting]]
   name = "max_attempts"
+  doc = "How many times a pull request is tried"
   type = "int"
   default = 1
 
   [[kind.setting]]
   name = "every"
+  doc = "How often to look for a pull request"
   type = "duration"
   jitter = true
   default = "30s"
@@ -177,6 +203,7 @@ claims = true
   # outcome; each action a slot calls is one `call` to this plugin.
   [[kind.slot]]
   name = "on_run"
+  doc = "Runs for a claimed pull request, and does the work on it"
 
     [[kind.slot.param]]
     name = "run"
@@ -188,6 +215,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_claim"
+  doc = "Runs once a pull request is claimed, before the run starts"
   when = "pre"
 
     [[kind.slot.param]]
@@ -196,6 +224,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_done"
+  doc = "Runs after the run finished the pull request"
   when = "post"
 
     [[kind.slot.param]]
@@ -212,6 +241,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_fail"
+  doc = "Runs after the run failed on the pull request"
   when = "post"
 
     [[kind.slot.param]]
@@ -229,64 +259,79 @@ claims = true
 # The actions a slot of the issue kind calls, each on the issue it is passed first.
 [[action]]
 name = "assign_me"
+doc = "Adds the token's own user to the issue's assignees"
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to assign"
   type = "Issue"
   required = true
 
 [[action]]
 name = "unassign"
+doc = "Takes only the token's own user off the issue's assignees"
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to unassign"
   type = "Issue"
   required = true
 
 [[action]]
 name = "add_label"
+doc = "Puts a label on the issue"
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to label"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "label"
+  doc = "The name of the label to add"
   type = "str"
   required = true
 
 [[action]]
 name = "remove_label"
+doc = "Takes a label off the issue"
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to take the label off"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "label"
+  doc = "The name of the label to remove"
   type = "str"
   required = true
 
 [[action]]
 name = "close"
+doc = "Closes the issue"
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to close"
   type = "Issue"
   required = true
 
 [[action]]
 name = "comment"
+doc = "Writes a comment on the issue"
 
   [[action.param]]
   name = "issue"
+  doc = "The issue to comment on"
   type = "Issue"
   required = true
 
   [[action.param]]
   name = "text"
+  doc = "The text of the comment"
   type = "str"
   required = true
 
@@ -294,63 +339,78 @@ name = "comment"
 # config's types have no subtyping, so one action cannot take both kinds' items.
 [[action]]
 name = "pr_assign_me"
+doc = "Adds the token's own user to the pull request's assignees"
 
   [[action.param]]
   name = "pr"
+  doc = "The pull request to assign"
   type = "Pull_Request"
   required = true
 
 [[action]]
 name = "pr_unassign"
+doc = "Takes only the token's own user off the assignees"
 
   [[action.param]]
   name = "pr"
+  doc = "The pull request to unassign"
   type = "Pull_Request"
   required = true
 
 [[action]]
 name = "pr_add_label"
+doc = "Puts a label on the pull request"
 
   [[action.param]]
   name = "pr"
+  doc = "The pull request to label"
   type = "Pull_Request"
   required = true
 
   [[action.param]]
   name = "label"
+  doc = "The name of the label to add"
   type = "str"
   required = true
 
 [[action]]
 name = "pr_remove_label"
+doc = "Takes a label off the pull request"
 
   [[action.param]]
   name = "pr"
+  doc = "The pull request to take the label off"
   type = "Pull_Request"
   required = true
 
   [[action.param]]
   name = "label"
+  doc = "The name of the label to remove"
   type = "str"
   required = true
 
 [[action]]
 name = "pr_close"
+doc = "Closes the pull request"
 
   [[action.param]]
   name = "pr"
+  doc = "The pull request to close"
   type = "Pull_Request"
   required = true
 
 [[action]]
 name = "pr_comment"
+doc = "Writes a comment on the pull request"
 
   [[action.param]]
   name = "pr"
+  doc = "The pull request to comment on"
   type = "Pull_Request"
   required = true
 
   [[action.param]]
   name = "text"
+  doc = "The text of the comment"
   type = "str"
   required = true

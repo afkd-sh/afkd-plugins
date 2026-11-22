@@ -11,18 +11,24 @@
 //!   `AFKD_SITE_SRC` names ([`site_src`]); it skips loudly without one.
 //! - The **validate** leg holds `afkd validate` to a service calling every read with every
 //!   parameter and reading every field of every handle and value, through two `afkd_board.Board`
-//!   values.
+//!   values; and another calling every write as the brief writes it, positionally where it says
+//!   so (`afkd_board.create_list(TRAIN, "Review")`), `run=run` on every write of a card, a
+//!   checklist and a comment, the run `nil` and left out as well.
 //! - The **reads** leg runs an interval service by hand whose run reads two boards through
 //!   children afkd starts for each call: the lists, the labels and the cards of one, the cards
 //!   of the other, one card read twice and `==` itself, its comments, and the refusal of that
 //!   card passed with the other board, naming both.
+//! - The **writes** leg runs an interval service by hand whose run echoes its own `machine`,
+//!   `service`, `instance` and `id`, makes a card with `run=run` and comments on a card with no
+//!   run: the board's fake recorded the card's body `run` as exactly the echoed four fields, and
+//!   the comment's body with no `run` key.
 //! - The **README** leg validates every `conf` fence of the plugin's README, each a whole entry
 //!   file, against the installed release, with every variable the fences read set by
 //!   [`CONFIG_ENV`].
 //!
 //! The boards are the plugin's own loopback fake ([`fake`]), which records each request it
-//! should never have been sent: each leg that reads ends with that record empty. No leg touches
-//! a network, every wait is bounded, and every spawn is held in a [`Daemon`].
+//! should never have been sent: each leg that reads or writes ends with that record empty. No
+//! leg touches a network, every wait is bounded, and every spawn is held in a [`Daemon`].
 
 mod common;
 
@@ -71,8 +77,14 @@ fn built_binary() -> &'static Path {
     })
 }
 
-/// What a release holds, relative and sorted: the manifest and the binary, nothing else.
-const RELEASE_TREE: &[&str] = &["afkd-afkd_board", "afkd-plugin.toml"];
+/// What a release holds, relative and sorted: the manifest, the binary and the two licence
+/// texts, nothing else.
+const RELEASE_TREE: &[&str] = &[
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "afkd-afkd_board",
+    "afkd-plugin.toml",
+];
 
 /// Stage the release `tools/pack-release` packs under `dst` and return the staged root,
 /// `<dst>/afkd-afkd_board`, failing unless it holds exactly [`RELEASE_TREE`].
@@ -88,7 +100,7 @@ fn stage(dst: &Path) -> PathBuf {
     assert_eq!(
         tree_of(&staged),
         RELEASE_TREE,
-        "the release holds the manifest and the binary alone"
+        "the release holds the manifest, the binary and the licence texts alone"
     );
     staged
 }
@@ -411,6 +423,110 @@ nightly :: service(interval) {
     assert_eq!(code, Some(0), "every read validates:\n{report}");
 }
 
+/// A match on the call `call`, of an action that gives nothing a config reads, which fails the run
+/// with the call's name on an `.err`.
+fn checked(call: &str) -> String {
+    let name = call
+        .trim_start_matches("afkd_board.")
+        .split('(')
+        .next()
+        .unwrap_or(call);
+    format!(
+        "    match {call} {{\n      .ok(_) => {{ }}\n      .err(e) => fail(\"afkd_board.{name}: \
+         #{{e.message}}\")\n    }}\n"
+    )
+}
+
+/// A service calling every write the plugin declares as the brief writes them, validates: the
+/// list writes with their name or their list positional (`afkd_board.create_list(TRAIN,
+/// "Review")`) and `name`, `at` and `after` named, a card made with every parameter and a handle
+/// read passed as `after`, `title` positional in `create_card` and named in `update_card`, a tick
+/// with its `done` positional and left to its default, `run=run`, `run=nil` and no run on the
+/// writes of a card, a checklist and a comment, and the handles and values they give read
+/// field by field.
+#[test]
+fn every_write_validates() {
+    let home = installed();
+    let calls = [
+        r#"afkd_board.create_list(TRAIN, "Icebox", at=.top)"#,
+        r#"afkd_board.create_list(TRAIN, "Mid", after="Todo")"#,
+        r#"afkd_board.update_list(TRAIN, "Review", name="Reviewed", after="Todo")"#,
+        r#"afkd_board.update_list(TRAIN, "Icebox", at=.bottom)"#,
+        r#"afkd_board.create_card(TRAIN, "Todo", "Placed", after=lead, run=run)"#,
+        r#"afkd_board.create_card(TRAIN, "Todo", "Bare")"#,
+        r#"afkd_board.update_card(TRAIN, lead, title="Renamed 🚨", run=run)"#,
+        r#"afkd_board.update_card(TRAIN, lead, description="Text", run=nil)"#,
+        r#"afkd_board.move_card(TRAIN, lead, "Doing", at=.top, run=run)"#,
+        r#"afkd_board.move_card(TRAIN, lead, "Doing", after=other, run=run)"#,
+        r#"afkd_board.move_card(TRAIN, lead, "Todo")"#,
+        r#"afkd_board.add_label(TRAIN, lead, "bug", run=run)"#,
+        r#"afkd_board.remove_label(TRAIN, lead, "待定", run=run)"#,
+        r#"afkd_board.add_item(TRAIN, lead, "Ship it", run=run)"#,
+        r#"afkd_board.check_item(TRAIN, lead, 0, false, run=run)"#,
+        r#"afkd_board.check_item(TRAIN, lead, 0, run=run)"#,
+        r#"afkd_board.remove_item(TRAIN, lead, 0, run=run)"#,
+        r#"afkd_board.mark_done(TRAIN, lead, run=run)"#,
+        r#"afkd_board.mark_done(TRAIN, lead, false, run=run)"#,
+        r#"afkd_board.add_blocked_by(TRAIN, lead, other, run=run)"#,
+        r#"afkd_board.remove_blocked_by(TRAIN, lead, other, run=run)"#,
+        r#"afkd_board.archive_card(TRAIN, lead, run=run)"#,
+        r#"afkd_board.unarchive_card(TRAIN, lead, run=run)"#,
+        r#"afkd_board.delete_card(TRAIN, lead, run=run)"#,
+        r#"afkd_board.delete_list(TRAIN, "Reviewed")"#,
+    ];
+    let checked: String = calls.iter().map(|call| checked(call)).collect();
+    let config = r###"import "afkd"
+import "svc:interval"
+import "@afkd/afkd_board"
+
+TRAIN :: afkd_board.Board{ key: "afk_board_train-0123456789" }
+
+nightly :: service(interval) {
+  every    1h
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {
+    made := match afkd_board.create_list(TRAIN, "Review") {
+      .ok(list) => list
+      .err(e) => fail("afkd_board.create_list: #{e.message}")
+    }
+    $ echo #{made.id} #{made.name}
+    lead := match afkd_board.card(TRAIN, 17) {
+      .ok(card) => card
+      .err(e) => fail("afkd_board.card: #{e.message}")
+    }
+    other := match afkd_board.card(TRAIN, 18) {
+      .ok(card) => card
+      .err(e) => fail("afkd_board.card: #{e.message}")
+    }
+    first := match afkd_board.create_card(
+      TRAIN,
+      "Todo",
+      "Title",
+      description="Why 🚨",
+      labels=[ "bug", "待定" ],
+      checklist=[ afkd_board.Item{ text: "Reproduce it", done: false } ],
+      at=.top,
+      run=run,
+    ) {
+      .ok(card) => card
+      .err(e) => fail("afkd_board.create_card: #{e.message}")
+    }
+    $ echo #{first.id} #{first.number} #{first.title} #{first.list} #{first.url}
+    comment := match afkd_board.create_comment(TRAIN, lead, "Looks good", run=run) {
+      .ok(written) => written
+      .err(e) => fail("afkd_board.create_comment: #{e.message}")
+    }
+    $ echo #{comment.id} #{comment.card} #{comment.body} #{comment.author ?? "key"} #{comment.run ?? "-"}
+CHECKED  }
+}
+"###
+    .replace("CHECKED", &checked);
+    write_config(home.path(), &config);
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "every write validates:\n{report}");
+}
+
 // --- the reads leg -----------------------------------------------------------------
 
 /// The file, under the reads leg's work dir, its run writes what each read gave back to.
@@ -542,10 +658,10 @@ fn run_dirs(home: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Everything a failed wait needs to say: what the run wrote so far, the requests each board
-/// should never have been sent, each run's log, the daemon's own log, and its stderr so far —
-/// where the plugin's own complaints land.
-fn dump(home: &Path, boards: &[&FakeBoard], daemon: &StreamingDaemon) -> String {
+/// Everything a failed wait needs to say: what the run wrote so far to `file`, the requests each
+/// board should never have been sent, each run's log, the daemon's own log, and its stderr so far
+/// — where the plugin's own complaints land.
+fn dump(home: &Path, file: &str, boards: &[&FakeBoard], daemon: &StreamingDaemon) -> String {
     let logs: Vec<String> = run_dirs(home)
         .iter()
         .map(|dir| {
@@ -558,8 +674,8 @@ fn dump(home: &Path, boards: &[&FakeBoard], daemon: &StreamingDaemon) -> String 
         .collect();
     let invalid: Vec<Vec<String>> = boards.iter().map(|b| b.invalid_requests()).collect();
     format!(
-        "{READS}:\n{}\nrefused: {invalid:?}\nruns:\n{}\ndaemon.log:\n{}\ndaemon stderr:\n{}",
-        std::fs::read_to_string(home.join(READS)).unwrap_or_default(),
+        "{file}:\n{}\nrefused: {invalid:?}\nruns:\n{}\ndaemon.log:\n{}\ndaemon stderr:\n{}",
+        std::fs::read_to_string(home.join(file)).unwrap_or_default(),
         logs.join("\n"),
         std::fs::read_to_string(daemon_log(home)).unwrap_or_default(),
         daemon.stderr_so_far()
@@ -630,7 +746,7 @@ fn reads_leg_two_boards_through_a_child_per_call() {
             Instant::now() < deadline,
             "`afkd run nightly` within {BUDGET:?}: {}\n{}",
             String::from_utf8_lossy(&out.stderr),
-            dump(home, &[&train, &ops], &daemon)
+            dump(home, READS, &[&train, &ops], &daemon)
         );
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -638,7 +754,7 @@ fn reads_leg_two_boards_through_a_child_per_call() {
         assert!(
             Instant::now() < deadline,
             "the run read both boards within {BUDGET:?}\n{}",
-            dump(home, &[&train, &ops], &daemon)
+            dump(home, READS, &[&train, &ops], &daemon)
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -657,7 +773,7 @@ fn reads_leg_two_boards_through_a_child_per_call() {
             ops.board_id()
         ),
         "what the run read\n{}",
-        dump(home, &[&train, &ops], &daemon)
+        dump(home, READS, &[&train, &ops], &daemon)
     );
     for (board, key) in [(&train, TRAIN_KEY), (&ops, OPS_KEY)] {
         let seen = board.seen();
@@ -685,6 +801,168 @@ fn reads_leg_two_boards_through_a_child_per_call() {
             "requests the board's API refuses"
         );
     }
+}
+
+// --- the writes leg ----------------------------------------------------------------
+
+/// The file, under the writes leg's work dir, its run echoes its own run to, one `<field> <value>`
+/// a line.
+const ECHOED: &str = "run.txt";
+
+/// The file, under the writes leg's work dir, its run writes what each write gave back to.
+const WRITTEN: &str = "writes.txt";
+
+/// The writes leg's service: an interval service whose run echoes the `machine`, the `service`,
+/// the `instance` and the `id` of the `afkd.Run` it is passed to [`ECHOED`], makes a card in
+/// `Todo` with `run=run`, and comments on the card it read with no run, writing to [`WRITTEN`]
+/// under `home`, and `end` last. The board is the one at `train`.
+fn writes_service(home: &Path, train: &str) -> String {
+    r###"import "afkd"
+import "svc:interval"
+import "@afkd/afkd_board"
+
+TRAIN :: afkd_board.Board{ key: "KEY", base_url: "URL" }
+
+nightly :: service(interval) {
+  every    24h
+  work_dir "HOME"
+
+  on_run proc(run: afkd.Run) {
+    $ echo machine #{run.machine} >> ECHOED
+    $ echo service #{run.service} >> ECHOED
+    $ echo instance #{run.instance} >> ECHOED
+    $ echo id #{run.id} >> ECHOED
+    lead := match afkd_board.card(TRAIN, 1) {
+      .ok(card) => card
+      .err(e) => fail("afkd_board.card: #{e.message}")
+    }
+    match afkd_board.create_card(TRAIN, "Todo", "Made in a run 🚀", description="By a run", run=run) {
+      .ok(card) => {
+        $ echo card #{card.id} #{card.title} >> WRITTEN
+      }
+      .err(e) => fail("afkd_board.create_card: #{e.message}")
+    }
+    match afkd_board.create_comment(TRAIN, lead, "No run here") {
+      .ok(comment) => {
+        $ echo comment #{comment.card} #{comment.run ?? "-"} >> WRITTEN
+      }
+      .err(e) => fail("afkd_board.create_comment: #{e.message}")
+    }
+    $ echo end >> WRITTEN
+  }
+}
+"###
+    .replace("KEY", TRAIN_KEY)
+    .replace("URL", train)
+    .replace("ECHOED", ECHOED)
+    .replace("WRITTEN", WRITTEN)
+    .replace("HOME", &home.display().to_string())
+}
+
+/// A service whose run writes to a board through children afkd starts for each call proves
+/// acceptance 3 through a real afkd: a write passed `run=run` reaches the board with that run's
+/// `machine`, `service`, `instance` and `id`, as the run itself echoed them, and a write passed no
+/// run reaches it with no `run` key at all. The board is never sent a request it refuses.
+#[test]
+fn writes_leg_each_write_under_its_run() {
+    let home = installed();
+    let home = home.path();
+    let train = FakeBoard::start("Release train 🚂", TRAIN_KEY, &["Todo", "Done"], &[]);
+    train.card(NewCard::new("Todo", "Lead"));
+
+    write_config(home, &writes_service(home, train.base_url()));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let out = run_subcommand_args(home, &["run", "nightly"]);
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "`afkd run nightly` within {BUDGET:?}: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            dump(home, WRITTEN, &[&train], &daemon)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    while !std::fs::read_to_string(home.join(WRITTEN)).is_ok_and(|w| w.ends_with("end\n")) {
+        assert!(
+            Instant::now() < deadline,
+            "the run wrote to the board within {BUDGET:?}\n{}",
+            dump(home, WRITTEN, &[&train], &daemon)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let echoed = read(&home.join(ECHOED));
+    let field = |name: &str| -> String {
+        echoed
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("the run echoed no {name}:\n{echoed}"))
+            .to_string()
+    };
+    let run = serde_json::json!({
+        "machine": field("machine"),
+        "service": field("service"),
+        "instance": field("instance").parse::<i64>().expect("the instance is a number"),
+        "id": field("id"),
+    });
+    assert_eq!(
+        read(&home.join(WRITTEN)),
+        "card 2 Made in a run 🚀\ncomment 1 -\nend\n",
+        "what the run wrote\n{}",
+        dump(home, WRITTEN, &[&train], &daemon)
+    );
+
+    let writes = train.writes();
+    let paths: Vec<String> = writes
+        .iter()
+        .map(|w| format!("{} {}", w.method, w.path))
+        .collect();
+    assert_eq!(
+        paths,
+        ["POST /api/board/cards", "POST /api/board/cards/1/comments"],
+        "{writes:?}"
+    );
+    let made = writes[0].body.as_ref().expect("the card's body");
+    assert_eq!(
+        made.get("run"),
+        Some(&run),
+        "the card was made under the run the service echoed: {made}"
+    );
+    let comment = writes[1].body.as_ref().expect("the comment's body");
+    assert_eq!(
+        comment,
+        &serde_json::json!({"body": "No run here"}),
+        "a comment written with no run carries no `run` key"
+    );
+    let bearer = format!("Bearer {TRAIN_KEY}");
+    assert!(
+        train
+            .seen()
+            .iter()
+            .all(|s| s.authorization.as_deref() == Some(bearer.as_str())),
+        "every request went out with the board's key alone"
+    );
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        train.invalid_requests(),
+        Vec::<String>::new(),
+        "requests the board's API refuses"
+    );
 }
 
 // --- the README --------------------------------------------------------------------

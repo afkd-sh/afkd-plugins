@@ -20,7 +20,7 @@
 # gitea trigger merges into the worker child (crates/gitea/src/common.rs:
 # GITEA_TOKEN / GITEA_BASE_URL / GITEA_REPO / GITEA_ISSUE_NUMBER, and
 # AFKD_SCRATCH_DIR holding the per-run scratch dir; the number is also written to
-# <scratch>/issue/number). It does NOT read its own path from the env
+# <scratch>/task/issue/number). It does NOT read its own path from the env
 # (CLAUDE_PLUGIN_ROOT is not exported into Bash-tool subprocesses — ADR-0017
 # Revision §5); SKILL.md passes the path on the command line, so this helper owns
 # only the API + marker mechanics. The marker name must match
@@ -67,15 +67,15 @@ def connection(base):
 
 
 def issue_number():
-    """The issue number: GITEA_ISSUE_NUMBER, then the <scratch>/issue/number file
-    fallback, else None. (Unlike post_comment.py this is issue-only — a park acts
+    """The issue number: GITEA_ISSUE_NUMBER, then the <scratch>/task/issue/number
+    file fallback, else None. (Unlike post_comment.py this is issue-only — a park acts
     on the originating issue, not a PR.)"""
     number = os.environ.get("GITEA_ISSUE_NUMBER")
     if number:
         return number
     scratch = os.environ.get("AFKD_SCRATCH_DIR")
     if scratch:
-        path = os.path.join(scratch, "issue", "number")
+        path = os.path.join(scratch, "task", "issue", "number")
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as f:
                 return f.read().strip()
@@ -157,7 +157,7 @@ def main():
     number = args.issue or issue_number()
     if not number:
         print(
-            "ask.py: no issue number (set GITEA_ISSUE_NUMBER, or AFKD_SCRATCH_DIR/issue/number)",
+            "ask.py: no issue number (set GITEA_ISSUE_NUMBER, or AFKD_SCRATCH_DIR/task/issue/number)",
             file=sys.stderr,
         )
         sys.exit(1)

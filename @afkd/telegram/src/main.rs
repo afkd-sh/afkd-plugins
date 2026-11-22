@@ -39,7 +39,7 @@ use crate::common::{StderrDiag, SystemClock};
 use crate::plugin::{Answer, Plugin};
 
 /// The brief at the scratch directory's root, which afkd writes framed.
-pub(crate) const TASK_FILE: &str = "task.md";
+pub(crate) const TASK_FILE: &str = "task/README.md";
 
 fn main() {
     let mut plugin = Plugin::new(Box::new(SystemClock), Box::new(StderrDiag));

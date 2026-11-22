@@ -1,8 +1,11 @@
 //! The release notes against the README: an operator's `afkd update` lands a release on
 //! whatever afkd they run, so the notes the release workflow writes must name the same afkd
 //! floor the README's "Install it" section states, and the comment above the notes' `printf`
-//! must give that floor's reason. The release workflow's `test` job runs this suite before it
-//! builds, so a floor that drifts never publishes.
+//! must give that floor's reason. The release workflow's `afkd_floor` job holds the release back
+//! until a stable afkd release is at or past that same floor, so its `AFKD_FLOOR` is held to the
+//! README too, and so is the shape of the job that keeps it from publishing early or failing
+//! quietly. The release workflow's `test` job runs this suite before it builds, so a floor that
+//! drifts never publishes.
 
 use std::fs;
 
@@ -107,6 +110,133 @@ fn the_release_notes_name_the_afkd_the_readme_requires() {
         "the comment above the notes' `printf` in {WORKFLOW} does not give why afkd {readme} \
          is the floor: {comment:?}"
     );
+}
+
+/// The lines of the job `name` of `workflow`: those after its `  name:` line that are blank or
+/// indented under it, up to the next job or comment at the jobs' own indent.
+fn job(workflow: &str, name: &str) -> Result<Vec<String>, String> {
+    let head = format!("  {name}:");
+    let mut lines = workflow.lines().skip_while(|l| *l != head);
+    if lines.next().is_none() {
+        return Err(format!("no `{name}` job"));
+    }
+    Ok(lines
+        .take_while(|l| l.trim().is_empty() || l.starts_with("    "))
+        .map(str::to_string)
+        .collect())
+}
+
+/// The `AFKD_FLOOR` the `afkd_floor` job sets, once the job and the release it holds back are
+/// checked: it authenticates `gh` with the workflow's token, fails on a `gh` failure rather than
+/// losing it inside a pipe (`pipefail`, and the `gh` its own command), takes the stable tags with
+/// a `grep` that finds none as `ready=false` (`|| true`), writes `ready`, and the release needs
+/// the job and runs only when `ready == 'true'`.
+fn floor_gate(workflow: &str) -> Result<String, String> {
+    let floor = job(workflow, "afkd_floor")?;
+    let has = |text: &str| floor.iter().any(|l| l.contains(text));
+    let at = |text: &str| floor.iter().position(|l| l.contains(text));
+    let set: Vec<&str> = floor
+        .iter()
+        .filter_map(|l| l.trim().strip_prefix("AFKD_FLOOR:"))
+        .map(|v| v.trim().trim_matches('"'))
+        .collect();
+    let floor_version = one_version(set, "`AFKD_FLOOR` in the `afkd_floor` job")?;
+    if !has("GH_TOKEN: ${{ github.token }}") {
+        return Err("the `afkd_floor` job does not set GH_TOKEN to the workflow's token".into());
+    }
+    let (Some(pipefail), Some(tags)) = (at("set -euo pipefail"), at("tags=$(gh release list"))
+    else {
+        return Err(
+            "the `afkd_floor` script has no `set -euo pipefail` or no `tags=$(gh …)`".into(),
+        );
+    };
+    if pipefail > tags || floor[tags].contains('|') {
+        return Err(
+            "the `afkd_floor` script reads the tags with `gh` as its own command, after \
+             `set -euo pipefail`, so a `gh` failure fails the job"
+                .into(),
+        );
+    }
+    for flag in [
+        "--repo afkd-sh/afkd",
+        "--exclude-pre-releases",
+        "--exclude-drafts",
+    ] {
+        if !floor[tags].contains(flag) {
+            return Err(format!(
+                "the `afkd_floor` script's `gh release list` has no `{flag}`"
+            ));
+        }
+    }
+    let Some(grep) = floor.iter().find(|l| l.contains("grep -E")) else {
+        return Err("the `afkd_floor` script takes the stable tags with no `grep -E`".into());
+    };
+    if !grep.contains("|| true") {
+        return Err("the `afkd_floor` script's `grep` has no `|| true`, so no stable tag fails the job rather than giving `ready=false`".into());
+    }
+    if !has(r#"echo "ready=$ready" >> "$GITHUB_OUTPUT""#) {
+        return Err("the `afkd_floor` script does not write `ready` to $GITHUB_OUTPUT".into());
+    }
+    let release = job(workflow, "release")?;
+    if !release
+        .iter()
+        .any(|l| l.trim() == "needs: [build, afkd_floor]")
+    {
+        return Err("the `release` job does not need `[build, afkd_floor]`".into());
+    }
+    let gated = release.iter().any(|l| {
+        l.trim().starts_with("if:") && l.contains("needs.afkd_floor.outputs.ready == 'true'")
+    });
+    if !gated {
+        return Err("the `release` job does not run only when `ready == 'true'`".into());
+    }
+    Ok(floor_version)
+}
+
+#[test]
+fn the_release_waits_for_the_afkd_floor() {
+    let read = |path| fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let readme = install_floor(&read(README)).unwrap_or_else(|e| panic!("{README}: {e}"));
+    let workflow = read(WORKFLOW);
+    let floor = floor_gate(&workflow).unwrap_or_else(|e| panic!("{WORKFLOW}: {e}"));
+    assert_eq!(
+        floor, readme,
+        "{WORKFLOW}'s `afkd_floor` job waits for afkd {floor}, but {README} says installing it \
+         needs afkd {readme}: change `AFKD_FLOOR` to the README's floor"
+    );
+    for (why, broken) in [
+        (
+            "no pipefail",
+            workflow.replace("set -euo pipefail", "set -eu"),
+        ),
+        (
+            "no GH_TOKEN",
+            workflow.replace("GH_TOKEN: ${{ github.token }}", "GH: x"),
+        ),
+        (
+            "a grep that fails with no stable tag",
+            workflow.replace("<<<\"$tags\" || true", "<<<\"$tags\""),
+        ),
+        (
+            "a gh inside a pipe",
+            workflow.replace("'.[].tagName')", "'.[].tagName' | sort)"),
+        ),
+        (
+            "a release not gated on ready",
+            workflow.replace(" && needs.afkd_floor.outputs.ready == 'true'", ""),
+        ),
+        (
+            "a release that does not need the floor",
+            workflow.replace("needs: [build, afkd_floor]", "needs: build"),
+        ),
+        (
+            "a floor that is no version",
+            workflow.replace("AFKD_FLOOR: ", "AFKD_FLOOR: 0."),
+        ),
+    ] {
+        let got = floor_gate(&broken);
+        assert!(got.is_err(), "a workflow with {why} reads as {got:?}");
+    }
 }
 
 #[test]

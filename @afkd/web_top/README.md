@@ -26,7 +26,7 @@ it on loopback and reach it through an SSH tunnel.
 
 ```console
 $ afkd install @afkd/web_top
-Installed @afkd/web_top 0.15.0 (companion)
+Installed @afkd/web_top 0.15.1 (companion)
   name it in a `plugin` block and the daemon will run it
 ```
 
@@ -197,10 +197,11 @@ Three properties, and the reason for each:
   trusting the browser's font metrics, and "nothing wraps into a broken row" is a property
   rather than a hope.
 - **Roles, never hexes.** A cell names a palette role; `dashboard.css` is the only file that
-  turns one into a colour. Those tones are `crates/tui/src/palette.rs`'s 24-bit arm, the night
-  look `afkd top` paints at 24-bit, plus the dark ground it assumes, and the
-  suite reads them straight out of the Rust and holds the stylesheet to exactly those, role by
-  role.
+  turns one into a colour. Those tones are `crates/tui/src/palette.rs`'s night arm (`night` and
+  `night_tone`, the `Hue` and `Tone` roles), the look `afkd top` paints at 24-bit on a dark
+  ground, plus that ground, and the suite reads them straight out of the Rust and holds the
+  stylesheet to exactly those, role by role. The day arm, tuned for a light ground, is not the
+  page's look.
 - **DOM-free.** It names neither `document` nor `window`; `paint.mjs` does the DOM work and
   makes no layout decision. That split is what lets the whole dashboard be rendered to text
   and diffed against the committed golden screens under `goldens/`.
@@ -226,7 +227,7 @@ are.
 Its suites are `layout.test.mjs` — fixture-driven the same way and gated by the same `cargo
 test` bridge — plus `keymap.test.mjs`, `session.test.mjs` and `input.test.mjs` beside it. A golden holds the screen as **three planes** — what it says, the palette role
 each cell says it in, and its weight-or-band, one letter per cell so the planes read under the
-text in any terminal. A cell's look is half its meaning here (the footer's faint badges, the
+text in any terminal. A cell's look is half its meaning here (the footer's receded badges, the
 load chips, the muted column header, the selection bar), and a text-only golden
 would pass over a page painted flat. They are regenerated deliberately — `node
 @afkd/web_top/layout.test.mjs --write-goldens` — never by the test run.
@@ -336,8 +337,10 @@ and never updated the doc. The divergences are:
 One row is here that `infoview.rs` has nowhere: a **stale** service's `Config` row.
 `docs/tui-style.md` §7 already says the `(orphan)`/`(stale)` words live in the help legend and
 the info view's `Config` row, and the Rust carries only the orphan half; the stale sentence is
-written to the same `tag - actionable sentence` shape from the same vocabulary the 🕸️ legend
-note uses. Reconciling the terminal's own two surfaces is not this page's to do.
+written to the same `tag - actionable sentence` shape from the vocabulary the 🕸️ legend note
+uses, `stale - restarts on its new config after this run`: it says when the service takes up
+its new config (§2), never a key, because the service does it by itself and the operator presses
+nothing. Reconciling the terminal's own two surfaces is not this page's to do.
 
 ## The run view
 

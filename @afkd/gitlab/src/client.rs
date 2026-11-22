@@ -24,10 +24,14 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use crate::file::{upload_of, Upload};
 use crate::http::{
     encode_segment, HttpClient, HttpError, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT,
 };
 use crate::rfc3339::parse_rfc3339;
+
+/// The most one file may hold: what `@afkd/linear` and `@afkd/github` take.
+pub(crate) const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// A project coordinate: the raw `project` setting (a numeric id or a
 /// path-with-namespace), which knows how to render itself as the `:id` path segment.
@@ -126,6 +130,8 @@ pub(crate) struct MergeRequest {
     pub(crate) title: String,
     /// The MR's page on GitLab (`web_url`); empty when GitLab sent none.
     pub(crate) url: String,
+    /// The MR description (`description`); empty when absent.
+    pub(crate) description: String,
     /// The MR's source branch (the pushed branch the review run checks out).
     pub(crate) source_branch: String,
     /// The MR author (matched by username against the bot for `author_me`).
@@ -337,6 +343,16 @@ pub(crate) trait GitlabClient {
         text: &str,
     ) -> Result<(), GitlabError>;
 
+    /// The upload the link `url` names, if it is one of this instance's: the path
+    /// `/uploads/<secret>/<filename>`, relative or absolute under the instance's web root
+    /// (see [`upload_of`]). What [`download`](Self::download) fetches.
+    fn upload_of(&self, url: &str) -> Option<Upload>;
+
+    /// Download `upload` from `project`, under [`MAX_FILE_BYTES`] —
+    /// `GET /projects/:id/uploads/:secret/:filename` (GitLab 17.4+, the Guest role). The
+    /// token goes only to the API, and no redirect carries it on.
+    fn download(&self, project: &Project, upload: &Upload) -> Result<Vec<u8>, GitlabError>;
+
     /// Hand over the current call's deadline, which every request until the next
     /// hand-over must finish by — set before a call, cleared with `None` after it. A
     /// client that sends no requests has nothing to bound and ignores it.
@@ -440,6 +456,12 @@ impl<T: GitlabClient> GitlabClient for std::sync::Arc<T> {
     ) -> Result<(), GitlabError> {
         (**self).edit_comment(project, kind, iid, note_id, text)
     }
+    fn upload_of(&self, url: &str) -> Option<Upload> {
+        (**self).upload_of(url)
+    }
+    fn download(&self, project: &Project, upload: &Upload) -> Result<Vec<u8>, GitlabError> {
+        (**self).download(project, upload)
+    }
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         (**self).set_call_deadline(deadline)
     }
@@ -449,13 +471,19 @@ impl<T: GitlabClient> GitlabClient for std::sync::Arc<T> {
 /// falls back to `https://gitlab.com`; surrounding whitespace and a trailing slash are
 /// trimmed; cloud and self-managed are identical (both under `/api/v4`).
 pub(crate) fn gitlab_api_base(base_url: &str) -> String {
+    format!("{}/api/v4", gitlab_web_base(base_url))
+}
+
+/// Resolve a configured `base_url` to the instance's web root, where its pages and its
+/// uploads live: the same root [`gitlab_api_base`] hangs `/api/v4` off, empty falling back
+/// to `https://gitlab.com`, surrounding whitespace and a trailing slash trimmed.
+pub(crate) fn gitlab_web_base(base_url: &str) -> String {
     let b = base_url.trim();
-    let root = if b.is_empty() {
-        "https://gitlab.com"
+    if b.is_empty() {
+        "https://gitlab.com".to_string()
     } else {
-        b.trim_end_matches('/')
-    };
-    format!("{root}/api/v4")
+        b.trim_end_matches('/').to_string()
+    }
 }
 
 /// Render a `project` value as its `:id` path segment: an all-ASCII-digit id passes
@@ -478,14 +506,17 @@ fn item_path(project: &Project, kind: ItemKind, iid: u64) -> String {
 /// A [`GitlabClient`] backed by the GitLab `/api/v4` REST API.
 pub(crate) struct Gitlab {
     http: HttpClient<GitlabError>,
+    /// The instance's web root ([`gitlab_web_base`]), what an absolute upload link is under.
+    web: String,
 }
 
 impl Gitlab {
     /// A client authenticating against `base_url` (empty → `https://gitlab.com`) with
     /// `token` as the `PRIVATE-TOKEN` header. The `/api/v4` root is computed once here via
-    /// [`gitlab_api_base`].
+    /// [`gitlab_api_base`], and the web root via [`gitlab_web_base`].
     pub(crate) fn new(base_url: &str, token: &str) -> Self {
         Self {
+            web: gitlab_web_base(base_url),
             http: HttpClient::new(
                 // The `/api/v4` root is resolved here, once; the spine neither trims nor
                 // suffixes what it is handed.
@@ -688,6 +719,35 @@ impl GitlabClient for Gitlab {
             .map(|_| ())
     }
 
+    fn upload_of(&self, url: &str) -> Option<Upload> {
+        upload_of(url, &self.web)
+    }
+
+    fn download(&self, project: &Project, upload: &Upload) -> Result<Vec<u8>, GitlabError> {
+        let stage = "fetch upload";
+        // GET /api/v4/projects/:id/uploads/:secret/:filename → the uploaded file's bytes
+        // (GitLab 17.4+, the Guest role). The token rides this request alone: a redirect to
+        // object storage is followed without it, and an upload link is never requested at
+        // its own url, whatever host it names.
+        let reply = self.http.get_bytes(
+            stage,
+            &format!(
+                "/projects/{}/uploads/{}/{}",
+                project.encoded(),
+                encode_segment(&upload.secret),
+                encode_segment(&upload.filename)
+            ),
+            MAX_FILE_BYTES,
+        )?;
+        if !(200..300).contains(&reply.status) {
+            return Err(GitlabError::Status {
+                stage,
+                status: reply.status,
+            });
+        }
+        Ok(reply.body)
+    }
+
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         self.http.set_deadline(deadline)
     }
@@ -812,6 +872,11 @@ fn value_to_mr(v: &Value) -> Option<MergeRequest> {
             .to_string(),
         url: v
             .get("web_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        description: v
+            .get("description")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
@@ -998,7 +1063,14 @@ mod mock {
         /// Every call deadline the client was handed, in order. Recorded only: the mock's
         /// requests stay instant.
         call_deadlines: Mutex<Vec<Option<Instant>>>,
+        /// The uploads the forge hosts, by `(secret, filename)`.
+        uploads: Mutex<HashMap<(String, String), Vec<u8>>>,
+        /// Every upload `download` was asked for, in order.
+        downloads: Mutex<Vec<Upload>>,
     }
+
+    /// The web root the mock's uploads are under: its issues' and merge requests' own host.
+    const MOCK_WEB: &str = "https://gitlab.example.com";
 
     /// The id/timestamp base a `post_comment` mints from: far above the small ids and
     /// epoch-relative seconds tests seed, so a posted note is always the newest.
@@ -1071,6 +1143,7 @@ mod mock {
                     iid,
                     title: format!("MR !{iid}"),
                     url: format!("https://gitlab.example.com/group/widgets/-/merge_requests/{iid}"),
+                    description: String::new(),
                     source_branch: source_branch.to_string(),
                     author: User {
                         id: author_id,
@@ -1081,6 +1154,24 @@ mod mock {
                 labels: Vec::new(),
                 assignees: Vec::new(),
             });
+        }
+
+        /// Give a seeded MR a description, as its author wrote it.
+        pub(crate) fn set_mr_description(&self, iid: u64, description: &str) {
+            if let Some(s) = lock(&self.mrs).iter_mut().find(|s| s.mr.iid == iid) {
+                s.mr.description = description.to_string();
+            }
+        }
+
+        /// Seed an upload the forge hosts: the bytes of `/uploads/<secret>/<filename>`. An
+        /// upload nothing seeded answers `404`.
+        pub(crate) fn add_upload(&self, secret: &str, filename: &str, bytes: &[u8]) {
+            lock(&self.uploads).insert((secret.to_string(), filename.to_string()), bytes.to_vec());
+        }
+
+        /// Every upload `download` was asked for, in order.
+        pub(crate) fn downloads(&self) -> Vec<Upload> {
+            lock(&self.downloads).clone()
         }
 
         /// Merge or close a seeded MR, as a human does: it leaves the open set.
@@ -1562,6 +1653,22 @@ mod mock {
             Ok(())
         }
 
+        /// The uploads of the real client's own reach: the rule is [`upload_of`]'s, over the
+        /// mock's host.
+        fn upload_of(&self, url: &str) -> Option<Upload> {
+            upload_of(url, MOCK_WEB)
+        }
+
+        fn download(&self, _project: &Project, upload: &Upload) -> Result<Vec<u8>, GitlabError> {
+            let stage = "fetch upload";
+            lock(&self.downloads).push(upload.clone());
+            self.guard(stage)?;
+            lock(&self.uploads)
+                .get(&(upload.secret.clone(), upload.filename.clone()))
+                .cloned()
+                .ok_or(GitlabError::Status { stage, status: 404 })
+        }
+
         fn set_call_deadline(&self, deadline: Option<Instant>) {
             lock(&self.call_deadlines).push(deadline);
         }
@@ -1672,6 +1779,7 @@ mod mock {
                 iid: 7,
                 title: "MR !7".into(),
                 url: "https://gitlab.example.com/group/widgets/-/merge_requests/7".into(),
+                description: String::new(),
                 source_branch: "feature/重试-backoff".into(),
                 author: User {
                     id: 1,
@@ -1683,6 +1791,73 @@ mod mock {
         assert_eq!(
             c.list_open_mrs(&project()).unwrap_err().stage(),
             "list merge requests"
+        );
+    }
+
+    /// The mock hosts the uploads a test seeds: a link of the mock's own host, relative or
+    /// absolute, is an upload, a seeded one downloads byte for byte, every ask is recorded,
+    /// an unseeded one answers 404, and the `fetch upload` stage takes the failure knobs.
+    #[test]
+    fn the_mock_hosts_the_uploads_a_test_seeds() {
+        let c = MockClient::new(1, "me");
+        let secret = "ab".repeat(16);
+        let bytes = b"\x89PNG\r\n\x1a\n\0\xff";
+        c.add_upload(&secret, "screen_shot.png", bytes);
+
+        let upload = Upload {
+            secret: secret.clone(),
+            filename: "screen_shot.png".into(),
+        };
+        assert_eq!(
+            c.upload_of(&format!("/uploads/{secret}/screen_shot.png")),
+            Some(upload.clone())
+        );
+        assert_eq!(
+            c.upload_of(&format!(
+                "https://gitlab.example.com/group/widgets/uploads/{secret}/screen_shot.png"
+            )),
+            Some(upload.clone())
+        );
+        assert_eq!(c.upload_of("https://example.com/x.png"), None);
+
+        assert_eq!(c.download(&project(), &upload).unwrap(), bytes);
+        let missing = Upload {
+            secret: "cd".repeat(16),
+            filename: "gone.png".into(),
+        };
+        assert!(matches!(
+            c.download(&project(), &missing),
+            Err(GitlabError::Status {
+                stage: "fetch upload",
+                status: 404
+            })
+        ));
+        assert_eq!(c.downloads(), [upload.clone(), missing]);
+
+        c.fail("fetch upload");
+        assert_eq!(
+            c.download(&project(), &upload).unwrap_err().to_string(),
+            "gitlab fetch upload: no response (mock failure)"
+        );
+        assert!(c.current_user().is_ok(), "another stage still answers");
+        c.clear_failure();
+        c.refuse("fetch upload", 403);
+        assert!(matches!(
+            c.download(&project(), &upload),
+            Err(GitlabError::Status { status: 403, .. })
+        ));
+    }
+
+    /// A seeded merge request carries the description a test gives it.
+    #[test]
+    fn a_seeded_mr_carries_its_description() {
+        let c = MockClient::new(1, "me");
+        c.add_mr(7, 1, "me", "feature/x");
+        assert_eq!(c.list_open_mrs(&project()).unwrap()[0].description, "");
+        c.set_mr_description(7, "See ![a](/uploads/x/a.png)");
+        assert_eq!(
+            c.list_open_mrs(&project()).unwrap()[0].description,
+            "See ![a](/uploads/x/a.png)"
         );
     }
 
@@ -1797,6 +1972,22 @@ mod parse_tests {
         );
     }
 
+    /// The web root is the root the API hangs off, `/api/v4` not on it: the default for an
+    /// empty base, whitespace and a trailing slash trimmed, a path under the host kept.
+    #[test]
+    fn gitlab_web_base_is_the_root_without_the_api() {
+        assert_eq!(gitlab_web_base(""), "https://gitlab.com");
+        assert_eq!(gitlab_web_base("   "), "https://gitlab.com");
+        assert_eq!(
+            gitlab_web_base(" https://gitlab.example.com/ "),
+            "https://gitlab.example.com"
+        );
+        assert_eq!(
+            gitlab_web_base("http://127.0.0.1:8080/gitlab/"),
+            "http://127.0.0.1:8080/gitlab"
+        );
+    }
+
     #[test]
     fn parse_issues_reads_iid_state_title_url_and_labels() {
         let body = r#"[
@@ -1858,7 +2049,7 @@ mod parse_tests {
     #[test]
     fn parse_mrs_reads_title_url_source_branch_and_author() {
         let body = r#"[
-            {"iid":12,"title":"修复 the retry storm 🚨","description":"","source_branch":"feature/重试-backoff",
+            {"iid":12,"title":"修复 the retry storm 🚨","description":"Closes #3 ✅\n\n![a](/uploads/x/a.png)","source_branch":"feature/重试-backoff",
              "web_url":"https://gitlab.example.com/acme/sub.group/widgets/-/merge_requests/12",
              "author":{"id":8,"username":"björn-öst[bot]"},"state":"opened","labels":["afkd::claimed"]},
             {"iid":13,"source_branch":"fix/y"},
@@ -1873,6 +2064,7 @@ mod parse_tests {
                     title: "修复 the retry storm 🚨".into(),
                     url: "https://gitlab.example.com/acme/sub.group/widgets/-/merge_requests/12"
                         .into(),
+                    description: "Closes #3 ✅\n\n![a](/uploads/x/a.png)".into(),
                     source_branch: "feature/重试-backoff".into(),
                     author: User {
                         id: 8,
@@ -1886,6 +2078,7 @@ mod parse_tests {
                     iid: 13,
                     title: String::new(),
                     url: String::new(),
+                    description: String::new(),
                     source_branch: "fix/y".into(),
                     author: User::default(),
                 },
@@ -2128,7 +2321,11 @@ mod http_tests {
 
     impl Stub {
         fn serve(response: impl Into<String>) -> Self {
-            let response = response.into();
+            Self::serve_bytes(response.into().into_bytes())
+        }
+
+        /// As [`serve`](Self::serve), for a reply that is not text: a file's bytes.
+        fn serve_bytes(response: Vec<u8>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
             let port = listener.local_addr().unwrap().port();
             let (tx, rx) = mpsc::channel();
@@ -2159,7 +2356,7 @@ mod http_tests {
                 if content_length > 0 {
                     reader.read_exact(&mut body).expect("read body");
                 }
-                stream.write_all(response.as_bytes()).expect("write reply");
+                stream.write_all(&response).expect("write reply");
                 stream.flush().ok();
                 tx.send(Captured {
                     method,
@@ -2563,6 +2760,156 @@ mod http_tests {
             }
         ));
         let _ = stub.captured();
+    }
+
+    /// A reply of `status` with `headers` and `body`, as a file is served: the body as
+    /// bytes, since a file is not text.
+    fn file_reply(status: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
+        let mut reply = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\n", body.len());
+        for header in headers {
+            reply.push_str(header);
+            reply.push_str("\r\n");
+        }
+        reply.push_str("Connection: close\r\n\r\n");
+        let mut reply = reply.into_bytes();
+        reply.extend_from_slice(body);
+        reply
+    }
+
+    fn upload(filename: &str) -> Upload {
+        Upload {
+            secret: "0f".repeat(16),
+            filename: filename.to_string(),
+        }
+    }
+
+    /// An upload is fetched from the project's uploads path on the API, its filename one
+    /// encoded segment, with the token, and its bytes — a NUL, a CR LF and invalid UTF-8
+    /// among them — come back whole.
+    #[test]
+    fn download_gets_the_uploads_path_with_the_token() {
+        let png = b"\x89PNG\r\n\x1a\n\0\xff\xfe--end\r\n";
+        let stub = Stub::serve_bytes(file_reply("200 OK", &["Content-Type: image/png"], png));
+        let client = stub.client("SECRET");
+        let got = client
+            .download(&project(), &upload("my shot/ü.png"))
+            .unwrap();
+        assert_eq!(got, png);
+        let req = stub.captured();
+        assert_eq!(req.method, "GET");
+        assert_eq!(
+            req.path(),
+            format!(
+                "/api/v4/projects/acme%2Fwidgets/uploads/{}/my%20shot%2F%C3%BC.png",
+                "0f".repeat(16)
+            )
+        );
+        assert_eq!(req.header("private-token").as_deref(), Some("SECRET"));
+        assert_eq!(req.header("authorization"), None, "no second credential");
+    }
+
+    /// A redirect — GitLab handing the file to object storage — is followed, and the token
+    /// does not make the hop: the API saw it, the storage host saw no credential at all.
+    #[test]
+    fn download_follows_a_redirect_without_the_token() {
+        let png = b"\x89PNG\r\n\x1a\n\0\xff";
+        let storage = Stub::serve_bytes(file_reply("200 OK", &["Content-Type: image/png"], png));
+        let api = Stub::serve(format!(
+            "HTTP/1.1 302 Found\r\nLocation: {}/storage/blob?sig=abc\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+            storage.base
+        ));
+        let got = api
+            .client("SECRET")
+            .download(&project(), &upload("a.png"))
+            .unwrap();
+        assert_eq!(got, png);
+        assert_eq!(
+            api.captured().header("private-token").as_deref(),
+            Some("SECRET")
+        );
+        let hop = storage.captured();
+        assert_eq!(hop.path(), "/storage/blob");
+        assert_eq!(hop.header("private-token"), None, "{:?}", hop.headers);
+        assert!(
+            !hop.headers.iter().any(|h| h.contains("SECRET")),
+            "{:?}",
+            hop.headers
+        );
+    }
+
+    /// A status past 2xx is the download's error, whatever body it carried; a body over
+    /// [`MAX_FILE_BYTES`] is an undecodable reply; and a request that reached nobody is a
+    /// transport failure that names neither the token nor the upload.
+    #[test]
+    fn download_maps_a_refusal_an_oversize_body_and_a_dead_host() {
+        let stub = Stub::serve_bytes(file_reply("404 Not Found", &[], b"{\"message\":\"404\"}"));
+        let err = stub
+            .client("t")
+            .download(&project(), &upload("a.png"))
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "gitlab fetch upload: forge returned status 404"
+        );
+
+        let big = vec![0u8; MAX_FILE_BYTES as usize + 1];
+        let stub = Stub::serve_bytes(file_reply("200 OK", &[], &big));
+        let err = stub
+            .client("t")
+            .download(&project(), &upload("a.png"))
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GitlabError::Decode {
+                    stage: "fetch upload",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let err = Gitlab::new(&format!("http://127.0.0.1:{port}"), "SECRET")
+            .download(&project(), &upload("a.png"))
+            .unwrap_err();
+        let GitlabError::Transport { reason, .. } = &err else {
+            panic!("expected a transport error, got {err:?}");
+        };
+        assert!(
+            !reason.contains("SECRET") && !reason.contains("a.png"),
+            "{reason}"
+        );
+    }
+
+    /// The client takes an upload link relative or absolute under its own base url and no
+    /// other host's, so a link in an issue can never name where the token goes.
+    #[test]
+    fn upload_of_is_under_the_clients_own_web_root() {
+        let secret = "0f".repeat(16);
+        let client = Gitlab::new("http://127.0.0.1:8080/", "SECRET");
+        let want = Some(Upload {
+            secret: secret.clone(),
+            filename: "a.png".into(),
+        });
+        assert_eq!(client.upload_of(&format!("/uploads/{secret}/a.png")), want);
+        assert_eq!(
+            client.upload_of(&format!(
+                "http://127.0.0.1:8080/acme/widgets/uploads/{secret}/a.png"
+            )),
+            want
+        );
+        for other in [
+            format!("http://127.0.0.1:8081/acme/widgets/uploads/{secret}/a.png"),
+            format!("https://gitlab.com/acme/widgets/uploads/{secret}/a.png"),
+            format!("http://127.0.0.1:8080@evil.example/acme/widgets/uploads/{secret}/a.png"),
+        ] {
+            assert_eq!(client.upload_of(&other), None, "{other}");
+        }
     }
 
     #[test]

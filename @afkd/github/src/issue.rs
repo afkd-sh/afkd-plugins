@@ -9,7 +9,7 @@
 //! against [`MockClient`](crate::client::MockClient) and a fake clock.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
+//! bound, the mid-run watch's cursor, and the framing of `task/README.md` — so what is here is
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side.
 //!
 //! Work is only ever claimed from the source-labelled, unclaimed set; an issue already
@@ -27,12 +27,13 @@ use crate::common::{
     claim_issue, claim_key_for, creds_env, lock, release_claim, release_stale, renew_marker,
     unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL, ENV_ISSUE_NUMBER, ENV_REPO,
 };
+use crate::file::{brief_with_files, linked_texts, FetchedFile};
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{Vocabulary, ISSUE_VOCABULARY};
 use crate::outbox::{lost_line, Item, Outbox, Write};
 use crate::settings::GithubConfig;
 use crate::wire::{Fields, IssueFields, WireFile, WireUnit};
-use crate::{ISSUE_DIR, NUMBER_FILE, TASK_FILE};
+use crate::{ISSUE_DIR, NUMBER_FILE, TASK_DIR, TASK_FILE};
 
 /// One issue taken on as a unit of work.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +51,10 @@ pub(crate) struct Unit {
     /// `afkd/claimed` — the handle's `labels`.
     pub(crate) labels: Vec<String>,
     pub(crate) body: String,
+    /// The thread the claim's re-read saw, our own marker among it: with the body, where
+    /// the files the issue links are read from ([`ClaimedUnit::linked_texts`]). The brief
+    /// carries none of it.
+    pub(crate) comments: Vec<IssueComment>,
     /// The login this issue was claimed as: the unit's `self`, and the identity the
     /// hooks' actions assign and unassign.
     pub(crate) claimed_as: String,
@@ -75,6 +80,10 @@ impl ClaimedUnit for Unit {
         Unit::thread(self)
     }
 
+    fn key(&self) -> String {
+        Unit::key(self)
+    }
+
     fn claimed_as(&self) -> &str {
         &self.claimed_as
     }
@@ -87,6 +96,10 @@ impl ClaimedUnit for Unit {
             title: self.title.clone(),
             me: self.claimed_as.clone(),
         }
+    }
+
+    fn linked_texts(&self) -> Vec<&str> {
+        linked_texts(&self.body, &self.comments)
     }
 }
 
@@ -154,7 +167,10 @@ impl IssueUnits {
                 return Ok(None);
             }
             match claim_issue(&*self.client, repo, issue.number, me, clock, diag)? {
-                Claimed::Won(claim_id) => {
+                Claimed::Won {
+                    marker: claim_id,
+                    thread,
+                } => {
                     // The claim is the marker; the label is the status it shows — and the
                     // re-pick gate `eligible` reads, so the kind adds it itself rather
                     // than trusting an `on_claim` hook to.
@@ -169,6 +185,7 @@ impl IssueUnits {
                         url: issue.url,
                         labels: issue.labels,
                         body: issue.body,
+                        comments: thread,
                         claimed_as: me.to_string(),
                     }));
                 }
@@ -183,8 +200,12 @@ impl IssueUnits {
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim identity's login as
     /// `self` and the issue's handle fields. `seen` is empty: the issue claim reads no
     /// comments, so afkd's watch takes its own baseline on its first read. The brief is
-    /// unframed — afkd frames `task.md` itself.
-    pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
+    /// unframed — afkd frames `task/README.md` itself — with each link to a file in
+    /// `fetched` written as its name, and the files linked only from the comments, which the
+    /// brief does not carry, listed at its end ([`brief_with_files`]); then each of those
+    /// files, which afkd copies in from where [`fetch_files`](crate::file::fetch_files)
+    /// wrote it.
+    pub(crate) fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
         env.insert(ENV_ISSUE_NUMBER.to_string(), unit.number.to_string());
@@ -201,16 +222,24 @@ impl IssueUnits {
             seen: Vec::new(),
             me: unit.claimed_as.clone(),
             env,
-            files: vec![
-                WireFile {
-                    path: TASK_FILE.to_string(),
-                    text: brief_text(&unit.title, &unit.body),
-                },
-                WireFile {
-                    path: format!("{ISSUE_DIR}/{NUMBER_FILE}"),
-                    text: unit.number.to_string(),
-                },
-            ],
+            files: [
+                WireFile::text(
+                    TASK_FILE,
+                    brief_with_files(&brief_text(&unit.title, &unit.body), fetched),
+                ),
+                WireFile::text(
+                    format!("{ISSUE_DIR}/{NUMBER_FILE}"),
+                    unit.number.to_string(),
+                ),
+            ]
+            .into_iter()
+            .chain(fetched.iter().map(|file| {
+                WireFile::from_path(
+                    format!("{TASK_DIR}/{}", file.name),
+                    file.path.to_string_lossy(),
+                )
+            }))
+            .collect(),
         }
     }
 }
@@ -243,8 +272,8 @@ impl Units for IssueUnits {
         IssueUnits::try_claim_next(self, me, diag, clock)
     }
 
-    fn wire_unit(&self, unit: &Unit) -> WireUnit {
-        IssueUnits::wire_unit(self, unit)
+    fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
+        IssueUnits::wire_unit(self, unit, fetched)
     }
 
     fn release(&self, unit: &Unit, diag: &dyn Diag) {
@@ -304,7 +333,7 @@ impl Units for IssueUnits {
     }
 }
 
-/// The brief written to `task.md`: the title, or the title, a blank line, then the body.
+/// The brief written to `task/README.md`: the title, or the title, a blank line, then the body.
 fn brief_text(title: &str, body: &str) -> String {
     if body.trim().is_empty() {
         title.to_string()
@@ -319,14 +348,16 @@ mod tests {
     //!
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief, the
     //! env, the end of a run and the hooks' actions. The drive around it (attempt counting,
-    //! the claim journal, the run-name mint, the cadence, the framing of `task.md`) is
+    //! the claim journal, the run-name mint, the cadence, the framing of `task/README.md`) is
     //! afkd's, on the far side of the wire; the wire itself is `tests/wire.rs`.
 
     use super::*;
     use crate::claim::{claim_renewal_text, claim_text, is_claim, split_claim_key, CLAIM_SETTLE};
     use crate::client::{Action, MockClient};
-    use crate::common::{CaptureDiag, FakeClock, CALL_BUDGET, CLAIM_RESERVE};
+    use crate::common::{CaptureDiag, FakeClock, TempDir, CALL_BUDGET, CLAIM_RESERVE};
+    use crate::file::fetch_files;
     use crate::lifecycle::LifecycleAction;
+    use crate::wire::FileSource;
     use std::time::Duration;
 
     fn cfg() -> GithubConfig {
@@ -418,7 +449,16 @@ mod tests {
             url: String::new(),
             labels: Vec::new(),
             body: "B".into(),
+            comments: Vec::new(),
             claimed_as: "me".into(),
+        }
+    }
+
+    /// The text of a wire file that carries it inline.
+    fn text_of(file: &WireFile) -> &str {
+        match &file.source {
+            FileSource::Text(text) => text,
+            FileSource::From(from) => panic!("{} is copied from {from}", file.path),
         }
     }
 
@@ -747,7 +787,7 @@ mod tests {
         );
         let unit = h.poll().expect("claimed");
         assert_eq!(
-            serde_json::to_value(h.units.wire_unit(&unit).fields).unwrap(),
+            serde_json::to_value(h.units.wire_unit(&unit, &[]).fields).unwrap(),
             serde_json::json!({
                 "title": "修复 the retry storm 🚨",
                 "url": "https://github.com/acme/widgets/issues/4",
@@ -756,7 +796,7 @@ mod tests {
             })
         );
         assert_eq!(
-            serde_json::to_value(h.units.wire_unit(&self::unit(9)).fields).unwrap(),
+            serde_json::to_value(h.units.wire_unit(&self::unit(9), &[]).fields).unwrap(),
             serde_json::json!({"title": "T", "url": "", "number": 9, "labels": []})
         );
     }
@@ -771,7 +811,7 @@ mod tests {
             claimed_as: "björn-öst[bot]".into(),
             ..unit(4)
         };
-        let wire = h.units.wire_unit(&unit);
+        let wire = h.units.wire_unit(&unit, &[]);
 
         // The claim-journal key the built-in wrote, and the session thread it resumes
         // under — both unchanged across the switch.
@@ -791,19 +831,83 @@ mod tests {
                 ("GITHUB_TOKEN".to_string(), "PAT".to_string()),
             ])
         );
-        // `scratch_layout`, the brief unframed: afkd frames `task.md` itself.
+        // `scratch_layout`, the brief unframed: afkd frames `task/README.md` itself.
         assert_eq!(
             wire.files,
             [
-                WireFile {
-                    path: "task.md".into(),
-                    text: "修复 the retry storm 🚨\n\nIt retries forever.\n\n```rust\nlet backoff = 0;\n```"
-                        .into(),
-                },
-                WireFile {
-                    path: "issue/number".into(),
-                    text: "4".into(),
-                },
+                WireFile::text(
+                    "task/README.md",
+                    "修复 the retry storm 🚨\n\nIt retries forever.\n\n```rust\nlet backoff = 0;\n```"
+                ),
+                WireFile::text("task/issue/number", "4"),
+            ]
+        );
+    }
+
+    /// An issue whose body pastes an image as `<img>` and whose comment links a PDF: the
+    /// claim read the thread once and each file is downloaded from it. The brief points the
+    /// image at its relative name, lists the PDF — which only a comment links, and the
+    /// brief carries no comment — by its relative name too, and no GitHub url is left in
+    /// it; every file rides as a `from` entry beside the brief, and the claim's own marker
+    /// is read as no text.
+    #[test]
+    fn the_brief_points_at_the_files_and_lists_the_one_only_a_comment_links() {
+        let h = Harness::new(cfg());
+        let img = "https://github.com/user-attachments/assets/0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+        let pdf = "https://github.com/user-attachments/files/1234/Spec%20v2.pdf";
+        let png = b"\x89PNG\r\n\x1a\n\0\xff\xfe--end";
+        let pdf_bytes = b"%PDF-1.7\n\0\xe2\xe3\r\n%%EOF";
+        let body = format!("Crash on start:\n\n<img width=\"640\" alt=\"Image\" src=\"{img}\" />");
+        let comment = format!("The spec: [Spec v2.pdf]({pdf})");
+        h.client.add_issue(7, "Crash 💥", &body, &["afkd/ready"]);
+        h.client.add_comment_body(7, 1, "alice", &comment, 100);
+        h.client.add_file(img, png, Some("image/png"), None);
+        h.client
+            .add_file(pdf, pdf_bytes, Some("application/pdf"), None);
+
+        let unit = h.poll().expect("claimed");
+        assert_eq!(unit.linked_texts(), [body.as_str(), comment.as_str()]);
+        let state = TempDir::new("issue-files");
+        let dir = state.path().join("task-files").join("k");
+        let fetched = fetch_files(&*h.client, "issue", &unit.linked_texts(), &dir, &h.diag);
+        let wire = h.units.wire_unit(&unit, &fetched);
+
+        assert_eq!(
+            text_of(&wire.files[0]),
+            "Crash 💥\n\nCrash on start:\n\n<img width=\"640\" alt=\"Image\" src=\"Image.png\" />\n\n\
+             ## Files linked elsewhere on the item\n\n\
+             These are linked from the item's description or its comments, which this brief \
+             does not carry, and are downloaded beside it:\n\n\
+             - [Spec v2.pdf](<Spec v2.pdf>)\n"
+        );
+        assert!(!text_of(&wire.files[0]).contains("github.com"));
+        assert_eq!(
+            wire.files[1..],
+            [
+                WireFile::text("task/issue/number", "7"),
+                WireFile::from_path("task/Image.png", dir.join("Image.png").to_str().unwrap()),
+                WireFile::from_path(
+                    "task/Spec v2.pdf",
+                    dir.join("Spec v2.pdf").to_str().unwrap()
+                ),
+            ]
+        );
+        assert_eq!(std::fs::read(dir.join("Image.png")).unwrap(), png);
+        assert_eq!(std::fs::read(dir.join("Spec v2.pdf")).unwrap(), pdf_bytes);
+        assert!(h.diag.lines().is_empty(), "{:?}", h.diag.lines());
+    }
+
+    /// An issue with no file to fetch hands over exactly the brief and the number, as it
+    /// did before files: no section, no `from` entry.
+    #[test]
+    fn an_issue_with_no_fetched_file_hands_over_no_file_entry() {
+        let h = Harness::new(cfg());
+        let wire = h.units.wire_unit(&unit(4), &[]);
+        assert_eq!(
+            wire.files,
+            [
+                WireFile::text("task/README.md", "T\n\nB"),
+                WireFile::text("task/issue/number", "4"),
             ]
         );
     }
@@ -816,7 +920,10 @@ mod tests {
             title: "Just a title".into(),
             ..unit(9)
         };
-        assert_eq!(h.units.wire_unit(&bare).files[0].text, "Just a title");
+        assert_eq!(
+            text_of(&h.units.wire_unit(&bare, &[]).files[0]),
+            "Just a title"
+        );
     }
 
     // --- Swallowed errors, renewal, and the poll's time budget ---

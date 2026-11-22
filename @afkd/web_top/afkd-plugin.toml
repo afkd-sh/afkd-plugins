@@ -1,5 +1,5 @@
 name = "@afkd/web_top"
-version = "0.15.0"
+version = "0.15.1"
 proto = 2
 shape = "companion"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -7,6 +7,7 @@ exec = "web_top"
 
 [[config.setting]]
 name = "listen"
+doc = "The address the dashboard is served on, as host or host:port"
 type = "str"
 default = "127.0.0.1:8771"
 
@@ -15,14 +16,17 @@ default = "127.0.0.1:8771"
 # `$TMPDIR/afkd/runs`, which no setting moves.
 [[config.setting]]
 name = "runs_dir"
+doc = "Where the daemon keeps its runs, read for a run view"
 type = "str"
 
 [[config.setting]]
 name = "max_clients"
+doc = "How many browsers may be attached at once"
 type = "int"
 default = 8
 
 [[config.setting]]
 name = "log_lines"
+doc = "How many log lines the page keeps per service"
 type = "int"
 default = 2000

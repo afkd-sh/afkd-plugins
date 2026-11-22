@@ -314,7 +314,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
                 "TRELLO_CARD_ID": b.card,
                 "TRELLO_TOKEN": TOKEN,
             },
-            "files": [{"path": "task.md", "text": format!(
+            "files": [{"path": "task/README.md", "text": format!(
                 "{TITLE}\n\n{BODY}\n\n## Checklists\n\n### Acceptance (1/2)\
                  \n- [x] retry stops after 5 tries · id: {}\
                  \n- [ ] backoff is capped at 30s · id: {}\

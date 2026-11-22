@@ -11,7 +11,7 @@
 //! against [`MockClient`](crate::client::MockClient) and a fake clock.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
+//! bound, the mid-run watch's cursor, and the framing of `task/README.md` — so what is here is
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side.
 //!
 //! The optional `discuss_with` key turns intake into a **conversation**: a candidate must
@@ -417,7 +417,7 @@ impl IssueUnits {
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim-time comment ids as
     /// `seen`, the claim identity as `self` and the issue's handle fields. The brief is
-    /// unframed — afkd frames `task.md` itself (ADR-0081).
+    /// unframed — afkd frames `task/README.md` itself (ADR-0081).
     pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
@@ -556,7 +556,7 @@ fn backstop_text(outcome: UnitOutcome, facts: &Facts) -> String {
     }
 }
 
-/// The brief written to `task.md`: the title, or the title, a blank line, then the body —
+/// The brief written to `task/README.md`: the title, or the title, a blank line, then the body —
 /// then, for a re-claimed (unparked) issue, the human replies that unparked it, each
 /// attributed.
 fn brief_text(title: &str, body: &str, feedback: &[FeedbackItem]) -> String {
@@ -576,7 +576,7 @@ mod tests {
     //! What is proven here is the **vendor half** — eligibility, the claim, the
     //! `discuss_with` tail gate, the clarification gate's park/backstop, the brief and
     //! the env. The drive around it (attempt counting, the claim journal, the run-name
-    //! mint, the cadence, the framing of `task.md`) is afkd's, on the far side of the
+    //! mint, the cadence, the framing of `task/README.md`) is afkd's, on the far side of the
     //! wire; the wire itself is `tests/wire.rs`.
 
     use super::*;
@@ -656,7 +656,7 @@ mod tests {
         }
     }
 
-    /// The `task.md` text a `poll` would hand over for `unit`.
+    /// The `task/README.md` text a `poll` would hand over for `unit`.
     fn task_md(h: &Harness, unit: &Unit) -> String {
         let wire = h.units.wire_unit(unit);
         assert_eq!(wire.files[0].path, TASK_FILE);
@@ -1488,7 +1488,7 @@ mod tests {
 
     /// AC3's round-trip end-to-end: a parked issue, two humans answering with real
     /// prose (multi-line, non-ASCII, a code block), re-claimed and re-briefed. The
-    /// regenerated `task.md` carries the standing title/body *and* a `## New
+    /// regenerated `task/README.md` carries the standing title/body *and* a `## New
     /// comments` section naming each replier — the answer to the parked question,
     /// not a re-derivation of it.
     #[test]
@@ -2176,16 +2176,16 @@ mod tests {
                 ("GITEA_TOKEN".to_string(), "PAT".to_string()),
             ])
         );
-        // `scratch_layout`, the brief unframed: afkd frames `task.md` itself.
+        // `scratch_layout`, the brief unframed: afkd frames `task/README.md` itself.
         assert_eq!(
             wire.files,
             [
                 WireFile {
-                    path: "task.md".into(),
+                    path: "task/README.md".into(),
                     text: "T\n\nB".into(),
                 },
                 WireFile {
-                    path: "issue/number".into(),
+                    path: "task/issue/number".into(),
                     text: "4".into(),
                 },
             ]

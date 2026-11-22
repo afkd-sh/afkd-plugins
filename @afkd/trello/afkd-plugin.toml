@@ -1,5 +1,5 @@
 name = "@afkd/trello"
-version = "0.14.1"
+version = "0.15.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -13,77 +13,93 @@ name = "Card"
 
   [[handle.field]]
   name = "title"
+  doc = "The card's title"
   type = "str"
 
   [[handle.field]]
   name = "url"
+  doc = "The link to the card on Trello"
   type = "str"
 
   [[handle.field]]
   name = "labels"
+  doc = "The names of the labels on the card"
   type = "list[str]"
 
 # The one kind, `service(trello)` in a config: a Trello board whose cards are claimed one
 # per run.
 [[kind]]
 name = "card"
+doc = "A Trello board whose cards are claimed one per run"
 role = "trigger"
 main = true
 claims = true
 
   [[kind.setting]]
   name = "board"
+  doc = "The address of the board to take cards from"
   type = "str"
   required = true
 
   [[kind.setting]]
   name = "base_url"
+  doc = "The Trello API address, when not the public one"
   type = "str"
 
   [[kind.setting]]
   name = "api_key"
+  doc = "The API key of the Trello app"
   type = "str"
   required = true
 
   [[kind.setting]]
   name = "token"
+  doc = "The token the plugin acts with on Trello"
   type = "str"
   required = true
 
   [[kind.setting]]
   name = "pick_from"
+  doc = "The lists to take cards from, first one first"
   type = "list[str]"
   required = true
 
   [[kind.setting]]
   name = "require_member"
+  doc = "Only cards this member is on"
   type = "str"
 
   [[kind.setting]]
   name = "require_label"
+  doc = "Only cards with this label"
   type = "str"
 
   [[kind.setting]]
   name = "without_label"
+  doc = "Skip cards with any of these labels"
   type = "list[str]"
 
   [[kind.setting]]
   name = "discuss_with"
+  doc = "Who may drive a card by commenting: anyone, or these members"
   type = "list[str]"
 
   # A threshold, so no range: it is not resampled per read.
   [[kind.setting]]
   name = "min_age"
+  doc = "How old a card must be before it is claimed"
   type = "duration"
 
   # These two afkd reads itself, as it declares them for every claiming kind.
   [[kind.setting]]
   name = "max_attempts"
+  doc = "How many times a card is tried"
   type = "int"
   default = 1
 
   [[kind.setting]]
   name = "every"
+  doc = "How often to look for a card"
   type = "duration"
   jitter = true
   default = "30s"
@@ -92,6 +108,7 @@ claims = true
   # each action a slot calls is one `call` to this plugin.
   [[kind.slot]]
   name = "on_run"
+  doc = "Runs for a claimed card, and does the work on it"
 
     [[kind.slot.param]]
     name = "run"
@@ -103,6 +120,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_claim"
+  doc = "Runs once a card is claimed, before the run starts"
   when = "pre"
 
     [[kind.slot.param]]
@@ -111,6 +129,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_done"
+  doc = "Runs after the run finished the card"
   when = "post"
 
     [[kind.slot.param]]
@@ -127,6 +146,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_fail"
+  doc = "Runs after the run failed on the card"
   when = "post"
 
     [[kind.slot.param]]
@@ -143,6 +163,7 @@ claims = true
 
   [[kind.slot]]
   name = "on_park"
+  doc = "Runs after the run parked the card to wait"
   when = "post"
 
     [[kind.slot.param]]
@@ -160,35 +181,43 @@ claims = true
 # The actions a slot calls, each on the card it is passed first.
 [[action]]
 name = "mark_complete"
+doc = "Marks the card complete"
 
   [[action.param]]
   name = "card"
+  doc = "The card to mark"
   type = "Card"
   required = true
 
 [[action]]
 name = "archive"
+doc = "Archives the card"
 
   [[action.param]]
   name = "card"
+  doc = "The card to archive"
   type = "Card"
   required = true
 
 [[action]]
 name = "move_to"
+doc = "Moves the card to a list"
 
   [[action.param]]
   name = "card"
+  doc = "The card to move"
   type = "Card"
   required = true
 
   [[action.param]]
   name = "list"
+  doc = "The name of the list to move the card to"
   type = "str"
   required = true
 
   [[action.param]]
   name = "at"
+  doc = "Whether the card lands at the top or the bottom of the list"
   type = "enum"
   values = ["top", "bottom"]
   named_only = true
@@ -196,68 +225,83 @@ name = "move_to"
 
 [[action]]
 name = "add_label"
+doc = "Puts a label on the card"
 
   [[action.param]]
   name = "card"
+  doc = "The card to label"
   type = "Card"
   required = true
 
   [[action.param]]
   name = "label"
+  doc = "The name of the label to add"
   type = "str"
   required = true
 
 [[action]]
 name = "remove_label"
+doc = "Takes a label off the card"
 
   [[action.param]]
   name = "card"
+  doc = "The card to take the label off"
   type = "Card"
   required = true
 
   [[action.param]]
   name = "label"
+  doc = "The name of the label to remove"
   type = "str"
   required = true
 
 [[action]]
 name = "add_member"
+doc = "Adds a member to the card"
 
   [[action.param]]
   name = "card"
+  doc = "The card to add the member to"
   type = "Card"
   required = true
 
   # A username, or "me": Trello's own alias for the member the credentials authenticate as.
   [[action.param]]
   name = "member"
+  doc = "A username, or me for the member the token belongs to"
   type = "str"
   default = "me"
 
 [[action]]
 name = "remove_member"
+doc = "Removes a member from the card"
 
   [[action.param]]
   name = "card"
+  doc = "The card to remove the member from"
   type = "Card"
   required = true
 
   # A username, or "me": Trello's own alias for the member the credentials authenticate as.
   [[action.param]]
   name = "member"
+  doc = "A username, or me for the member the token belongs to"
   type = "str"
   default = "me"
 
 [[action]]
 name = "comment"
+doc = "Writes a comment on the card"
 
   [[action.param]]
   name = "card"
+  doc = "The card to comment on"
   type = "Card"
   required = true
 
   [[action.param]]
   name = "text"
+  doc = "The text of the comment"
   type = "str"
   required = true
 
@@ -265,19 +309,23 @@ name = "comment"
 # uploaded as `name`; queued and retried like every write when Trello is down.
 [[action]]
 name = "attach"
+doc = "Uploads a file to the card, retried when Trello is down"
 
   [[action.param]]
   name = "card"
+  doc = "The card to attach the file to"
   type = "Card"
   required = true
 
   [[action.param]]
   name = "path"
+  doc = "The absolute path of the file to upload"
   type = "str"
   required = true
 
   [[action.param]]
   name = "name"
+  doc = "The name the file is uploaded as"
   type = "str"
   required = true
 
@@ -285,18 +333,22 @@ name = "attach"
 # written when there is none. A read, never queued.
 [[action]]
 name = "fetch_attachment"
+doc = "Saves the newest file of a name on the card, if there is one"
 
   [[action.param]]
   name = "card"
+  doc = "The card to take the file from"
   type = "Card"
   required = true
 
   [[action.param]]
   name = "name"
+  doc = "The name of the file to fetch"
   type = "str"
   required = true
 
   [[action.param]]
   name = "to"
+  doc = "The absolute path to write the file to"
   type = "str"
   required = true

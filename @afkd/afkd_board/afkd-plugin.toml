@@ -1,5 +1,5 @@
 name = "@afkd/afkd_board"
-version = "0.1.0"
+version = "0.2.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -68,60 +68,73 @@ name = "Card"
   # 17 for #17.
   [[handle.field]]
   name = "number"
+  doc = "The card's number on the board, such as 17"
   type = "int"
 
   [[handle.field]]
   name = "title"
+  doc = "The card's title"
   type = "str"
 
   # Markdown, "" when it has none.
   [[handle.field]]
   name = "description"
+  doc = "The card's description in Markdown, empty when it has none"
   type = "str"
 
   # The name of the list it is in.
   [[handle.field]]
   name = "list"
+  doc = "The name of the list the card is in"
   type = "str"
 
   # By name, in the order they were put on.
   [[handle.field]]
   name = "labels"
+  doc = "The names of the card's labels, in the order they were put on"
   type = "list[str]"
 
   [[handle.field]]
   name = "archived"
+  doc = "Whether the card is archived"
   type = "bool"
 
   [[handle.field]]
   name = "done"
+  doc = "Whether the card is done"
   type = "bool"
 
   # The numbers of the cards it is blocked by, done or not, and of those it blocks.
   [[handle.field]]
   name = "blocked_by"
+  doc = "The numbers of the cards that block it, done or not"
   type = "list[int]"
 
   [[handle.field]]
   name = "blocking"
+  doc = "The numbers of the cards it blocks"
   type = "list[int]"
 
   # Whether a card it is blocked by is not done.
   [[handle.field]]
   name = "blocked"
+  doc = "Whether a card that blocks it is not done"
   type = "bool"
 
   [[handle.field]]
   name = "url"
+  doc = "The link to the card on the board"
   type = "str"
 
   [[handle.field]]
   name = "created_at"
+  doc = "When the card was made"
   type = "time"
 
   # The newest of when it was made, its changes and its comments.
   [[handle.field]]
   name = "updated_at"
+  doc = "The newest of when it was made, changed or commented on"
   type = "time"
 
 # A comment on a card. afkd carries `id`, the comment's uuid, and `key`,
@@ -132,44 +145,53 @@ name = "Comment"
   # The number of the card it is on.
   [[handle.field]]
   name = "card"
+  doc = "The number of the card it is on"
   type = "int"
 
   [[handle.field]]
   name = "body"
+  doc = "The text of the comment"
   type = "str"
 
   # The name of the person who made it; nil for a comment a key made, and once the person's
   # account is deleted.
   [[handle.field]]
   name = "author"
+  doc = "The name of the person who made it, nil for a key's or a deleted one"
   type = "str?"
 
   # The id of the run it was made in.
   [[handle.field]]
   name = "run"
+  doc = "The id of the run it was made in, nil for none"
   type = "str?"
 
   [[handle.field]]
   name = "created_at"
+  doc = "When the comment was made"
   type = "time"
 
   # Its card's url, since a comment has no address of its own.
   [[handle.field]]
   name = "url"
+  doc = "The link to its card, since a comment has no address of its own"
   type = "str"
 
 # The card of that number, archived or not.
 [[action]]
 name = "card"
+doc = "Reads the card of a number, archived or not"
 returns = "Card"
 
   [[action.param]]
   name = "b"
+  doc = "The board to read"
   type = "Board"
   required = true
 
   [[action.param]]
   name = "number"
+  doc = "The card's number"
   type = "int"
   required = true
 
@@ -177,52 +199,61 @@ returns = "Card"
 # place in it, archived cards after the others, the last archived first.
 [[action]]
 name = "cards"
+doc = "Reads the cards every filter given keeps, in the board's order"
 returns = "list[Card]"
 
   [[action.param]]
   name = "b"
+  doc = "The board to read"
   type = "Board"
   required = true
 
   # A card in any of these lists, by name.
   [[action.param]]
   name = "list"
+  doc = "Only cards in any of these lists, by name"
   type = "list[str]"
   named_only = true
 
   # A card carrying every one of these labels.
   [[action.param]]
   name = "labels"
+  doc = "Only cards carrying every one of these labels"
   type = "list[str]"
   named_only = true
 
   # A card carrying none of these labels.
   [[action.param]]
   name = "without_labels"
+  doc = "Only cards carrying none of these labels"
   type = "list[str]"
   named_only = true
 
   # true keeps the cards that are done, false those that are not; left out, both.
   [[action.param]]
   name = "done"
+  doc = "True keeps the done cards, false the others, left out both"
   type = "bool?"
   named_only = true
 
   # true keeps the blocked cards, false the free ones; left out, both.
   [[action.param]]
   name = "blocked"
+  doc = "True keeps the blocked cards, false the free ones, left out both"
   type = "bool?"
   named_only = true
 
   # In the title or the description, case aside.
   [[action.param]]
   name = "text"
+  doc = "Only cards with this text in the title or description, any case"
   type = "str"
   named_only = true
 
   # Archived cards too.
   [[action.param]]
   name = "include_archived"
+  doc = "Whether archived cards are kept too"
   type = "bool"
   named_only = true
   default = false
@@ -230,6 +261,7 @@ returns = "list[Card]"
   # 1 to 250.
   [[action.param]]
   name = "limit"
+  doc = "How many cards to read at most, 1 to 250"
   type = "int"
   named_only = true
   default = 50
@@ -237,34 +269,647 @@ returns = "list[Card]"
 # The card's comments, oldest first.
 [[action]]
 name = "comments"
+doc = "Reads the card's comments, oldest first"
 returns = "list[Comment]"
 
   [[action.param]]
   name = "b"
+  doc = "The board the card is on"
   type = "Board"
   required = true
 
   [[action.param]]
   name = "card"
+  doc = "The card whose comments to read"
   type = "Card"
   required = true
 
 # The board's lists, in order.
 [[action]]
 name = "lists"
+doc = "Reads the board's lists, in order"
 returns = "list[List]"
 
   [[action.param]]
   name = "b"
+  doc = "The board to read"
   type = "Board"
   required = true
 
 # The board's labels.
 [[action]]
 name = "labels"
+doc = "Reads the board's labels"
 returns = "list[Label]"
 
   [[action.param]]
   name = "b"
+  doc = "The board to read"
   type = "Board"
+  required = true
+
+# The writes. Every write of a card, of its checklist and of a comment takes `run`, the run it is
+# made in, as a named-only `afkd.Run?`: the board shows the change under that run, and one
+# made with none under the key's name. A write of a list takes none. A list is named by its
+# name, matched exactly; a card is a `Card` handle of the board the `Board` reaches.
+
+# A card with the board's next number, at the bottom of `list` unless `at` or `after` says.
+[[action]]
+name = "create_card"
+doc = "Makes a card with the board's next number, at the bottom unless told"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board to write to"
+  type = "Board"
+  required = true
+
+  # The list it goes in, by name.
+  [[action.param]]
+  name = "list"
+  doc = "The name of the list it goes in"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "title"
+  doc = "The card's title"
+  type = "str"
+  required = true
+
+  # Markdown.
+  [[action.param]]
+  name = "description"
+  doc = "The card's description in Markdown"
+  type = "str"
+  named_only = true
+
+  # By name; one the board lacks is made in the next free colour.
+  [[action.param]]
+  name = "labels"
+  doc = "The names of its labels, one the board lacks is made"
+  type = "list[str]"
+  named_only = true
+
+  # Its items, none ticked: only each item's text is sent.
+  [[action.param]]
+  name = "checklist"
+  doc = "Its checklist items, none ticked: only each text is sent"
+  type = "list[Item]"
+  named_only = true
+
+  # The place in the list. Not with `after`.
+  [[action.param]]
+  name = "at"
+  doc = "The place in the list, top or bottom, not with after"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+
+  # Right after this card, which is in the list. Not with `at`.
+  [[action.param]]
+  name = "after"
+  doc = "The card in the list it goes right after, not with at"
+  type = "Card?"
+  named_only = true
+
+  # The run it is made in.
+  [[action.param]]
+  name = "run"
+  doc = "The run it is made in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card with its title or its description changed.
+[[action]]
+name = "update_card"
+doc = "Changes a card's title or description"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to change"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "title"
+  doc = "The card's new title"
+  type = "str"
+  named_only = true
+
+  # Markdown.
+  [[action.param]]
+  name = "description"
+  doc = "The card's new description in Markdown"
+  type = "str"
+  named_only = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is changed in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card moved to `list`, at the bottom unless `at` or `after` says.
+[[action]]
+name = "move_card"
+doc = "Moves a card to a list, at the bottom unless told"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to move"
+  type = "Card"
+  required = true
+
+  # By name.
+  [[action.param]]
+  name = "list"
+  doc = "The name of the list to move it to"
+  type = "str"
+  required = true
+
+  # The place in the list. Not with `after`.
+  [[action.param]]
+  name = "at"
+  doc = "The place in the list, top or bottom, not with after"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+
+  # Right after this card, which is in the list. Not with `at`.
+  [[action.param]]
+  name = "after"
+  doc = "The card in the list it goes right after, not with at"
+  type = "Card?"
+  named_only = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is moved in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card with the label put on; one the board lacks is made in the next free colour.
+[[action]]
+name = "add_label"
+doc = "Puts a label on a card, making it when the board lacks it"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to label"
+  type = "Card"
+  required = true
+
+  # By name.
+  [[action.param]]
+  name = "label"
+  doc = "The name of the label to put on"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is put on in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card with the label taken off. A label the card lacks, or the board does, leaves it as it
+# is, and writes nothing.
+[[action]]
+name = "remove_label"
+doc = "Takes a label off a card, writing nothing when it is not on"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to take the label off"
+  type = "Card"
+  required = true
+
+  # By name.
+  [[action.param]]
+  name = "label"
+  doc = "The name of the label to take off"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is taken off in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card with an item added to the end of its checklist, not ticked.
+[[action]]
+name = "add_item"
+doc = "Adds an unticked item to the end of a card's checklist"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card whose checklist to add to"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "text"
+  doc = "The item's text"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is added in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card with its checklist's item ticked, or unticked.
+[[action]]
+name = "check_item"
+doc = "Ticks or unticks an item of a card's checklist"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card whose checklist to change"
+  type = "Card"
+  required = true
+
+  # The item's place in its checklist, from 0.
+  [[action.param]]
+  name = "index"
+  doc = "The item's place in its checklist, from 0"
+  type = "int"
+  required = true
+
+  # true ticks it, false unticks it.
+  [[action.param]]
+  name = "done"
+  doc = "True ticks it, false unticks it"
+  type = "bool"
+  default = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is changed in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card with its checklist's item removed, the items after it moving up one.
+[[action]]
+name = "remove_item"
+doc = "Removes an item of a card's checklist, the later ones moving up"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card whose checklist to change"
+  type = "Card"
+  required = true
+
+  # The item's place in its checklist, from 0.
+  [[action.param]]
+  name = "index"
+  doc = "The item's place in its checklist, from 0"
+  type = "int"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is removed in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card marked done, or not. A blocked card is refused, naming the cards that are not done.
+[[action]]
+name = "mark_done"
+doc = "Marks a card done or not, refusing a blocked card"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to mark"
+  type = "Card"
+  required = true
+
+  # true marks it done, false not.
+  [[action.param]]
+  name = "done"
+  doc = "True marks it done, false not"
+  type = "bool"
+  default = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is marked in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card blocked by `other`, with `done` as the board left it. A block that makes a chain back
+# is refused, naming the chain.
+[[action]]
+name = "add_blocked_by"
+doc = "Blocks a card by another, refusing a block that makes a chain back"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the cards are on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to block"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "other"
+  doc = "The card that blocks it"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is blocked in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card with its block by `other` taken off.
+[[action]]
+name = "remove_blocked_by"
+doc = "Takes a card's block by another card off"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the cards are on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to unblock"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "other"
+  doc = "The card that blocks it"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is unblocked in"
+  type = "afkd.Run?"
+  named_only = true
+
+# A comment on the card.
+[[action]]
+name = "create_comment"
+doc = "Makes a comment on a card"
+returns = "Comment"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to comment on"
+  type = "Card"
+  required = true
+
+  # Markdown, 1 to 10 000 characters.
+  [[action.param]]
+  name = "body"
+  doc = "The comment's text in Markdown, 1 to 10 000 characters"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is made in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card archived, which leaves its list.
+[[action]]
+name = "archive_card"
+doc = "Archives a card, which leaves its list"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to archive"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is archived in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The archived card brought back to the bottom of its list.
+[[action]]
+name = "unarchive_card"
+doc = "Brings an archived card back to the bottom of its list"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The archived card to bring back"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is brought back in"
+  type = "afkd.Run?"
+  named_only = true
+
+# The card deleted for good, with its checklist, its comments and its activity; it gives the card
+# as it was read before. The board's API takes no run to delete a card, so `run` does not reach it.
+[[action]]
+name = "delete_card"
+doc = "Deletes a card for good, giving the card as it was read before"
+returns = "Card"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to delete"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "run"
+  doc = "The run it is deleted in, which the board's API does not take"
+  type = "afkd.Run?"
+  named_only = true
+
+# A list at the bottom of the board unless `at` or `after` says.
+[[action]]
+name = "create_list"
+doc = "Makes a list, at the bottom of the board unless told"
+returns = "List"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board to write to"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  doc = "The list's name"
+  type = "str"
+  required = true
+
+  # The place on the board. Not with `after`.
+  [[action.param]]
+  name = "at"
+  doc = "The place on the board, top or bottom, not with after"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+
+  # Right after this list, by name. Not with `at`.
+  [[action.param]]
+  name = "after"
+  doc = "The name of the list it goes right after, not with at"
+  type = "str"
+  named_only = true
+
+# The list renamed, moved, or both.
+[[action]]
+name = "update_list"
+doc = "Renames a list, moves it, or both"
+returns = "List"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the list is on"
+  type = "Board"
+  required = true
+
+  # By name.
+  [[action.param]]
+  name = "list"
+  doc = "The name of the list to change"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  doc = "The list's new name"
+  type = "str"
+  named_only = true
+
+  # The place on the board. Not with `after`.
+  [[action.param]]
+  name = "at"
+  doc = "The place on the board, top or bottom, not with after"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+
+  # Right after this list, by name. Not with `at`.
+  [[action.param]]
+  name = "after"
+  doc = "The name of the list it goes right after, not with at"
+  type = "str"
+  named_only = true
+
+# The list deleted with its archived cards. One holding cards that are not archived is refused,
+# naming how many.
+[[action]]
+name = "delete_list"
+doc = "Deletes a list with its archived cards, refusing one with live cards"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the list is on"
+  type = "Board"
+  required = true
+
+  # By name.
+  [[action.param]]
+  name = "list"
+  doc = "The name of the list to delete"
+  type = "str"
   required = true

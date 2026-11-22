@@ -183,7 +183,7 @@ pub(crate) fn has_content(message: &TgMessage) -> bool {
     !text_of(message).is_empty() || !files_of(message).is_empty()
 }
 
-/// The brief a run reads in `task.md`: who sent the message, where and when, what it
+/// The brief a run reads in `task/README.md`: who sent the message, where and when, what it
 /// replies to, its text, and a line per file with what `fetch_file` takes. afkd frames it
 /// as data before writing it.
 pub(crate) fn brief(message: &TgMessage) -> String {
