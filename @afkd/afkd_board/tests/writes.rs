@@ -19,7 +19,7 @@ const KEY: &str = "afk_board_writes-0123456789";
 
 /// The run every write is made in, and its four fields as the board takes them.
 fn run() -> Value {
-    json!({"machine": "nexus", "service": "develop/review.0", "instance": 2,
+    json!({"machine": "nexus", "service": "develop/review.0", "instance": "blue-2",
            "id": "261116-163511-card-17-2"})
 }
 
@@ -630,7 +630,7 @@ fn create_comment_gives_the_comment_made_in_its_run() {
             Some(Run {
                 machine: "nexus".to_string(),
                 service: "develop/review.0".to_string(),
-                instance: 2,
+                instance: "blue-2".to_string(),
                 id: "261116-163511-card-17-2".to_string(),
             })
         )
@@ -1036,7 +1036,7 @@ fn a_malformed_run_and_an_empty_key_are_refused_before_any_request() {
     for run in [
         json!("261116-163511"),
         json!({"machine": "nexus"}),
-        json!({"machine": "nexus", "service": "s", "instance": "0", "id": "i"}),
+        json!({"machine": "nexus", "service": "s", "instance": 0, "id": "i"}),
     ] {
         let (reply, _) = call(
             &fake,

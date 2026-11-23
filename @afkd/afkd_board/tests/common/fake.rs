@@ -92,12 +92,12 @@ impl NewCard {
     }
 }
 
-/// A run a comment is made in, as the API names one.
+/// A run a comment is made in, as the API names one, its instance a string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
     pub machine: String,
     pub service: String,
-    pub instance: i64,
+    pub instance: String,
     pub id: String,
 }
 
@@ -789,8 +789,9 @@ impl Store {
     }
 
     /// The run `fields` name, `run`, which is exactly `{machine, service, instance, id}`: a
-    /// machine, a service and an id of 1 to 100 characters with no control character, and an
-    /// instance from 0. Anything else is `400` and recorded.
+    /// machine, a service, an instance and an id, each a string of 1 to 100 characters with no
+    /// control character; an instance that is a number is no string. Anything else is `400` and
+    /// recorded.
     fn run_of(&mut self, fields: &Fields, req: &Request) -> Result<Option<Run>, Reply> {
         let Some(run) = fields.get("run") else {
             return Ok(None);
@@ -812,7 +813,7 @@ impl Store {
                 Some(Run {
                     machine: word("machine")?,
                     service: word("service")?,
-                    instance: run.get("instance")?.as_i64().filter(|i| *i >= 0)?,
+                    instance: word("instance")?,
                     id: word("id")?,
                 })
             });

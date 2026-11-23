@@ -272,7 +272,8 @@ a handle like a read's, so the same card written and read is `==` itself.
 - **A card of another board** than the `afkd_board.Board` reaches, passed as `card`, `other` or
   `after`, is an `.err` naming both boards, as it is for [`comments`](#refusals).
 - **A `run` that is no `afkd.Run`** is an `.err`: ``update_card: parameter run must be an afkd.Run``.
-  The plugin sends exactly the run's `machine`, `service`, `instance` and `id`.
+  The plugin sends exactly the run's `machine`, `service`, `instance` and `id`, the `instance` as
+  the string afkd gives it.
 - **What the board refuses** comes back with its own sentence: a blocked card marked done,
   ``mark_done: Card #3 is blocked by #1 and #2, which are not done.``; a block that makes a chain
   back, ``add_blocked_by: Card #1 cannot be blocked by #3, since #3 is blocked by #2, which is
