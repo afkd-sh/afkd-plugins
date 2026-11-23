@@ -163,6 +163,33 @@ fn discuss_settings(fake: &FakeTrello) -> Value {
     })
 }
 
+/// When the object an ObjectId names was made, in the unix milliseconds a `time` field is.
+fn made(id: &str) -> u64 {
+    u64::from_str_radix(&id[..8], 16).expect("an ObjectId") * 1000
+}
+
+/// Every field the `Card` handle declares for the suite's own card as the board holds it now,
+/// in the unix milliseconds a `time` is: its labels and members as the caller says, the list
+/// it is in, and the last activity the fake has stamped on it.
+fn card_fields(b: &Board, list: &str, labels: &[&str], members: &[&str]) -> Value {
+    json!({
+        "title": TITLE,
+        "number": 1,
+        "name": TITLE,
+        "url": b.fake.url(&b.card),
+        "description": BODY,
+        "board": BOARD,
+        "list": list,
+        "labels": labels,
+        "members": members,
+        "due": null,
+        "due_complete": false,
+        "archived": false,
+        "created_at": made(&b.card),
+        "last_activity_at": b.fake.last_activity(&b.card) * 1000,
+    })
+}
+
 /// The `finish` envelope's facts, as afkd writes them: every field, though the plugin
 /// reads only the signal and the reason.
 fn facts(signal: &str, reason: Option<&str>) -> Value {
@@ -275,12 +302,12 @@ fn hello_refuses_what_it_cannot_arm_with() {
 
 // --- poll ---
 
-/// The won race hands over exactly the unit the built-in would have run — its journal
-/// key and session thread, the claim-read thread as `seen`, afkd's member id, the four
-/// env names the skill reads, and the brief unframed — with every field the manifest's
-/// `Card` declares, its labels by name and a colour-only one left out, and the board
-/// holds the claim as the built-in leaves it. The `poll` moves nothing itself:
-/// `on_claim`'s calls, sent after it, do, and every line is narrated on stderr.
+/// The won race hands over exactly the unit the built-in would have run — its session
+/// thread, the claim-read thread as `seen`, afkd's member id, the four env names the skill
+/// reads, and the brief unframed — keyed by the card, `trello:<card id>`, with every field the
+/// manifest's `Card` declares, its labels by name and a colour-only one left out, and the board
+/// holds the claim as the built-in leaves it. The `poll` moves nothing itself: `on_claim`'s
+/// calls, sent after it, do, and every line is narrated on stderr.
 #[test]
 fn a_won_race_hands_over_the_built_ins_unit() {
     let b = board();
@@ -299,12 +326,8 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         reply["unit"],
         json!({
             "id": SHORT_LINK,
-            "key": format!("{}#{}", b.card, claim.id),
-            "fields": {
-                "title": TITLE,
-                "url": b.fake.url(&b.card),
-                "labels": ["afkd/ready", "Väntar på svar"],
-            },
+            "key": format!("trello:{}", b.card),
+            "fields": card_fields(&b, "Up for Grabs", &["afkd/ready", "Väntar på svar"], &[]),
             "thread": SHORT_LINK,
             "seen": [claim.id, b.asked[1], b.asked[0]],
             "self": b.fake.me(),
@@ -361,8 +384,9 @@ fn a_won_race_hands_over_the_built_ins_unit() {
     plugin.finish();
 }
 
-/// A card with no label still sends its `labels`, empty, beside the title and url: afkd
-/// finds every declared field there whatever the board holds.
+/// A card with no label, member or due date still sends every field — its `labels` and
+/// `members` empty, its `due` `null` — afkd finds every declared field there whatever the
+/// board holds.
 #[test]
 fn an_unlabelled_card_hands_over_its_labels_empty() {
     let b = board();
@@ -371,7 +395,38 @@ fn an_unlabelled_card_hands_over_its_labels_empty() {
     assert_eq!(reply["fire"], true, "{}", plugin.stderr());
     assert_eq!(
         reply["unit"]["fields"],
-        json!({"title": TITLE, "url": b.fake.url(&b.card), "labels": []})
+        card_fields(&b, "Up for Grabs", &[], &[])
+    );
+    plugin.finish();
+}
+
+/// A claimed card carries every field the `Card` handle declares, filled from Trello as the
+/// board holds the card once the claim is won: its list's name and board's short link, its
+/// members' usernames, its due date and whether that is complete, its `idShort` as `number`,
+/// and its last activity — which the claim comment itself moved on. Each field is the one a
+/// read of the same card gives, so the two handles are `==`.
+#[test]
+fn a_claimed_card_carries_every_card_field() {
+    let b = board();
+    b.fake.label(&b.card, "afkd/ready");
+    b.fake.card_member(&b.card, &b.phil);
+    b.fake.card_member(&b.card, &b.chen);
+    b.fake.due(&b.card, 86_400 * 3, true);
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let unit = plugin.poll()["unit"].clone();
+    let mut want = card_fields(&b, "Up for Grabs", &["afkd/ready"], &["phil", "chen"]);
+    want["due"] = json!(b.fake.due_of(&b.card).expect("a due date") * 1000);
+    want["due_complete"] = json!(true);
+    assert_eq!(unit["fields"], want);
+    // The same card read as `trello.cards` reads it: the same handle, field for field.
+    let read = plugin.read_armed(
+        "cards",
+        json!({"acct": b.fake.account(), "board": BOARD, "limit": 1}),
+    );
+    assert_eq!(read["ok"], true, "{}", plugin.stderr());
+    assert_eq!(
+        read["handles"][0],
+        json!({"id": SHORT_LINK, "key": unit["key"], "fields": want})
     );
     plugin.finish();
 }
@@ -701,11 +756,11 @@ fn two_list_settings(fake: &FakeTrello) -> Value {
 }
 
 /// With nothing claimable in the first list, the poll claims from the second, and the
-/// key names the list the card came from.
+/// key is the card's own — the list the card came from is the plugin's to keep.
 #[test]
 fn pick_from_names_two_lists_and_claims_from_the_second() {
     let b = board();
-    let (list, card) = second_list(&b);
+    let (_, card) = second_list(&b);
     let mut plugin = Plugin::armed(two_list_settings(&b.fake));
 
     let unit = claim_one(&mut plugin);
@@ -714,8 +769,8 @@ fn pick_from_names_two_lists_and_claims_from_the_second() {
     assert_eq!(claim.len(), 1, "one claim, ours");
     assert_eq!(
         unit["key"],
-        format!("{card}#{}#{list}", claim[0].id),
-        "the key names the second list"
+        format!("trello:{card}"),
+        "the key is the card's, whichever list it came from"
     );
     assert!(claims(&b.fake, &b.card).is_empty());
     assert_eq!(b.fake.list_of(&card), "In Progress");
@@ -723,21 +778,36 @@ fn pick_from_names_two_lists_and_claims_from_the_second() {
     plugin.finish();
 }
 
-/// The source list rides in the journal key, so a fresh process — the restart after a
-/// crash — returns a card claimed from the second list to the bottom of that list, not
-/// to the first.
+/// The source list rides in the plugin's record of the claim, in the directory afkd names
+/// for it, so a fresh process sharing that directory — the restart after a crash — returns a
+/// card claimed from the second list to the bottom of that list, not to the first.
 #[test]
 fn release_after_a_restart_returns_a_second_list_card_to_its_list() {
     let b = board();
     let (_, card) = second_list(&b);
     let queued = b.fake.card("Hjälpvideor 🎬", "Qu3u3d00", "Nästa video", "");
-    let mut before = Plugin::armed(two_list_settings(&b.fake));
+    let state = TempDir::new("state");
+    let mut before = Plugin::armed_with(
+        DEVELOP,
+        OWNER,
+        Some(state.path()),
+        two_list_settings(&b.fake),
+    );
     let unit = claim_one(&mut before);
     assert_eq!(unit["id"], "Hj4lpV1d");
     assert_eq!(b.fake.list_of(&card), "In Progress");
+    assert!(
+        state.path().join("claims").is_dir(),
+        "the record is written before the unit is handed over"
+    );
     before.finish();
 
-    let mut after = Plugin::armed(two_list_settings(&b.fake));
+    let mut after = Plugin::armed_with(
+        DEVELOP,
+        OWNER,
+        Some(state.path()),
+        two_list_settings(&b.fake),
+    );
     assert_eq!(
         after.call(json!({"call": "release", "key": unit["key"]})),
         json!({"released": true})
@@ -748,15 +818,99 @@ fn release_after_a_restart_returns_a_second_list_card_to_its_list() {
         b.fake.cards_in("Up for Grabs"),
         std::slice::from_ref(&b.card)
     );
+    assert_eq!(
+        std::fs::read_dir(state.path().join("claims"))
+            .unwrap()
+            .count(),
+        0,
+        "the record goes with the release"
+    );
     after.finish();
 }
 
+/// A restart with no record — the directory is not shared, or afkd named none, and the
+/// process is armed under another claim owner — releases a `trello:` key by the rule that
+/// holds without one: every claim this account's member posted is pruned but the ones
+/// carrying the new owner, a rival member's claim is kept, and the card moves back to the
+/// bottom of the `pick_from` list it sits in — here none, since `on_claim` moved it out, so
+/// the first.
+#[test]
+fn a_restart_with_no_record_prunes_the_first_processs_claim_and_keeps_a_rivals() {
+    let b = board();
+    let (_, card) = second_list(&b);
+    let queued = b.fake.card("Hjälpvideor 🎬", "Qu3u3d00", "Nästa video", "");
+    let mut before = Plugin::armed(two_list_settings(&b.fake));
+    let unit = claim_one(&mut before);
+    assert_eq!(unit["id"], "Hj4lpV1d");
+    before.finish();
+    let rival = b.fake.member("rival-host", "Rival");
+    let rivals = b
+        .fake
+        .comment(&card, &rival, "[afkd-claim] owner=afkd-17", 30);
+    let ours = b.fake.comment(
+        &card,
+        &b.fake.me(),
+        "[afkd-claim] owner=afkd-5151 renewal=2",
+        20,
+    );
+    assert_eq!(claims(&b.fake, &card).len(), 3);
+
+    let mut after = Plugin::armed_with(DEVELOP, "afkd-5151", None, two_list_settings(&b.fake));
+    assert_eq!(
+        after.call(json!({"call": "release", "key": unit["key"]})),
+        json!({"released": true}),
+        "{}",
+        after.stderr()
+    );
+    let left: Vec<String> = claims(&b.fake, &card).into_iter().map(|c| c.id).collect();
+    assert_eq!(
+        left,
+        [rivals, ours],
+        "the first process's claim is the one gone"
+    );
+    assert_eq!(b.fake.cards_in("Hjälpvideor 🎬"), [queued]);
+    assert_eq!(b.fake.cards_in("Up for Grabs"), [b.card.clone(), card]);
+    assert!(b.fake.cards_in("In Progress").is_empty());
+    after.finish();
+}
+
+/// A key an older release journaled, `card#claim#list`, is still released: its claim deleted
+/// and the card returned to the list it names, with no record to read.
+#[test]
+fn an_older_releases_key_is_still_released() {
+    let b = board();
+    let (list, card) = second_list(&b);
+    let queued = b.fake.card("Hjälpvideor 🎬", "Qu3u3d00", "Nästa video", "");
+    let claim = b.fake.comment(
+        &card,
+        &b.fake.me(),
+        "[afkd-claim] owner=afkd-17 renewal=3",
+        600,
+    );
+    // The older release's `on_claim` moved it out of the list it was claimed from.
+    b.fake.move_card(&card, "In Progress");
+    let mut plugin = Plugin::armed(two_list_settings(&b.fake));
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": format!("{card}#{claim}#{list}")})),
+        json!({"released": true})
+    );
+    assert!(claims(&b.fake, &card).is_empty());
+    assert_eq!(b.fake.cards_in("Hjälpvideor 🎬"), [queued, card]);
+    plugin.finish();
+}
+
 /// Release the key of a card the sweep claimed in `plugin`: from `plugin` itself, or —
-/// with `restart` — from a fresh process, the plugin that claimed it gone.
-fn release_swept(b: &Board, plugin: Plugin, key: &Value, restart: bool) {
+/// with `restart` — from a fresh process sharing the plugin's directory `state`, the plugin
+/// that claimed it gone.
+fn release_swept(b: &Board, plugin: Plugin, key: &Value, restart: bool, state: &TempDir) {
     let mut plugin = if restart {
         plugin.finish();
-        Plugin::armed(two_list_settings(&b.fake))
+        Plugin::armed_with(
+            DEVELOP,
+            OWNER,
+            Some(state.path()),
+            two_list_settings(&b.fake),
+        )
     } else {
         plugin
     };
@@ -769,22 +923,27 @@ fn release_swept(b: &Board, plugin: Plugin, key: &Value, restart: bool) {
 
 /// The discusser's shape over two lists: a card claimed from the second list with no
 /// `on_claim` to move it is parked where it sits, answered, and claimed again by the
-/// sweep — whose key names the list, so a crash returns it to the bottom of that list,
+/// sweep — whose record names the list, so a crash returns it to the bottom of that list,
 /// before a restart or after one.
 #[test]
 fn a_parked_card_answered_in_the_second_list_goes_back_there() {
     for restart in [false, true] {
         let b = board();
-        let (list, card) = second_list(&b);
+        let (_, card) = second_list(&b);
         let queued = b.fake.card("Hjälpvideor 🎬", "Qu3u3d00", "Nästa video", "");
-        let mut plugin = Plugin::armed(two_list_settings(&b.fake));
+        let state = TempDir::new("state");
+        let mut plugin = Plugin::armed_with(
+            DEVELOP,
+            OWNER,
+            Some(state.path()),
+            two_list_settings(&b.fake),
+        );
 
         let reply = plugin.poll();
         assert_eq!(reply["fire"], true, "{}", plugin.stderr());
         let unit = reply["unit"].clone();
         assert_eq!(unit["id"], "Hj4lpV1d");
-        let claim = claims(&b.fake, &card);
-        assert_eq!(unit["key"], format!("{card}#{}#{list}", claim[0].id));
+        assert_eq!(unit["key"], format!("trello:{card}"));
         let scratch = TempDir::new("park");
         std::fs::write(scratch.path().join("park"), b"").unwrap();
         assert_eq!(
@@ -820,13 +979,18 @@ fn a_parked_card_answered_in_the_second_list_goes_back_there() {
         assert!(b.fake.labels(&card).is_empty(), "the badge comes off");
         let claim = claims(&b.fake, &card);
         assert_eq!(claim.len(), 1, "one claim, ours");
+        assert_eq!(unit["key"], format!("trello:{card}"));
+        let record = std::fs::read_to_string(state.path().join(format!("claims/{card}.json")))
+            .expect("the sweep's claim is recorded");
+        let record: Value = serde_json::from_str(&record).unwrap();
         assert_eq!(
-            unit["key"],
-            format!("{card}#{}#{list}", claim[0].id),
-            "the sweep's key names the list the card sat in"
+            record["list_id"],
+            b.fake.list_id("Hjälpvideor 🎬"),
+            "the record names the list the card sat in"
         );
+        assert_eq!(record["claim_id"], claim[0].id);
 
-        release_swept(&b, plugin, &unit["key"], restart);
+        release_swept(&b, plugin, &unit["key"], restart, &state);
         assert!(claims(&b.fake, &card).is_empty());
         assert_eq!(
             b.fake.cards_in("Hjälpvideor 🎬"),
@@ -841,13 +1005,14 @@ fn a_parked_card_answered_in_the_second_list_goes_back_there() {
 }
 
 /// A card parked outside every `pick_from` list — where the selfdev `on_claim` put it —
-/// keeps the default key when the sweep claims it, and goes back to the first list,
+/// is recorded under no list when the sweep claims it, and goes back to the first list,
 /// before a restart or after one.
 #[test]
 fn a_parked_card_answered_outside_pick_from_goes_to_the_first_list() {
     for restart in [false, true] {
         let b = board();
         second_list(&b);
+        let state = TempDir::new("state");
         let card = b
             .fake
             .card("In Progress", "1nPr0g00", "Bakgrundsvideo: färjan ⛴️", "");
@@ -861,16 +1026,25 @@ fn a_parked_card_answered_outside_pick_from_goes_to_the_first_list() {
             110,
         );
         b.fake.comment(&card, &b.phil, "Utan — bara musik.", 60);
-        let mut plugin = Plugin::armed(two_list_settings(&b.fake));
+        let mut plugin = Plugin::armed_with(
+            DEVELOP,
+            OWNER,
+            Some(state.path()),
+            two_list_settings(&b.fake),
+        );
 
         let swept = plugin.poll();
         assert_eq!(swept["fire"], true, "{}", plugin.stderr());
         let unit = swept["unit"].clone();
         assert_eq!(unit["id"], "1nPr0g00");
-        let claim = claims(&b.fake, &card);
-        assert_eq!(unit["key"], format!("{card}#{}", claim[0].id));
+        assert_eq!(claims(&b.fake, &card).len(), 1);
+        assert_eq!(unit["key"], format!("trello:{card}"));
+        let record = std::fs::read_to_string(state.path().join(format!("claims/{card}.json")))
+            .expect("the sweep's claim is recorded");
+        let record: Value = serde_json::from_str(&record).unwrap();
+        assert_eq!(record["list_id"], Value::Null, "no list to go back to");
 
-        release_swept(&b, plugin, &unit["key"], restart);
+        release_swept(&b, plugin, &unit["key"], restart, &state);
         assert!(claims(&b.fake, &card).is_empty());
         assert_eq!(
             b.fake.cards_in("Up for Grabs"),
@@ -1183,8 +1357,9 @@ fn a_discuss_turn_that_said_nothing_is_backstopped() {
 /// A finish that does not land is `held`: the claim stays on the card, `on_done`'s calls
 /// after it still reach the card, and afkd's later `release` of the key replays what is
 /// owed — `false` while the board is still down, `true` once it lands — without repeating
-/// a hook action. A child that did not hold the finish — afkd restarted in between —
-/// takes the crash reversal for the same key instead.
+/// a hook action. A child that did not hold the finish — afkd restarted in between, under a
+/// claim owner of its own — takes the crash reversal for the same key instead: the first
+/// process's claim is pruned, since it carries another owner.
 #[test]
 fn an_undelivered_finish_is_held_and_release_delivers_it() {
     let b = board();
@@ -1244,7 +1419,7 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
     );
     before.finish();
     b.fake.heal("delete comment");
-    let mut after = Plugin::armed(settings(&b.fake));
+    let mut after = Plugin::armed_with(DEVELOP, "afkd-5151", None, settings(&b.fake));
     assert_eq!(
         after.call(json!({"call": "release", "key": key})),
         json!({"released": true})

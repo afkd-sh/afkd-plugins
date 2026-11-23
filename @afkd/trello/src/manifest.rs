@@ -9,12 +9,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
 use serde_json::Value;
 
+use crate::client::TRELLO_BASE;
+use crate::handles::{
+    AttachmentFields, BoardFields, CardFields, CheckItemFields, ChecklistFields, CommentFields,
+    LabelFields, ListFields, MemberFields,
+};
 use crate::lifecycle::{ACTIONS, HANDLE};
 use crate::plugin::TRELLO_KIND;
+use crate::reads::READS;
 use crate::settings::{ME, SETTINGS};
-use crate::wire::CardFields;
 
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 
@@ -111,31 +117,41 @@ fn the_manifest_names_the_plugin_and_its_finished_binary() {
     }
 }
 
-/// The one `[[handle]]` is the card every slot is passed and every action takes first,
-/// with the fields the plugin knows about a card beyond the `id` and `key` every handle
-/// has.
+/// The one `[[struct]]` is `trello.Account`: the key and the token, each marked secret, and
+/// Trello's API root as the base's default.
 #[test]
-fn the_handle_is_the_card_with_its_fields() {
+fn the_struct_is_the_account_a_read_reaches() {
     let tables = tables(MANIFEST);
-    let field = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
+    let field = |name: &str, ty: &str, extra: &[(&str, &str)]| {
+        let mut t = table(extra);
+        t.insert("name".into(), quoted(name));
+        t.insert("type".into(), quoted(ty));
+        t
+    };
     assert_eq!(
-        grouped(&tables, "handle", "handle.field"),
+        grouped(&tables, "struct", "struct.field"),
         [(
-            table(&[("name", "\"Card\"")]),
+            table(&[("name", "\"Account\"")]),
             vec![
-                field("title", "str"),
-                field("url", "str"),
-                field("labels", "list[str]"),
+                field("api_key", "str", &[("secret", "true")]),
+                field("token", "str", &[("secret", "true")]),
+                field("base_url", "str", &[("default", &quoted(TRELLO_BASE))]),
             ]
         )]
     );
 }
 
-/// Whether `value` has the JSON shape afkd reads a handle field of type `ty` from.
+/// Whether `value` has the JSON shape afkd reads a handle field of type `ty` from: `null`
+/// for a `T?`, and unix milliseconds for a `time`.
 fn shaped(value: &Value, ty: &str) -> bool {
+    if let Some(inner) = ty.strip_suffix('?') {
+        return value.is_null() || shaped(value, inner);
+    }
     match ty {
         "str" => value.is_string(),
-        "int" => value.is_i64(),
+        "int" => value.is_i64() || value.is_u64(),
+        "bool" => value.is_boolean(),
+        "time" => value.is_u64(),
         "list[str]" => value
             .as_array()
             .is_some_and(|items| items.iter().all(Value::is_string)),
@@ -143,47 +159,215 @@ fn shaped(value: &Value, ty: &str) -> bool {
     }
 }
 
-/// The fields a claim sends are exactly the ones the `[[handle]]` declares, each in the
-/// JSON shape of its declared type — a rich card's and a bare one's alike. afkd refuses a
-/// unit carrying a field undeclared or mistyped, and a declared one never sent faults the
-/// slot that reads it, so a field added to either side alone fails here.
+/// A rich value and a bare one of each handle's fields, as the plugin sends them: every
+/// field set, wide text and all, and every optional field `null` and every list empty.
+fn handle_fields() -> Vec<(&'static str, [Value; 2])> {
+    fn both<F: Serialize>(rich: &F, bare: &F) -> [Value; 2] {
+        [
+            serde_json::to_value(rich).unwrap(),
+            serde_json::to_value(bare).unwrap(),
+        ]
+    }
+    let words = |w: &[&str]| -> Vec<String> { w.iter().map(|s| s.to_string()).collect() };
+    let rich_card = CardFields {
+        title: "修复 the retry storm 🚨 — \"backoff\" resets".into(),
+        number: 12,
+        name: "修复 the retry storm 🚨 — \"backoff\" resets".into(),
+        url: "https://trello.com/c/Rk7eLy5w/12-the-retry-storm".into(),
+        description: "## 背景\n\nIt retries forever.".into(),
+        board: "1Rkelydw".into(),
+        list: "Väntar / Blockerat".into(),
+        labels: words(&["afkd/ready", "Väntar på svar"]),
+        members: words(&["phil", "陳大文"]),
+        due: Some(1_798_106_400_250),
+        due_complete: true,
+        archived: true,
+        created_at: 1_793_095_080_000,
+        last_activity_at: 1_793_095_380_500,
+    };
+    let bare_card = CardFields {
+        title: String::new(),
+        number: 0,
+        name: String::new(),
+        url: String::new(),
+        description: String::new(),
+        board: String::new(),
+        list: String::new(),
+        labels: Vec::new(),
+        members: Vec::new(),
+        due: None,
+        due_complete: false,
+        archived: false,
+        created_at: 0,
+        last_activity_at: 0,
+    };
+    let comment = |rich: bool| CommentFields {
+        card: "Rk7eLy5w".into(),
+        body: if rich {
+            "看起来不对 🚨\n\n```\nx\n```"
+        } else {
+            ""
+        }
+        .into(),
+        author: rich.then(|| "陳大文".into()),
+        created_at: 1_793_095_080_087,
+        edited_at: rich.then_some(1_793_095_380_500),
+    };
+    let checklist = |rich: bool| ChecklistFields {
+        card: "Rk7eLy5w".into(),
+        name: "Acceptance ✅".into(),
+        items: if rich {
+            words(&["one", "二"])
+        } else {
+            Vec::new()
+        },
+    };
+    let check_item = |rich: bool| CheckItemFields {
+        card: "Rk7eLy5w".into(),
+        checklist: "6a4dd5de1234abcd5678ef90".into(),
+        name: "二 — the second".into(),
+        done: rich,
+    };
+    let attachment = |rich: bool| AttachmentFields {
+        card: "Rk7eLy5w".into(),
+        name: "plan 計画.md".into(),
+        url: "https://trello.com/1/cards/c/attachments/a/download/plan.md".into(),
+        bytes: rich.then_some(1234),
+        mime_type: rich.then(|| "text/markdown".into()),
+        created_at: 1_793_095_080_007,
+        is_upload: rich,
+    };
+    let board = |rich: bool| BoardFields {
+        name: "afkd 板".into(),
+        url: "https://trello.com/b/1Rkelydw/afkd".into(),
+        archived: rich,
+    };
+    let list = |rich: bool| ListFields {
+        name: "Up for Grabs 🎁".into(),
+        board: "1Rkelydw".into(),
+        archived: rich,
+    };
+    let label = |rich: bool| LabelFields {
+        name: if rich { "Bug 🐛" } else { "" }.into(),
+        color: rich.then(|| "red".into()),
+        board: "1Rkelydw".into(),
+    };
+    let member = MemberFields {
+        full_name: "陳大文".into(),
+    };
+    vec![
+        ("Card", both(&rich_card, &bare_card)),
+        ("Comment", both(&comment(true), &comment(false))),
+        ("Checklist", both(&checklist(true), &checklist(false))),
+        ("Check_Item", both(&check_item(true), &check_item(false))),
+        ("Attachment", both(&attachment(true), &attachment(false))),
+        ("Board", both(&board(true), &board(false))),
+        ("List", both(&list(true), &list(false))),
+        ("Label", both(&label(true), &label(false))),
+        ("Member", both(&member, &member)),
+    ]
+}
+
+/// The `[[handle]]`s are the card every slot is passed and every action takes first, and the
+/// eight other objects a read hands back, in that order, each with the line saying what it is.
+#[test]
+fn the_handles_are_the_card_and_the_eight_a_read_hands_back() {
+    let tables = tables(MANIFEST);
+    let handles = named(&tables, "handle");
+    assert_eq!(
+        handles
+            .iter()
+            .map(|h| h["name"].trim_matches('"'))
+            .collect::<Vec<_>>(),
+        handle_fields()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+    );
+    // The scan keeps no `doc`, so a handle's own line is held to its presence here.
+    let text = MANIFEST.lines().map(str::trim).collect::<Vec<_>>();
+    for handle in &handles {
+        let at = text
+            .iter()
+            .position(|l| *l == format!("name = {}", handle["name"]))
+            .expect("the handle's name line");
+        assert!(
+            text[at + 1].starts_with("doc = \""),
+            "{} has no doc line",
+            handle["name"]
+        );
+    }
+}
+
+/// Every declared `[[handle]]` declares exactly the fields its code sends — a rich value's
+/// and a bare one's alike — each in the JSON shape of its declared type (`time`, `time?`,
+/// `bool`, `int`, `int?`, `str`, `str?` or `list[str]`). afkd refuses a handle carrying a field
+/// undeclared or mistyped, and a declared one never sent faults the slot that reads it, so a
+/// field added to either side alone fails here. No handle declares `id` or `key`, which every
+/// handle has.
 #[test]
 fn every_declared_handle_field_is_sent_with_its_declared_type() {
     let tables = tables(MANIFEST);
-    let rich = CardFields {
-        title: "修复 the retry storm 🚨 — \"backoff\" resets".into(),
-        url: "https://trello.com/c/Rk7eLy5w/12-the-retry-storm".into(),
-        labels: vec!["afkd/ready".into(), "Väntar på svar".into()],
-    };
-    let bare = CardFields {
-        title: String::new(),
-        url: String::new(),
-        labels: Vec::new(),
-    };
     let handles = grouped(&tables, "handle", "handle.field");
-    assert_eq!(handles.len(), 1, "one handle, the card");
-    let (handle, fields) = &handles[0];
-    assert_eq!(handle["name"], quoted("Card"));
-    let declared: BTreeSet<&str> = fields.iter().map(|f| f["name"].trim_matches('"')).collect();
-    for sent in [rich, bare] {
-        let sent = serde_json::to_value(sent).unwrap();
-        let sent = sent.as_object().expect("the fields are an object");
+    let sent = handle_fields();
+    assert_eq!(handles.len(), sent.len());
+    for ((handle, fields), (name, values)) in handles.iter().zip(&sent) {
+        assert_eq!(handle["name"], quoted(name));
+        let declared: BTreeSet<&str> = fields.iter().map(|f| f["name"].trim_matches('"')).collect();
         assert_eq!(
-            sent.keys().map(String::as_str).collect::<BTreeSet<_>>(),
-            declared
+            declared.len(),
+            fields.len(),
+            "{name} declares a field twice"
         );
-        for field in fields {
-            let (name, ty) = (
-                field["name"].trim_matches('"'),
-                field["type"].trim_matches('"'),
+        assert!(
+            !declared.contains("id") && !declared.contains("key"),
+            "{name}"
+        );
+        for value in values {
+            let value = value.as_object().expect("the fields are an object");
+            assert_eq!(
+                value.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+                declared,
+                "{name}"
             );
-            assert!(
-                shaped(&sent[name], ty),
-                "`{name}` is not a {ty}: {}",
-                sent[name]
-            );
+            for field in fields {
+                let (field, ty) = (
+                    field["name"].trim_matches('"'),
+                    field["type"].trim_matches('"'),
+                );
+                assert!(
+                    shaped(&value[field], ty),
+                    "{name}.{field} is not a {ty}: {}",
+                    value[field]
+                );
+            }
         }
     }
+    // The shapes the brief tables, spelled out for the card, whose fields are the most.
+    let card = &handles[0].1;
+    let types: Vec<(&str, &str)> = card
+        .iter()
+        .map(|f| (f["name"].trim_matches('"'), f["type"].trim_matches('"')))
+        .collect();
+    assert_eq!(
+        types,
+        [
+            ("title", "str"),
+            ("number", "int"),
+            ("name", "str"),
+            ("url", "str"),
+            ("description", "str"),
+            ("board", "str"),
+            ("list", "str"),
+            ("labels", "list[str]"),
+            ("members", "list[str]"),
+            ("due", "time?"),
+            ("due_complete", "bool"),
+            ("archived", "bool"),
+            ("created_at", "time"),
+            ("last_activity_at", "time"),
+        ]
+    );
 }
 
 /// The one `[[kind]]` is the main trigger, claiming one card per run, and declares the
@@ -244,12 +428,29 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
     );
 }
 
-/// The `[[action]]`s are the ones [`from_call`](crate::lifecycle::from_call) decodes, in
-/// its order, each taking the card's handle first and then the parameters it reads; a member
-/// action's `member` defaults to the token's own member. A plugin exposes no values, so
-/// there is no `[[value]]`.
+/// Each `[[action]]` and the `[[action.param]]`s written under it, by name: a `[[action.param]]`
+/// belongs to the `[[action]]` above it.
+fn action_params(tables: &[Table]) -> BTreeMap<String, Vec<BTreeMap<String, String>>> {
+    let mut params: BTreeMap<String, Vec<BTreeMap<String, String>>> = BTreeMap::new();
+    let mut action = String::new();
+    for (header, t) in tables {
+        match header.as_str() {
+            "action" => {
+                action = t["name"].trim_matches('"').to_string();
+                params.entry(action.clone()).or_default();
+            }
+            "action.param" => params.entry(action.clone()).or_default().push(t.clone()),
+            _ => {}
+        }
+    }
+    params
+}
+
+/// The `[[action]]`s are today's actions, [`ACTIONS`], and then the reads [`READS`] answers,
+/// each in its code's order, and nothing else. A plugin exposes no values, so there is no
+/// `[[value]]`.
 #[test]
-fn the_actions_are_the_ones_the_code_answers() {
+fn the_actions_are_the_actions_then_the_reads() {
     let tables = tables(MANIFEST);
     let actions: Vec<String> = named(&tables, "action")
         .iter()
@@ -257,19 +458,26 @@ fn the_actions_are_the_ones_the_code_answers() {
         .collect();
     assert_eq!(
         actions,
-        ACTIONS.iter().map(|a| quoted(a)).collect::<Vec<_>>()
+        ACTIONS
+            .iter()
+            .chain(READS)
+            .map(|a| quoted(a))
+            .collect::<Vec<_>>()
     );
+    assert!(
+        named(&tables, "value").is_empty(),
+        "a plugin exposes no values"
+    );
+}
 
-    // Each `[[action.param]]` belongs to the `[[action]]` above it.
-    let mut params: BTreeMap<String, Vec<BTreeMap<String, String>>> = BTreeMap::new();
-    let mut action = String::new();
-    for (header, t) in &tables {
-        match header.as_str() {
-            "action" => action = t["name"].trim_matches('"').to_string(),
-            "action.param" => params.entry(action.clone()).or_default().push(t.clone()),
-            _ => {}
-        }
-    }
+/// The `[[action]]`s are the ones [`from_call`](crate::lifecycle::from_call) decodes, in
+/// its order, each taking the card's handle first and then the parameters it reads; a member
+/// action's `member` defaults to the token's own member.
+#[test]
+fn the_actions_are_the_ones_the_code_answers() {
+    let tables = tables(MANIFEST);
+    let mut params = action_params(&tables);
+    params.retain(|action, _| ACTIONS.contains(&action.as_str()));
     let required = |name: &str| {
         vec![table(&[
             ("name", &quoted(name)),
@@ -320,21 +528,118 @@ fn the_actions_are_the_ones_the_code_answers() {
         params, want,
         "mark_complete and archive take the card alone"
     );
-
-    assert!(
-        named(&tables, "value").is_empty(),
-        "a plugin exposes no values"
-    );
     assert_eq!(ME, "me", "the member default is Trello's own alias");
+}
+
+/// Each read takes a `trello.Account` first and returns what it reads: `cards` the board by
+/// address or short link and then every filter named-only with none defaulted, bar whether
+/// archived cards count and the limit, which are named-only with their defaults; the rest the
+/// parameters they read, a handle where the read acts on one.
+#[test]
+fn the_reads_take_an_account_and_return_what_they_read() {
+    let tables = tables(MANIFEST);
+    let returns: BTreeMap<String, String> = named(&tables, "action")
+        .into_iter()
+        .filter(|t| READS.contains(&t["name"].trim_matches('"')))
+        .map(|t| {
+            (
+                t["name"].trim_matches('"').to_string(),
+                t.get("returns").cloned().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        returns,
+        BTreeMap::from(
+            [
+                ("cards", "\"list[Card]\""),
+                ("comments", "\"list[Comment]\""),
+                ("checklists", "\"list[Checklist]\""),
+                ("check_items", "\"list[Check_Item]\""),
+                ("attachments", "\"list[Attachment]\""),
+                ("download_attachment", ""),
+                ("me", "\"Member\""),
+                ("boards", "\"list[Board]\""),
+                ("lists", "\"list[List]\""),
+                ("labels", "\"list[Label]\""),
+                ("members", "\"list[Member]\""),
+            ]
+            .map(|(name, ty)| (name.to_string(), ty.to_string()))
+        )
+    );
+
+    let param = |name: &str, ty: &str, extra: &[(&str, &str)]| {
+        let mut t = table(extra);
+        t.insert("name".into(), quoted(name));
+        t.insert("type".into(), quoted(ty));
+        t
+    };
+    let required = |name: &str, ty: &str| param(name, ty, &[("required", "true")]);
+    let named_only = |name: &str, ty: &str| param(name, ty, &[("named_only", "true")]);
+    let acct = required("acct", "Account");
+    let card = required("card", "Card");
+    let board = required("board", "str");
+    let cards = vec![
+        acct.clone(),
+        board.clone(),
+        named_only("list", "list[str]"),
+        named_only("labels", "list[str]"),
+        named_only("without_labels", "list[str]"),
+        named_only("members", "list[str]"),
+        param(
+            "include_archived",
+            "bool",
+            &[("named_only", "true"), ("default", "false")],
+        ),
+        param(
+            "limit",
+            "int",
+            &[("named_only", "true"), ("default", "100")],
+        ),
+    ];
+    let want = BTreeMap::from([
+        ("cards".to_string(), cards),
+        (
+            "comments".to_string(),
+            vec![
+                acct.clone(),
+                card.clone(),
+                param(
+                    "limit",
+                    "int",
+                    &[("named_only", "true"), ("default", "200")],
+                ),
+            ],
+        ),
+        ("checklists".to_string(), vec![acct.clone(), card.clone()]),
+        ("check_items".to_string(), vec![acct.clone(), card.clone()]),
+        ("attachments".to_string(), vec![acct.clone(), card]),
+        (
+            "download_attachment".to_string(),
+            vec![
+                acct.clone(),
+                required("attachment", "Attachment"),
+                required("to", "str"),
+            ],
+        ),
+        ("me".to_string(), vec![acct.clone()]),
+        ("boards".to_string(), vec![acct.clone()]),
+        ("lists".to_string(), vec![acct.clone(), board.clone()]),
+        ("labels".to_string(), vec![acct.clone(), board.clone()]),
+        ("members".to_string(), vec![acct, board]),
+    ]);
+    let mut params = action_params(&tables);
+    params.retain(|action, _| READS.contains(&action.as_str()));
+    assert_eq!(params, want);
 }
 
 /// A plugin's kinds, actions, withables and handle types share one namespace
 /// (reference §13.3), and afkd's install refuses a collision; so no name is declared twice
-/// across them.
+/// across them, the struct's included.
 #[test]
 fn no_kind_action_or_handle_shares_a_name() {
     let tables = tables(MANIFEST);
-    let mut names: Vec<&str> = ["handle", "kind", "action"]
+    let mut names: Vec<&str> = ["struct", "handle", "kind", "action"]
         .iter()
         .flat_map(|header| named(&tables, header))
         .map(|t| t["name"].as_str())

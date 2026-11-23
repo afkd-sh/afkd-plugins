@@ -25,26 +25,37 @@
 //! `release`, which takes the ordinary reversal. The poll runs under a scan budget, since
 //! afkd ends a call at 60 seconds. And the lines go to [`Diag`], whose running form is
 //! stderr.
+//!
+//! A claimed card's key is `trello:<card id>`, the key a read of the same card hands out, so
+//! the claimed card and the card read are `==`. What a release needs of the claim — its
+//! comment, and the list the card was claimed from — is the plugin's own [`ClaimRecord`],
+//! kept in memory and, when afkd names the plugin's directory, in a file there, so a restart
+//! still returns a second-list card to its list. A `trello:` key with no record is released
+//! by a rule that holds across a restart ([`release_unrecorded`](TrelloUnits::release_unrecorded)).
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::attachment;
+use serde::{Deserialize, Serialize};
+
+use crate::attachment::{self, write_atomic};
 use crate::board::{BoardClient, BoardError, Card, Checklist, Comment};
 use crate::claim::{
-    claim_renewal_text, claim_text, is_claim, won_claim, ClaimMarker, CLAIM_LIFETIME, CLAIM_SETTLE,
+    claim_owner, claim_renewal_text, claim_text, is_claim, won_claim, ClaimMarker, CLAIM_LIFETIME,
+    CLAIM_SETTLE,
 };
 use crate::common::{
     lock, Clock, Diag, ScanBudget, ENV_API_KEY, ENV_BOARD_ID, ENV_CARD_ID, ENV_TOKEN,
 };
+use crate::handles::{parse_read_key, read_key, CardFields};
 use crate::lifecycle::{LifecycleAction, ListPosition};
 use crate::outbox::{
     self, lost_line, named, queued_behind_line, queued_line, transient, Outbox, Write, RETRY_FOR,
 };
 use crate::settings::{BoardConfig, DiscussWith, MemberRef, ME};
-use crate::wire::{CardFields, Facts, UnitOutcome, WireFile, WireUnit};
+use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
 use crate::{PARK_FILE, TASK_FILE};
 
 /// Marker prefix on a failed-attempt comment.
@@ -94,6 +105,9 @@ pub(crate) const ACTION_TAG: &str = "[trello]";
 /// One card taken on as a unit of work.
 pub(crate) struct Unit {
     card: Card,
+    /// Every field of the card's `trello.Card` handle, read once the claim was won, so the
+    /// unit hands over the card as a read of it would.
+    fields: CardFields,
     /// Our claim comment id, to delete on lease release.
     claim_id: String,
     /// The full claim-read comment set (the read used to judge the claim). The brief
@@ -137,14 +151,43 @@ impl Unit {
         &self.card
     }
 
-    /// The claim-journal key afkd keeps this unit under ([`card_key`]).
+    /// The claim-journal key afkd keeps this unit under: `trello:<card id>`, the key a read
+    /// of the card hands out.
     fn key(&self) -> String {
-        card_key(
-            &self.card.id,
-            &self.claim_id,
-            self.source.as_ref().map(|s| s.id.as_str()),
-        )
+        read_key(&self.card.id)
     }
+
+    /// What a release of this unit's claim needs.
+    fn record(&self) -> ClaimRecord {
+        ClaimRecord {
+            card_id: self.card.id.clone(),
+            claim_id: self.claim_id.clone(),
+            list_id: self.source.as_ref().map(|s| s.id.clone()),
+        }
+    }
+}
+
+/// What a release needs of a claim, which the unit's key no longer carries: the card, the
+/// claim comment to delete, and the `pick_from` list the card was claimed from when it is
+/// not the first one named, where the reversal returns it.
+///
+/// Kept by the plugin in memory and, when afkd named a directory for it, in
+/// `<state_dir>/claims/<card id>.json`, written before the `poll` reply that hands the
+/// unit over and removed once the claim is finished or released.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClaimRecord {
+    pub(crate) card_id: String,
+    pub(crate) claim_id: String,
+    pub(crate) list_id: Option<String>,
+}
+
+/// What a release of a key does, as the key and the plugin's records read it.
+enum Release {
+    /// The claim comment `claim_id` is known: it is deleted, and the card returns to the
+    /// list `list_id` names, or the first `pick_from` list.
+    Claim(ClaimRecord),
+    /// A `trello:` key nothing recorded: the plugin was restarted, or never held the claim.
+    Unrecorded { card_id: String },
 }
 
 /// One card's finish that never reached the board (ADR-0059): what is still owed, so a
@@ -282,12 +325,25 @@ pub(crate) struct TrelloUnits {
     call_deadline: Mutex<Option<Instant>>,
     /// The writes the board could not take, which the plugin's worker retries.
     outbox: Arc<Outbox>,
+    /// The plugin's own directory, when afkd named one: where a claim's record outlives the
+    /// process.
+    state_dir: Option<PathBuf>,
+    /// The claims this process holds, by card id: what a release of the card's key needs.
+    records: Mutex<BTreeMap<String, ClaimRecord>>,
 }
 
 impl TrelloUnits {
-    /// The vendor half for `cfg`, talking to the board through `board`, as `id`.
-    pub(crate) fn new(board: Box<dyn BoardClient>, cfg: &BoardConfig, id: Identity) -> Self {
+    /// The vendor half for `cfg`, talking to the board through `board`, as `id`, keeping
+    /// each claim's record in `state_dir` too when there is one.
+    pub(crate) fn new(
+        board: Box<dyn BoardClient>,
+        cfg: &BoardConfig,
+        id: Identity,
+        state_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
+            state_dir,
+            records: Mutex::new(BTreeMap::new()),
             board,
             board_id: cfg.board_id.clone(),
             pick_from: cfg.pick_from.clone(),
@@ -313,6 +369,86 @@ impl TrelloUnits {
     /// The writes this kind owes the board, for the worker that delivers them.
     pub(crate) fn outbox(&self) -> &Arc<Outbox> {
         &self.outbox
+    }
+
+    /// The file holding the record of the claim on card `card_id`, when there is a
+    /// directory for it.
+    fn record_path(&self, card_id: &str) -> Option<PathBuf> {
+        let dir = self.state_dir.as_ref()?;
+        Some(
+            dir.join("claims")
+                .join(format!("{}.json", sanitize(card_id))),
+        )
+    }
+
+    /// Keep `record`, in memory and in its file. A write that fails is diagnosed, and the
+    /// record stays in memory: the claim goes on, and only a restart would miss it.
+    fn keep_record(&self, record: ClaimRecord, diag: &dyn Diag) {
+        if let Some(path) = self.record_path(&record.card_id) {
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| {
+                    serde_json::to_vec(&record)
+                        .map_err(std::io::Error::other)
+                        .and_then(|bytes| write_atomic(&path, &bytes))
+                });
+            if let Err(e) = written {
+                diag.err(&format_args!(
+                    "cannot record the claim on card {} in {}: {e}",
+                    record.card_id,
+                    path.display()
+                ));
+            }
+        }
+        lock(&self.records).insert(record.card_id.clone(), record);
+    }
+
+    /// The record of the claim on card `card_id`: the one in memory, else the one a process
+    /// before this left in the plugin's directory. A file that cannot be read as a record is
+    /// diagnosed and read as none.
+    fn record_of(&self, card_id: &str, diag: &dyn Diag) -> Option<ClaimRecord> {
+        if let Some(record) = lock(&self.records).get(card_id) {
+            return Some(record.clone());
+        }
+        let path = self.record_path(card_id)?;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                diag.err(&format_args!("cannot read {}: {e}", path.display()));
+                return None;
+            }
+        };
+        match serde_json::from_slice::<ClaimRecord>(&bytes) {
+            Ok(record) if record.card_id == card_id => Some(record),
+            Ok(_) => {
+                diag.err(&format_args!(
+                    "{} records a claim on another card",
+                    path.display()
+                ));
+                None
+            }
+            Err(e) => {
+                diag.err(&format_args!(
+                    "cannot read {} as a claim: {e}",
+                    path.display()
+                ));
+                None
+            }
+        }
+    }
+
+    /// Forget the record of the claim on card `card_id`, in memory and in its file.
+    fn forget_record(&self, card_id: &str, diag: &dyn Diag) {
+        lock(&self.records).remove(card_id);
+        if let Some(path) = self.record_path(card_id) {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => diag.err(&format_args!("cannot remove {}: {e}", path.display())),
+            }
+        }
     }
 
     /// Do `write` on `card`, or queue it: behind the card's earlier writes while any is
@@ -704,10 +840,12 @@ impl TrelloUnits {
     /// claim has time to be seen, re-read the thread, and win only as the single earliest
     /// still-live claim ([`won_claim`]).
     ///
-    /// The win narrates **here**, before returning, and takes the park badge and owner
-    /// marker off a card that carried them; afkd runs `on_claim` once this poll's reply
-    /// hands the unit over. A failed re-read is a board fault, not a lost round: our claim
-    /// is released and the error propagates.
+    /// The win takes the park badge and owner marker off a card that carried them, reads
+    /// every field of the card's handle — after that, so the handle is the card as it now
+    /// is, and a read of it by `trello.cards` is `==` — then narrates and records the claim
+    /// ([`keep_record`](Self::keep_record)); afkd runs `on_claim` once this poll's reply hands
+    /// the unit over. A failed re-read, or a failed read of the handle, is a board fault, not
+    /// a lost round: our claim is released and the error propagates.
     fn attempt_claim(
         &self,
         card: Card,
@@ -733,16 +871,18 @@ impl TrelloUnits {
             self.drop_claim(&card.id, &claim.id, diag);
             return Ok(ClaimRound::Lost);
         }
-        diag.narrate(&claimed_line(&card));
         // The card is being worked, so it is no longer waiting on anyone: take the badge
         // off, and the owner marker with it — a marker exists only while the badge does.
         // Best-effort: the claim is won either way.
-        if card.labels.iter().any(|l| l == AWAITING_LABEL) {
-            if let Err(e) = self
+        let badged = card.labels.iter().any(|l| l == AWAITING_LABEL);
+        let mut badge_removed = false;
+        if badged {
+            match self
                 .board
                 .remove_label(&self.board_id, &card.id, AWAITING_LABEL)
             {
-                diag.err(&e);
+                Ok(()) => badge_removed = true,
+                Err(e) => diag.err(&e),
             }
             let mut removed = Vec::new();
             for prior in comments.iter().filter(|c| is_park(&c.text)) {
@@ -755,18 +895,43 @@ impl TrelloUnits {
             // in it after the board dropped it would be deleted a second time — a 404.
             comments.retain(|c| !removed.contains(&c.id));
         }
+        // Every field of the card's handle, as the card is now: after the badge is off and
+        // the claim comment is on, so a read of the card a moment later is the same.
+        let fields = match self.board.card_handle(&card.id) {
+            Ok(fields) => fields,
+            Err(e) => {
+                self.drop_claim(&card.id, &claim.id, diag);
+                // The card goes back as it was found: a parked card keeps its badge, which
+                // is what the next beat's sweep finds it by.
+                if badge_removed {
+                    if let Err(e) = self
+                        .board
+                        .add_label(&self.board_id, &card.id, AWAITING_LABEL)
+                    {
+                        diag.err(&e);
+                    }
+                }
+                return Err(e);
+            }
+        };
+        diag.narrate(&claimed_line(&card));
         // The feedback delta and the delivery boundary, computed once from the read that
         // judged the claim, so a comment arriving mid-run lands after the boundary.
         let feedback = feedback_comments(&comments, &self_author);
         let delivered = delivered_upto(&comments, &self_author, &feedback);
-        Ok(ClaimRound::Won(Box::new(Unit {
+        let unit = Unit {
             card,
+            fields,
             claim_id: claim.id,
             comments,
             delivered_upto: delivered,
             self_author,
             source: source.cloned(),
-        })))
+        };
+        // Recorded before the unit is handed over: from here a release of its key finds the
+        // claim comment and the list it came from, across a restart too.
+        self.keep_record(unit.record(), diag);
+        Ok(ClaimRound::Won(Box::new(unit)))
     }
 
     /// Release a claim comment this poll posted but will not keep. Best-effort but not
@@ -957,25 +1122,66 @@ impl TrelloUnits {
     ///
     /// **Otherwise it is a crash victim**, or a unit afkd handed back unrun: prune the
     /// `[afkd-claim]` comment and move the card back to the **bottom** of the list it was
-    /// claimed from — the first `pick_from` list for a key that names none — so a
+    /// claimed from — the first `pick_from` list for a claim that names none — so a
     /// repeatedly-crashing card cannot starve the queue head. Best-effort: a board
     /// failure is diagnosed and the key still released, so a persistently-failing board
     /// cannot loop the reap.
     ///
-    /// `None` for a key with no `#`, which names nothing releasable.
+    /// The claim comment and the list come from the key's record ([`ClaimRecord`]), or from
+    /// the key itself when an older release journaled it as `card#claim[#list]`. A `trello:`
+    /// key with no record — the plugin was restarted and its directory holds none — is
+    /// released by [`release_unrecorded`](Self::release_unrecorded).
+    ///
+    /// `None` for a key that is none of these, which names nothing releasable.
     pub(crate) fn release_stale(&self, key: &str, now: Instant, diag: &dyn Diag) -> Option<bool> {
-        let (card_id, claim_id, list_id) = split_card_key(key)?;
+        let release = self.release_of(key, diag)?;
+        let record = match release {
+            Release::Claim(record) => record,
+            Release::Unrecorded { card_id } => {
+                self.release_unrecorded(&card_id, diag);
+                return Some(true);
+            }
+        };
         if let Some(owed) = self.take_pending(key) {
-            if let Some(verdict) = self.retry_pending(owed, claim_id, now, diag) {
+            if let Some(verdict) = self.retry_pending(owed, &record.claim_id, now, diag) {
+                if verdict {
+                    self.forget_record(&record.card_id, diag);
+                }
                 return Some(verdict);
             }
         }
-        if let Err(e) = self.board.delete_comment(card_id, claim_id) {
+        if let Err(e) = self.board.delete_comment(&record.card_id, &record.claim_id) {
             diag.err(&e);
         }
-        // `first()` is `None` only for units the greeting would have refused to arm, since
-        // `pick_from` is required: then there is no list to return it to, and the claim
-        // is pruned.
+        self.move_back(&record.card_id, record.list_id.as_deref(), diag);
+        self.forget_record(&record.card_id, diag);
+        Some(true)
+    }
+
+    /// What the release of `key` does: the claim its record names, the claim an older
+    /// release's key names, or — for a `trello:` key with no record — the pruning rule.
+    fn release_of(&self, key: &str, diag: &dyn Diag) -> Option<Release> {
+        if let Some(card_id) = parse_read_key(key) {
+            return Some(match self.record_of(card_id, diag) {
+                Some(record) => Release::Claim(record),
+                None => Release::Unrecorded {
+                    card_id: card_id.to_string(),
+                },
+            });
+        }
+        let (card_id, claim_id, list_id) = split_card_key(key)?;
+        Some(Release::Claim(ClaimRecord {
+            card_id: card_id.to_string(),
+            claim_id: claim_id.to_string(),
+            list_id: list_id.map(str::to_string),
+        }))
+    }
+
+    /// Move card `card_id` to the bottom of `list_id`, or of the first `pick_from` list when
+    /// there is none. `first()` is `None` only for units the greeting would have refused to
+    /// arm, since `pick_from` is required: then there is no list to return it to.
+    /// Best-effort, diagnosed.
+    fn move_back(&self, card_id: &str, list_id: Option<&str>, diag: &dyn Diag) {
         let list_id = match list_id {
             Some(list_id) => Some(Ok(list_id.to_string())),
             None => self
@@ -995,7 +1201,57 @@ impl TrelloUnits {
             Some(Err(e)) => diag.err(&e),
             None => {}
         }
-        Some(true)
+    }
+
+    /// Release a `trello:` key whose claim nothing recorded, by a rule that holds across a
+    /// restart: prune every `[afkd-claim]` comment on the card posted by this account's own
+    /// member — the author a claim's `self_author` is taken from — except one carrying this
+    /// process's current owner, which is a live claim of this process. A claim by another
+    /// member is kept. Then the card goes to the bottom of the `pick_from` list it sits in
+    /// ([`sweep_source`](Self::sweep_source)'s pick), else the first.
+    ///
+    /// One Trello account is one identity to the kind: every comment by the token's member
+    /// is afkd's own, so a claim another afkd process on the same account posted, under its
+    /// own owner, is pruned too. It can only be on a card whose lease ours let lapse, since a
+    /// live claim is stepped over ([`has_live_claim`]); the other run meets a 404 on its next
+    /// renewal, which it diagnoses. Best-effort, as every release: a failure is diagnosed.
+    fn release_unrecorded(&self, card_id: &str, diag: &dyn Diag) {
+        match self
+            .board
+            .resolve_member(&self.board_id, &MemberRef::SelfMember)
+        {
+            Ok(me) => match self.board.card_comments(card_id) {
+                Ok(comments) => {
+                    for stale in comments.iter().filter(|c| {
+                        is_claim(&c.text)
+                            && c.author == me
+                            && claim_owner(&c.text) != Some(self.owner.as_str())
+                    }) {
+                        if let Err(e) = self.board.delete_comment(card_id, &stale.id) {
+                            diag.err(&e);
+                        }
+                    }
+                }
+                Err(e) => diag.err(&e),
+            },
+            Err(e) => diag.err(&e),
+        }
+        let source = match self.board.read_card(card_id) {
+            Ok(Some(card)) => self.sweep_source(&card, &mut None),
+            // Gone, archived or deleted: there is nowhere to return it to.
+            Ok(None) => return,
+            // A card that cannot be read goes to the first list, as one in no later list does.
+            Err(e) => {
+                diag.err(&e);
+                Ok(None)
+            }
+        };
+        match source {
+            Ok(source) => {
+                self.move_back(card_id, source.as_ref().map(|s| s.id.as_str()), diag);
+            }
+            Err(e) => diag.err(&e),
+        }
     }
 
     /// Keep this card's claim comment alive for as long as afkd's fire holds it.
@@ -1014,8 +1270,9 @@ impl TrelloUnits {
     /// spine read off it:
     ///
     /// - `id`: the sanitized short link (the run-name component);
-    /// - `key`: the claim-journal key ([`card_key`]);
-    /// - `fields`: the card's title, url and label names, as the claiming read saw them;
+    /// - `key`: the claim-journal key, `trello:<card id>` ([`Unit::key`]);
+    /// - `fields`: every field of the card's `trello.Card` handle, as read once the claim
+    ///   was won;
     /// - `thread`: the raw short link, stable across every claim (ADR-0067);
     /// - `seen`: the claim-read comment ids, which the brief already carries;
     /// - `self`: afkd's own member id;
@@ -1025,11 +1282,7 @@ impl TrelloUnits {
         WireUnit {
             id: sanitize(&unit.card.short_link),
             key: unit.key(),
-            fields: CardFields {
-                title: unit.card.title.clone(),
-                url: unit.card.url.clone(),
-                labels: unit.card.labels.clone(),
-            },
+            fields: unit.fields.clone(),
             thread: unit.card.short_link.clone(),
             seen: unit.comments.iter().map(|c| c.id.clone()).collect(),
             me: unit.self_author.clone(),
@@ -1184,7 +1437,10 @@ impl TrelloUnits {
             }
         }
         let delivered = !release_owed;
-        if !delivered {
+        if delivered {
+            // Nothing is left to release: the record of the claim goes with it.
+            self.forget_record(&unit.card.id, diag);
+        } else {
             self.remember_pending(PendingFinish {
                 key: unit.key(),
                 returns_to: unit.source.as_ref().map_or_else(
@@ -1235,11 +1491,14 @@ fn instance_base(name: &str) -> Option<&str> {
     shaped.then_some(base)
 }
 
-/// The claim-journal key for a card's in-flight claim (ADR-0059): the card id (the
-/// move-back subject at reap), the claim comment id (the prune target) and, for a card
-/// claimed from a `pick_from` list after the first, that list's id (where the reversal
+/// The claim-journal key an older release kept a card's in-flight claim under (ADR-0059): the
+/// card id (the move-back subject at reap), the claim comment id (the prune target) and, for
+/// a card claimed from a `pick_from` list after the first, that list's id (where the reversal
 /// returns it), joined by `#`. A first-list claim names no list, so its key is
-/// `<card_id>#<claim_id>` whatever else `pick_from` names.
+/// `<card_id>#<claim_id>` whatever else `pick_from` names. This release journals
+/// `trello:<card id>` and keeps the rest in a [`ClaimRecord`]; the older shape is still
+/// released ([`split_card_key`]), and built here only to say so in tests.
+#[cfg(test)]
 fn card_key(card_id: &str, claim_id: &str, list_id: Option<&str>) -> String {
     match list_id {
         Some(list_id) => format!("{card_id}#{claim_id}#{list_id}"),
@@ -1870,7 +2129,17 @@ mod tests {
         }
 
         fn as_service(board: Arc<MockBoard>, cfg: BoardConfig, id: Identity) -> Self {
-            let units = TrelloUnits::new(Box::new(Arc::clone(&board)), &cfg, id);
+            Self::in_dir(board, cfg, id, None)
+        }
+
+        /// The same, keeping each claim's record in `state_dir` too.
+        fn in_dir(
+            board: Arc<MockBoard>,
+            cfg: BoardConfig,
+            id: Identity,
+            state_dir: Option<PathBuf>,
+        ) -> Self {
+            let units = TrelloUnits::new(Box::new(Arc::clone(&board)), &cfg, id, state_dir);
             Self {
                 board,
                 units,
@@ -2724,10 +2993,10 @@ mod tests {
         assert_eq!(h.board.resolve_count(), 3);
     }
 
-    /// The source list rides in the journal key, so a card the plugin puts back goes to
-    /// the list it was claimed from: a second-list card's key names that list, and its
-    /// reversal moves it there with no resolve; a first-list card's key is the lone-list
-    /// key it always was, and its reversal resolves the first name.
+    /// The source list rides in the claim's record, so a card the plugin puts back goes to
+    /// the list it was claimed from: a second-list card's record names that list, and its
+    /// reversal moves it there with no resolve; a first-list card's record names none, and
+    /// its reversal resolves the first name. The key is the card's either way.
     #[test]
     fn a_card_claimed_from_a_later_list_is_put_back_in_that_list() {
         let h = Harness::new(two_lists_cfg(), "me").with_hooks(hooks(
@@ -2740,7 +3009,15 @@ mod tests {
 
         let unit = h.poll().expect("claimed from the second list");
         let key = h.units.wire_unit(&unit).key;
-        assert_eq!(key, "card1#c1000#Up for Grabs");
+        assert_eq!(key, "trello:card1");
+        assert_eq!(
+            lock(&h.units.records)["card1"],
+            ClaimRecord {
+                card_id: "card1".into(),
+                claim_id: "c1000".into(),
+                list_id: Some("Up for Grabs".into()),
+            }
+        );
         let before = (h.board.actions().len(), h.board.calls().len());
         assert_eq!(h.release(&key), Some(true));
         assert_eq!(h.board.calls()[before.1..], ["delete comment", "move card"]);
@@ -2759,12 +3036,18 @@ mod tests {
             ],
         );
 
-        // A first-list card keeps the lone-list key and goes back to the first list.
+        assert!(
+            lock(&h.units.records).is_empty(),
+            "the record goes with the release"
+        );
+
+        // A first-list card's record names no list, and it goes back to the first list.
         h.board.add_card("Ideas 💡", "idea1", "Förslag 💡", "Body");
         h.board.set_clock(2000);
         let unit = h.poll().expect("claimed from the first list");
         let key = h.units.wire_unit(&unit).key;
-        assert_eq!(key, "idea1#c2000");
+        assert_eq!(key, "trello:idea1");
+        assert_eq!(lock(&h.units.records)["idea1"].list_id, None);
         assert_eq!(h.release(&key), Some(true));
         assert_eq!(
             h.board.actions().last(),
@@ -2785,7 +3068,12 @@ mod tests {
         h.board.set_clock(1000);
         h.board.fail("delete comment");
         let held = h.beat(1, |_| fault("boom")).expect("held");
-        assert_eq!(held, "card1#c1000#Up for Grabs");
+        assert_eq!(held, "trello:card1");
+        assert_eq!(
+            lock(&h.units.records)["card1"].list_id.as_deref(),
+            Some("Up for Grabs"),
+            "a held finish keeps its record"
+        );
 
         h.board.fail_status("delete comment", 403);
         h.clock.advance(Duration::from_secs(60));
@@ -2842,7 +3130,8 @@ mod tests {
             h.board.set_clock(3000);
             let unit = h.poll().expect("the sweep claims the answered card");
             assert!(!is_badged(&h.board, "card1"));
-            assert_eq!(unit.key(), "card1#c3000#Up for Grabs");
+            assert_eq!(unit.key(), "trello:card1");
+            assert_eq!(unit.record().list_id.as_deref(), Some("Up for Grabs"));
             (h, unit)
         };
 
@@ -2884,10 +3173,10 @@ mod tests {
         );
     }
 
-    /// A swept card in the first list, or in no `pick_from` list at all, keeps the
-    /// default key, and its reversal returns it to the first list.
+    /// A swept card in the first list, or in no `pick_from` list at all, records no list,
+    /// and its reversal returns it to the first list.
     #[test]
-    fn the_sweep_keys_a_first_list_or_outside_card_by_default() {
+    fn the_sweep_records_no_list_for_a_first_list_or_outside_card() {
         for list in ["Ideas 💡", "In Progress"] {
             let h = Harness::new(two_lists_cfg(), "me");
             seed_two_lists(&h.board);
@@ -2896,7 +3185,8 @@ mod tests {
 
             let unit = h.poll().expect("the sweep claims the answered card");
             assert_eq!(unit.card.id, "p0", "{list}");
-            assert_eq!(unit.key(), "p0#c1000", "{list}");
+            assert_eq!(unit.key(), "trello:p0", "{list}");
+            assert_eq!(unit.record().list_id, None, "{list}");
             assert_eq!(h.release(&unit.key()), Some(true));
             assert_eq!(
                 h.board.actions().last(),
@@ -2939,7 +3229,8 @@ mod tests {
         // With the board back, the same beat takes it over under its list.
         h.board.clear_failure();
         let unit = h.poll().expect("taken over");
-        assert_eq!(unit.key(), "p0#c1000#Up for Grabs");
+        assert_eq!(unit.key(), "trello:p0");
+        assert_eq!(unit.record().list_id.as_deref(), Some("Up for Grabs"));
         assert!(h
             .diag
             .narrated()
@@ -2970,8 +3261,10 @@ mod tests {
         assert!(h.board.comments_on("card1").is_empty());
     }
 
-    // --- The journal key and `release` (ADR-0059) ---
+    // --- The journal key, its record and `release` (ADR-0059) ---
 
+    /// The older release's `card#claim[#list]` key still splits, as the release of a key an
+    /// older release journaled reads it.
     #[test]
     fn card_key_round_trips_through_split() {
         assert_eq!(card_key("card1", "claim1", None), "card1#claim1");
@@ -2993,16 +3286,367 @@ mod tests {
         );
     }
 
-    /// The key afkd journals is `card#claim`, both halves the reaper needs, and a clean
-    /// finish is delivered — so afkd releases the entry rather than holding it.
+    /// The key afkd journals is `trello:<card id>`, the card's own, and the claim comment
+    /// the reaper needs is the plugin's record; a clean finish is delivered — so afkd
+    /// releases the entry rather than holding it — and takes the record with it.
     #[test]
-    fn a_won_claim_is_keyed_by_card_and_claim_and_a_clean_finish_delivers() {
+    fn a_won_claim_is_keyed_by_its_card_and_a_clean_finish_delivers() {
         let h = Harness::new(cfg(), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
         let unit = h.poll().expect("claimed");
-        assert_eq!(h.units.wire_unit(&unit).key, "card1#c1000");
+        assert_eq!(h.units.wire_unit(&unit).key, "trello:card1");
+        assert_eq!(
+            h.units.record_of("card1", &h.diag),
+            Some(ClaimRecord {
+                card_id: "card1".into(),
+                claim_id: "c1000".into(),
+                list_id: None,
+            })
+        );
         assert!(h.run_script(&unit, &[proceed()]).delivered);
+        assert_eq!(h.units.record_of("card1", &h.diag), None);
+    }
+
+    /// The unit hands over every field of the card's handle as the board has the card once
+    /// the claim is won, the same the claim's own read gives: the list it is in, the board's
+    /// short link, the number, and the claim comment the card now carries beside them.
+    #[test]
+    fn a_claimed_card_carries_every_handle_field() {
+        let h = Harness::new(cfg(), "me");
+        seed_source_card(&h.board, "card1");
+        h.board.seed_card_label("card1", "afkd/ready");
+        h.board.seed_board_member("phil", "mem-phil");
+        h.board.seed_card_member("card1", "mem-phil");
+        h.board.set_clock(1000);
+        let unit = h.poll().expect("claimed");
+        assert_eq!(
+            h.board.calls().last(),
+            Some(&"read card fields"),
+            "the handle is the claim's last read"
+        );
+        let fields = h.board.card_handle("card1").unwrap();
+        assert_eq!(unit.fields, fields);
+        assert_eq!(h.units.wire_unit(&unit).fields, fields);
+        assert_eq!(
+            (
+                fields.title.as_str(),
+                fields.name.as_str(),
+                fields.list.as_str(),
+                fields.board.as_str()
+            ),
+            ("Title", "Title", "Up for Grabs", "mockboard")
+        );
+        assert_eq!(fields.labels, ["afkd/ready"]);
+        assert_eq!(fields.members, ["phil"]);
+    }
+
+    /// A claim won on a card whose handle cannot be read is not kept: the claim comment is
+    /// deleted, the error propagates as a failed re-read does, no record is left, and a
+    /// parked card is badged again, since the badge is what the next sweep finds it by.
+    #[test]
+    fn a_claim_whose_handle_cannot_be_read_is_dropped() {
+        let h = Harness::new(cfg(), "me");
+        seed_source_card(&h.board, "card1");
+        h.board.set_clock(1000);
+        h.board.fail("read card fields");
+        let e = h.try_claim().err().expect("the poll fails");
+        assert_eq!(
+            e.to_string(),
+            "trello read card fields: no response (mock failure)"
+        );
+        assert!(h.board.comments_on("card1").is_empty(), "the claim is gone");
+        assert!(lock(&h.units.records).is_empty());
+        assert!(h.diag.narrated().is_empty(), "nothing was claimed");
+
+        // A parked card the sweep claims loses its badge to the claim, and gets it back.
+        let parked = Harness::new(two_lists_cfg(), "me");
+        seed_two_lists(&parked.board);
+        seed_answered_park(&parked.board, "Ideas 💡", "p0", None);
+        parked.board.set_clock(1000);
+        parked.board.fail("read card fields");
+        assert!(parked.try_claim().is_err());
+        assert!(is_badged(&parked.board, "p0"), "badged again");
+        assert!(!parked
+            .board
+            .comments_on("p0")
+            .iter()
+            .any(|c| is_claim(&c.text)));
+        parked.board.clear_failure();
+        assert!(parked.poll().is_some(), "the next beat claims it");
+    }
+
+    /// A release of a `trello:` key no record holds — the plugin was restarted with no
+    /// directory, or a second process on the same account found the key in afkd's journal —
+    /// prunes every claim this account's member posted, but the ones carrying this
+    /// process's current owner, a renewed one included; keeps a claim by another member and
+    /// every comment that is no claim; and moves the card to the bottom of its list.
+    #[test]
+    fn a_key_with_no_record_prunes_this_accounts_claims_but_the_current_owners() {
+        let first = Harness::new(cfg(), "afkd-1");
+        seed_source_card(&first.board, "card1");
+        first.board.set_clock(1000);
+        let unit = first.poll().expect("claimed by afkd-1");
+        let board = &first.board;
+        board.seed_comment_by("card1", "rival", &claim_text("afkd-9"), "mem-rival", 500);
+        board.seed_comment_by(
+            "card1",
+            "ours",
+            &claim_renewal_text("afkd-2", 3),
+            SELF_ID,
+            600,
+        );
+        board.seed_comment_by("card1", "other", &claim_text("afkd-3"), SELF_ID, 700);
+        board.seed_comment_by("card1", "note", "see [afkd-claim] above", SELF_ID, 800);
+        board.seed_comment_by("card1", "human", "looks stuck", "mem-phil", 900);
+
+        let second = Harness::on_board(
+            Arc::clone(&first.board),
+            cfg(),
+            "afkd-2",
+            TEST_SERVICE,
+            &[TEST_SERVICE],
+        );
+        assert_eq!(second.units.record_of("card1", &second.diag), None);
+        let actions = first.board.actions().len();
+        assert_eq!(second.release(&unit.key()), Some(true));
+
+        let left: Vec<String> = first
+            .board
+            .comments_on("card1")
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(left, ["rival", "ours", "note", "human"]);
+        assert_eq!(
+            first.board.actions()[actions..],
+            [
+                Action::DeleteComment {
+                    card: "card1".into(),
+                    comment: "c1000".into(),
+                },
+                Action::DeleteComment {
+                    card: "card1".into(),
+                    comment: "other".into(),
+                },
+                Action::Move {
+                    card: "card1".into(),
+                    list: "Up for Grabs".into(),
+                    position: ListPosition::Bottom,
+                },
+            ]
+        );
+        assert!(second.diag.errs().is_empty(), "{:?}", second.diag.errs());
+    }
+
+    /// The card goes to the bottom of the `pick_from` list it sits in — the second list for
+    /// a card in it, the first for one in the first list or in none — and a card the board
+    /// has gone from is left alone, or a card that cannot be read goes to the first list.
+    #[test]
+    fn a_key_with_no_record_moves_the_card_to_the_bottom_of_its_pick_from_list() {
+        for (list, to) in [
+            ("Up for Grabs", "Up for Grabs"),
+            ("Ideas 💡", "Ideas 💡"),
+            ("In Progress", "Ideas 💡"),
+        ] {
+            let h = Harness::new(two_lists_cfg(), "afkd-2");
+            seed_two_lists(&h.board);
+            h.board.add_card(list, "stray", "Other", "Body");
+            let before = h.board.actions().len();
+            assert_eq!(h.release("trello:stray"), Some(true), "{list}");
+            assert_eq!(
+                h.board.actions()[before..],
+                [Action::Move {
+                    card: "stray".into(),
+                    list: to.into(),
+                    position: ListPosition::Bottom,
+                }],
+                "{list}"
+            );
+        }
+
+        let h = Harness::new(two_lists_cfg(), "afkd-2");
+        seed_two_lists(&h.board);
+        h.board.vanish_on_read("card1");
+        let before = h.board.actions().len();
+        assert_eq!(h.release("trello:card1"), Some(true));
+        assert_eq!(
+            h.board.actions().len(),
+            before,
+            "a card that is gone is not moved"
+        );
+
+        let h = Harness::new(two_lists_cfg(), "afkd-2");
+        seed_two_lists(&h.board);
+        h.board.fail("read card");
+        assert_eq!(h.release("trello:card1"), Some(true));
+        assert_eq!(
+            h.diag.errs(),
+            ["trello read card: no response (mock failure)"]
+        );
+        assert_eq!(
+            h.board.actions().last(),
+            Some(&Action::Move {
+                card: "card1".into(),
+                list: "Ideas 💡".into(),
+                position: ListPosition::Bottom,
+            })
+        );
+    }
+
+    /// A board that cannot be read for the claims leaves them, says so, and still moves the
+    /// card and releases the key, so a failing board cannot loop the reap.
+    #[test]
+    fn an_unrecorded_release_is_best_effort() {
+        let h = Harness::new(cfg(), "afkd-2");
+        seed_source_card(&h.board, "card1");
+        h.board
+            .seed_comment("card1", "old", &claim_text("afkd-1"), 500);
+        h.board.fail("read comments");
+        assert_eq!(h.release("trello:card1"), Some(true));
+        assert_eq!(
+            h.diag.errs(),
+            ["trello read comments: no response (mock failure)"]
+        );
+        assert_eq!(h.board.comments_on("card1").len(), 1, "the claim stays");
+        assert!(has_move_to(&h.board, "Up for Grabs"));
+
+        let h = Harness::new(cfg(), "afkd-2");
+        seed_source_card(&h.board, "card1");
+        h.board
+            .seed_comment("card1", "old", &claim_text("afkd-1"), 500);
+        h.board.fail("resolve member");
+        assert_eq!(h.release("trello:card1"), Some(true));
+        assert_eq!(
+            h.diag.errs(),
+            ["trello resolve member: no response (mock failure)"]
+        );
+        assert_eq!(h.board.comments_on("card1").len(), 1);
+        assert!(has_move_to(&h.board, "Up for Grabs"));
+    }
+
+    /// The identity the harness arms with, as `owner`.
+    fn identity(owner: &str) -> Identity {
+        Identity {
+            owner: owner.into(),
+            service: TEST_SERVICE.into(),
+            roster: vec![TEST_SERVICE.into()],
+        }
+    }
+
+    /// With a directory, a claim's record is written there before the unit is handed over,
+    /// and a restart — a new vendor half over the same directory, even under another owner —
+    /// releases the key from the record: the claim comment it names deleted and the card
+    /// returned to the list it was claimed from, with no read of the card's comments.
+    #[test]
+    fn a_restart_releases_from_the_record_in_the_directory() {
+        let dir = TempDir::new("records");
+        let first = Harness::in_dir(
+            Arc::new(MockBoard::new()),
+            two_lists_cfg(),
+            identity("afkd-1"),
+            Some(dir.path().to_path_buf()),
+        );
+        seed_two_lists(&first.board);
+        first.board.set_clock(1000);
+        let unit = first.poll().expect("claimed from the second list");
+
+        let file = dir.path().join("claims/card1.json");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("the record is written")).unwrap();
+        assert_eq!(
+            written,
+            serde_json::json!({"card_id": "card1", "claim_id": "c1000", "list_id": "Up for Grabs"})
+        );
+
+        let restarted = Harness::in_dir(
+            Arc::clone(&first.board),
+            two_lists_cfg(),
+            identity("afkd-5151"),
+            Some(dir.path().to_path_buf()),
+        );
+        let (actions, calls) = (first.board.actions().len(), first.board.calls().len());
+        assert_eq!(restarted.release(&unit.key()), Some(true));
+        assert_eq!(
+            first.board.calls()[calls..],
+            ["delete comment", "move card"]
+        );
+        assert_eq!(
+            first.board.actions()[actions..],
+            [
+                Action::DeleteComment {
+                    card: "card1".into(),
+                    comment: "c1000".into(),
+                },
+                Action::Move {
+                    card: "card1".into(),
+                    list: "Up for Grabs".into(),
+                    position: ListPosition::Bottom,
+                },
+            ]
+        );
+        assert!(!file.exists(), "the record goes with the release");
+        assert!(restarted.diag.errs().is_empty());
+
+        // Released twice, the key is an unrecorded one: nothing is left to prune.
+        assert_eq!(restarted.release(&unit.key()), Some(true));
+    }
+
+    /// A delivered finish removes the record, in memory and in the directory; a held one
+    /// keeps it for the release that follows.
+    #[test]
+    fn a_finish_removes_the_record_when_delivered_and_keeps_it_when_held() {
+        let dir = TempDir::new("finish-records");
+        let h = Harness::in_dir(
+            Arc::new(MockBoard::new()),
+            cfg(),
+            identity("me"),
+            Some(dir.path().to_path_buf()),
+        );
+        seed_source_card(&h.board, "card1");
+        h.board.set_clock(1000);
+        let file = dir.path().join("claims/card1.json");
+
+        h.board.fail("delete comment");
+        let held = h.beat(1, |_| proceed()).expect("held");
+        assert!(file.exists(), "a held finish keeps its record");
+        assert!(lock(&h.units.records).contains_key("card1"));
+        h.board.clear_failure();
+        assert_eq!(h.release(&held), Some(true));
+        assert!(!file.exists() && lock(&h.units.records).is_empty());
+
+        let unit = h.poll().expect("claimed again");
+        assert!(file.exists(), "a new claim, a new record");
+        assert!(h.run_script(&unit, &[proceed()]).delivered);
+        assert!(!file.exists() && lock(&h.units.records).is_empty());
+    }
+
+    /// A record that cannot be written is diagnosed and the claim goes on: the record stays in
+    /// memory, so a release in this process still finds the claim.
+    #[test]
+    fn a_record_that_cannot_be_written_stays_in_memory() {
+        let dir = TempDir::new("unwritable");
+        std::fs::write(dir.path().join("claims"), b"in the way").unwrap();
+        let h = Harness::in_dir(
+            Arc::new(MockBoard::new()),
+            two_lists_cfg(),
+            identity("afkd-1"),
+            Some(dir.path().to_path_buf()),
+        );
+        seed_two_lists(&h.board);
+        h.board.set_clock(1000);
+        let unit = h.poll().expect("the claim goes on");
+        let errs = h.diag.errs();
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(
+            errs[0].starts_with("cannot record the claim on card card1 in "),
+            "{}",
+            errs[0]
+        );
+        assert_eq!(lock(&h.units.records)["card1"], unit.record());
+        let calls = h.board.calls().len();
+        assert_eq!(h.release(&unit.key()), Some(true));
+        assert_eq!(h.board.calls()[calls..], ["delete comment", "move card"]);
     }
 
     /// An exhausted run's `finish` is delivered too, so its entry is cleared rather than
@@ -3146,7 +3790,7 @@ mod tests {
     #[test]
     fn an_undelivered_finish_holds_the_claim_instead_of_releasing_it() {
         let (h, held) = a_run_whose_release_cannot_land();
-        assert_eq!(held, "card1#c1000");
+        assert_eq!(held, "trello:card1");
         assert!(
             h.board
                 .comments_on("card1")
@@ -3194,7 +3838,7 @@ mod tests {
         h.board.set_clock(1000);
         h.board.fail("delete comment");
         let held = h.beat(1, |_| proceed()).expect("held");
-        assert_eq!(held, "card1#c1000");
+        assert_eq!(held, "trello:card1");
         assert!(h
             .board
             .comments_on("card1")
@@ -4100,8 +4744,10 @@ mod tests {
     }
 
     fn claimed_unit_with_claim(id: &str, claim_id: &str) -> Unit {
+        let card = card(id, "T", "B");
         Unit {
-            card: card(id, "T", "B"),
+            fields: fields_of(&card),
+            card,
             claim_id: claim_id.into(),
             comments: vec![],
             delivered_upto: UNIX_EPOCH,
@@ -4110,8 +4756,29 @@ mod tests {
         }
     }
 
+    /// The handle fields a unit built by hand over `card` carries.
+    fn fields_of(card: &Card) -> CardFields {
+        CardFields {
+            title: card.title.clone(),
+            number: 1,
+            name: card.title.clone(),
+            url: card.url.clone(),
+            description: card.description.clone(),
+            board: "BID".into(),
+            list: "Up for Grabs".into(),
+            labels: card.labels.clone(),
+            members: Vec::new(),
+            due: None,
+            due_complete: false,
+            archived: false,
+            created_at: 0,
+            last_activity_at: 0,
+        }
+    }
+
     fn unit_of(card: Card, comments: Vec<Comment>, self_id: &str) -> Unit {
         Unit {
+            fields: fields_of(&card),
             card,
             claim_id: "myclaim".into(),
             comments,
@@ -4629,7 +5296,8 @@ mod tests {
     // --- The unit as it crosses the wire ---
 
     /// The unit the built-in's spine would have run, field for field: the name, the
-    /// journal key and the thread are three distinct reads of one card, the env carries
+    /// journal key (the card's own) and the thread are three distinct reads of one card, the
+    /// env carries
     /// the credentials and the card id the skill reads, `seen` is the claim-read thread,
     /// and the brief is the only file, unframed.
     #[test]
@@ -4649,7 +5317,8 @@ mod tests {
 
         // One `-` per unsafe CHAR, so the wide glyph and the emoji each fold to one.
         assert_eq!(wire.id, "1Rk-el-ydw----");
-        assert_eq!(wire.key, "6a4dd5de1234abcd5678ef90#myclaim");
+        assert_eq!(wire.key, "trello:6a4dd5de1234abcd5678ef90");
+        assert_eq!(wire.fields, unit.fields);
         assert_eq!(wire.thread, "1Rk/el ydw 修 🚨");
         assert_ne!(wire.id, wire.thread);
         assert_ne!(wire.key, wire.thread);
@@ -4679,8 +5348,8 @@ mod tests {
         );
     }
 
-    /// The thread keys one conversation across every claim of a card — two claims, two
-    /// journal keys, one thread — and separates one card from another.
+    /// The thread keys one conversation across every claim of a card — two claims of one
+    /// card, one key, one thread — and separates one card from another by both.
     #[test]
     fn the_thread_is_stable_per_card_and_distinct_across_cards() {
         let h = Harness::new(cfg(), "me");
@@ -4689,8 +5358,12 @@ mod tests {
         let other = h.units.wire_unit(&claimed_unit_with_claim("card2", "c1"));
         assert_eq!(first.thread, "sl-card1");
         assert_eq!(again.thread, first.thread);
-        assert_ne!(again.key, first.key);
+        assert_eq!(
+            again.key, first.key,
+            "the key is the card's, not the claim's"
+        );
         assert_eq!(other.thread, "sl-card2");
+        assert_ne!(other.key, first.key);
     }
 
     /// Driven through the real claim path: two board members with distinct member ids
@@ -6414,6 +7087,8 @@ mod tests {
         assert_eq!(lines[0], orphan_line(&narrated_card(NARRATED_TITLE), gone));
     }
 
+    /// An unbadged poll asks the board what it always asked, and one read more once the claim
+    /// is won: the card's handle fields.
     #[test]
     fn an_unbadged_poll_asks_the_board_exactly_what_it_asked_before() {
         let plain = Harness::new(cfg(), "me");
@@ -6431,6 +7106,7 @@ mod tests {
                 "list cards",
                 "post comment",
                 "read comments",
+                "read card fields",
             ],
         );
 
@@ -6549,7 +7225,7 @@ mod tests {
     #[test]
     fn a_park_with_no_extras_whose_badge_fails_still_holds_the_claim() {
         let (h, held) = a_park_whose_badge_cannot_land_with(Vec::new());
-        assert_eq!(held, "card1#c1000");
+        assert_eq!(held, "trello:card1");
         assert!(h
             .board
             .comments_on("card1")

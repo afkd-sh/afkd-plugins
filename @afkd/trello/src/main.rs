@@ -11,22 +11,30 @@
 //! claim either one left on a live card is recognised, renewed and released by the other,
 //! and a card parked by one is resumed by the other. The hooks are afkd's: each action one
 //! calls arrives as a `call` ([`lifecycle`]).
+//!
+//! Beside the kind are the **reads** ([`reads`]): a board's cards, a card's comments,
+//! checklists and attachments, and a board's lists, labels and members, each called with a
+//! `trello.Account` ([`account`]) and answered in handles ([`handles`]) keyed
+//! `trello:<Trello's id>`, which a `service(trello)`'s claimed card is too.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod account;
 mod attachment;
 mod board;
 mod card;
 mod claim;
 mod client;
 mod common;
+mod handles;
 mod http;
 mod lifecycle;
 #[cfg(test)]
 mod manifest;
 mod outbox;
 mod plugin;
+mod reads;
 mod rfc3339;
 mod settings;
 mod wire;

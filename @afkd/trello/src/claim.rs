@@ -69,6 +69,25 @@ pub(crate) fn is_claim(text: &str) -> bool {
     text.trim_start().starts_with(CLAIM_MARKER)
 }
 
+/// The owner a claim comment carries: the text between `owner=` and an optional trailing
+/// ` renewal=<n>`, as [`claim_text`] and [`claim_renewal_text`] write them. `None` for a
+/// claim in no such shape, and for text that is no claim.
+pub(crate) fn claim_owner(text: &str) -> Option<&str> {
+    let owner = text
+        .trim_start()
+        .strip_prefix(CLAIM_MARKER)?
+        .trim_start()
+        .strip_prefix("owner=")?;
+    Some(match owner.rsplit_once(" renewal=") {
+        Some((owner, renewal))
+            if !renewal.is_empty() && renewal.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            owner
+        }
+        _ => owner,
+    })
+}
+
 /// Whether our claim is the unique minimum among still-live claims under the total order
 /// `(posted_at, id)`.
 ///
@@ -155,6 +174,42 @@ mod tests {
         );
         for owner in ["me", "björn-öst[bot]", ""] {
             assert!(is_claim(&claim_text(owner)), "round-trips for {owner:?}");
+        }
+    }
+
+    /// The owner a claim names comes back from both texts, with and without a renewal, as
+    /// the writers spell them; a renewal-looking tail that is no counter belongs to the
+    /// owner, and text that is no claim, or names no owner, has none.
+    #[test]
+    fn claim_owner_reads_both_claim_texts() {
+        for owner in [
+            "afkd-4242",
+            "björn-öst[bot]",
+            "two words",
+            "",
+            "x renewal=y",
+        ] {
+            assert_eq!(claim_owner(&claim_text(owner)), Some(owner), "{owner:?}");
+            for renewal in [0, 1, 12] {
+                assert_eq!(
+                    claim_owner(&claim_renewal_text(owner, renewal)),
+                    Some(owner),
+                    "{owner:?} renewal {renewal}"
+                );
+            }
+        }
+        assert_eq!(
+            claim_owner("  \n[afkd-claim]   owner=afkd-7 renewal=3"),
+            Some("afkd-7")
+        );
+        for text in [
+            "",
+            "[afkd-claim]",
+            "[afkd-claim] by afkd-1",
+            "[afkd-ran] owner=afkd-1 upto=10",
+            "seen a stray [afkd-claim] owner=afkd-1 on this card",
+        ] {
+            assert_eq!(claim_owner(text), None, "{text:?}");
         }
     }
 

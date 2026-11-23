@@ -18,9 +18,17 @@
 //! is what makes [`transport_reason`]'s URL-free rule load-bearing rather than merely
 //! tidy: the two `ureq::Error` variants that render the request URI would fold a live key
 //! and token into whatever the caller logs.
+//!
+//! A client is **retrying** when the caller asks ([`HttpClient::retrying`]): a read through a
+//! `trello.Account` is done or refused, so a 429 is tried again — on every verb — and a 5xx
+//! on every verb but `POST`, which Trello may already have carried out. Each wait is what
+//! Trello's `x-rate-limit-*-interval-ms` headers say, or else one second doubling, and one
+//! that would pass the call's deadline is not taken: the call is refused with the answer it
+//! last got. A request is therefore a *description* ([`BoardRequest`]) built anew for every
+//! attempt, and every status is read here, never turned into an error by `ureq`.
 
 use std::marker::PhantomData;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -34,6 +42,18 @@ pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a board call waits for the response (read/write) before giving up.
 pub(crate) const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The wait before the first retry of an answer that names none, doubling after each one.
+pub(crate) const RETRY_FIRST: Duration = Duration::from_secs(1);
+
+/// The most times one request is tried again. The call's deadline is what ends retries in
+/// practice; this ends them for a client with none.
+const RETRY_MAX: u32 = 8;
+
+/// The most a response body may hold, past which it is a decode fault: far over what one
+/// reply can be (afkd takes 8 MiB of a call's), so a page of cards is never cut short by
+/// `ureq`'s own default of 10 MB.
+const MAX_BODY: u64 = 64 * 1024 * 1024;
 
 /// Idle longer than this and the pooled sockets are assumed stale: the peer, a NAT or a
 /// tunnel exit may have dropped them without ever sending a FIN. Handed to ureq as its
@@ -77,13 +97,38 @@ fn build_agent(connect: Duration, read: Duration) -> ureq::Agent {
         .new_agent()
 }
 
-/// A request [`HttpClient::request`] built and handed back unexecuted, over whichever of
-/// ureq's two builder typestates the verb takes.
-pub(crate) enum BoardRequest {
-    /// A verb ureq builds without a request body: GET, DELETE.
-    NoBody(ureq::RequestBuilder<ureq::typestate::WithoutBody>),
-    /// A verb ureq builds with one: POST, PUT.
-    WithBody(ureq::RequestBuilder<ureq::typestate::WithBody>),
+/// The HTTP verbs the client sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verb {
+    Get,
+    Post,
+    Put,
+    Delete,
+}
+
+impl Verb {
+    /// The verb `method` names — GET, and deliberately rather than by panic, any other
+    /// word. The vocabulary is a literal at every call site.
+    fn of(method: &str) -> Self {
+        match method {
+            "POST" => Verb::Post,
+            "PUT" => Verb::Put,
+            "DELETE" => Verb::Delete,
+            _ => Verb::Get,
+        }
+    }
+}
+
+/// A request [`HttpClient::request`] described and handed back unsent: built into one of
+/// `ureq`'s requests anew for every attempt, so a retry sends what the first did.
+pub(crate) struct BoardRequest {
+    verb: Verb,
+    /// The whole address, without any query.
+    url: String,
+    /// Whether the client's credential pairs lead the query.
+    credentialed: bool,
+    pairs: Vec<(String, String)>,
+    headers: Vec<(String, String)>,
 }
 
 impl BoardRequest {
@@ -91,26 +136,69 @@ impl BoardRequest {
     ///
     /// Appends rather than replaces, so the credential's pairs, stamped first, always
     /// lead.
-    pub(crate) fn query(self, key: &str, value: &str) -> Self {
-        match self {
-            BoardRequest::NoBody(r) => BoardRequest::NoBody(r.query(key, value)),
-            BoardRequest::WithBody(r) => BoardRequest::WithBody(r.query(key, value)),
-        }
+    pub(crate) fn query(mut self, key: &str, value: &str) -> Self {
+        self.pairs.push((key.to_string(), value.to_string()));
+        self
     }
 
-    /// Set one header, verbatim — a body's content type, a download's `Authorization`.
+    /// Set one header, verbatim — a download's `Authorization`.
+    fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+}
+
+/// What a request carries as its body.
+#[derive(Clone, Copy)]
+enum Payload<'a> {
+    Empty,
+    /// A JSON document, under its content type.
+    Json(&'a Value),
+    /// Bytes verbatim, under `content_type` — an upload's multipart form.
+    Bytes {
+        content_type: &'a str,
+        body: &'a [u8],
+    },
+}
+
+/// One attempt of a [`BoardRequest`] built, over whichever of ureq's two builder typestates
+/// the verb takes.
+enum Built {
+    /// A verb ureq builds without a request body: GET, DELETE.
+    NoBody(ureq::RequestBuilder<ureq::typestate::WithoutBody>),
+    /// A verb ureq builds with one: POST, PUT.
+    WithBody(ureq::RequestBuilder<ureq::typestate::WithBody>),
+}
+
+impl Built {
+    /// Set one header, verbatim.
     fn header(self, name: &str, value: &str) -> Self {
         match self {
-            BoardRequest::NoBody(r) => BoardRequest::NoBody(r.header(name, value)),
-            BoardRequest::WithBody(r) => BoardRequest::WithBody(r.header(name, value)),
+            Built::NoBody(r) => Built::NoBody(r.header(name, value)),
+            Built::WithBody(r) => Built::WithBody(r.header(name, value)),
         }
     }
 
-    /// Send the request with no body, whichever typestate it holds.
-    fn call(self) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    /// Read every status here rather than have `ureq` turn a 4xx or 5xx into an error —
+    /// so such a response arrives as an `Ok` whose headers and body are still readable —
+    /// and clip the request's global timeout to `global`, when the call has a deadline. The
+    /// agent's per-op timeouts still apply underneath.
+    fn configure(self, global: Option<Duration>) -> Self {
         match self {
-            BoardRequest::NoBody(r) => r.call(),
-            BoardRequest::WithBody(r) => r.send_empty(),
+            Built::NoBody(r) => {
+                let mut config = r.config().http_status_as_error(false);
+                if let Some(d) = global {
+                    config = config.timeout_global(Some(d));
+                }
+                Built::NoBody(config.build())
+            }
+            Built::WithBody(r) => {
+                let mut config = r.config().http_status_as_error(false);
+                if let Some(d) = global {
+                    config = config.timeout_global(Some(d));
+                }
+                Built::WithBody(config.build())
+            }
         }
     }
 
@@ -121,36 +209,51 @@ impl BoardRequest {
         body: impl ureq::AsSendBody,
     ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         match self {
-            BoardRequest::NoBody(r) => r.force_send_body().send(body),
-            BoardRequest::WithBody(r) => r.send(body),
+            Built::NoBody(r) => r.force_send_body().send(body),
+            Built::WithBody(r) => r.send(body),
         }
     }
 
-    /// Clip the request's global timeout to `global`, when the call has a deadline. The
-    /// agent's per-op timeouts still apply underneath.
-    fn clip(self, global: Option<Duration>) -> Self {
-        let Some(d) = global else { return self };
-        match self {
-            BoardRequest::NoBody(r) => {
-                BoardRequest::NoBody(r.config().timeout_global(Some(d)).build())
-            }
-            BoardRequest::WithBody(r) => {
-                BoardRequest::WithBody(r.config().timeout_global(Some(d)).build())
+    /// Send the request with `payload` as its body.
+    fn send(self, payload: Payload<'_>) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+        match payload {
+            Payload::Empty => match self {
+                Built::NoBody(r) => r.call(),
+                Built::WithBody(r) => r.send_empty(),
+            },
+            Payload::Json(value) => self
+                .header("Content-Type", "application/json")
+                .send_body(&value.to_string()),
+            Payload::Bytes { content_type, body } => {
+                self.header("Content-Type", content_type).send_body(body)
             }
         }
     }
+}
 
-    /// Send the request with no body, with the status-to-error translation turned
-    /// **off** for this one request — so a 4xx/5xx arrives as an `Ok` response whose
-    /// body is still readable.
-    fn call_reading_any_status(self) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
-        match self {
-            BoardRequest::NoBody(r) => r.config().http_status_as_error(false).build().call(),
-            BoardRequest::WithBody(r) => {
-                r.config().http_status_as_error(false).build().send_empty()
-            }
-        }
-    }
+/// Whether an answer of `status` to a request of `verb` is tried again: a 429 whatever the
+/// verb, and a 5xx unless the verb is a `POST`, which Trello may already have carried out.
+fn retryable(verb: Verb, status: u16) -> bool {
+    status == 429 || (status >= 500 && verb != Verb::Post)
+}
+
+/// What Trello's rate-limit headers ask a client to wait: the largest of its
+/// `x-rate-limit-*-interval-ms` values, or `None` when it names none.
+fn rate_wait(headers: &ureq::http::HeaderMap) -> Option<Duration> {
+    headers
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.as_str();
+            name.starts_with("x-rate-limit-") && name.ends_with("-interval-ms")
+        })
+        .filter_map(|(_, value)| value.to_str().ok()?.trim().parse::<u64>().ok())
+        .max()
+        .map(Duration::from_millis)
+}
+
+/// Whether `status` is one `ureq` would have made an error of.
+fn is_failure(status: ureq::http::StatusCode) -> bool {
+    status.is_client_error() || status.is_server_error()
 }
 
 /// The failure vocabulary a caller's error type supplies so the spine can report a fault
@@ -195,6 +298,10 @@ pub(crate) struct HttpClient<E> {
     agent: Mutex<Option<Generation>>,
     /// The current call's deadline, `None` between calls.
     deadline: Mutex<Option<Instant>>,
+    /// Whether an answer that says try again later is tried again ([`Self::retrying`]).
+    retrying: bool,
+    /// How a retry waits: the thread sleeps, except in a test that records the waits.
+    sleep: Arc<dyn Fn(Duration) + Send + Sync>,
     _err: PhantomData<fn() -> E>,
 }
 
@@ -215,8 +322,25 @@ impl<E: HttpError> HttpClient<E> {
             read,
             agent: Mutex::new(None),
             deadline: Mutex::new(None),
+            retrying: false,
+            sleep: Arc::new(std::thread::sleep),
             _err: PhantomData,
         }
+    }
+
+    /// This client, retrying: a 429 is tried again on every verb, and a 5xx on every verb
+    /// but `POST`, each after the wait Trello's rate-limit headers name or else one second
+    /// doubling, for as long as the wait ends before the call's deadline.
+    pub(crate) fn retrying(mut self) -> Self {
+        self.retrying = true;
+        self
+    }
+
+    /// This client, waiting through `sleep` rather than the thread's.
+    #[cfg(test)]
+    pub(crate) fn sleeping(mut self, sleep: impl Fn(Duration) + Send + Sync + 'static) -> Self {
+        self.sleep = Arc::new(sleep);
+        self
     }
 
     /// The API root every request is built off, as the caller handed it over.
@@ -270,21 +394,39 @@ impl<E: HttpError> HttpClient<E> {
         agent
     }
 
-    /// A `method` request for the base-relative `path`, with the credential already
-    /// stamped as the leading query pairs, handed back unexecuted so the caller appends
-    /// its own.
-    pub(crate) fn request(&self, method: &str, path: &str) -> BoardRequest {
+    /// One attempt of `req` built: the credential pairs first if it carries them, then its
+    /// own pairs, then its headers.
+    fn build(&self, req: &BoardRequest) -> Built {
         let agent = self.agent();
-        let url = format!("{}{path}", self.base);
-        let req = match method {
-            "POST" => BoardRequest::WithBody(agent.post(&url)),
-            "PUT" => BoardRequest::WithBody(agent.put(&url)),
-            "DELETE" => BoardRequest::NoBody(agent.delete(&url)),
-            // GET, and — deliberately, rather than by panic — any other verb. The
-            // vocabulary is a literal at every call site.
-            _ => BoardRequest::NoBody(agent.get(&url)),
+        let built = match req.verb {
+            Verb::Post => Built::WithBody(agent.post(&req.url)),
+            Verb::Put => Built::WithBody(agent.put(&req.url)),
+            Verb::Delete => Built::NoBody(agent.delete(&req.url)),
+            Verb::Get => Built::NoBody(agent.get(&req.url)),
         };
-        self.auth.iter().fold(req, |req, (k, v)| req.query(k, v))
+        let auth: &[(String, String)] = if req.credentialed { &self.auth } else { &[] };
+        let built = auth
+            .iter()
+            .chain(&req.pairs)
+            .fold(built, |built, (k, v)| match built {
+                Built::NoBody(r) => Built::NoBody(r.query(k, v)),
+                Built::WithBody(r) => Built::WithBody(r.query(k, v)),
+            });
+        req.headers
+            .iter()
+            .fold(built, |built, (name, value)| built.header(name, value))
+    }
+
+    /// A `method` request for the base-relative `path`, with the credential to lead its
+    /// query, handed back unsent so the caller appends its own pairs.
+    pub(crate) fn request(&self, method: &str, path: &str) -> BoardRequest {
+        BoardRequest {
+            verb: Verb::of(method),
+            url: format!("{}{path}", self.base),
+            credentialed: true,
+            pairs: Vec::new(),
+            headers: Vec::new(),
+        }
     }
 
     /// GET `path` with the credential, returning the body text.
@@ -292,10 +434,53 @@ impl<E: HttpError> HttpClient<E> {
         self.send(stage, self.request("GET", path))
     }
 
-    /// Execute a built request, mapping ureq's outcome onto an `E` and reading the body.
+    /// Send `req` with `payload` as its body, and read what came back: the response — any
+    /// status, with its headers and its body unread — or a transport failure.
+    ///
+    /// A retrying client ([`Self::retrying`]) sends it again when the answer says to, after
+    /// the wait the answer names or else [`RETRY_FIRST`] doubling, until the answer is one
+    /// that stands, the wait would end past the call's deadline, or [`RETRY_MAX`] retries
+    /// are spent: then the answer last got is returned, for the caller to refuse the call
+    /// with.
+    fn exchange(
+        &self,
+        stage: &'static str,
+        req: &BoardRequest,
+        payload: Payload<'_>,
+    ) -> Result<ureq::http::Response<ureq::Body>, E> {
+        let mut backoff = RETRY_FIRST;
+        let mut retries = 0;
+        loop {
+            let budget = self.request_budget(stage)?;
+            let resp = self
+                .build(req)
+                .configure(budget)
+                .send(payload)
+                .map_err(|e| E::transport(stage, transport_reason(&e)))?;
+            let status = resp.status();
+            if !self.retrying
+                || !is_failure(status)
+                || !retryable(req.verb, status.as_u16())
+                || retries >= RETRY_MAX
+            {
+                return Ok(resp);
+            }
+            let wait = rate_wait(resp.headers()).unwrap_or_else(|| {
+                let wait = backoff;
+                backoff *= 2;
+                wait
+            });
+            if lock(&self.deadline).is_some_and(|deadline| Instant::now() + wait >= deadline) {
+                return Ok(resp);
+            }
+            (self.sleep)(wait);
+            retries += 1;
+        }
+    }
+
+    /// Execute a built request, mapping its outcome onto an `E` and reading the body.
     pub(crate) fn send(&self, stage: &'static str, req: BoardRequest) -> Result<String, E> {
-        let req = req.clip(self.request_budget(stage)?);
-        map_outcome(stage, req.call())
+        into_text(stage, self.exchange(stage, &req, Payload::Empty)?)
     }
 
     /// Send a JSON `payload` as the request body with the right content type.
@@ -305,11 +490,7 @@ impl<E: HttpError> HttpClient<E> {
         req: BoardRequest,
         payload: &Value,
     ) -> Result<String, E> {
-        let result = req
-            .clip(self.request_budget(stage)?)
-            .header("Content-Type", "application/json")
-            .send_body(&payload.to_string());
-        map_outcome(stage, result)
+        into_text(stage, self.exchange(stage, &req, Payload::Json(payload))?)
     }
 
     /// Send `body` verbatim as the request body, under `content_type` — an upload's
@@ -321,11 +502,8 @@ impl<E: HttpError> HttpClient<E> {
         content_type: &str,
         body: &[u8],
     ) -> Result<String, E> {
-        let result = req
-            .clip(self.request_budget(stage)?)
-            .header("Content-Type", content_type)
-            .send_body(body);
-        map_outcome(stage, result)
+        let payload = Payload::Bytes { content_type, body };
+        into_text(stage, self.exchange(stage, &req, payload)?)
     }
 
     /// GET the absolute `url` verbatim — off no API root, with none of the credential's
@@ -339,24 +517,28 @@ impl<E: HttpError> HttpClient<E> {
         authorization: &str,
         limit: u64,
     ) -> Result<Vec<u8>, E> {
-        let req = BoardRequest::NoBody(self.agent().get(url))
-            .clip(self.request_budget(stage)?)
-            .header("Authorization", authorization);
-        match req.call() {
-            Ok(mut resp) => resp
-                .body_mut()
-                .with_config()
-                .limit(limit)
-                .read_to_vec()
-                .map_err(|e| match e {
-                    ureq::Error::BodyExceedsLimit(_) => {
-                        E::decode(stage, &format!("the body is over {limit} bytes"))
-                    }
-                    e => E::decode(stage, &transport_reason(&e)),
-                }),
-            Err(ureq::Error::StatusCode(status)) => Err(E::status(stage, status)),
-            Err(other) => Err(E::transport(stage, transport_reason(&other))),
+        let req = BoardRequest {
+            verb: Verb::Get,
+            url: url.to_string(),
+            credentialed: false,
+            pairs: Vec::new(),
+            headers: Vec::new(),
         }
+        .header("Authorization", authorization);
+        let mut resp = self.exchange(stage, &req, Payload::Empty)?;
+        if is_failure(resp.status()) {
+            return Err(E::status(stage, resp.status().as_u16()));
+        }
+        resp.body_mut()
+            .with_config()
+            .limit(limit)
+            .read_to_vec()
+            .map_err(|e| match e {
+                ureq::Error::BodyExceedsLimit(_) => {
+                    E::decode(stage, &format!("the body is over {limit} bytes"))
+                }
+                e => E::decode(stage, &transport_reason(&e)),
+            })
     }
 
     /// Execute a built request, letting the caller **judge** a non-success status off
@@ -373,45 +555,36 @@ impl<E: HttpError> HttpClient<E> {
         req: BoardRequest,
         tolerate: impl Fn(u16, &str) -> bool,
     ) -> Result<String, E> {
-        // With the status translation off, a 4xx/5xx arrives as `Ok` with its body
-        // intact, and every `Err` left is a transport failure, which the predicate must
-        // never see because there is no status to judge.
-        let req = req.clip(self.request_budget(stage)?);
-        match req.call_reading_any_status() {
-            Err(e) => Err(E::transport(stage, transport_reason(&e))),
-            Ok(mut resp) => {
-                let status = resp.status();
-                if !(status.is_client_error() || status.is_server_error()) {
-                    read_body(stage, &mut resp)
-                } else {
-                    // An unreadable body is an empty one: a fault the predicate cannot
-                    // recognize, so it stays an error.
-                    let body = resp.body_mut().read_to_string().unwrap_or_default();
-                    let status = status.as_u16();
-                    if tolerate(status, &body) {
-                        Ok(body)
-                    } else {
-                        Err(E::status(stage, status))
-                    }
-                }
-            }
+        // A 4xx/5xx arrives as `Ok` with its body intact, and every `Err` left is a
+        // transport failure, which the predicate must never see because there is no status
+        // to judge.
+        let mut resp = self.exchange(stage, &req, Payload::Empty)?;
+        let status = resp.status();
+        if !is_failure(status) {
+            return read_body(stage, &mut resp);
+        }
+        // An unreadable body is an empty one: a fault the predicate cannot recognize, so
+        // it stays an error.
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        let status = status.as_u16();
+        if tolerate(status, &body) {
+            Ok(body)
+        } else {
+            Err(E::status(stage, status))
         }
     }
 }
 
-/// Map ureq's request outcome onto the caller's error vocabulary, reading a successful
-/// response to text.
-fn map_outcome<E: HttpError>(
+/// Read a response that arrived to text, or fail with its status when it is a failure: the
+/// translation `ureq` would have made, made here since every status is read here.
+fn into_text<E: HttpError>(
     stage: &'static str,
-    result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+    mut resp: ureq::http::Response<ureq::Body>,
 ) -> Result<String, E> {
-    match result {
-        Ok(mut resp) => read_body(stage, &mut resp),
-        Err(ureq::Error::StatusCode(status)) => Err(E::status(stage, status)),
-        // Everything else ureq can raise is a request that produced no response.
-        // `ureq::Error` is `#[non_exhaustive]`, so this arm is required as well as correct.
-        Err(other) => Err(E::transport(stage, transport_reason(&other))),
+    if is_failure(resp.status()) {
+        return Err(E::status(stage, resp.status().as_u16()));
     }
+    read_body(stage, &mut resp)
 }
 
 /// Read an arrived response to text: a premature EOF mid-body is a **decode** failure,
@@ -421,6 +594,8 @@ fn read_body<E: HttpError>(
     resp: &mut ureq::http::Response<ureq::Body>,
 ) -> Result<String, E> {
     resp.body_mut()
+        .with_config()
+        .limit(MAX_BODY)
         .read_to_string()
         .map_err(|e| E::decode(stage, &transport_reason(&e)))
 }
@@ -459,6 +634,67 @@ mod tests {
             agent_expired(born, at(300), at(301)),
             "busy, past the age bound"
         );
+    }
+
+    /// A 429 is retried whatever the verb; a 5xx on every verb but the `POST`, which Trello
+    /// may already have carried out; and nothing else, a 4xx included.
+    #[test]
+    fn only_a_429_and_a_5xx_off_a_post_are_retried() {
+        for verb in [Verb::Get, Verb::Put, Verb::Delete, Verb::Post] {
+            assert!(retryable(verb, 429), "{verb:?}");
+            for status in [400, 401, 404, 409] {
+                assert!(!retryable(verb, status), "{verb:?} {status}");
+            }
+        }
+        for verb in [Verb::Get, Verb::Put, Verb::Delete] {
+            for status in [500, 502, 503, 599] {
+                assert!(retryable(verb, status), "{verb:?} {status}");
+            }
+        }
+        for status in [500, 502, 503] {
+            assert!(!retryable(Verb::Post, status), "POST {status}");
+        }
+        assert_eq!(Verb::of("PUT"), Verb::Put);
+        assert_eq!(Verb::of("anything else"), Verb::Get);
+    }
+
+    /// The wait a 429 asks is the largest of its `x-rate-limit-*-interval-ms` headers,
+    /// whatever their case; other rate-limit headers and values that are no number name
+    /// none.
+    #[test]
+    fn the_wait_is_the_largest_rate_limit_interval() {
+        let headers = |pairs: &[(&str, &str)]| {
+            let mut map = ureq::http::HeaderMap::new();
+            for (name, value) in pairs {
+                map.append(
+                    ureq::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    ureq::http::HeaderValue::from_str(value).unwrap(),
+                );
+            }
+            map
+        };
+        assert_eq!(
+            rate_wait(&headers(&[
+                ("X-Rate-Limit-Api-Key-Interval-Ms", "10000"),
+                ("x-rate-limit-api-token-interval-ms", "2000"),
+                ("x-rate-limit-api-key-max", "300"),
+                ("x-rate-limit-api-key-remaining", "0"),
+            ])),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            rate_wait(&headers(&[("x-rate-limit-api-token-interval-ms", " 250 ")])),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            rate_wait(&headers(&[
+                ("x-rate-limit-api-key-max", "300"),
+                ("x-rate-limit-api-key-interval-ms", "soon"),
+                ("retry-after", "3"),
+            ])),
+            None
+        );
+        assert_eq!(rate_wait(&headers(&[])), None);
     }
 
     /// Neither URL-bearing variant renders its URI, whatever it carries — and Trello's

@@ -14,6 +14,7 @@
 use std::time::{Instant, SystemTime};
 
 use crate::attachment::Attachment;
+use crate::handles::CardFields;
 use crate::lifecycle::ListPosition;
 use crate::settings::MemberRef;
 
@@ -224,6 +225,11 @@ pub(crate) trait BoardClient {
     /// not an error, so it is distinguished from a genuine board fault.
     fn read_card(&self, card_id: &str) -> Result<Option<Card>, BoardError>;
 
+    /// Every field of the `trello.Card` handle for card `card_id`, as the board has the card
+    /// now: its list's name, its board's short link and its members' usernames resolved in
+    /// the one read. A card the board no longer has is an error, like any read that fails.
+    fn card_handle(&self, card_id: &str) -> Result<CardFields, BoardError>;
+
     /// Read the comments on card `card_id`.
     fn card_comments(&self, card_id: &str) -> Result<Vec<Comment>, BoardError>;
 
@@ -340,6 +346,9 @@ impl<T: BoardClient + ?Sized> BoardClient for std::sync::Arc<T> {
     fn read_card(&self, card_id: &str) -> Result<Option<Card>, BoardError> {
         (**self).read_card(card_id)
     }
+    fn card_handle(&self, card_id: &str) -> Result<CardFields, BoardError> {
+        (**self).card_handle(card_id)
+    }
     fn card_comments(&self, card_id: &str) -> Result<Vec<Comment>, BoardError> {
         (**self).card_comments(card_id)
     }
@@ -422,6 +431,7 @@ pub(crate) use mock::{Action, MockBoard};
 mod mock {
     use super::*;
     use crate::common::lock;
+    use crate::handles::millis;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
@@ -473,6 +483,8 @@ mod mock {
         created_action: SystemTime,
         /// The card's attachments, in the order they were put on it.
         attachments: Vec<MockAttachment>,
+        /// The card's number on the board, in the order the cards were added.
+        number: i64,
     }
 
     /// One attachment on a mock card: its listing, and the bytes its url serves.
@@ -501,6 +513,7 @@ mod mock {
                 created_at: Some(UNIX_EPOCH),
                 created_action: UNIX_EPOCH,
                 attachments: Vec::new(),
+                number: 0,
             }
         }
     }
@@ -508,6 +521,9 @@ mod mock {
     /// The member id [`MemberRef::SelfMember`] resolves to on a mock board, so the
     /// common case needs no seeding. Matches the author of a posted comment.
     pub(crate) const SELF_ID: &str = "mock-self";
+
+    /// The short link a mock card reports for its board.
+    pub(crate) const MOCK_BOARD: &str = "mockboard";
 
     /// What a recorded board mutation was.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -649,11 +665,14 @@ mod mock {
                 .expect("list exists")
                 .cards
                 .push(id.to_string());
-            lock(&self.cards).insert(
+            let mut cards = lock(&self.cards);
+            let number = i64::try_from(cards.len()).unwrap_or(0) + 1;
+            cards.insert(
                 id.to_string(),
                 CardState {
                     title: title.to_string(),
                     description: description.to_string(),
+                    number,
                     ..CardState::default()
                 },
             );
@@ -1104,6 +1123,49 @@ mod mock {
                 comments: Some(c.comments.clone()),
                 list_id,
             }))
+        }
+
+        fn card_handle(&self, card_id: &str) -> Result<CardFields, BoardError> {
+            self.guard("read card fields")?;
+            let lists = lock(&self.lists);
+            let cards = lock(&self.cards);
+            let members = lock(&self.members);
+            let Some(c) = cards.get(card_id) else {
+                return Err(BoardError::Status {
+                    stage: "read card fields",
+                    status: 404,
+                });
+            };
+            let list = lists
+                .iter()
+                .find(|l| l.cards.iter().any(|id| id == card_id))
+                .map(|l| l.name.clone())
+                .unwrap_or_default();
+            // The board reports a member by username; one nobody seeded by id reads as the
+            // id, as the real parser's own fallback does for a name.
+            let username = |id: &String| {
+                members
+                    .iter()
+                    .find(|(_, member)| *member == id)
+                    .map_or_else(|| id.clone(), |(username, _)| username.clone())
+            };
+            let created = c.created_at.map_or(0, millis);
+            Ok(CardFields {
+                title: c.title.clone(),
+                number: c.number,
+                name: c.title.clone(),
+                url: card_url(card_id),
+                description: c.description.clone(),
+                board: MOCK_BOARD.to_string(),
+                list,
+                labels: c.labels.clone(),
+                members: c.members.iter().map(username).collect(),
+                due: None,
+                due_complete: c.complete,
+                archived: c.archived,
+                created_at: created,
+                last_activity_at: created,
+            })
         }
 
         fn card_comments(&self, card_id: &str) -> Result<Vec<Comment>, BoardError> {
