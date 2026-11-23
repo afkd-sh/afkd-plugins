@@ -283,7 +283,7 @@ fn sample(ty: &str) -> Value {
         "list[str]" => json!(["Todo"]),
         "list[Item]" => json!([{"text": "Reproduce it", "done": false}]),
         "enum" => json!("top"),
-        "afkd.Run?" => json!({"machine": "nexus", "service": "develop/review.0", "instance": 0,
+        "afkd.Run?" => json!({"machine": "nexus", "service": "develop/review.0", "instance": "0",
                               "id": "261116-163511-card-17-2"}),
         other => panic!("no sample of {other}"),
     }

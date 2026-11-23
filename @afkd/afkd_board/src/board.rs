@@ -94,7 +94,8 @@ pub(crate) fn card_arg(
 
 /// The run `action` was passed as its argument `run`, as afkd sends an `afkd.Run?`, rebuilt as
 /// exactly the `{"machine", "service", "instance", "id"}` the board's API takes, any other field
-/// a newer afkd sends dropped; `None` for a run that is left out or `nil`. Anything else is
+/// a newer afkd sends dropped, the `instance` the string afkd sends and passed on unchanged;
+/// `None` for a run that is left out or `nil`. Anything else, an integer `instance` included, is
 /// refused.
 pub(crate) fn run_arg(action: &str, args: &Map<String, Value>) -> Result<Option<Value>, String> {
     let run = match args.get("run") {
@@ -105,7 +106,7 @@ pub(crate) fn run_arg(action: &str, args: &Map<String, Value>) -> Result<Option<
     let (Some(machine), Some(service), Some(instance), Some(id)) = (
         text("machine"),
         text("service"),
-        run.get("instance").and_then(Value::as_i64),
+        text("instance"),
         text("id"),
     ) else {
         return Err(format!("{action}: parameter run must be an afkd.Run"));
@@ -171,16 +172,16 @@ mod tests {
     }
 
     /// A run is rebuilt as its four fields alone, so a field a newer afkd sends is dropped, and
-    /// the instance stays a number.
+    /// the instance stays the string afkd sent.
     #[test]
     fn a_run_keeps_its_four_fields_and_drops_the_rest() {
-        let run = json!({"machine": "nexus", "service": "develop/review.0", "instance": 2,
+        let run = json!({"machine": "nexus", "service": "develop/review.0", "instance": "blue-2",
                          "id": "261116-163511-card-17-2", "scratch_dir": "/tmp/x", "cost": 1.5});
         assert_eq!(
             run_arg("create_card", &args(json!({ "run": run }))),
             Ok(Some(
                 json!({"machine": "nexus", "service": "develop/review.0",
-                           "instance": 2, "id": "261116-163511-card-17-2"})
+                           "instance": "blue-2", "id": "261116-163511-card-17-2"})
             ))
         );
     }
@@ -195,9 +196,9 @@ mod tests {
             json!("261116-163511"),
             json!([1]),
             json!({}),
-            json!({"machine": "m", "service": "s", "instance": 0}),
-            json!({"machine": "m", "service": "s", "instance": "0", "id": "i"}),
-            json!({"machine": 1, "service": "s", "instance": 0, "id": "i"}),
+            json!({"machine": "m", "service": "s", "instance": "0"}),
+            json!({"machine": "m", "service": "s", "instance": 0, "id": "i"}),
+            json!({"machine": 1, "service": "s", "instance": "0", "id": "i"}),
         ] {
             assert_eq!(
                 run_arg("add_item", &args(json!({ "run": run }))),

@@ -579,7 +579,7 @@ mod tests {
         serde_json::from_str(CARD).unwrap()
     }
 
-    const RUN: &str = r#"{"machine": "nexus", "service": "develop/review.0", "instance": 3,
+    const RUN: &str = r#"{"machine": "nexus", "service": "develop/review.0", "instance": "3",
                           "id": "261116-163511-card-17-2"}"#;
 
     fn run() -> Value {

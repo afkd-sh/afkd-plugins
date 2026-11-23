@@ -86,7 +86,7 @@ fn world() -> FakeBoard {
     let run = Run {
         machine: "hexagon".to_string(),
         service: "afkd::develop".to_string(),
-        instance: 1,
+        instance: "1".to_string(),
         id: "261118-112008".to_string(),
     };
     fake.comment(1, "Claimed 🚀", "nightly", true, Some(run), 700);

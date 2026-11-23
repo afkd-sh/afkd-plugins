@@ -722,7 +722,7 @@ fn reads_leg_two_boards_through_a_child_per_call() {
         Some(Run {
             machine: "nova".to_string(),
             service: "develop".to_string(),
-            instance: 0,
+            instance: "0".to_string(),
             id: "develop-0-42".to_string(),
         }),
         120,
@@ -909,7 +909,7 @@ fn writes_leg_each_write_under_its_run() {
     let run = serde_json::json!({
         "machine": field("machine"),
         "service": field("service"),
-        "instance": field("instance").parse::<i64>().expect("the instance is a number"),
+        "instance": field("instance"),
         "id": field("id"),
     });
     assert_eq!(
