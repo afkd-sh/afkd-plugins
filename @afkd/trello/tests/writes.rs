@@ -766,12 +766,12 @@ fn an_attachment_is_made_read_back_downloaded_and_deleted() {
         ),
         (
             json!(nowhere),
-            format!("attach: no file at {}", nowhere.display()),
+            format!("create_attachment: no file at {}", nowhere.display()),
         ),
         (
             json!(huge),
             format!(
-                "attach: {} is over the 10 MiB Trello takes in one attachment",
+                "create_attachment: {} is over the 10 MiB Trello takes in one attachment",
                 huge.display()
             ),
         ),
@@ -783,6 +783,12 @@ fn an_attachment_is_made_read_back_downloaded_and_deleted() {
         );
         assert_eq!(refusal(&reply), sentence);
     }
+    let reply = b.call(
+        &mut plugin,
+        "create_attachment",
+        json!({"card": card, "path": huge, "name": ""}),
+    );
+    assert_eq!(refusal(&reply), "create_attachment: name must not be empty");
     assert_eq!(b.count("POST"), posts, "nothing was sent");
     plugin.finish();
 }

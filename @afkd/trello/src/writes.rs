@@ -964,7 +964,13 @@ fn create_attachment(
         .file_name()
         .map(|file| file.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let upload = read_upload(path, name.unwrap_or(&own))?;
+    // `read_upload` speaks as the queued `attach`; this call speaks as itself.
+    let upload = read_upload(path, name.unwrap_or(&own)).map_err(|refusal| {
+        match refusal.strip_prefix("attach: ") {
+            Some(rest) => format!("{action}: {rest}"),
+            None => refusal,
+        }
+    })?;
     let card_key = card_id(card);
     let made = client
         .upload(
