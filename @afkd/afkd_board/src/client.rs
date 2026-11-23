@@ -710,7 +710,7 @@ mod tests {
     /// A run is put in a body when there is one, and a body without one has no `run` key.
     #[test]
     fn a_run_is_in_the_body_only_when_there_is_one() {
-        let run = json!({"machine": "m", "service": "s", "instance": 0, "id": "i"});
+        let run = json!({"machine": "m", "service": "s", "instance": "0", "id": "i"});
         assert_eq!(
             with_run(json!({"text": "x"}), Some(&run)),
             json!({"text": "x", "run": run})
