@@ -24,7 +24,8 @@ use crate::card::ACTION_TAG;
 use crate::common::Diag;
 
 /// The most one attachment may hold, either way: what Trello takes in one upload on a free
-/// board, and the same guard the skill's `post_attachment.py` keeps.
+/// board, and the same guard the skill's `create_attachment.py` and `download_attachment.py`
+/// keep.
 pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
 
 /// A file to put on a card: the name it is stored under, and its bytes as they were read.
