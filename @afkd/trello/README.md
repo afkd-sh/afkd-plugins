@@ -6,7 +6,9 @@ the actions that move the card across the board as work starts, finishes, or fai
 that attach a file to the card and fetch one back. Beside it, a config
 [reads Trello through a `trello.Account`](#reading-trello-through-a-trelloaccount): a board's
 cards, a card's comments, checklists and attachments, and a board's lists, labels and members,
-from any service's slots or run. It also
+from any service's slots or run, and
+[writes it through the same account](#writing-trello-through-a-trelloaccount): cards,
+comments, checklists, check items and attachments made, changed and deleted. It also
 ships the `trello` skill an agent works the card through: read and post comments, fetch and
 attach files, tick checklist items, move and label the card, and ask a question that parks
 the card until a human replies.
@@ -608,8 +610,9 @@ A struct the plugin declares, built as `trello.Account{ … }`:
 ### The handles
 
 Every handle is sent with every field, filled: one that may hold nothing is `T?` and `nil`
-when it does, and a list with nothing in it is empty. Its `key` is `trello:<Trello's id>`, so
-a handle read twice, or claimed and read, is `==`, and a read finds the object by it.
+when it does, and a list with nothing in it is empty. Its `key` is `trello:<Trello's id>`, bar
+two, so a handle read twice, or claimed and read, or written and read, is `==`, and a read or
+a write finds the object by it.
 
 | Handle              | Fields |
 |---------------------|--------|
@@ -623,10 +626,11 @@ a handle read twice, or claimed and read, is `==`, and a read finds the object b
 | `trello.Label`      | `id` (Trello's id), `name` (`""` for a colour-only label), `color: str?`, `board` |
 | `trello.Member`     | `id` (the username), `full_name` |
 
-An **attachment's key** is `trello:<card id>/<attachment id>`, the one key that holds two ids:
-Trello has no route to an attachment outside its card, and a handle crosses the wire as its
-`id` and `key` alone, so `download_attachment` could reach the file by nothing else. A card's
-comment is found by its action id alone.
+An **attachment's key** is `trello:<card id>/<attachment id>` and a **check item's** is
+`trello:<card id>/<item id>`, the two keys that hold two ids: Trello has no route to either
+outside its card, and a handle crosses the wire as its `id` and `key` alone, so
+`download_attachment` could reach the file, and `update_check_item` the item, by nothing else.
+A card's comment, and a checklist, is found by its own id alone.
 
 ### The reads
 
@@ -698,7 +702,9 @@ with a 429 is tried again, on every verb, and one answered with a 5xx on every v
 `x-rate-limit-*-interval-ms` headers the answer carries, or, when it carries none, one
 second, then two, doubling. A wait that would end past the call's deadline, 45 seconds, is
 not taken: the call is refused with the last answer it got. The writes of the kind, the
-actions on a claimed card, are not retried this way: the outbox retries those.
+actions on a claimed card, are not retried this way: the outbox retries those. The
+[writes through an account](#writing-trello-through-a-trelloaccount) are retried as a read is,
+bar the `POST`.
 
 ### Two accounts, and from a slot
 
@@ -787,6 +793,133 @@ on its next renewal, which it diagnoses, and the card returns to `pick_from`. **
 process its own Trello account**: one account is one identity to the kind, which reads every
 comment by the token's member as afkd's own in the brief, the feedback delta and the
 backstop alike.
+
+## Writing Trello through a `trello.Account`
+
+A config also writes a board through an account: files a card, edits its description, moves
+a card no run claimed, ticks a checklist item, rewrites or deletes a comment. Each write takes
+a `trello.Account` first, as a read does, and reaches Trello through nothing else, so it works
+the same from any service's slots or run. Each is done now or refused, never queued, and gives
+back what it made or changed, read back the way the reads read it: the handle it answers is
+`==` to the one `trello.cards`, `comments`, `checklists`, `check_items` or `attachments` hands
+back. The four deletes give nil.
+
+| Call                                                          | Gives |
+|---------------------------------------------------------------|-------|
+| `trello.create_card(acct, board, list, name, ~description, ~at, ~labels, ~members, ~due)` | the `trello.Card` made |
+| `trello.update_card(acct, card, ~name, ~description, ~list, ~at, ~due, ~due_complete)` | the `trello.Card` as Trello now holds it; `at` places it in its list, the new one or the one it is in; a card moved to another list with no `at` lands at the top, as `move_to` puts it |
+| `trello.archive_card(acct, card)`, `trello.unarchive_card(acct, card)` | the `trello.Card`, `archived` set or unset |
+| `trello.delete_card(acct, card)`                              | nil; Trello deletes the card for good, with its comments and attachments |
+| `trello.create_comment(acct, card, body)`                     | the `trello.Comment` made |
+| `trello.update_comment(acct, comment, body)`                  | the `trello.Comment`, rewritten |
+| `trello.delete_comment(acct, comment)`                        | nil |
+| `trello.create_checklist(acct, card, name, ~items)`           | the `trello.Checklist`, its items unticked, in the order given |
+| `trello.delete_checklist(acct, checklist)`                    | nil |
+| `trello.create_check_item(acct, checklist, name, ~at)`        | the `trello.Check_Item` made |
+| `trello.update_check_item(acct, item, ~name, ~done)`          | the `trello.Check_Item`, renamed or ticked |
+| `trello.delete_check_item(acct, item)`                        | nil |
+| `trello.create_attachment(acct, card, path, ~name)`           | the `trello.Attachment` made, from the file at the absolute path `path`, read when called, at most 10 MiB, named `name` or the file's own name |
+| `trello.delete_attachment(acct, attachment)`                  | nil |
+
+| Parameter                | Type              | Notes |
+|--------------------------|-------------------|-------|
+| `board`                  | `str`             | the board's address or short link |
+| `list`                   | `str`             | a list's name on the card's board (in `create_card`, on `board`) |
+| `name`                   | `str`             | the card's, the checklist's or the item's name |
+| `description`, `body`    | `str`             | markdown, at most 16 384 characters; `""` empties a description |
+| `at`                     | `.top`, `.bottom` | the place in the list or the checklist; left out, `.bottom` in `create_card` and `create_check_item`, and in `update_card` the place the card has unless it moves list, and then `.top` |
+| `items`                  | `list[str]`       | the new checklist's items' names |
+| `done`                   | `bool`            | whether the item is ticked |
+| `labels`                 | `list[str]`       | names on the board |
+| `members`                | `list[str]`       | usernames, or `"me"`, of members of the board |
+| `due`                    | `time.Time?`      | left out, it leaves the due date; `nil` clears it |
+| `due_complete`           | `bool`            | whether the due date is marked complete |
+
+A write changes only what it is passed: `update_card` sends one request holding the fields
+given, and with none given sends none and answers the card as it is, as `update_check_item`
+does with neither `name` nor `done`. A `due` is written to the millisecond, and reads back to
+it.
+
+- **A name is matched exactly.** A list, label or member the board has none of is an `.err`
+  naming the ones there are, `create_card: the board has no label named "Hold"; its labels are
+  "afkd/ready", "Problem"`, and a name several of them share is an `.err` listing their ids,
+  `create_card: 2 labels are named "dup" (ids <id>, <id>); name one of them by renaming the
+  other`. `create_card` resolves its list, every label and every member, `"me"` through the
+  token's own username, before it sends anything, and `update_card` resolves a new `list` on
+  the card's own board. No label is ever created: a label the board lacks is an `.err`.
+- **Labels and members on a card** are added and removed by today's `add_label`,
+  `remove_label`, `add_member` and `remove_member`, which keep those names until the actions
+  on a claimed card are replaced by calls that take an account.
+- **A description or a body past Trello's 16 384 characters** is an `.err` before anything is
+  sent, counted in characters: `create_card: description is 16385 characters, over the 16384
+  Trello takes`.
+- **Another member's comment.** Trello lets a token edit and delete only its own comments, so
+  `update_comment` and `delete_comment` on another member's are an `.err` in Trello's own
+  words: `trello update comment: board returned status 401: unauthorized permission
+  requested`. A refusal of any write keeps what Trello said when it said something.
+- **`create_checklist` makes its items one by one**, in the order given. An item Trello
+  refuses leaves the checklist as far as it got, and the `.err` names the checklist and how
+  many of its items were made, `create_checklist: checklist "Acceptance" (<id>) was made on
+  card Qb7eLy2w with 2 of its 4 items, then: …`.
+- **A write that landed but could not be read back** is an `.err` that says so, `the card was
+  written, but reading it back failed: …`; the write is not undone.
+- A handle this plugin did not hand out, or one of another kind, a path that is not absolute,
+  a file Trello cannot take, an empty `api_key` or `token`: each an `.err` before any request
+  that writes, as for a read.
+
+**Retries.** A write is done now or refused; nothing is queued, so a write the plugin cannot
+finish is the config's to see and decide on. A request Trello answers with a 429 is tried
+again, on every verb, after the wait Trello's `x-rate-limit-*-interval-ms` headers name or, when
+they name none, one second, then two, doubling, for as long as the wait ends before the call's
+deadline, 45 seconds; past it the write is refused with the last answer Trello gave. A 5xx is
+tried again on a `PUT`, a `DELETE` and the reads that check what was written, and **never on a
+`POST`**, which Trello may already have carried out: a 5xx on `create_card`, `create_comment`,
+`create_checklist`, `create_check_item` or `create_attachment` is refused at once, and none of
+them is ever sent twice.
+
+```conf
+import "afkd"
+import "std:env"
+import "svc:interval"
+import "@afkd/trello"
+
+ACME  :: trello.Account{ api_key: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset"), token: env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset") }
+BOARD :: "https://trello.com/b/REPLACE_ME/board"
+
+planner :: service(interval) {
+  every    1h
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {
+    match trello.create_card(ACME, BOARD, "Backlog", "Part 1: the schema", description="Split off from the plan.", labels=[ "afkd/ready" ], members=[ "me" ], at=.top) {
+      .ok(card) => {
+        match trello.create_checklist(ACME, card, "Acceptance", items=[ "migration runs", "rollback tested" ]) {
+          .ok(_) => { }
+          .err(e) => fail("trello.create_checklist: #{e.message}")
+        }
+        match trello.create_comment(ACME, card, "filed from the plan at #{run.scratch_dir}") {
+          .ok(note) => {
+            match trello.update_comment(ACME, note, "filed from the plan") {
+              .ok(_) => { }
+              .err(e) => fail("trello.update_comment: #{e.message}")
+            }
+          }
+          .err(e) => fail("trello.create_comment: #{e.message}")
+        }
+        match trello.update_card(ACME, card, list="Doing", at=.bottom) {
+          .ok(_) => { }
+          .err(e) => fail("trello.update_card: #{e.message}")
+        }
+        match trello.create_attachment(ACME, card, "#{run.scratch_dir}/plan.md", name="plan.md") {
+          .ok(_) => { }
+          .err(e) => fail("trello.create_attachment: #{e.message}")
+        }
+      }
+      .err(e) => fail("trello.create_card: #{e.message}")
+    }
+  }
+}
+```
 
 ## Where it differs from the built-in
 

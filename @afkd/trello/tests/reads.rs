@@ -861,6 +861,16 @@ fn checklists_and_check_items_come_in_the_cards_order() {
     );
     assert_eq!(handles(&items)[0]["id"], first[1]);
     assert_eq!(handles(&items)[3]["id"], second[0]);
+    // An item's key carries its card's id, as an attachment's does: Trello has no route to an
+    // item that does not go through its card.
+    assert_eq!(
+        handles(&items)[0]["key"],
+        format!("trello:{card}/{}", first[1])
+    );
+    assert_eq!(
+        handles(&items)[3]["key"],
+        format!("trello:{card}/{}", second[0])
+    );
     assert_eq!(
         handles(&items)[0]["fields"]["checklist"],
         handles(&lists)[0]["id"]

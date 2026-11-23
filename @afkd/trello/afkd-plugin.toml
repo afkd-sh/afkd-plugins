@@ -1,5 +1,5 @@
 name = "@afkd/trello"
-version = "0.16.0"
+version = "0.17.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -165,7 +165,9 @@ doc = "A checklist on a card"
   doc = "The names of its items, in order"
   type = "list[str]"
 
-# One item of a checklist, its `id` Trello's id and its key `trello:<that id>`.
+# One item of a checklist, its `id` Trello's id. Trello has no route to an item that does not go
+# through its card, so its key is `trello:<card id>/<item id>`, one of the two keys that name
+# two ids, with an attachment's.
 [[handle]]
 name = "Check_Item"
 doc = "One item of a checklist"
@@ -193,7 +195,7 @@ doc = "One item of a checklist"
 
 # A file or a link on a card, its `id` Trello's id. Trello has no route to an attachment outside
 # its card, and a handle crosses the wire as `id` and `key` alone, so its key is
-# `trello:<card id>/<attachment id>`, the one key that names two ids.
+# `trello:<card id>/<attachment id>`, one of the two keys that name two ids, with a check item's.
 [[handle]]
 name = "Attachment"
 doc = "A file or a link attached to a card"
@@ -884,4 +886,428 @@ returns = "list[Member]"
   name = "board"
   doc = "The board's address, or its short link"
   type = "str"
+  required = true
+
+# The writes. Each takes a `trello.Account` first, reaches Trello only through it, and gives back
+# what it made or changed, read back the way the reads read it, so its handle is `==` to the one
+# a read hands back; the four deletes give nothing. A write is done now or refused, never queued:
+# a 429 is tried again within the call's deadline, after the wait Trello's rate-limit headers
+# name or else one second doubling, and a 5xx too, except on a POST, which Trello may already
+# have carried out, so nothing is made twice. A name is matched exactly: a list, label or member
+# the board has none of is refused naming the ones there are, and a name several share is
+# refused listing their ids. A description or a body past Trello's 16 384 characters is refused
+# before anything is sent. Adding and removing a label or a member on a card stays with today's
+# `add_label`, `remove_label`, `add_member` and `remove_member`.
+
+# A card made in a list of a board, at the top or the bottom of it. `create_card` never makes a
+# label the board lacks.
+[[action]]
+name = "create_card"
+doc = "Makes a card in a list of a board"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "board"
+  doc = "The board's address, or its short link"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "list"
+  doc = "The name of the list to make the card in"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  doc = "The card's name"
+  type = "str"
+  required = true
+
+  # Markdown, at most 16 384 characters.
+  [[action.param]]
+  name = "description"
+  doc = "The card's description in Markdown"
+  type = "str"
+  named_only = true
+
+  [[action.param]]
+  name = "at"
+  doc = "Whether the card lands at the top or the bottom of the list"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+  default = "bottom"
+
+  # Names on the board.
+  [[action.param]]
+  name = "labels"
+  doc = "The labels to put on the card, by name"
+  type = "list[str]"
+  named_only = true
+
+  # Usernames on the board, or "me".
+  [[action.param]]
+  name = "members"
+  doc = "The members to put on the card, by username or me"
+  type = "list[str]"
+  named_only = true
+
+  [[action.param]]
+  name = "due"
+  doc = "When the card is due"
+  type = "time?"
+  named_only = true
+
+# A card changed in one request: each field passed is set and each left out stays. `at` places
+# the card in its list, the new one or the one it is in; a card moved to another list with no
+# `at` lands at the top, as `move_to` puts it. With nothing passed no request is sent.
+[[action]]
+name = "update_card"
+doc = "Changes a card's name, description, list, place or due date"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to change"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  doc = "The card's new name"
+  type = "str"
+  named_only = true
+
+  # Markdown, at most 16 384 characters; "" empties it.
+  [[action.param]]
+  name = "description"
+  doc = "The card's new description in Markdown, empty to clear it"
+  type = "str"
+  named_only = true
+
+  # A list of the card's own board, by name.
+  [[action.param]]
+  name = "list"
+  doc = "The name of the list to move the card to"
+  type = "str"
+  named_only = true
+
+  [[action.param]]
+  name = "at"
+  doc = "Whether the card lands at the top or the bottom of its list"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+
+  [[action.param]]
+  name = "due"
+  doc = "The card's new due date, nil to clear it"
+  type = "time?"
+  named_only = true
+
+  [[action.param]]
+  name = "due_complete"
+  doc = "Whether the card's due date is marked complete"
+  type = "bool"
+  named_only = true
+
+[[action]]
+name = "archive_card"
+doc = "Archives a card"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to archive"
+  type = "Card"
+  required = true
+
+[[action]]
+name = "unarchive_card"
+doc = "Takes a card out of the archive"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to take out of the archive"
+  type = "Card"
+  required = true
+
+# Trello deletes the card for good, with its comments and attachments.
+[[action]]
+name = "delete_card"
+doc = "Deletes a card for good"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to delete"
+  type = "Card"
+  required = true
+
+[[action]]
+name = "create_comment"
+doc = "Writes a comment on a card"
+returns = "Comment"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to comment on"
+  type = "Card"
+  required = true
+
+  # At most 16 384 characters.
+  [[action.param]]
+  name = "body"
+  doc = "The text of the comment"
+  type = "str"
+  required = true
+
+# Trello lets a token edit only its own comments: another member's is refused in Trello's words.
+[[action]]
+name = "update_comment"
+doc = "Rewrites the token's own comment"
+returns = "Comment"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "comment"
+  doc = "The comment to rewrite"
+  type = "Comment"
+  required = true
+
+  # At most 16 384 characters.
+  [[action.param]]
+  name = "body"
+  doc = "The new text of the comment"
+  type = "str"
+  required = true
+
+# Trello lets a token delete only its own comments: another member's is refused in Trello's words.
+[[action]]
+name = "delete_comment"
+doc = "Deletes the token's own comment"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "comment"
+  doc = "The comment to delete"
+  type = "Comment"
+  required = true
+
+# A checklist at the bottom of a card, and its items unticked, in the order given. An item Trello
+# refuses leaves the checklist as far as it got, and the refusal says how far.
+[[action]]
+name = "create_checklist"
+doc = "Makes a checklist on a card, with its items"
+returns = "Checklist"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to put the checklist on"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  doc = "The checklist's name"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "items"
+  doc = "The names of the checklist's items, in order"
+  type = "list[str]"
+  named_only = true
+
+[[action]]
+name = "delete_checklist"
+doc = "Deletes a checklist with its items"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "checklist"
+  doc = "The checklist to delete"
+  type = "Checklist"
+  required = true
+
+[[action]]
+name = "create_check_item"
+doc = "Adds an item to a checklist"
+returns = "Check_Item"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "checklist"
+  doc = "The checklist to add the item to"
+  type = "Checklist"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  doc = "The item's text"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "at"
+  doc = "Whether the item lands at the top or the bottom of the checklist"
+  type = "enum"
+  values = ["top", "bottom"]
+  named_only = true
+  default = "bottom"
+
+# With neither `name` nor `done` passed no request is sent.
+[[action]]
+name = "update_check_item"
+doc = "Renames a check item, or ticks or unticks it"
+returns = "Check_Item"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "item"
+  doc = "The check item to change"
+  type = "Check_Item"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  doc = "The item's new text"
+  type = "str"
+  named_only = true
+
+  [[action.param]]
+  name = "done"
+  doc = "Whether the item is ticked"
+  type = "bool"
+  named_only = true
+
+[[action]]
+name = "delete_check_item"
+doc = "Deletes a check item"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "item"
+  doc = "The check item to delete"
+  type = "Check_Item"
+  required = true
+
+# The file at the absolute path `path`, read when the write is called, at most 10 MiB, put on the
+# card as `name`, or as the file's own name. Done now or refused, unlike `attach`, which is queued.
+[[action]]
+name = "create_attachment"
+doc = "Uploads a file to a card as an attachment"
+returns = "Attachment"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to attach the file to"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "path"
+  doc = "The absolute path of the file to upload"
+  type = "str"
+  required = true
+
+  [[action.param]]
+  name = "name"
+  doc = "The name the file is attached as, the file's own by default"
+  type = "str"
+  named_only = true
+
+[[action]]
+name = "delete_attachment"
+doc = "Deletes an attachment from its card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "attachment"
+  doc = "The attachment to delete"
+  type = "Attachment"
   required = true

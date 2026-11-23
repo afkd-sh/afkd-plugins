@@ -3,9 +3,10 @@
 //! handle; the plugin fills them, and declares only the other fields ([`WireHandle`]).
 //!
 //! A handle's key is `trello:<Trello's id>`, so the same object read twice, or claimed and
-//! read, is `==`. The one exception is an attachment's, `trello:<card id>/<attachment id>`:
-//! Trello has no route to an attachment outside its card, and a handle crosses the wire as
-//! its `id` and `key` alone, so `download_attachment` could reach the file by nothing else.
+//! read, is `==`. The two exceptions are an attachment's, `trello:<card id>/<attachment id>`,
+//! and a check item's, `trello:<card id>/<item id>`: Trello has no route to either outside
+//! its card, and a handle crosses the wire as its `id` and `key` alone, so
+//! `download_attachment` and `update_check_item` could reach theirs by nothing else.
 //!
 //! Each builder reads Trello's JSON, so a card the claim read, a card a board read and a
 //! comment an action listing gave all arrive in one shape. A time is unix milliseconds,
@@ -35,18 +36,34 @@ pub(crate) fn attachment_key(card_id: &str, attachment_id: &str) -> String {
     format!("{KEY_PREFIX}{card_id}/{attachment_id}")
 }
 
+/// The key of check item `item_id` of card `card_id`, which has the shape of an
+/// attachment's for the same reason: Trello has no route to an item outside its card.
+pub(crate) fn check_item_key(card_id: &str, item_id: &str) -> String {
+    format!("{KEY_PREFIX}{card_id}/{item_id}")
+}
+
 /// The Trello id a [`read_key`] holds, or `None` for a key of any other shape: one an older
-/// release journaled (`card#claim`), an attachment's, or none of this plugin's.
+/// release journaled (`card#claim`), a two-id key's, or none of this plugin's.
 pub(crate) fn parse_read_key(key: &str) -> Option<&str> {
     let id = key.strip_prefix(KEY_PREFIX)?;
     (!id.is_empty() && !id.contains(['#', '/'])).then_some(id)
 }
 
+/// The two ids a key of the shape `trello:<card id>/<id>` holds.
+fn parse_two_ids(key: &str) -> Option<(&str, &str)> {
+    let (card, id) = key.strip_prefix(KEY_PREFIX)?.split_once('/')?;
+    let plain = |id: &str| !id.is_empty() && !id.contains(['#', '/']);
+    (plain(card) && plain(id)).then_some((card, id))
+}
+
 /// The card id and the attachment id an [`attachment_key`] holds.
 pub(crate) fn parse_attachment_key(key: &str) -> Option<(&str, &str)> {
-    let (card, attachment) = key.strip_prefix(KEY_PREFIX)?.split_once('/')?;
-    let plain = |id: &str| !id.is_empty() && !id.contains(['#', '/']);
-    (plain(card) && plain(attachment)).then_some((card, attachment))
+    parse_two_ids(key)
+}
+
+/// The card id and the item id a [`check_item_key`] holds.
+pub(crate) fn parse_check_item_key(key: &str) -> Option<(&str, &str)> {
+    parse_two_ids(key)
 }
 
 /// The fields of a `trello.Card` handle, in the manifest's order.
@@ -331,9 +348,13 @@ pub(crate) fn build_checklist(
     })
 }
 
-/// The check items of the checklist `checklist` of the card whose short link is `card`, in
-/// order, each as a handle.
-pub(crate) fn build_check_items(checklist: &Value, card: &str) -> Vec<WireHandle<CheckItemFields>> {
+/// The check items of the checklist `checklist` of the card `card_id`, whose short link is
+/// `card`, in order, each as a handle: its key carries the card's id too ([`check_item_key`]).
+pub(crate) fn build_check_items(
+    checklist: &Value,
+    card_id: &str,
+    card: &str,
+) -> Vec<WireHandle<CheckItemFields>> {
     let list_id = str_of(checklist, "id");
     ordered_items(checklist)
         .into_iter()
@@ -341,7 +362,7 @@ pub(crate) fn build_check_items(checklist: &Value, card: &str) -> Vec<WireHandle
             let id = item.get("id")?.as_str()?;
             Some(WireHandle {
                 id: id.to_string(),
-                key: read_key(id),
+                key: check_item_key(card_id, id),
                 fields: CheckItemFields {
                     card: card.to_string(),
                     checklist: list_id.to_string(),
@@ -489,6 +510,11 @@ mod tests {
             parse_attachment_key("trello:card1/att1"),
             Some(("card1", "att1"))
         );
+        assert_eq!(check_item_key("card1", "item1"), "trello:card1/item1");
+        assert_eq!(
+            parse_check_item_key("trello:card1/item1"),
+            Some(("card1", "item1"))
+        );
         for key in [
             "",
             "trello:",
@@ -508,6 +534,7 @@ mod tests {
             "x",
         ] {
             assert_eq!(parse_attachment_key(key), None, "{key}");
+            assert_eq!(parse_check_item_key(key), None, "{key}");
         }
     }
 
@@ -653,7 +680,7 @@ mod tests {
                 items: vec!["first".into(), "second".into(), "unplaced".into()],
             }
         );
-        let items = build_check_items(&checklist, "Qb7eLy2w");
+        let items = build_check_items(&checklist, "card1", "Qb7eLy2w");
         let seen: Vec<(&str, &str, bool)> = items
             .iter()
             .map(|i| (i.id.as_str(), i.fields.name.as_str(), i.fields.done))
@@ -669,7 +696,7 @@ mod tests {
         assert!(items
             .iter()
             .all(|i| i.fields.checklist == "cl1" && i.fields.card == "Qb7eLy2w"));
-        assert_eq!(items[0].key, "trello:i1");
+        assert_eq!(items[0].key, "trello:card1/i1");
 
         let empty = json!({"id": "cl2"});
         assert_eq!(
@@ -679,7 +706,7 @@ mod tests {
                 .items,
             Vec::<String>::new()
         );
-        assert!(build_check_items(&empty, "c").is_empty());
+        assert!(build_check_items(&empty, "c1", "c").is_empty());
     }
 
     /// An uploaded file and a link: the key carries the card id, a link has no size and

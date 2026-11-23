@@ -11,8 +11,8 @@
 //! 2. reads what it reads from Trello through the account's retrying client, each list to its
 //!    end — the board's cards past Trello's 1000, a card's comments to the `limit`;
 //! 3. answers with handles keyed `trello:<Trello's id>` (an attachment's `trello:<card
-//!    id>/<attachment id>`), or a value, or nothing, in one reply under afkd's 8 MiB for a
-//!    call ([`fit_call`]).
+//!    id>/<attachment id>`, a check item's `trello:<card id>/<item id>`), or a value, or
+//!    nothing, in one reply under afkd's 8 MiB for a call ([`fit_call`]).
 //!
 //! A read is never queued: it is done now, a request Trello answered "later" tried again
 //! within the call's deadline, or refused with the reason.
@@ -69,11 +69,12 @@ const PAGE: usize = 1000;
 
 /// The card fields a board read asks for: every one a `trello.Card` carries, no more, so a
 /// page of a thousand cards stays as small as it can.
-const CARD_FIELDS: &str = "name,desc,idList,idMembers,labels,shortLink,url,closed,due,dueComplete,\
+pub(crate) const CARD_FIELDS: &str =
+    "name,desc,idList,idMembers,labels,shortLink,url,closed,due,dueComplete,\
                            idShort,dateLastActivity,pos";
 
 /// The attachment fields a read asks for: every one a `trello.Attachment` carries.
-const ATTACHMENT_FIELDS: &str = "id,name,date,url,isUpload,bytes,mimeType";
+pub(crate) const ATTACHMENT_FIELDS: &str = "id,name,date,url,isUpload,bytes,mimeType";
 
 /// A handle a read was passed: the id and the key it carries.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -227,7 +228,7 @@ pub(crate) fn decode(
 
 /// The board `action` was passed, by its address or its short link, as the id the address
 /// carries.
-fn board_arg(action: &str, args: &Map<String, Value>) -> Result<String, String> {
+pub(crate) fn board_arg(action: &str, args: &Map<String, Value>) -> Result<String, String> {
     let address = string(action, args, "board")?;
     if address.trim().is_empty() {
         return Err(format!(
@@ -287,7 +288,11 @@ fn names(args: &Map<String, Value>, param: &str) -> Result<Option<Vec<String>>, 
 
 /// The handle `action` was passed as its argument `param`, as afkd sends one,
 /// `{"id":…,"key":…}`, or the sentence refusing an argument that is missing or no handle.
-fn handle_arg(action: &str, args: &Map<String, Value>, param: &str) -> Result<HandleArg, String> {
+pub(crate) fn handle_arg(
+    action: &str,
+    args: &Map<String, Value>,
+    param: &str,
+) -> Result<HandleArg, String> {
     let handle = match args.get(param) {
         Some(Value::Object(handle)) => Some(handle),
         Some(_) => None,
@@ -311,7 +316,7 @@ fn handle_arg(action: &str, args: &Map<String, Value>, param: &str) -> Result<Ha
 
 /// The card `action` was passed, its key one of a card's: `trello:<card id>`, whether the
 /// card was claimed or read.
-fn card_arg(action: &str, args: &Map<String, Value>) -> Result<HandleArg, String> {
+pub(crate) fn card_arg(action: &str, args: &Map<String, Value>) -> Result<HandleArg, String> {
     let card = handle_arg(action, args, "card")?;
     if parse_read_key(&card.key).is_none() {
         return Err(format!(
@@ -323,7 +328,11 @@ fn card_arg(action: &str, args: &Map<String, Value>) -> Result<HandleArg, String
 }
 
 /// The string argument `param` of `action`, or the sentence refusing its absence or type.
-fn string(action: &str, args: &Map<String, Value>, param: &str) -> Result<String, String> {
+pub(crate) fn string(
+    action: &str,
+    args: &Map<String, Value>,
+    param: &str,
+) -> Result<String, String> {
     match args.get(param) {
         Some(Value::String(value)) => Ok(value.clone()),
         Some(_) => Err(format!("{action}: parameter {param} must be a string")),
@@ -333,7 +342,7 @@ fn string(action: &str, args: &Map<String, Value>, param: &str) -> Result<String
 
 /// The argument `param` of `action` read by `read`, `None` when it is left out or `null`, or
 /// the sentence refusing a value that is not `what`.
-fn optional<'a, T>(
+pub(crate) fn optional<'a, T>(
     action: &str,
     args: &'a Map<String, Value>,
     param: &str,
@@ -349,7 +358,7 @@ fn optional<'a, T>(
 }
 
 /// The card id a card handle's key holds. Decoded already, so the key always parses.
-fn card_id(card: &HandleArg) -> &str {
+pub(crate) fn card_id(card: &HandleArg) -> &str {
     parse_read_key(&card.key).unwrap_or(&card.key)
 }
 
@@ -365,14 +374,18 @@ fn trello(e: BoardError) -> String {
 
 /// A board as a read finds it: Trello's id for it, which every path after the first read
 /// uses, and its short link, which a handle's `board` field is.
-struct Board {
-    id: String,
-    short_link: String,
+pub(crate) struct Board {
+    pub(crate) id: String,
+    pub(crate) short_link: String,
 }
 
 /// Read the board `address` names, or say it is none: an address or a short link a call
 /// named, as [`derive_board_id`] reduced it.
-fn read_board(client: &TrelloClient, action: &str, address: &str) -> Result<Board, String> {
+pub(crate) fn read_board(
+    client: &TrelloClient,
+    action: &str,
+    address: &str,
+) -> Result<Board, String> {
     let board = client
         .get_json(
             "read board",
@@ -397,7 +410,7 @@ fn read_board(client: &TrelloClient, action: &str, address: &str) -> Result<Boar
 }
 
 /// `path` read as a JSON array: what a list read asks of Trello, in `pairs`.
-fn array(
+pub(crate) fn array(
     client: &TrelloClient,
     stage: &'static str,
     path: &str,
@@ -456,7 +469,7 @@ fn run(action: &str, call: &ReadCall, client: &TrelloClient) -> Result<(String, 
             let checklists = checklists_of(client, card_id(card))?;
             let handles: Vec<_> = checklists
                 .iter()
-                .flat_map(|list| build_check_items(list, &card.id))
+                .flat_map(|list| build_check_items(list, card_id(card), &card.id))
                 .collect();
             (
                 handles_line(&handles),
@@ -552,7 +565,7 @@ fn run(action: &str, call: &ReadCall, client: &TrelloClient) -> Result<(String, 
 
 /// Every label of a board: Trello gives 50 unless asked, so the read asks for the 1000 it
 /// allows.
-fn board_labels(client: &TrelloClient, board_id: &str) -> Result<Vec<Value>, String> {
+pub(crate) fn board_labels(client: &TrelloClient, board_id: &str) -> Result<Vec<Value>, String> {
     array(
         client,
         "read labels",
@@ -562,7 +575,7 @@ fn board_labels(client: &TrelloClient, board_id: &str) -> Result<Vec<Value>, Str
 }
 
 /// A board's members.
-fn board_members(client: &TrelloClient, board_id: &str) -> Result<Vec<Value>, String> {
+pub(crate) fn board_members(client: &TrelloClient, board_id: &str) -> Result<Vec<Value>, String> {
     array(
         client,
         "read members",
@@ -572,7 +585,7 @@ fn board_members(client: &TrelloClient, board_id: &str) -> Result<Vec<Value>, St
 }
 
 /// A card's checklists with their items, in the card's order.
-fn checklists_of(client: &TrelloClient, card_id: &str) -> Result<Vec<Value>, String> {
+pub(crate) fn checklists_of(client: &TrelloClient, card_id: &str) -> Result<Vec<Value>, String> {
     let lists = array(
         client,
         "read checklists",
@@ -625,7 +638,7 @@ fn comment_actions(
 }
 
 /// The names `have` lists, each quoted, for a sentence naming what a board has.
-fn quoted(have: &[String]) -> String {
+pub(crate) fn quoted(have: &[String]) -> String {
     if have.is_empty() {
         return "none".to_string();
     }
@@ -635,12 +648,50 @@ fn quoted(have: &[String]) -> String {
         .join(", ")
 }
 
-/// The sentence refusing a `name` of `kind` the board has none of, naming the ones it has.
-fn missing(kind: &str, name: &str, have: &[String]) -> String {
+/// The sentence of `action` refusing a `name` of `kind` the board has none of, naming the
+/// ones it has.
+fn missing(action: &str, kind: &str, name: &str, have: &[String]) -> String {
     format!(
-        "cards: the board has no {kind} named {name:?}; its {kind}s are {}",
+        "{action}: the board has no {kind} named {name:?}; its {kind}s are {}",
         quoted(have)
     )
+}
+
+/// The id of the one of `candidates`, `(id, name)` pairs of `kind`, that is named `name`.
+///
+/// # Errors
+///
+/// Returns `action`'s sentence for a name none of them has, naming the ones there are, and for
+/// one several share, listing their ids.
+pub(crate) fn one_named(
+    action: &str,
+    kind: &str,
+    name: &str,
+    candidates: &[(String, String)],
+) -> Result<String, String> {
+    let named: Vec<&str> = candidates
+        .iter()
+        .filter(|(_, candidate)| candidate == name)
+        .map(|(id, _)| id.as_str())
+        .collect();
+    match named.as_slice() {
+        [only] => Ok((*only).to_string()),
+        [] => {
+            let mut have: Vec<String> = Vec::new();
+            for (_, candidate) in candidates {
+                if !have.contains(candidate) {
+                    have.push(candidate.clone());
+                }
+            }
+            Err(missing(action, kind, name, &have))
+        }
+        several => Err(format!(
+            "{action}: {} {kind}s are named {name:?} (ids {}); name one of them by renaming \
+             the other",
+            several.len(),
+            several.join(", ")
+        )),
+    }
 }
 
 /// One list of a board, as `cards` reads it.
@@ -655,35 +706,21 @@ struct ListInfo {
 ///
 /// # Errors
 ///
-/// Returns the sentence for a name no list has, naming the lists there are, and for one two
-/// lists share, listing their ids.
-fn list_ids(names: &[String], considered: &[&ListInfo]) -> Result<HashSet<String>, String> {
-    let mut have: Vec<String> = Vec::new();
-    for list in considered {
-        if !have.contains(&list.name) {
-            have.push(list.name.clone());
-        }
-    }
-    let mut ids = HashSet::new();
-    for name in names {
-        let named: Vec<&&ListInfo> = considered.iter().filter(|l| &l.name == name).collect();
-        match named.as_slice() {
-            [] => return Err(missing("list", name, &have)),
-            [only] => {
-                ids.insert(only.id.clone());
-            }
-            several => {
-                let shared: Vec<&str> = several.iter().map(|l| l.id.as_str()).collect();
-                return Err(format!(
-                    "cards: {} lists are named {name:?} (ids {}); name one of them by renaming \
-                     the other",
-                    several.len(),
-                    shared.join(", ")
-                ));
-            }
-        }
-    }
-    Ok(ids)
+/// Returns `action`'s sentence for a name no list has, naming the lists there are, and for one
+/// two lists share, listing their ids.
+fn list_ids(
+    action: &str,
+    names: &[String],
+    considered: &[&ListInfo],
+) -> Result<HashSet<String>, String> {
+    let candidates: Vec<(String, String)> = considered
+        .iter()
+        .map(|list| (list.id.clone(), list.name.clone()))
+        .collect();
+    names
+        .iter()
+        .map(|name| one_named(action, "list", name, &candidates))
+        .collect()
 }
 
 /// The cards of the board `query` names that every filter of it keeps, as handles: list by
@@ -743,11 +780,11 @@ fn cards(client: &TrelloClient, query: &CardQuery) -> Result<Vec<WireHandle<Card
     let in_lists = query
         .list
         .as_deref()
-        .map(|names| list_ids(names, &considered))
+        .map(|names| list_ids(action, names, &considered))
         .transpose()?;
     for name in query.labels.iter().chain(&query.without_labels).flatten() {
         if !label_names.contains(name) {
-            return Err(missing("label", name, &label_names));
+            return Err(missing(action, "label", name, &label_names));
         }
     }
     let on_cards: Option<HashSet<String>> = match &query.members {
@@ -760,7 +797,7 @@ fn cards(client: &TrelloClient, query: &CardQuery) -> Result<Vec<WireHandle<Card
                 } else if let Some((id, _)) = lookups.members.iter().find(|(_, u)| *u == who) {
                     ids.insert(id.clone());
                 } else {
-                    return Err(missing("member", who, &usernames));
+                    return Err(missing(action, "member", who, &usernames));
                 }
             }
             Some(ids)
@@ -1271,15 +1308,19 @@ mod tests {
         let every: Vec<&ListInfo> = all.iter().collect();
         let name = |n: &str| vec![n.to_string()];
         assert_eq!(
-            list_ids(&name("Backlog"), &open),
+            list_ids("cards", &name("Backlog"), &open),
             Ok(HashSet::from(["l1".to_string()]))
         );
         assert_eq!(
-            list_ids(&["Backlog".to_string(), "Done".to_string()], &every),
+            list_ids(
+                "cards",
+                &["Backlog".to_string(), "Done".to_string()],
+                &every
+            ),
             Ok(HashSet::from(["l1".to_string(), "l4".to_string()]))
         );
         assert_eq!(
-            list_ids(&name("Doing"), &open),
+            list_ids("cards", &name("Doing"), &open),
             Err(
                 "cards: 2 lists are named \"Doing\" (ids l2, l3); name one of them by renaming \
                  the other"
@@ -1287,7 +1328,7 @@ mod tests {
             )
         );
         assert_eq!(
-            list_ids(&name("Done"), &open),
+            list_ids("cards", &name("Done"), &open),
             Err(
                 "cards: the board has no list named \"Done\"; its lists are \"Backlog\", \
                  \"Doing\""
@@ -1295,7 +1336,7 @@ mod tests {
             )
         );
         assert_eq!(
-            list_ids(&name("Nope"), &[]),
+            list_ids("cards", &name("Nope"), &[]),
             Err("cards: the board has no list named \"Nope\"; its lists are none".to_string())
         );
     }
@@ -1304,13 +1345,53 @@ mod tests {
     #[test]
     fn a_missing_name_lists_what_there_is() {
         assert_eq!(
-            missing("label", "Hold", &["afkd/ready".into(), "bug 🐛".into()]),
+            missing(
+                "cards",
+                "label",
+                "Hold",
+                &["afkd/ready".into(), "bug 🐛".into()]
+            ),
             "cards: the board has no label named \"Hold\"; its labels are \"afkd/ready\", \
              \"bug 🐛\""
         );
         assert_eq!(
-            missing("member", "ghost", &[]),
-            "cards: the board has no member named \"ghost\"; its members are none"
+            missing("create_card", "member", "ghost", &[]),
+            "create_card: the board has no member named \"ghost\"; its members are none"
+        );
+    }
+
+    /// `one_named` finds the one candidate of a name, refuses a name none has by naming the
+    /// ones there are, each once, and one several share by listing their ids.
+    #[test]
+    fn one_named_wants_exactly_one() {
+        let label = |id: &str, name: &str| (id.to_string(), name.to_string());
+        let labels = [label("b1", "bug"), label("b2", "bug"), label("r1", "ready")];
+        assert_eq!(
+            one_named("create_card", "label", "ready", &labels),
+            Ok("r1".to_string())
+        );
+        assert_eq!(
+            one_named("create_card", "label", "bug", &labels),
+            Err(
+                "create_card: 2 labels are named \"bug\" (ids b1, b2); name one of them by \
+                 renaming the other"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            one_named("create_card", "label", "Hold", &labels),
+            Err(
+                "create_card: the board has no label named \"Hold\"; its labels are \"bug\", \
+                 \"ready\""
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            one_named("create_card", "member", "ghost", &[]),
+            Err(
+                "create_card: the board has no member named \"ghost\"; its members are none"
+                    .to_string()
+            )
         );
     }
 }

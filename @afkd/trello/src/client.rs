@@ -23,10 +23,13 @@ use serde_json::Value;
 use crate::attachment::{multipart, Attachment, MAX_ATTACHMENT_BYTES};
 use crate::board::{BoardClient, BoardError, Card, CheckItem, Checklist, Comment};
 use crate::handles::{build_card, CardFields, Lookups};
-use crate::http::{HttpClient, HttpError, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT};
+use crate::http::{
+    BoardRequest, HttpClient, HttpError, Payload, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT,
+};
 use crate::lifecycle::ListPosition;
 use crate::rfc3339::{parse_rfc3339, parse_rfc3339_millis};
 use crate::settings::MemberRef;
+use crate::wire::WireHandle;
 
 /// The Trello REST base (`https://api.trello.com/1`).
 pub(crate) const TRELLO_BASE: &str = "https://api.trello.com/1";
@@ -37,6 +40,14 @@ pub(crate) const TRELLO_BASE: &str = "https://api.trello.com/1";
 impl HttpError for BoardError {
     fn status(stage: &'static str, status: u16) -> Self {
         BoardError::Status { stage, status }
+    }
+
+    fn answered(stage: &'static str, status: u16, message: String) -> Self {
+        BoardError::Answered {
+            stage,
+            status,
+            message,
+        }
     }
 
     fn transport(stage: &'static str, reason: String) -> Self {
@@ -172,12 +183,90 @@ impl TrelloClient {
         path: &str,
         pairs: &[(&str, &str)],
     ) -> Result<Value, BoardError> {
-        let req = pairs
-            .iter()
-            .fold(self.http.request("GET", path), |req, (k, v)| {
-                req.query(k, v)
-            });
+        let req = self.with_pairs("GET", path, pairs);
         BoardError::decode_json(stage, &self.http.send(stage, req)?)
+    }
+
+    /// A `method` request for `path` with the query `pairs`, ready to carry a body.
+    fn with_pairs(&self, method: &str, path: &str, pairs: &[(&str, &str)]) -> BoardRequest {
+        pairs
+            .iter()
+            .fold(self.http.request(method, path), |req, (k, v)| {
+                req.query(k, v)
+            })
+    }
+
+    /// `POST` or `PUT` `path` with the credential and the query `pairs`, and `body` as its
+    /// JSON when it has one, the reply read as JSON: what a write through a `trello.Account`
+    /// sends, tagged with `stage`. A 4xx keeps Trello's own words ([`BoardError::Answered`]).
+    pub(crate) fn write_json(
+        &self,
+        stage: &'static str,
+        method: &str,
+        path: &str,
+        pairs: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> Result<Value, BoardError> {
+        let req = self.with_pairs(method, path, pairs);
+        let payload = body.map_or(Payload::Empty, Payload::Json);
+        let reply = self.http.send_answering(stage, req, payload)?;
+        BoardError::decode_json(stage, &reply)
+    }
+
+    /// `DELETE` `path` with the credential, tagged with `stage`. A 4xx keeps Trello's own
+    /// words ([`BoardError::Answered`]).
+    pub(crate) fn delete(&self, stage: &'static str, path: &str) -> Result<(), BoardError> {
+        let req = self.http.request("DELETE", path);
+        self.http
+            .send_answering(stage, req, Payload::Empty)
+            .map(drop)
+    }
+
+    /// Post the file `bytes` named `name` to `path` as a multipart form, and read the JSON
+    /// Trello made of it back: the created attachment, its id included. A 4xx keeps Trello's
+    /// own words ([`BoardError::Answered`]).
+    pub(crate) fn upload(
+        &self,
+        stage: &'static str,
+        path: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<Value, BoardError> {
+        let (content_type, body) = multipart(name, bytes);
+        let req = self.http.request("POST", path);
+        let payload = Payload::Bytes {
+            content_type: &content_type,
+            body: &body,
+        };
+        let reply = self.http.send_answering(stage, req, payload)?;
+        BoardError::decode_json(stage, &reply)
+    }
+
+    /// The card `card_id` as the `trello.Card` handle it is now, its list's name, its board's
+    /// short link and its members' usernames resolved in the one read, tagged with `stage`.
+    /// A card the board no longer has is an error, like any read that fails.
+    pub(crate) fn read_card_handle(
+        &self,
+        stage: &'static str,
+        card_id: &str,
+    ) -> Result<WireHandle<CardFields>, BoardError> {
+        // The card with the three things its fields name by id nested in the one read: its
+        // list's name, its board's short link and its members' usernames. Trello's default
+        // card fields carry the rest.
+        let card = self.get_json(
+            stage,
+            &format!("/cards/{card_id}"),
+            &[
+                ("list", "true"),
+                ("list_fields", "name"),
+                ("board", "true"),
+                ("board_fields", "shortLink"),
+                ("members", "true"),
+                ("member_fields", "username"),
+            ],
+        )?;
+        build_card(&card, &Lookups::nested(&card))
+            .ok_or_else(|| decode_err(stage, "card missing id"))
     }
 
     /// Resolve `member` to a member id, tagging any fault with `stage`.
@@ -257,7 +346,7 @@ fn already_a_member(status: u16, body: &str) -> bool {
 }
 
 /// Trello's `pos` query value for a [`ListPosition`].
-fn pos_value(position: ListPosition) -> &'static str {
+pub(crate) fn pos_value(position: ListPosition) -> &'static str {
     match position {
         ListPosition::Top => "top",
         ListPosition::Bottom => "bottom",
@@ -328,25 +417,8 @@ impl BoardClient for TrelloClient {
     }
 
     fn card_handle(&self, card_id: &str) -> Result<CardFields, BoardError> {
-        let stage = "read card fields";
-        // The card with the three things its fields name by id nested in the one read: its
-        // list's name, its board's short link and its members' usernames. Trello's default
-        // card fields carry the rest.
-        let card = self.get_json(
-            stage,
-            &format!("/cards/{card_id}"),
-            &[
-                ("list", "true"),
-                ("list_fields", "name"),
-                ("board", "true"),
-                ("board_fields", "shortLink"),
-                ("members", "true"),
-                ("member_fields", "username"),
-            ],
-        )?;
-        build_card(&card, &Lookups::nested(&card))
+        self.read_card_handle("read card fields", card_id)
             .map(|handle| handle.fields)
-            .ok_or_else(|| decode_err(stage, "card missing id"))
     }
 
     fn read_card(&self, card_id: &str) -> Result<Option<Card>, BoardError> {
@@ -377,9 +449,12 @@ impl BoardClient for TrelloClient {
             return Ok(None);
         }
         let value = BoardError::decode_json(stage, &body)?;
-        card_from_value(&value)
-            .ok_or_else(|| decode_err(stage, "card missing id or name"))
-            .map(Some)
+        let card =
+            card_from_value(&value).ok_or_else(|| decode_err(stage, "card missing id or name"))?;
+        // Trello serves an archived card as it does an open one, with `closed: true`; the
+        // board no longer has it for this read's purpose, as for the board's own listing.
+        let closed = value.get("closed").and_then(Value::as_bool) == Some(true);
+        Ok((!closed).then_some(card))
     }
 
     fn card_comments(&self, card_id: &str) -> Result<Vec<Comment>, BoardError> {
@@ -1008,6 +1083,8 @@ mod tests {
     use std::sync::mpsc;
     use std::thread::JoinHandle;
 
+    use serde_json::json;
+
     /// What the stub server saw on the wire for one request: the start line split
     /// into method + target (path?query), the headers as raw lines, and the body.
     struct Captured {
@@ -1384,6 +1461,192 @@ mod tests {
         assert!(matches!(
             client.read_card("c1").unwrap_err(),
             BoardError::Decode { .. }
+        ));
+        let _ = stub.captured();
+    }
+
+    /// An archived card is one the board no longer has for this read: `closed: true` reads
+    /// as `Ok(None)`, as a 404 does, and an open one still reads whole.
+    #[test]
+    fn read_card_answers_none_for_an_archived_card() {
+        let stub = Stub::serve(ok_json(r#"{"id":"c1","name":"Old","closed":true}"#));
+        let client = stub.client("k", "t");
+        assert_eq!(client.read_card("c1").unwrap(), None);
+        let _ = stub.captured();
+
+        let stub = Stub::serve(ok_json(r#"{"id":"c1","name":"New","closed":false}"#));
+        let client = stub.client("k", "t");
+        assert_eq!(client.read_card("c1").unwrap().expect("open").title, "New");
+        let _ = stub.captured();
+    }
+
+    /// A refusal as Trello sends one: `status` with `body` as text.
+    fn refusal(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// `write_json` sends a POST with its query and its JSON body under the JSON content
+    /// type, a PUT the same, and one with no body sends none; the reply is read as JSON.
+    #[test]
+    fn write_json_sends_its_method_path_content_type_and_body() {
+        let body = json!({"name": "Plan 計画", "idList": "l1"});
+        let stub = Stub::serve(ok_json(r#"{"id":"c9"}"#));
+        let client = stub.client("KEY", "TOK");
+        let made = client
+            .write_json(
+                "create card",
+                "POST",
+                "/cards",
+                &[("pos", "top")],
+                Some(&body),
+            )
+            .unwrap();
+        assert_eq!(made["id"], "c9");
+        let req = stub.captured();
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path(), "/cards");
+        assert!(req.has_query("key", "KEY") && req.has_query("token", "TOK"));
+        assert!(req.has_query("pos", "top"));
+        assert_eq!(
+            req.header("content-type").as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(serde_json::from_str::<Value>(&req.body).unwrap(), body);
+
+        let stub = Stub::serve(ok_json(r#"{"id":"c9"}"#));
+        let client = stub.client("k", "t");
+        client
+            .write_json(
+                "update card",
+                "PUT",
+                "/cards/c9",
+                &[],
+                Some(&json!({"closed": true})),
+            )
+            .unwrap();
+        let req = stub.captured();
+        assert_eq!((req.method.as_str(), req.path()), ("PUT", "/cards/c9"));
+        assert_eq!(req.body, r#"{"closed":true}"#);
+
+        let stub = Stub::serve(ok_json("{}"));
+        let client = stub.client("k", "t");
+        client
+            .write_json(
+                "create checklist",
+                "POST",
+                "/checklists/x/checkItems",
+                &[("name", "first item"), ("pos", "bottom")],
+                None,
+            )
+            .unwrap();
+        let req = stub.captured();
+        assert_eq!(req.method, "POST");
+        assert!(req.has_query("name", "first item"));
+        assert!(req.body.is_empty(), "no body: {:?}", req.body);
+        assert_eq!(req.header("content-type"), None);
+    }
+
+    /// `delete` sends a DELETE of the path with the credential and no body.
+    #[test]
+    fn delete_sends_a_bodyless_delete() {
+        let stub = Stub::serve(ok_json(r#"{"limits":{}}"#));
+        let client = stub.client("KEY", "TOK");
+        client.delete("delete card", "/cards/c9").unwrap();
+        let req = stub.captured();
+        assert_eq!(req.method, "DELETE");
+        assert_eq!(req.path(), "/cards/c9");
+        assert!(req.has_query("key", "KEY") && req.has_query("token", "TOK"));
+        assert!(req.body.is_empty());
+    }
+
+    /// `upload` posts the multipart form `attachment::multipart` builds, under its content
+    /// type, and returns the reply's JSON with the new attachment's id.
+    #[test]
+    fn upload_posts_the_multipart_form_and_returns_the_created_attachment() {
+        let stub = Stub::serve(ok_json(r#"{"id":"a7","name":"plan.md","isUpload":true}"#));
+        let client = stub.client("k", "t");
+        let bytes = b"# plan\n\0\xff";
+        let made = client
+            .upload(
+                "create attachment",
+                "/cards/c9/attachments",
+                "plan.md",
+                bytes,
+            )
+            .unwrap();
+        assert_eq!(made["id"], "a7");
+        let req = stub.captured();
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path(), "/cards/c9/attachments");
+        let (content_type, body) = multipart("plan.md", bytes);
+        assert_eq!(req.header("content-type"), Some(content_type));
+        assert_eq!(req.raw, body);
+    }
+
+    /// A 4xx with a body is `Answered` with Trello's text, whichever helper sent it; one
+    /// with none stays a plain `Status`.
+    #[test]
+    fn a_refusal_keeps_trellos_words_and_an_empty_one_stays_a_status() {
+        let denied = refusal("401 Unauthorized", "unauthorized permission requested");
+        let stub = Stub::serve(denied.clone());
+        let client = stub.client("k", "t");
+        let err = client.delete("delete comment", "/actions/a1").unwrap_err();
+        assert!(matches!(
+            &err,
+            BoardError::Answered { stage: "delete comment", status: 401, message }
+                if message == "unauthorized permission requested"
+        ));
+        assert_eq!(
+            err.to_string(),
+            "trello delete comment: board returned status 401: unauthorized permission requested"
+        );
+        let _ = stub.captured();
+
+        let stub = Stub::serve(denied.clone());
+        let client = stub.client("k", "t");
+        let err = client
+            .write_json(
+                "update comment",
+                "PUT",
+                "/actions/a1",
+                &[],
+                Some(&json!({"text": "x"})),
+            )
+            .unwrap_err();
+        assert!(matches!(err, BoardError::Answered { status: 401, .. }));
+        let _ = stub.captured();
+
+        let stub = Stub::serve(denied);
+        let client = stub.client("k", "t");
+        let err = client
+            .upload("create attachment", "/cards/c/attachments", "a", b"x")
+            .unwrap_err();
+        assert!(matches!(err, BoardError::Answered { status: 401, .. }));
+        let _ = stub.captured();
+
+        let stub = Stub::serve(refusal("404 Not Found", ""));
+        let client = stub.client("k", "t");
+        let err = client.delete("delete card", "/cards/gone").unwrap_err();
+        assert!(matches!(
+            err,
+            BoardError::Status {
+                stage: "delete card",
+                status: 404
+            }
+        ));
+        let _ = stub.captured();
+
+        let stub = Stub::serve(refusal("400 Bad Request", r#"{"message":"invalid id"}"#));
+        let client = stub.client("k", "t");
+        let err = client
+            .write_json("create card", "POST", "/cards", &[], None)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            BoardError::Answered { status: 400, message, .. } if message == "invalid id"
         ));
         let _ = stub.captured();
     }
