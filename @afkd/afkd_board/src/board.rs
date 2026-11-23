@@ -94,20 +94,23 @@ pub(crate) fn card_arg(
 
 /// The run `action` was passed as its argument `run`, as afkd sends an `afkd.Run?`, rebuilt as
 /// exactly the `{"machine", "service", "instance", "id"}` the board's API takes, any other field
-/// a newer afkd sends dropped; `None` for a run that is left out or `nil`. Anything else is
-/// refused.
+/// a newer afkd sends dropped; `None` for a run that is left out or `nil`. afkd sends every field
+/// of a run as a string, the `instance` as its digits, and the board's API takes it as a number,
+/// so it is read from either. Anything else is refused.
 pub(crate) fn run_arg(action: &str, args: &Map<String, Value>) -> Result<Option<Value>, String> {
     let run = match args.get("run") {
         None | Some(Value::Null) => return Ok(None),
         Some(run) => run,
     };
     let text = |name: &str| run.get(name).and_then(Value::as_str);
-    let (Some(machine), Some(service), Some(instance), Some(id)) = (
-        text("machine"),
-        text("service"),
-        run.get("instance").and_then(Value::as_i64),
-        text("id"),
-    ) else {
+    let instance = match run.get("instance") {
+        Some(Value::String(digits)) => digits.parse::<i64>().ok(),
+        Some(number) => number.as_i64(),
+        None => None,
+    };
+    let (Some(machine), Some(service), Some(instance), Some(id)) =
+        (text("machine"), text("service"), instance, text("id"))
+    else {
         return Err(format!("{action}: parameter run must be an afkd.Run"));
     };
     Ok(Some(json!({
@@ -171,17 +174,23 @@ mod tests {
     }
 
     /// A run is rebuilt as its four fields alone, so a field a newer afkd sends is dropped, and
-    /// the instance stays a number.
+    /// the instance, which afkd sends as a string of digits, becomes a number.
     #[test]
     fn a_run_keeps_its_four_fields_and_drops_the_rest() {
-        let run = json!({"machine": "nexus", "service": "develop/review.0", "instance": 2,
-                         "id": "261116-163511-card-17-2", "scratch_dir": "/tmp/x", "cost": 1.5});
+        let sent = json!({"machine": "nexus", "service": "develop/review.0", "instance": "2",
+                          "id": "261116-163511-card-17-2",
+                          "scratch_dir": "/tmp/x/runs/develop/review.0/261116-163511-card-17-2"});
+        let kept = json!({"machine": "nexus", "service": "develop/review.0",
+                          "instance": 2, "id": "261116-163511-card-17-2"});
         assert_eq!(
-            run_arg("create_card", &args(json!({ "run": run }))),
-            Ok(Some(
-                json!({"machine": "nexus", "service": "develop/review.0",
-                           "instance": 2, "id": "261116-163511-card-17-2"})
-            ))
+            run_arg("create_card", &args(json!({ "run": sent }))),
+            Ok(Some(kept.clone()))
+        );
+        let numeric = json!({"machine": "nexus", "service": "develop/review.0", "instance": 2,
+                             "id": "261116-163511-card-17-2", "cost": 1.5});
+        assert_eq!(
+            run_arg("create_card", &args(json!({ "run": numeric }))),
+            Ok(Some(kept))
         );
     }
 
@@ -196,7 +205,8 @@ mod tests {
             json!([1]),
             json!({}),
             json!({"machine": "m", "service": "s", "instance": 0}),
-            json!({"machine": "m", "service": "s", "instance": "0", "id": "i"}),
+            json!({"machine": "m", "service": "s", "instance": "zero", "id": "i"}),
+            json!({"machine": "m", "service": "s", "instance": 0.5, "id": "i"}),
             json!({"machine": 1, "service": "s", "instance": 0, "id": "i"}),
         ] {
             assert_eq!(
