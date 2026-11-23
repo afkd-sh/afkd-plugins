@@ -42,7 +42,9 @@ const QUOTE_MAX: usize = 80;
 pub(crate) fn transient(e: &BoardError) -> bool {
     match e {
         BoardError::Transport { .. } => true,
-        BoardError::Status { status, .. } => *status == 429 || (500..=599).contains(status),
+        BoardError::Status { status, .. } | BoardError::Answered { status, .. } => {
+            *status == 429 || (500..=599).contains(status)
+        }
         BoardError::Decode { .. }
         | BoardError::ListNotFound { .. }
         | BoardError::MemberNotFound { .. }

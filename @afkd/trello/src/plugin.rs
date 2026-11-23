@@ -8,12 +8,12 @@
 //! unit's card is kept a while for that ([`FINISHED_MAX`]), since its post-run slot's
 //! calls arrive after `finish`.
 //!
-//! **Every read reaches an account, not the service** ([`crate::reads`]). It comes as a
-//! `call`: to the trigger child from a `service(trello)`'s slot, and from anywhere else to a
-//! child afkd starts for that one call, which gets no `hello` and reads its `proto` off the
-//! call itself ([`once`]). Either way the read is answered through the client built for the
-//! account it names, and a trigger child keeps the clients it has built ([`Clients`]), so
-//! `"me"` is resolved once per account for the child's life.
+//! **Every read and write reaches an account, not the service** ([`crate::reads`],
+//! [`crate::writes`]). It comes as a `call`: to the trigger child from a `service(trello)`'s
+//! slot, and from anywhere else to a child afkd starts for that one call, which gets no
+//! `hello` and reads its `proto` off the call itself ([`once`]). Either way it is answered
+//! through the client built for the account it names, and a trigger child keeps the clients it
+//! has built ([`Clients`]), so `"me"` is resolved once per account for the child's life.
 //!
 //! Six things the wire forces that the built-in never had to do:
 //!
@@ -60,6 +60,7 @@ use crate::wire::{
     fire_line, fit_comments, fit_poll, Facts, Fitted, Request, UnitOutcome, WireComment, MAX_REPLY,
     PROTO,
 };
+use crate::writes::{self, WRITES};
 
 /// The one kind this plugin provides, its main one: `service(trello)` in a config.
 pub(crate) const TRELLO_KIND: &str = "card";
@@ -261,8 +262,8 @@ fn on_armed(
     }
 }
 
-/// Answer the one `call` a child afkd started for it gets, with no `hello` before it: a read,
-/// under the call's own budget. An action no one declared is refused, as is a protocol this
+/// Answer the one `call` a child afkd started for it gets, with no `hello` before it: a read or
+/// a write, under the call's own budget. An action no one declared is refused, as is a protocol this
 /// plugin does not speak. A call with no `proto` at all is no such call: afkd is out of step,
 /// as for any request before a `hello`.
 ///
@@ -292,11 +293,15 @@ fn once(
             "{action} acts on a card a service(trello) claimed, and this call has no service"
         ));
     }
-    if !READS.contains(&action) {
+    let answer = if READS.contains(&action) {
+        reads::answer
+    } else if WRITES.contains(&action) {
+        writes::answer
+    } else {
         return refuse(format!("no action `{action}`"));
-    }
+    };
     let mut clients = Clients::default();
-    Answer::Reply(reads::answer(
+    Answer::Reply(answer(
         action,
         args,
         clock.now() + CALL_BUDGET,
@@ -552,8 +557,9 @@ impl Armed {
     /// taken for delivery and `ok`: the outbox retries it, and the slot's next action
     /// queues behind it. A `fetch_attachment` is a read, done now or refused, never queued.
     ///
-    /// A read ([`READS`]) reaches the `trello.Account` it is passed through this child's
-    /// client for it, and no card of this service: it is answered first, whoever claimed what.
+    /// A write ([`WRITES`]) or a read ([`READS`]) reaches the `trello.Account` it is passed
+    /// through this child's client for it, and no card of this service: it is answered first,
+    /// whoever claimed what. A write is done now or refused, never queued in the outbox.
     fn call(
         &mut self,
         action: &str,
@@ -561,8 +567,17 @@ impl Armed {
         clock: &dyn Clock,
         diag: &dyn Diag,
     ) -> Answer {
-        // A read reaches the account it is passed, and no card of this service: it is
-        // answered whoever claimed what.
+        // A write or a read reaches the account it is passed, and no card of this service: it
+        // is answered whoever claimed what.
+        if WRITES.contains(&action) {
+            return Answer::Reply(writes::answer(
+                action,
+                args,
+                clock.now() + CALL_BUDGET,
+                &mut self.clients,
+                diag,
+            ));
+        }
         if READS.contains(&action) {
             return Answer::Reply(reads::answer(
                 action,
@@ -1996,6 +2011,31 @@ mod tests {
                 once("lists", json!(2), json!({"acct": acct})),
                 "lists: parameter board is required",
             ),
+            (
+                once(
+                    "create_card",
+                    json!(2),
+                    json!({"acct": acct, "list": "Backlog", "name": "Plan"}),
+                ),
+                "create_card: parameter board is required",
+            ),
+            (
+                once(
+                    "delete_card",
+                    json!(2),
+                    json!({"acct": {"api_key": "k", "token": ""}, "card": {"id": "c", "key": "trello:c"}}),
+                ),
+                "delete_card: acct.token is empty",
+            ),
+            (
+                once(
+                    "delete_attachment",
+                    json!(2),
+                    json!({"acct": acct, "attachment": {"id": "a", "key": "trello:a"}}),
+                ),
+                "delete_attachment: attachment a has a key this plugin did not hand out: \
+                 trello:a",
+            ),
         ] {
             let mut f = Fixture::new();
             assert_eq!(
@@ -2037,6 +2077,63 @@ mod tests {
             f.board.calls().is_empty(),
             "the service's board is not the account"
         );
+        assert_eq!(f.poll()["fire"], true, "the service claims on");
+    }
+
+    /// An armed child answers a write the way it answers a read: a refusal at decode is a
+    /// reply, diagnosed, with the kind's board untouched, and the service goes on claiming.
+    /// Today's action names are still the ones `from_call` answers: none is a write's.
+    #[test]
+    fn an_armed_child_answers_a_write_refusal_and_todays_actions_still_reach_from_call() {
+        let mut f = Fixture::armed(settings());
+        seed(&f.board);
+        let account = json!({"api_key": "k", "token": "t"});
+        for (action, args, error) in [
+            (
+                "delete_card",
+                json!({"acct": {"api_key": "k", "token": ""}, "card": {"id": "c", "key": "trello:c"}}),
+                "delete_card: acct.token is empty",
+            ),
+            (
+                "create_comment",
+                json!({"acct": account, "card": {"id": "c", "key": "trello:c"}}),
+                "create_comment: parameter body is required",
+            ),
+            (
+                "create_attachment",
+                json!({"acct": account, "card": {"id": "c", "key": "trello:c"}, "path": "x.md"}),
+                "create_attachment: path must be absolute, not \"x.md\"",
+            ),
+        ] {
+            let reply = f.call(json!({"call": "call", "action": action, "args": args}));
+            assert_eq!(reply, json!({"ok": false, "error": error}), "{action}");
+        }
+        assert_eq!(
+            f.diag.errs(),
+            [
+                "delete_card: acct.token is empty",
+                "create_comment: parameter body is required",
+                "create_attachment: path must be absolute, not \"x.md\"",
+            ]
+        );
+        assert!(
+            f.board.calls().is_empty(),
+            "the service's board is not the account"
+        );
+        // Today's action reaches `from_call`, which finds no unit for a key it never handed out.
+        let reply = f.call(json!({"call": "call", "action": "archive",
+            "args": {"card": {"id": "nope", "key": "trello:nope"}}}));
+        assert_eq!(reply["ok"], false);
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("holds no card for"),
+            "{reply}"
+        );
+        for action in ACTIONS {
+            assert!(!WRITES.contains(action), "{action} is a write's name");
+        }
         assert_eq!(f.poll()["fire"], true, "the service claims on");
     }
 

@@ -15,7 +15,9 @@
 //! Beside the kind are the **reads** ([`reads`]): a board's cards, a card's comments,
 //! checklists and attachments, and a board's lists, labels and members, each called with a
 //! `trello.Account` ([`account`]) and answered in handles ([`handles`]) keyed
-//! `trello:<Trello's id>`, which a `service(trello)`'s claimed card is too.
+//! `trello:<Trello's id>`, which a `service(trello)`'s claimed card is too. And the
+//! **writes** ([`writes`]): cards, comments, checklists, check items and attachments made,
+//! changed and deleted through the same account, each answered with what it made or changed.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -38,6 +40,7 @@ mod reads;
 mod rfc3339;
 mod settings;
 mod wire;
+mod writes;
 
 use std::io::{BufRead, Write};
 

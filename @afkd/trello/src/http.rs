@@ -19,8 +19,8 @@
 //! tidy: the two `ureq::Error` variants that render the request URI would fold a live key
 //! and token into whatever the caller logs.
 //!
-//! A client is **retrying** when the caller asks ([`HttpClient::retrying`]): a read through a
-//! `trello.Account` is done or refused, so a 429 is tried again — on every verb — and a 5xx
+//! A client is **retrying** when the caller asks ([`HttpClient::retrying`]): a read or a write
+//! through a `trello.Account` is done or refused, so a 429 is tried again — on every verb — and a 5xx
 //! on every verb but `POST`, which Trello may already have carried out. Each wait is what
 //! Trello's `x-rate-limit-*-interval-ms` headers say, or else one second doubling, and one
 //! that would pass the call's deadline is not taken: the call is refused with the answer it
@@ -150,7 +150,7 @@ impl BoardRequest {
 
 /// What a request carries as its body.
 #[derive(Clone, Copy)]
-enum Payload<'a> {
+pub(crate) enum Payload<'a> {
     Empty,
     /// A JSON document, under its content type.
     Json(&'a Value),
@@ -262,6 +262,10 @@ fn is_failure(status: ureq::http::StatusCode) -> bool {
 pub(crate) trait HttpError: Sized {
     /// The board answered with a non-success HTTP status.
     fn status(stage: &'static str, status: u16) -> Self;
+
+    /// The board answered with a non-success HTTP status and said why: `message` is its own
+    /// text for the refusal.
+    fn answered(stage: &'static str, status: u16, message: String) -> Self;
 
     /// The request never produced a response. `reason` is built URL-free.
     fn transport(stage: &'static str, reason: String) -> Self;
@@ -506,6 +510,31 @@ impl<E: HttpError> HttpClient<E> {
         into_text(stage, self.exchange(stage, &req, payload)?)
     }
 
+    /// Send `req` with `payload` as its body, like [`send`](Self::send), but keep what the
+    /// board says when it refuses: on a 4xx or 5xx the body is read and the failure is
+    /// [`HttpError::answered`] with Trello's text — a JSON string unquoted, an object's
+    /// `message`, else the body as it came — and plain [`HttpError::status`] when the body
+    /// is empty. A write that may be another member's to make needs the words.
+    pub(crate) fn send_answering(
+        &self,
+        stage: &'static str,
+        req: BoardRequest,
+        payload: Payload<'_>,
+    ) -> Result<String, E> {
+        let mut resp = self.exchange(stage, &req, payload)?;
+        let status = resp.status();
+        if !is_failure(status) {
+            return read_body(stage, &mut resp);
+        }
+        // An unreadable body is an empty one, so the refusal stands as its status.
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        let status = status.as_u16();
+        match answer_text(&body) {
+            Some(message) => Err(E::answered(stage, status, message)),
+            None => Err(E::status(stage, status)),
+        }
+    }
+
     /// GET the absolute `url` verbatim — off no API root, with none of the credential's
     /// query pairs — authenticated by `authorization` as its `Authorization` header, and
     /// read its body as bytes, no more than `limit` of them. ureq strips the header from
@@ -573,6 +602,21 @@ impl<E: HttpError> HttpClient<E> {
             Err(E::status(stage, status))
         }
     }
+}
+
+/// Trello's words in a refusal's `body`: a JSON string unquoted, a JSON object's `message`,
+/// else the body as it came, trimmed. `None` when it holds none.
+fn answer_text(body: &str) -> Option<String> {
+    let text = match serde_json::from_str::<Value>(body) {
+        Ok(Value::String(text)) => text,
+        Ok(Value::Object(object)) => match object.get("message").and_then(Value::as_str) {
+            Some(message) => message.to_string(),
+            None => body.to_string(),
+        },
+        _ => body.to_string(),
+    };
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// Read a response that arrived to text, or fail with its status when it is a failure: the
@@ -695,6 +739,30 @@ mod tests {
             None
         );
         assert_eq!(rate_wait(&headers(&[])), None);
+    }
+
+    /// Trello's words come out of a refusal's body whichever shape it has, and an empty
+    /// body has none.
+    #[test]
+    fn trellos_words_are_read_off_a_refusals_body() {
+        assert_eq!(
+            answer_text("\"unauthorized permission requested\""),
+            Some("unauthorized permission requested".to_string())
+        );
+        assert_eq!(
+            answer_text(r#"{"message":"invalid id","error":"ERROR"}"#),
+            Some("invalid id".to_string())
+        );
+        assert_eq!(
+            answer_text(r#"{"error":"ERROR"}"#),
+            Some(r#"{"error":"ERROR"}"#.to_string())
+        );
+        assert_eq!(
+            answer_text("invalid value for idList\n"),
+            Some("invalid value for idList".to_string())
+        );
+        assert_eq!(answer_text(""), None);
+        assert_eq!(answer_text("  \n"), None);
     }
 
     /// Neither URL-bearing variant renders its URI, whatever it carries — and Trello's

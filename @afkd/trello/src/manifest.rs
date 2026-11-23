@@ -21,6 +21,7 @@ use crate::lifecycle::{ACTIONS, HANDLE};
 use crate::plugin::TRELLO_KIND;
 use crate::reads::READS;
 use crate::settings::{ME, SETTINGS};
+use crate::writes::WRITES;
 
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 
@@ -269,7 +270,8 @@ fn handle_fields() -> Vec<(&'static str, [Value; 2])> {
 }
 
 /// The `[[handle]]`s are the card every slot is passed and every action takes first, and the
-/// eight other objects a read hands back, in that order, each with the line saying what it is.
+/// eight other objects a read or a write hands back, in that order, each with the line saying
+/// what it is.
 #[test]
 fn the_handles_are_the_card_and_the_eight_a_read_hands_back() {
     let tables = tables(MANIFEST);
@@ -446,9 +448,9 @@ fn action_params(tables: &[Table]) -> BTreeMap<String, Vec<BTreeMap<String, Stri
     params
 }
 
-/// The `[[action]]`s are today's actions, [`ACTIONS`], and then the reads [`READS`] answers,
-/// each in its code's order, and nothing else. A plugin exposes no values, so there is no
-/// `[[value]]`.
+/// The `[[action]]`s are today's actions, [`ACTIONS`], then the reads [`READS`] answers, then
+/// the writes [`WRITES`] does, each in its code's order, and nothing else. A plugin exposes no
+/// values, so there is no `[[value]]`.
 #[test]
 fn the_actions_are_the_actions_then_the_reads() {
     let tables = tables(MANIFEST);
@@ -461,6 +463,7 @@ fn the_actions_are_the_actions_then_the_reads() {
         ACTIONS
             .iter()
             .chain(READS)
+            .chain(WRITES)
             .map(|a| quoted(a))
             .collect::<Vec<_>>()
     );
@@ -630,6 +633,153 @@ fn the_reads_take_an_account_and_return_what_they_read() {
     ]);
     let mut params = action_params(&tables);
     params.retain(|action, _| READS.contains(&action.as_str()));
+    assert_eq!(params, want);
+}
+
+/// Each write takes a `trello.Account` first and returns what it makes or changes — a card, a
+/// comment, a checklist, a check item or an attachment — and each delete nothing; and the
+/// parameters are the code's: the handle each takes typed by its kind, the required ones first,
+/// then the named-only ones, `at` an enum of top and bottom that defaults to the bottom where
+/// the write makes something and has no default where it changes a card.
+#[test]
+fn the_writes_take_an_account_and_return_what_they_write() {
+    let tables = tables(MANIFEST);
+    let returns: BTreeMap<String, String> = named(&tables, "action")
+        .into_iter()
+        .filter(|t| WRITES.contains(&t["name"].trim_matches('"')))
+        .map(|t| {
+            (
+                t["name"].trim_matches('"').to_string(),
+                t.get("returns").cloned().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        returns,
+        BTreeMap::from(
+            [
+                ("create_card", "\"Card\""),
+                ("update_card", "\"Card\""),
+                ("archive_card", "\"Card\""),
+                ("unarchive_card", "\"Card\""),
+                ("delete_card", ""),
+                ("create_comment", "\"Comment\""),
+                ("update_comment", "\"Comment\""),
+                ("delete_comment", ""),
+                ("create_checklist", "\"Checklist\""),
+                ("delete_checklist", ""),
+                ("create_check_item", "\"Check_Item\""),
+                ("update_check_item", "\"Check_Item\""),
+                ("delete_check_item", ""),
+                ("create_attachment", "\"Attachment\""),
+                ("delete_attachment", ""),
+            ]
+            .map(|(name, ty)| (name.to_string(), ty.to_string()))
+        )
+    );
+
+    let param = |name: &str, ty: &str, extra: &[(&str, &str)]| {
+        let mut t = table(extra);
+        t.insert("name".into(), quoted(name));
+        t.insert("type".into(), quoted(ty));
+        t
+    };
+    let required = |name: &str, ty: &str| param(name, ty, &[("required", "true")]);
+    let named_only = |name: &str, ty: &str| param(name, ty, &[("named_only", "true")]);
+    let at = |default: Option<&str>| {
+        let mut extra = vec![("named_only", "true"), ("values", "[\"top\", \"bottom\"]")];
+        let default = default.map(quoted);
+        if let Some(default) = &default {
+            extra.push(("default", default.as_str()));
+        }
+        param("at", "enum", &extra)
+    };
+    let acct = required("acct", "Account");
+    let card = required("card", "Card");
+    let comment = required("comment", "Comment");
+    let checklist = required("checklist", "Checklist");
+    let item = required("item", "Check_Item");
+    let on_card = |extra: &[BTreeMap<String, String>]| {
+        let mut params = vec![acct.clone(), card.clone()];
+        params.extend(extra.iter().cloned());
+        params
+    };
+    let want = BTreeMap::from([
+        (
+            "create_card".to_string(),
+            vec![
+                acct.clone(),
+                required("board", "str"),
+                required("list", "str"),
+                required("name", "str"),
+                named_only("description", "str"),
+                at(Some("bottom")),
+                named_only("labels", "list[str]"),
+                named_only("members", "list[str]"),
+                named_only("due", "time?"),
+            ],
+        ),
+        (
+            "update_card".to_string(),
+            on_card(&[
+                named_only("name", "str"),
+                named_only("description", "str"),
+                named_only("list", "str"),
+                at(None),
+                named_only("due", "time?"),
+                named_only("due_complete", "bool"),
+            ]),
+        ),
+        ("archive_card".to_string(), on_card(&[])),
+        ("unarchive_card".to_string(), on_card(&[])),
+        ("delete_card".to_string(), on_card(&[])),
+        (
+            "create_comment".to_string(),
+            on_card(&[required("body", "str")]),
+        ),
+        (
+            "update_comment".to_string(),
+            vec![acct.clone(), comment.clone(), required("body", "str")],
+        ),
+        ("delete_comment".to_string(), vec![acct.clone(), comment]),
+        (
+            "create_checklist".to_string(),
+            on_card(&[required("name", "str"), named_only("items", "list[str]")]),
+        ),
+        (
+            "delete_checklist".to_string(),
+            vec![acct.clone(), checklist.clone()],
+        ),
+        (
+            "create_check_item".to_string(),
+            vec![
+                acct.clone(),
+                checklist,
+                required("name", "str"),
+                at(Some("bottom")),
+            ],
+        ),
+        (
+            "update_check_item".to_string(),
+            vec![
+                acct.clone(),
+                item.clone(),
+                named_only("name", "str"),
+                named_only("done", "bool"),
+            ],
+        ),
+        ("delete_check_item".to_string(), vec![acct.clone(), item]),
+        (
+            "create_attachment".to_string(),
+            on_card(&[required("path", "str"), named_only("name", "str")]),
+        ),
+        (
+            "delete_attachment".to_string(),
+            vec![acct, required("attachment", "Attachment")],
+        ),
+    ]);
+    let mut params = action_params(&tables);
+    params.retain(|action, _| WRITES.contains(&action.as_str()));
     assert_eq!(params, want);
 }
 

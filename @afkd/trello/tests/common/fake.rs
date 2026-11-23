@@ -34,6 +34,28 @@
 //! to 1000, from below `before`. A card read nests its list, its board and its members when
 //! asked. Checklists come back in `pos` order. A route can be told to answer a 429 some
 //! number of times, with the rate-limit headers or without.
+//!
+//! For the writes a `trello.Account` makes it takes every one. A card read serves an
+//! archived card as Trello does, with `closed: true`, and answers `404` only for a card it
+//! does not have; it honours `fields` (keeping what it nests, and the checklists when
+//! `checklists=all` asks) beside the nesting. `PUT /cards/{id}` with a JSON body is an
+//! `update card`: it applies `name`, `desc`, `closed`, `dueComplete`, `idList` with `pos`
+//! (placed as a move is; a `pos` alone places the card in the list it is in) and `due` —
+//! an RFC 3339 string, kept to the millisecond, or `null` to clear it — while the
+//! query-parameter `move card`, `archive card` and `complete card` forms stay as they were.
+//! `POST /cards` also takes `idLabels`, `idMembers` and `due` from its body, and
+//! `DELETE /cards/{id}` removes a card with its comments and attachments. A comment action
+//! is read, edited and deleted by its id alone (`/actions/{id}`), and every comment action
+//! carries `data.card`, the card's `id` and `shortLink`; an edit or a delete of a comment
+//! another member wrote is Trello's `401 unauthorized permission requested`. `POST
+//! /cards/{id}/checklists` makes a checklist, `GET /checklists/{id}` reads one — honouring
+//! `fields`, `idCard` among them, and `checkItems` — `DELETE /checklists/{id}` removes it,
+//! and `POST /checklists/{id}/checkItems` adds an item at `pos` top or bottom. An item is
+//! changed (`name`, `state`) and removed by `/cards/{card}/checkItem/{item}`, and an
+//! attachment removed by `DELETE /cards/{card}/attachments/{id}`. Each write is a route of
+//! its own to fail or throttle: `update card`, `delete card`, `read action`, `update
+//! action`, `delete action`, `create checklist`, `read checklist`, `delete checklist`,
+//! `create check item`, `update check item`, `delete check item` and `delete attachment`.
 
 #![allow(dead_code)]
 
@@ -57,6 +79,12 @@ pub const BOARD: &str = "1Rkelydw";
 
 /// The member the key and token authenticate as — afkd's own.
 pub const ME: &str = "afkd-bot";
+
+/// A check item as `(id, name, complete)`.
+pub type ItemRow = (String, String, bool);
+
+/// A checklist as `(id, name, items)`.
+pub type ChecklistRow = (String, String, Vec<ItemRow>);
 
 /// One request as the fake saw it.
 #[derive(Debug, Clone)]
@@ -182,6 +210,9 @@ struct Card {
     due_complete: bool,
     /// The due date, in seconds.
     due: Option<u64>,
+    /// The millisecond within the due second, which a due date written to the millisecond
+    /// keeps.
+    due_millis: u32,
     /// The second `dateLastActivity` carries: when the card was made, and then when a write
     /// last touched it.
     last_activity: u64,
@@ -283,6 +314,16 @@ impl State {
         })
     }
 
+    /// The card and the place on it of the checklist `id`.
+    fn checklist_at(&self, id: &str) -> Option<(usize, usize)> {
+        self.cards.iter().enumerate().find_map(|(card, c)| {
+            c.checklists
+                .iter()
+                .position(|cl| cl.id == id)
+                .map(|list| (card, list))
+        })
+    }
+
     /// The board named by its id or its short link.
     fn board_at(&self, which: &str) -> Option<usize> {
         self.boards
@@ -320,7 +361,12 @@ impl State {
     }
 
     fn comment_json(&self, c: &Comment) -> Value {
-        let mut data = json!({ "text": c.text });
+        // Every comment action names the card it is on, as Trello's does.
+        let card = self.cards.iter().find(|card| card.id == c.card).map_or(
+            json!({ "id": c.card }),
+            |card| json!({ "id": card.id, "shortLink": card.short_link }),
+        );
+        let mut data = json!({ "text": c.text, "card": card });
         if let Some(edited) = c.edited {
             data["dateLastEdited"] = json!(stamp(edited));
         }
@@ -477,7 +523,9 @@ impl State {
             "idMembers": card.members,
             "labels": card.labels.iter().map(|l| self.label_json(l)).collect::<Vec<_>>(),
             "closed": card.closed,
-            "due": card.due.map(stamp),
+            "due": card.due.map(|secs| {
+                stamp(secs).replace(".000Z", &format!(".{:03}Z", card.due_millis))
+            }),
             "dueComplete": card.due_complete,
             "dateLastActivity": stamp(card.last_activity),
             "checklists": card.checklists.iter().map(|cl| self.checklist_json(cl, &card.id)).collect::<Vec<_>>(),
@@ -807,6 +855,7 @@ impl FakeTrello {
             closed: false,
             due_complete: false,
             due: None,
+            due_millis: 0,
             last_activity: created,
         });
         id
@@ -873,7 +922,63 @@ impl FakeTrello {
             .find(|c| c.id == card)
             .expect("a seeded card");
         card.due = Some(now().saturating_add_signed(secs));
+        card.due_millis = 0;
         card.due_complete = complete;
+    }
+
+    /// The millisecond a card is due, when it has a due date: the second and the fraction
+    /// of it a write kept.
+    pub fn due_millis_of(&self, card: &str) -> Option<u64> {
+        let s = lock(&self.state);
+        let card = s
+            .cards
+            .iter()
+            .find(|c| c.id == card)
+            .expect("a seeded card");
+        card.due
+            .map(|secs| secs * 1000 + u64::from(card.due_millis))
+    }
+
+    /// Whether the fake still holds the card `card` (its id), archived or not.
+    pub fn has_card(&self, card: &str) -> bool {
+        lock(&self.state).cards.iter().any(|c| c.id == card)
+    }
+
+    /// Whether the fake still holds the comment `comment` (its action id).
+    pub fn has_comment(&self, comment: &str) -> bool {
+        lock(&self.state).comments.iter().any(|c| c.id == comment)
+    }
+
+    /// Whether the fake still holds the attachment `attachment` (its id).
+    pub fn has_attachment(&self, attachment: &str) -> bool {
+        lock(&self.state)
+            .attachments
+            .iter()
+            .any(|a| a.id == attachment)
+    }
+
+    /// A card's checklists as `(id, name, items)`, each item `(id, name, complete)`, in
+    /// the order they were put on the card, items in the order they were put on theirs.
+    pub fn checklists_on(&self, card: &str) -> Vec<ChecklistRow> {
+        let s = lock(&self.state);
+        let card = s
+            .cards
+            .iter()
+            .find(|c| c.id == card)
+            .expect("a seeded card");
+        card.checklists
+            .iter()
+            .map(|cl| {
+                (
+                    cl.id.clone(),
+                    cl.name.clone(),
+                    cl.items
+                        .iter()
+                        .map(|i| (i.id.clone(), i.name.clone(), i.done))
+                        .collect(),
+                )
+            })
+            .collect()
     }
 
     /// Put a member (their id) on a card.
@@ -1582,11 +1687,26 @@ fn route(s: &mut State, request: &Request) -> (u16, Value) {
             _ => "read comments",
         },
         ("POST", ["cards"]) => "create card",
+        ("DELETE", ["cards", _]) => "delete card",
         ("POST", ["cards", _, "actions", "comments"]) => "post comment",
         ("PUT", ["cards", _, "actions", _, "comments"]) => "edit comment",
         ("DELETE", ["cards", _, "actions", _, "comments"]) => "delete comment",
+        ("GET", ["actions", _]) => "read action",
+        ("PUT", ["actions", _]) => "update action",
+        ("DELETE", ["actions", _]) => "delete action",
+        ("POST", ["cards", _, "checklists"]) => "create checklist",
+        ("GET", ["checklists", _]) => "read checklist",
+        ("DELETE", ["checklists", _]) => "delete checklist",
+        ("POST", ["checklists", _, "checkItems"]) => "create check item",
+        ("PUT", ["cards", _, "checkItem", _]) => "update check item",
+        ("DELETE", ["cards", _, "checkItem", _]) => "delete check item",
+        ("DELETE", ["cards", _, "attachments", _]) => "delete attachment",
+        // A PUT with a JSON body is an update of the card; the query-parameter forms below
+        // are today's actions'.
         ("PUT", ["cards", _]) => {
-            if param("idList").is_some() || payload.get("idList").is_some() {
+            if payload.is_object() {
+                "update card"
+            } else if param("idList").is_some() || payload.get("idList").is_some() {
                 "move card"
             } else if param("closed").is_some() {
                 "archive card"
@@ -1784,11 +1904,14 @@ fn route(s: &mut State, request: &Request) -> (u16, Value) {
                     .collect(),
             )
         }
+        // An archived card is served as an open one is, with `closed: true`.
         "read card" => match card_at(s) {
-            Some(at) if !s.cards[at].closed => {
-                (200, s.nested_json(&s.cards[at], &|key: &str| param(key)))
+            Some(at) => {
+                let value = s.nested_json(&s.cards[at], &|key: &str| param(key));
+                let checklists = param("checklists").as_deref() == Some("all");
+                (200, cut_card(value, param("fields").as_deref(), checklists))
             }
-            _ => not_found,
+            None => not_found,
         },
         "list checklists" => match card_at(s) {
             Some(at) => {
@@ -1847,6 +1970,25 @@ fn route(s: &mut State, request: &Request) -> (u16, Value) {
             else {
                 return (400, json!("invalid value for idList"));
             };
+            let ids = |key: &str| -> Vec<String> {
+                payload[key]
+                    .as_array()
+                    .map(|ids| {
+                        ids.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let (labels, members) = (ids("idLabels"), ids("idMembers"));
+            let due = match payload.get("due") {
+                None | Some(Value::Null) => None,
+                Some(due) => match due.as_str().and_then(parse_stamp) {
+                    Some(due) => Some(due),
+                    None => return (400, json!("invalid value for due")),
+                },
+            };
             let at = s.board_at(&board).expect("the list's board");
             s.boards[at].cards += 1;
             let number = s.boards[at].cards;
@@ -1860,12 +2002,13 @@ fn route(s: &mut State, request: &Request) -> (u16, Value) {
                 list,
                 board,
                 number,
-                labels: Vec::new(),
-                members: Vec::new(),
+                labels,
+                members,
                 checklists: Vec::new(),
                 closed: false,
                 due_complete: false,
-                due: None,
+                due: due.map(|(secs, _)| secs),
+                due_millis: due.map_or(0, |(_, millis)| millis),
                 last_activity: created,
             };
             let mut reply = s.card_json(&card, false);
@@ -2052,6 +2195,320 @@ fn route(s: &mut State, request: &Request) -> (u16, Value) {
                 None => not_found,
             }
         }
+        "update card" => {
+            let Some(at) = card_at(s) else {
+                return not_found;
+            };
+            let id = s.cards[at].id.clone();
+            let moved = payload.get("idList").is_some() || payload.get("pos").is_some();
+            let list = match payload.get("idList") {
+                None => s.cards[at].list.clone(),
+                Some(list) => list.as_str().unwrap_or("").to_string(),
+            };
+            let Some(board) = s
+                .lists
+                .iter()
+                .find(|l| l.id == list)
+                .map(|l| l.board.clone())
+            else {
+                return (400, json!("invalid value for idList"));
+            };
+            let due = match payload.get("due") {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(due) => match due.as_str().and_then(parse_stamp) {
+                    Some(due) => Some(Some(due)),
+                    None => return (400, json!("invalid value for due")),
+                },
+            };
+            let card = &mut s.cards[at];
+            if let Some(name) = payload.get("name").and_then(Value::as_str) {
+                card.name = name.to_string();
+            }
+            if let Some(desc) = payload.get("desc").and_then(Value::as_str) {
+                card.desc = desc.to_string();
+            }
+            if let Some(done) = payload.get("dueComplete").and_then(Value::as_bool) {
+                card.due_complete = done;
+            }
+            if let Some(closed) = payload.get("closed").and_then(Value::as_bool) {
+                card.closed = closed;
+            }
+            if let Some(due) = due {
+                card.due = due.map(|(secs, _)| secs);
+                card.due_millis = due.map_or(0, |(_, millis)| millis);
+            }
+            if moved {
+                let mut card = s.cards[at].clone();
+                card.list = list;
+                card.board = board;
+                s.place(card, Some(at), Pos::read(payload.get("pos"), Pos::Top));
+            }
+            s.touch(&id);
+            let card = s.cards.iter().find(|c| c.id == id).cloned();
+            (200, card.map_or(Value::Null, |c| s.card_json(&c, false)))
+        }
+        "delete card" => {
+            let Some(at) = card_at(s) else {
+                return not_found;
+            };
+            let id = s.cards.remove(at).id;
+            s.comments.retain(|c| c.card != id);
+            s.attachments.retain(|a| a.card != id);
+            (200, json!({ "limits": {} }))
+        }
+        "read action" => match s.comments.iter().find(|c| c.id == segs[1]) {
+            Some(c) => {
+                let mut value = s.comment_json(c);
+                if let Some(fields) = param("memberCreator_fields") {
+                    value["memberCreator"] =
+                        State::only(value["memberCreator"].clone(), Some(&fields));
+                }
+                (200, value)
+            }
+            None => not_found,
+        },
+        "update action" | "delete action" => {
+            let Some(at) = s.comments.iter().position(|c| c.id == segs[1]) else {
+                return not_found;
+            };
+            // Trello lets a token edit and delete only its own comments.
+            if s.comments[at].author != s.me {
+                return (401, json!("unauthorized permission requested"));
+            }
+            let card = s.comments[at].card.clone();
+            if name == "delete action" {
+                s.comments.remove(at);
+                s.touch(&card);
+                return (200, json!({ "_value": null }));
+            }
+            let text = field("text")
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let comment = &mut s.comments[at];
+            comment.text = text;
+            comment.edited = Some(now());
+            let comment = comment.clone();
+            s.touch(&card);
+            (200, s.comment_json(&comment))
+        }
+        "create checklist" => {
+            let Some(at) = card_at(s) else {
+                return not_found;
+            };
+            let pos = next_pos(
+                s.cards[at].checklists.iter().map(|cl| cl.pos),
+                Pos::read(field("pos").as_ref(), Pos::Bottom),
+            );
+            let list_name = field("name")
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let checklist = Checklist {
+                id: s.mint(now()),
+                name: list_name,
+                items: Vec::new(),
+                pos,
+            };
+            let card = s.cards[at].id.clone();
+            let reply = s.checklist_json(&checklist, &card);
+            s.cards[at].checklists.push(checklist);
+            s.touch(&card);
+            (200, reply)
+        }
+        "read checklist" | "delete checklist" | "create check item" => {
+            let Some((on, of)) = s.checklist_at(segs[1]) else {
+                return not_found;
+            };
+            let card = s.cards[on].id.clone();
+            match name {
+                "delete checklist" => {
+                    s.cards[on].checklists.remove(of);
+                    s.touch(&card);
+                    (200, json!({ "limits": {} }))
+                }
+                "create check item" => {
+                    let item_id = s.mint(now());
+                    let list = &mut s.cards[on].checklists[of];
+                    let pos = Pos::read(field("pos").as_ref(), Pos::Bottom);
+                    let item = CheckItem {
+                        id: item_id,
+                        name: field("name")
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_default(),
+                        done: false,
+                        pos: next_pos(list.items.iter().map(|i| i.pos), pos),
+                    };
+                    let reply = check_item_json(&item, &list.id, &card);
+                    match pos {
+                        Pos::Top => list.items.insert(0, item),
+                        _ => list.items.push(item),
+                    }
+                    s.touch(&card);
+                    (200, reply)
+                }
+                _ => {
+                    // Trello's `fields` cut the checklist, and `checkItems` — all, unless
+                    // `none` — is a nest of its own.
+                    let list = &s.cards[on].checklists[of];
+                    let mut value = s.checklist_json(list, &card);
+                    let mut items = value["checkItems"].take();
+                    if let Some(items) = items.as_array_mut() {
+                        items.sort_by(|a, b| {
+                            let pos = |v: &Value| v["pos"].as_f64().unwrap_or(f64::MAX);
+                            pos(a).total_cmp(&pos(b))
+                        });
+                    }
+                    let mut value = State::only(value, param("fields").as_deref());
+                    if param("checkItems").as_deref() != Some("none") {
+                        value["checkItems"] = items;
+                    }
+                    (200, value)
+                }
+            }
+        }
+        "update check item" | "delete check item" => {
+            let Some(at) = card_at(s) else {
+                return not_found;
+            };
+            let card = s.cards[at].id.clone();
+            let found = s.cards[at]
+                .checklists
+                .iter()
+                .enumerate()
+                .find_map(|(l, cl)| {
+                    cl.items
+                        .iter()
+                        .position(|i| i.id == segs[3])
+                        .map(|i| (l, i))
+                });
+            let Some((list_at, item_at)) = found else {
+                return not_found;
+            };
+            let list = &mut s.cards[at].checklists[list_at];
+            if name == "delete check item" {
+                list.items.remove(item_at);
+                s.touch(&card);
+                return (200, json!({ "limits": {} }));
+            }
+            let state = match field("state").as_ref().and_then(Value::as_str) {
+                None => None,
+                Some("complete") => Some(true),
+                Some("incomplete") => Some(false),
+                Some(_) => return (400, json!("invalid value for state")),
+            };
+            let item = &mut list.items[item_at];
+            if let Some(new_name) = field("name").as_ref().and_then(Value::as_str) {
+                item.name = new_name.to_string();
+            }
+            if let Some(done) = state {
+                item.done = done;
+            }
+            let reply = check_item_json(item, &list.id, &card);
+            s.touch(&card);
+            (200, reply)
+        }
+        "delete attachment" => {
+            let card = card_at(s).map(|at| s.cards[at].id.clone());
+            let Some(at) = s
+                .attachments
+                .iter()
+                .position(|a| Some(&a.card) == card.as_ref() && a.id == segs[3])
+            else {
+                return not_found;
+            };
+            s.attachments.remove(at);
+            s.touch(segs[1]);
+            (200, json!({ "limits": {} }))
+        }
         _ => not_found,
     }
+}
+
+/// A check item as Trello gives one.
+fn check_item_json(item: &CheckItem, checklist: &str, card: &str) -> Value {
+    json!({
+        "id": item.id,
+        "idChecklist": checklist,
+        "idCard": card,
+        "name": item.name,
+        "pos": item.pos,
+        "state": if item.done { "complete" } else { "incomplete" },
+    })
+}
+
+/// The `pos` a checklist or check item is given among `others`: half the first at the top,
+/// 16384 past the last at the bottom, or the number named.
+fn next_pos(others: impl Iterator<Item = f64>, pos: Pos) -> f64 {
+    let others: Vec<f64> = others.collect();
+    match pos {
+        Pos::Top => others
+            .iter()
+            .copied()
+            .reduce(f64::min)
+            .map_or(16_384.0, |p| p / 2.0),
+        Pos::Bottom => others
+            .iter()
+            .copied()
+            .reduce(f64::max)
+            .map_or(16_384.0, |p| p + 16_384.0),
+        Pos::At(n) => n,
+    }
+}
+
+/// A card read cut to the `fields` it names and its `id`, with what it nests — its list, its
+/// board, its members and its actions, and its checklists when they were asked for — kept.
+fn cut_card(value: Value, fields: Option<&str>, checklists: bool) -> Value {
+    let Some(fields) = fields.filter(|f| *f != "all") else {
+        return value;
+    };
+    let wanted: HashSet<&str> = fields.split(',').collect();
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .filter(|(key, _)| {
+                    let key = key.as_str();
+                    key == "id"
+                        || wanted.contains(key)
+                        || ["list", "board", "members", "actions"].contains(&key)
+                        || (checklists && key == "checklists")
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// An RFC 3339 UTC stamp, `YYYY-MM-DDTHH:MM:SS[.fff]Z`, as seconds since the epoch and the
+/// milliseconds within the second; `None` for any other shape.
+fn parse_stamp(text: &str) -> Option<(u64, u32)> {
+    let (date, time) = text.strip_suffix('Z')?.split_once('T')?;
+    let mut d = date.splitn(3, '-');
+    let year: i64 = d.next()?.parse().ok()?;
+    let month: i64 = d.next()?.parse().ok()?;
+    let day: i64 = d.next()?.parse().ok()?;
+    let (clock, fraction) = time.split_once('.').unwrap_or((time, ""));
+    let mut t = clock.splitn(3, ':');
+    let hour: i64 = t.next()?.parse().ok()?;
+    let minute: i64 = t.next()?.parse().ok()?;
+    let second: i64 = t.next()?.parse().ok()?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let millis: String = fraction.chars().chain("000".chars()).take(3).collect();
+    // Days from the civil date (Howard Hinnant's `days_from_civil`).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + hour * 3_600 + minute * 60 + second;
+    Some((u64::try_from(secs).ok()?, millis.parse().ok()?))
 }

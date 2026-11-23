@@ -125,6 +125,15 @@ pub(crate) enum BoardError {
         /// The HTTP status code returned.
         status: u16,
     },
+    /// The board answered a write with a non-success HTTP status and said why in the body.
+    Answered {
+        /// The stage of work the call belonged to.
+        stage: &'static str,
+        /// The HTTP status code returned.
+        status: u16,
+        /// Trello's own words for the refusal.
+        message: String,
+    },
     /// The request never produced a response (connection/transport failure).
     Transport {
         /// The stage of work the call belonged to.
@@ -168,6 +177,14 @@ impl std::fmt::Display for BoardError {
             BoardError::Status { stage, status } => {
                 write!(f, "trello {stage}: board returned status {status}")
             }
+            BoardError::Answered {
+                stage,
+                status,
+                message,
+            } => write!(
+                f,
+                "trello {stage}: board returned status {status}: {message}"
+            ),
             BoardError::Transport { stage, reason } => {
                 write!(f, "trello {stage}: no response ({reason})")
             }
@@ -191,6 +208,7 @@ impl BoardError {
     pub(crate) fn stage(&self) -> &'static str {
         match self {
             BoardError::Status { stage, .. }
+            | BoardError::Answered { stage, .. }
             | BoardError::Transport { stage, .. }
             | BoardError::Decode { stage, .. }
             | BoardError::ListNotFound { stage, .. }
@@ -1959,6 +1977,15 @@ mod board_error_tests {
             "list cards"
         );
         assert_eq!(
+            BoardError::Answered {
+                stage: "delete comment",
+                status: 401,
+                message: "unauthorized permission requested".into()
+            }
+            .stage(),
+            "delete comment"
+        );
+        assert_eq!(
             BoardError::Transport {
                 stage: "move card",
                 reason: "boom".into()
@@ -2011,6 +2038,14 @@ mod board_error_tests {
                     status: 503,
                 },
                 "trello list cards: board returned status 503",
+            ),
+            (
+                BoardError::Answered {
+                    stage: "update comment",
+                    status: 401,
+                    message: "unauthorized permission requested".into(),
+                },
+                "trello update comment: board returned status 401: unauthorized permission requested",
             ),
             (
                 BoardError::Transport {
