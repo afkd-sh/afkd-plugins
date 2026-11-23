@@ -2,7 +2,8 @@
 
 Every `.jsonl` here is what a real afkd daemon wrote to its control socket, line for line,
 the three `runs*/` trees are `cp -r` copies of a real daemon's `<state dir>/runs`, and
-`blockwait-trace.txt` is what `afkd trace` printed for one of them. Nothing is hand-written:
+`blockwait-trace.txt` is what `afkd trace` 0.2.489 printed for one of them (the rail tree; afkd
+no longer prints it, and no drift gate compares it against afkd). Nothing is hand-written:
 the suites derive their expectations from these files, so a re-capture cannot quietly make an
 assertion vacuous, and a frame shape this fold has never actually seen — or a run-dir layout
 the daemon has never actually written — cannot sneak into the suite as a guess.
@@ -94,7 +95,7 @@ adversarial line set; one that exits non-zero; one nested workflow
 | `runs/` | `<state dir>/runs` copied once the fourth session's last fire had finished: four run dirs across two daemon generations, of which the window walk keeps three. |
 | `runs-midfire/` | The same tree copied **during** that fire, so its newest run dir is an in-progress one whose trace still has open nodes and whose `run.log` stops mid-output. |
 | `runs-blockwait/` | `<state dir>/runs` copied once the tenth session's run had finished: `blocker`'s one kept run, whose trace holds a `queue_wait` node on `heavy`, a `queue` node on each of `heavy` and `gpu`, and an `http` node for one `GET`. |
-| `blockwait-trace.txt` | `afkd trace`'s stdout for that run's `trace.jsonl`, from the same build: the rows the run view of the same run, served off disk, is held to. |
+| `blockwait-trace.txt` | `afkd trace` 0.2.489's stdout for that run's `trace.jsonl`, the rail tree, from the same build: the rows the run view of the same run, served off disk, is held to. `afkd trace` has printed the narration tree since afkd `6a72e113`, so it cannot re-record this, and the drift gate no longer compares it against afkd. |
 
 None is read in place. Git carries no mtimes, and `recent_run_dirs` orders a service's run
 dirs by mtime — so `backfill.test.mjs` copies the tree to a scratch dir and restores each run
@@ -320,6 +321,12 @@ The session, in order:
 (release, master at `efc2f23d`): a throwaway daemon started with `env -i` and an isolated `HOME`
 under `/tmp`, its working directory that `HOME`, and no recorder, since nothing here is a wire
 capture. None of the earlier files was re-recorded.
+
+`blockwait-trace.txt` is the rail tree `afkd trace` 0.2.489 printed. `afkd trace` has printed the
+narration tree since afkd `6a72e113` (queue nodes print no line there), so it can no longer
+re-record this text, and the drift gate no longer compares it against afkd: it stays as the run
+view's pinned expectation in `backfill.test.mjs`. The `afkd trace` step in the recipe below is
+a historical record.
 
 Its config is the eighth's with three lines added: `import "core:http"`, `keep_runs always` in
 `blocker`, and a last step in `blocker` that `GET`s a 23-byte file off a
