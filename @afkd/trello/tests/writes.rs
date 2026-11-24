@@ -940,10 +940,346 @@ fn update_card_and_the_comment_writes_refuse_what_they_cannot_send() {
     plugin.finish();
 }
 
+// --- labels and members on a card ---
+
+/// The id of the board's label named `name`, as the `labels` read gives its key.
+fn label_id(b: &Board, plugin: &mut Plugin, name: &str) -> String {
+    let reply = plugin.read("labels", b.args(json!({"board": BOARD})));
+    handles(&reply)
+        .iter()
+        .find(|l| l["fields"]["name"] == name)
+        .and_then(|l| l["key"].as_str())
+        .and_then(|key| key.strip_prefix("trello:"))
+        .expect("a label of the board")
+        .to_string()
+}
+
+/// The requests the fake saw that changed a card's labels or members: the method and the path
+/// past `/1/cards/`.
+fn tagging(b: &Board) -> Vec<(String, String)> {
+    b.fake
+        .seen()
+        .into_iter()
+        .filter(|r| r.method != "GET" && r.path.contains("/id"))
+        .map(|r| (r.method, r.path))
+        .collect()
+}
+
+/// `add_label` puts a label the board has on the card, `remove_label` takes it off, each by the
+/// name and each sending the one request — a `POST` of the label's id, a `DELETE` of its path —
+/// and answering the card as Trello now holds it, `==` to the one `trello.cards` hands back.
+#[test]
+fn add_label_and_remove_label_change_a_cards_labels_by_name() {
+    let b = board();
+    let id = b.id("AAAA0001").to_string();
+    let mut plugin = Plugin::spawn();
+    let bug = label_id(&b, &mut plugin, "bug");
+    let card = b.card("AAAA0001");
+
+    let reply = b.call(
+        &mut plugin,
+        "add_label",
+        json!({"card": card, "label": "bug"}),
+    );
+    assert_eq!(handle(&reply)["key"], card["key"]);
+    assert_eq!(handle(&reply)["fields"]["labels"], json!(["bug"]));
+    assert_eq!(b.fake.labels(&id), ["bug"]);
+    let posted = b.fake.seen();
+    let post = posted
+        .iter()
+        .rev()
+        .find(|r| r.method == "POST")
+        .expect("a POST");
+    assert_eq!(post.path, format!("/1/cards/{id}/idLabels"));
+    assert!(
+        post.query.iter().any(|(k, v)| k == "value" && *v == bug),
+        "{:?}",
+        post.query
+    );
+    let read = plugin.read(
+        "cards",
+        b.args(json!({"board": BOARD, "list": ["Backlog"]})),
+    );
+    assert_eq!(
+        &handles(&read)[0],
+        handle(&reply),
+        "the card read is the card written"
+    );
+
+    b.call(
+        &mut plugin,
+        "add_label",
+        json!({"card": card, "label": "ready"}),
+    );
+    assert_eq!(b.fake.labels(&id), ["bug", "ready"], "additive");
+
+    let reply = b.call(
+        &mut plugin,
+        "remove_label",
+        json!({"card": card, "label": "bug"}),
+    );
+    assert_eq!(handle(&reply)["fields"]["labels"], json!(["ready"]));
+    assert_eq!(b.fake.labels(&id), ["ready"]);
+    let deleted = b
+        .fake
+        .seen()
+        .into_iter()
+        .rev()
+        .find(|r| r.method == "DELETE")
+        .expect("a DELETE");
+    assert_eq!(deleted.path, format!("/1/cards/{id}/idLabels/{bug}"));
+    let stderr = plugin.finish();
+    for said in [
+        "added label \"bug\" to card AAAA0001",
+        "removed label \"bug\" from card AAAA0001",
+    ] {
+        assert!(stderr.contains(&format!("[trello] {said}")), "{stderr}");
+    }
+}
+
+/// `add_member` and `remove_member` put a board member on a card and take them off by
+/// username, `me` — the default — being the token's own, and answer the card as it now is.
+#[test]
+fn add_member_and_remove_member_change_a_cards_members_by_username() {
+    let b = board();
+    let id = b.id("AAAA0001").to_string();
+    let mut plugin = Plugin::spawn();
+    let card = b.card("AAAA0001");
+
+    let reply = b.call(&mut plugin, "add_member", json!({"card": card}));
+    assert_eq!(
+        handle(&reply)["fields"]["members"],
+        json!([ME]),
+        "me is the default"
+    );
+    let reply = b.call(
+        &mut plugin,
+        "add_member",
+        json!({"card": card, "member": "phil"}),
+    );
+    assert_eq!(handle(&reply)["fields"]["members"], json!([ME, "phil"]));
+    assert_eq!(b.fake.members(&id), [ME, "phil"]);
+    let post = b
+        .fake
+        .seen()
+        .into_iter()
+        .rev()
+        .find(|r| r.method == "POST")
+        .expect("a POST");
+    assert_eq!(post.path, format!("/1/cards/{id}/idMembers"));
+    assert!(
+        post.query.iter().any(|(k, v)| k == "value" && *v == b.phil),
+        "{:?}",
+        post.query
+    );
+    let read = plugin.read(
+        "cards",
+        b.args(json!({"board": BOARD, "list": ["Backlog"]})),
+    );
+    assert_eq!(&handles(&read)[0], handle(&reply));
+
+    let reply = b.call(
+        &mut plugin,
+        "remove_member",
+        json!({"card": card, "member": "me"}),
+    );
+    assert_eq!(handle(&reply)["fields"]["members"], json!(["phil"]));
+    let reply = b.call(
+        &mut plugin,
+        "remove_member",
+        json!({"card": card, "member": "phil"}),
+    );
+    assert_eq!(handle(&reply)["fields"]["members"], json!([]));
+    assert_eq!(b.fake.members(&id), Vec::<String>::new());
+    let deleted = b
+        .fake
+        .seen()
+        .into_iter()
+        .rev()
+        .find(|r| r.method == "DELETE")
+        .expect("a DELETE");
+    assert_eq!(deleted.path, format!("/1/cards/{id}/idMembers/{}", b.phil));
+    let stderr = plugin.finish();
+    assert!(
+        stderr.contains("[trello] added member \"phil\" to card AAAA0001"),
+        "{stderr}"
+    );
+}
+
+/// A label the board lacks is refused naming the ones it has, and none is made: no request
+/// creates a label, and the card is left as it was. A name two labels share is refused listing
+/// their ids. A colour-only label has no name to ask for.
+#[test]
+fn a_label_the_board_lacks_is_refused_and_no_label_is_made() {
+    let b = board();
+    let id = b.id("AAAA0001").to_string();
+    let mut plugin = Plugin::spawn();
+    let card = b.card("AAAA0001");
+    for action in ["add_label", "remove_label"] {
+        let reply = b.call(
+            &mut plugin,
+            action,
+            json!({"card": card, "label": "Hold 🛑"}),
+        );
+        assert_eq!(
+            refusal(&reply),
+            format!(
+                "{action}: the board has no label named \"Hold 🛑\"; its labels are \"bug\", \
+                 \"ready\", \"dup\""
+            )
+        );
+    }
+    let reply = b.call(
+        &mut plugin,
+        "add_label",
+        json!({"card": card, "label": "dup"}),
+    );
+    assert!(
+        refusal(&reply).starts_with("add_label: 2 labels are named \"dup\" (ids "),
+        "{reply}"
+    );
+    assert!(b.fake.labels(&id).is_empty(), "the card is as it was");
+    let created = b
+        .fake
+        .seen()
+        .into_iter()
+        .filter(|r| r.method == "POST" && r.path.ends_with("/labels"))
+        .count();
+    assert_eq!(created, 0, "no label was made");
+    assert!(
+        tagging(&b).is_empty(),
+        "nothing was put on the card: {:?}",
+        tagging(&b)
+    );
+    plugin.finish();
+}
+
+/// A member the board lacks is refused naming the ones it has, and a card Trello has none of is
+/// refused as Trello says; nothing is put on any card.
+#[test]
+fn a_member_the_board_lacks_is_refused_naming_the_ones_it_has() {
+    let b = board();
+    let mut plugin = Plugin::spawn();
+    let card = b.card("AAAA0001");
+    for action in ["add_member", "remove_member"] {
+        let reply = b.call(
+            &mut plugin,
+            action,
+            json!({"card": card, "member": "ghost"}),
+        );
+        let sentence = refusal(&reply);
+        assert!(
+            sentence.starts_with(&format!(
+                "{action}: the board has no member named \"ghost\"; its members are "
+            )),
+            "{sentence}"
+        );
+        for known in [ME, "phil", "chen"] {
+            assert!(sentence.contains(&format!("\"{known}\"")), "{sentence}");
+        }
+    }
+    let gone = json!({"id": "Gone0000", "key": "trello:6a4dd5de1234abcd5678ef99"});
+    let reply = b.call(
+        &mut plugin,
+        "add_label",
+        json!({"card": gone, "label": "bug"}),
+    );
+    assert_eq!(
+        refusal(&reply),
+        "trello read card: board returned status 404"
+    );
+    assert!(tagging(&b).is_empty(), "{:?}", tagging(&b));
+    plugin.finish();
+}
+
+/// Adding what is already on the card, and removing what it lacks, are `ok` with the card as it
+/// is, and send nothing that writes — for a label and for a member alike.
+#[test]
+fn adding_what_is_there_or_removing_what_is_not_is_ok_and_sends_no_write() {
+    let b = board();
+    let id = b.id("AAAA0001").to_string();
+    b.fake.label(&id, "bug");
+    b.fake.card_member(&id, &b.phil);
+    let mut plugin = Plugin::spawn();
+    let card = b.card("AAAA0001");
+    let writes = |b: &Board| b.count("POST") + b.count("PUT") + b.count("DELETE");
+    let before = writes(&b);
+
+    let reply = b.call(
+        &mut plugin,
+        "add_label",
+        json!({"card": card, "label": "bug"}),
+    );
+    assert_eq!(handle(&reply)["fields"]["labels"], json!(["bug"]));
+    let reply = b.call(
+        &mut plugin,
+        "remove_label",
+        json!({"card": card, "label": "ready"}),
+    );
+    assert_eq!(handle(&reply)["fields"]["labels"], json!(["bug"]));
+    let reply = b.call(
+        &mut plugin,
+        "add_member",
+        json!({"card": card, "member": "phil"}),
+    );
+    assert_eq!(handle(&reply)["fields"]["members"], json!(["phil"]));
+    let reply = b.call(
+        &mut plugin,
+        "remove_member",
+        json!({"card": card, "member": "chen"}),
+    );
+    assert_eq!(handle(&reply)["fields"]["members"], json!(["phil"]));
+    assert_eq!(writes(&b), before, "no write was sent: {:?}", tagging(&b));
+    assert_eq!(b.fake.labels(&id), ["bug"]);
+    assert_eq!(b.fake.members(&id), ["phil"]);
+    plugin.finish();
+}
+
+/// The four are answered by the armed child of a `service(trello)` too, the same way.
+#[test]
+fn the_label_and_member_writes_are_answered_by_an_armed_child() {
+    let b = board();
+    let id = b.id("CCCC0003").to_string();
+    let mut plugin = Plugin::armed(settings(&b.fake));
+    let card = b.card("CCCC0003");
+    for (action, extra, labels, members) in [
+        (
+            "add_label",
+            json!({"label": "ready"}),
+            vec!["ready"],
+            vec![],
+        ),
+        (
+            "add_member",
+            json!({"member": "chen"}),
+            vec!["ready"],
+            vec!["chen"],
+        ),
+        (
+            "remove_label",
+            json!({"label": "ready"}),
+            vec![],
+            vec!["chen"],
+        ),
+        ("remove_member", json!({"member": "chen"}), vec![], vec![]),
+    ] {
+        let mut args = json!({"card": card});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let reply = plugin.read_armed(action, b.args(args));
+        let fields = &handle(&reply)["fields"];
+        assert_eq!(fields["labels"], json!(labels), "{action}");
+        assert_eq!(fields["members"], json!(members), "{action}");
+    }
+    assert!(b.fake.labels(&id).is_empty() && b.fake.members(&id).is_empty());
+    plugin.finish();
+}
+
 // --- a 429, a 5xx ---
 
 /// A 429 on a write is waited out as its rate-limit headers say and the write answers `ok`, in
-/// the armed child of a service that has an outbox: the card is made once, and nothing is queued.
+/// the armed child of a service: the card is made once, and nothing is queued.
 #[test]
 fn a_429_on_a_write_is_retried_to_ok() {
     let b = board();

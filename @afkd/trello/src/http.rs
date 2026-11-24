@@ -497,19 +497,6 @@ impl<E: HttpError> HttpClient<E> {
         into_text(stage, self.exchange(stage, &req, Payload::Json(payload))?)
     }
 
-    /// Send `body` verbatim as the request body, under `content_type` — an upload's
-    /// multipart form.
-    pub(crate) fn send_bytes(
-        &self,
-        stage: &'static str,
-        req: BoardRequest,
-        content_type: &str,
-        body: &[u8],
-    ) -> Result<String, E> {
-        let payload = Payload::Bytes { content_type, body };
-        into_text(stage, self.exchange(stage, &req, payload)?)
-    }
-
     /// Send `req` with `payload` as its body, like [`send`](Self::send), but keep what the
     /// board says when it refuses: on a 4xx or 5xx the body is read and the failure is
     /// [`HttpError::answered`] with Trello's text — a JSON string unquoted, an object's

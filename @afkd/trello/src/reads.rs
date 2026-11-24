@@ -1,5 +1,5 @@
-//! The **account reads** a config calls with a `trello.Account` first: a board's cards, a
-//! card's comments, checklists, check items and attachments, one attachment saved to a path,
+//! The **account reads** a config calls with a `trello.Account` first: a board's cards, one
+//! card, a card's comments, checklists, check items and attachments, one attachment saved to a path,
 //! the member the token acts as, the boards it reaches, and a board's lists, labels and
 //! members.
 //!
@@ -26,7 +26,7 @@ use serde_json::{json, Map, Value};
 
 use crate::account::{Account, Clients};
 use crate::attachment::{write_atomic, MAX_ATTACHMENT_BYTES};
-use crate::board::{BoardClient, BoardError};
+use crate::board::BoardError;
 use crate::card::ACTION_TAG;
 use crate::client::{parse_labels_field, TrelloClient};
 use crate::common::Diag;
@@ -38,9 +38,10 @@ use crate::handles::{
 use crate::settings::{derive_board_id, ME};
 use crate::wire::{WireHandle, MAX_CALL_REPLY};
 
-/// The reads, in the order the manifest declares them, after today's actions
-/// ([`ACTIONS`](crate::lifecycle::ACTIONS)).
+/// The reads, in the order the manifest declares them, before the writes
+/// ([`WRITES`](crate::writes::WRITES)).
 pub(crate) const READS: &[&str] = &[
+    "card",
     "cards",
     "comments",
     "checklists",
@@ -100,17 +101,33 @@ pub(crate) struct CardQuery {
 /// One read, decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReadCall {
+    /// One card, by short link or Trello id.
+    Card {
+        id: String,
+    },
     Cards(Box<CardQuery>),
-    Comments { card: HandleArg, limit: usize },
+    Comments {
+        card: HandleArg,
+        limit: usize,
+    },
     Checklists(HandleArg),
     CheckItems(HandleArg),
     Attachments(HandleArg),
-    DownloadAttachment { attachment: HandleArg, to: String },
+    DownloadAttachment {
+        attachment: HandleArg,
+        to: String,
+    },
     Me,
     Boards,
-    Lists { board: String },
-    Labels { board: String },
-    Members { board: String },
+    Lists {
+        board: String,
+    },
+    Labels {
+        board: String,
+    },
+    Members {
+        board: String,
+    },
 }
 
 /// Do the read `action` with `args`, and answer it: the reply line, `ok` with what it read,
@@ -175,7 +192,8 @@ pub(crate) fn fit_call(action: &str, line: String) -> Result<String, String> {
 /// # Errors
 ///
 /// Returns the sentence for an `acct` that is no account or holds an empty key or token, an
-/// argument missing or of another type than the manifest's, an empty filter list, a `limit`
+/// argument missing or of another type than the manifest's, a `card` of an empty `id`, an
+/// empty filter list, a `limit`
 /// outside 1 to 1000, a handle whose key is none of the kind the read takes, and a
 /// `download_attachment` to a path that is not absolute.
 pub(crate) fn decode(
@@ -184,6 +202,15 @@ pub(crate) fn decode(
 ) -> Result<(Account, ReadCall), String> {
     let account = Account::from_arg(action, args.get("acct"))?;
     let call = match action {
+        "card" => {
+            let id = string(action, args, "id")?;
+            if id.trim().is_empty() {
+                return Err(format!("{action}: id must name a card, not {id:?}"));
+            }
+            ReadCall::Card {
+                id: id.trim().to_string(),
+            }
+        }
         "cards" => ReadCall::Cards(Box::new(card_query(args)?)),
         "comments" => {
             let limit = optional(action, args, "limit", Value::as_i64, "an int")?
@@ -436,6 +463,18 @@ fn by_position(mut items: Vec<Value>) -> Vec<Value> {
 fn run(action: &str, call: &ReadCall, client: &TrelloClient) -> Result<(String, String), String> {
     let read = |what: String| format!("{ACTION_TAG} read {what}");
     Ok(match call {
+        ReadCall::Card { id } => {
+            let card = client
+                .read_card_handle("read card", id)
+                .map_err(|e| match e {
+                    BoardError::Status { status: 404, .. } => {
+                        format!("{action}: no card {id:?} on this account: {e}")
+                    }
+                    e => e.to_string(),
+                })?;
+            let said = read(format!("card {}", card.id));
+            (json!({ "ok": true, "handle": card }).to_string(), said)
+        }
         ReadCall::Cards(query) => {
             let handles = cards(client, query)?;
             (
@@ -1086,6 +1125,20 @@ mod tests {
                 to: "/srv/計画 1/plan.md".into()
             })
         );
+        for id in ["Qb7eLy2w", "6a4dd5de1234abcd5678ef90"] {
+            assert_eq!(
+                call("card", json!({"id": id})),
+                Ok(ReadCall::Card { id: id.into() }),
+                "a card by short link or by id"
+            );
+        }
+        assert_eq!(
+            call("card", json!({"id": " Qb7eLy2w "})),
+            Ok(ReadCall::Card {
+                id: "Qb7eLy2w".into()
+            }),
+            "the id is trimmed"
+        );
         assert_eq!(call("me", json!({})), Ok(ReadCall::Me));
         assert_eq!(call("boards", json!({})), Ok(ReadCall::Boards));
         let board = |b: &str| b.to_string();
@@ -1128,6 +1181,22 @@ mod tests {
         let old_refusal =
             format!("checklists: card Qb7eLy2w has a key this plugin did not hand out: {old_key}");
         for (action, extra, refusal) in [
+            ("card", json!({}), "card: parameter id is required"),
+            (
+                "card",
+                json!({"id": 7}),
+                "card: parameter id must be a string",
+            ),
+            (
+                "card",
+                json!({"id": card}),
+                "card: parameter id must be a string",
+            ),
+            (
+                "card",
+                json!({"id": "  "}),
+                "card: id must name a card, not \"  \"",
+            ),
             ("cards", json!({}), "cards: parameter board is required"),
             (
                 "cards",

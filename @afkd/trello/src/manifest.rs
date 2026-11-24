@@ -8,6 +8,7 @@
 //! the line of prose on an item is for the editor, and `checks/` holds it to its rule.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::slice::from_ref;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -17,7 +18,6 @@ use crate::handles::{
     AttachmentFields, BoardFields, CardFields, CheckItemFields, ChecklistFields, CommentFields,
     LabelFields, ListFields, MemberFields,
 };
-use crate::lifecycle::{ACTIONS, HANDLE};
 use crate::plugin::TRELLO_KIND;
 use crate::reads::READS;
 use crate::settings::{ME, SETTINGS};
@@ -26,7 +26,7 @@ use crate::writes::WRITES;
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
 
 /// One table of the manifest: its header (`""` for the top level) and its keys, each
-/// with its value as written (`"card"`, `true`, `["top", "bottom"]`).
+/// with its value as written (`"intake"`, `true`, `["top", "bottom"]`).
 type Table = (String, BTreeMap<String, String>);
 
 /// A table and the tables written under it: a `[[kind.slot]]` and its `[[kind.slot.param]]`s.
@@ -415,7 +415,7 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
             params.push(param("run", "afkd.Run"));
         }
         params.push(param("account", "Account"));
-        params.push(param(HANDLE, "Card"));
+        params.push(param("card", "Card"));
         if let Some(when) = when {
             t.insert("when".into(), quoted(when));
             if when == "post" {
@@ -454,9 +454,9 @@ fn action_params(tables: &[Table]) -> BTreeMap<String, Vec<BTreeMap<String, Stri
     params
 }
 
-/// The `[[action]]`s are today's actions, [`ACTIONS`], then the reads [`READS`] answers, then
-/// the writes [`WRITES`] does, each in its code's order, and nothing else. A plugin exposes no
-/// values, so there is no `[[value]]`.
+/// The `[[action]]`s are the reads [`READS`] answers, then the writes [`WRITES`] does, each in
+/// its code's order, and nothing else: there is no action a slot calls that is neither. A
+/// plugin exposes no values, so there is no `[[value]]`.
 #[test]
 fn the_actions_are_the_actions_then_the_reads() {
     let tables = tables(MANIFEST);
@@ -466,9 +466,8 @@ fn the_actions_are_the_actions_then_the_reads() {
         .collect();
     assert_eq!(
         actions,
-        ACTIONS
+        READS
             .iter()
-            .chain(READS)
             .chain(WRITES)
             .map(|a| quoted(a))
             .collect::<Vec<_>>()
@@ -479,68 +478,8 @@ fn the_actions_are_the_actions_then_the_reads() {
     );
 }
 
-/// The `[[action]]`s are the ones [`from_call`](crate::lifecycle::from_call) decodes, in
-/// its order, each taking the card's handle first and then the parameters it reads; a member
-/// action's `member` defaults to the token's own member.
-#[test]
-fn the_actions_are_the_ones_the_code_answers() {
-    let tables = tables(MANIFEST);
-    let mut params = action_params(&tables);
-    params.retain(|action, _| ACTIONS.contains(&action.as_str()));
-    let required = |name: &str| {
-        vec![table(&[
-            ("name", &quoted(name)),
-            ("type", "\"str\""),
-            ("required", "true"),
-        ])]
-    };
-    let member = table(&[
-        ("name", "\"member\""),
-        ("type", "\"str\""),
-        ("default", &quoted(ME)),
-    ]);
-    let card = table(&[
-        ("name", &quoted(HANDLE)),
-        ("type", "\"Card\""),
-        ("required", "true"),
-    ]);
-    let mut want = BTreeMap::from([
-        ("add_label".to_string(), required("label")),
-        ("remove_label".to_string(), required("label")),
-        ("add_member".to_string(), vec![member.clone()]),
-        ("remove_member".to_string(), vec![member]),
-        ("comment".to_string(), required("text")),
-        (
-            "attach".to_string(),
-            [required("path"), required("name")].concat(),
-        ),
-        (
-            "fetch_attachment".to_string(),
-            [required("name"), required("to")].concat(),
-        ),
-    ]);
-    let mut move_to = required("list");
-    move_to.push(table(&[
-        ("name", "\"at\""),
-        ("type", "\"enum\""),
-        ("values", "[\"top\", \"bottom\"]"),
-        ("named_only", "true"),
-        ("default", "\"top\""),
-    ]));
-    want.insert("move_to".to_string(), move_to);
-    for action in ACTIONS {
-        want.entry(action.to_string())
-            .or_default()
-            .insert(0, card.clone());
-    }
-    assert_eq!(
-        params, want,
-        "mark_complete and archive take the card alone"
-    );
-    assert_eq!(ME, "me", "the member default is Trello's own alias");
-}
-
-/// Each read takes a `trello.Account` first and returns what it reads: `cards` the board by
+/// Each read takes a `trello.Account` first and returns what it reads: `card` the one card by
+/// its short link or id; `cards` the board by
 /// address or short link and then every filter named-only with none defaulted, bar whether
 /// archived cards count and the limit, which are named-only with their defaults; the rest the
 /// parameters they read, a handle where the read acts on one.
@@ -561,6 +500,7 @@ fn the_reads_take_an_account_and_return_what_they_read() {
         returns,
         BTreeMap::from(
             [
+                ("card", "\"Card\""),
                 ("cards", "\"list[Card]\""),
                 ("comments", "\"list[Comment]\""),
                 ("checklists", "\"list[Checklist]\""),
@@ -607,6 +547,10 @@ fn the_reads_take_an_account_and_return_what_they_read() {
         ),
     ];
     let want = BTreeMap::from([
+        (
+            "card".to_string(),
+            vec![acct.clone(), required("id", "str")],
+        ),
         ("cards".to_string(), cards),
         (
             "comments".to_string(),
@@ -646,7 +590,8 @@ fn the_reads_take_an_account_and_return_what_they_read() {
 /// comment, a checklist, a check item or an attachment — and each delete nothing; and the
 /// parameters are the code's: the handle each takes typed by its kind, the required ones first,
 /// then the named-only ones, `at` an enum of top and bottom that defaults to the bottom where
-/// the write makes something and has no default where it changes a card.
+/// the write makes something and has no default where it changes a card. A label write names
+/// its label, required; a member write names its member, which defaults to the token's own.
 #[test]
 fn the_writes_take_an_account_and_return_what_they_write() {
     let tables = tables(MANIFEST);
@@ -679,6 +624,10 @@ fn the_writes_take_an_account_and_return_what_they_write() {
                 ("delete_check_item", ""),
                 ("create_attachment", "\"Attachment\""),
                 ("delete_attachment", ""),
+                ("add_label", "\"Card\""),
+                ("remove_label", "\"Card\""),
+                ("add_member", "\"Card\""),
+                ("remove_member", "\"Card\""),
             ]
             .map(|(name, ty)| (name.to_string(), ty.to_string()))
         )
@@ -705,6 +654,7 @@ fn the_writes_take_an_account_and_return_what_they_write() {
     let comment = required("comment", "Comment");
     let checklist = required("checklist", "Checklist");
     let item = required("item", "Check_Item");
+    let member = param("member", "str", &[("default", &quoted(ME))]);
     let on_card = |extra: &[BTreeMap<String, String>]| {
         let mut params = vec![acct.clone(), card.clone()];
         params.extend(extra.iter().cloned());
@@ -781,12 +731,23 @@ fn the_writes_take_an_account_and_return_what_they_write() {
         ),
         (
             "delete_attachment".to_string(),
-            vec![acct, required("attachment", "Attachment")],
+            vec![acct.clone(), required("attachment", "Attachment")],
         ),
+        (
+            "add_label".to_string(),
+            on_card(&[required("label", "str")]),
+        ),
+        (
+            "remove_label".to_string(),
+            on_card(&[required("label", "str")]),
+        ),
+        ("add_member".to_string(), on_card(from_ref(&member))),
+        ("remove_member".to_string(), on_card(&[member])),
     ]);
     let mut params = action_params(&tables);
     params.retain(|action, _| WRITES.contains(&action.as_str()));
     assert_eq!(params, want);
+    assert_eq!(ME, "me", "the member default is Trello's own alias");
 }
 
 /// A plugin's kinds, actions, withables and handle types share one namespace

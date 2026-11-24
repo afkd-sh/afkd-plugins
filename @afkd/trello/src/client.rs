@@ -20,19 +20,36 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::attachment::{multipart, Attachment, MAX_ATTACHMENT_BYTES};
+use crate::attachment::{multipart, MAX_ATTACHMENT_BYTES};
 use crate::board::{BoardClient, BoardError, Card, CheckItem, Checklist, Comment};
 use crate::handles::{build_card, CardFields, Lookups};
 use crate::http::{
     BoardRequest, HttpClient, HttpError, Payload, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT,
 };
-use crate::lifecycle::ListPosition;
-use crate::rfc3339::{parse_rfc3339, parse_rfc3339_millis};
+use crate::rfc3339::parse_rfc3339;
 use crate::settings::MemberRef;
 use crate::wire::WireHandle;
 
 /// The Trello REST base (`https://api.trello.com/1`).
 pub(crate) const TRELLO_BASE: &str = "https://api.trello.com/1";
+
+/// Where a moved card lands in its destination list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ListPosition {
+    /// Land at the top of the list (the default).
+    #[default]
+    Top,
+    /// Land at the bottom of the list.
+    Bottom,
+}
+
+/// Trello's `pos` query value for a [`ListPosition`].
+pub(crate) fn pos_value(position: ListPosition) -> &'static str {
+    match position {
+        ListPosition::Top => "top",
+        ListPosition::Bottom => "bottom",
+    }
+}
 
 /// The failure vocabulary the shared HTTP spine reports through: the three staged
 /// [`BoardError`] variants, so the plumbing builds one without naming Trello. Every
@@ -139,7 +156,7 @@ impl TrelloClient {
     /// This client, retrying: a 429 is tried again, and a 5xx on a read, a `PUT` and a
     /// `DELETE` but never a `POST`, each after the wait Trello's rate-limit headers name or
     /// else one second doubling, while the wait ends before the call's deadline. The kind's
-    /// own client is not: its writes are the outbox's to retry.
+    /// own client is not: what it could not write is said and lost, or held for `release`.
     pub(crate) fn retrying(mut self) -> Self {
         self.http = self.http.retrying();
         self
@@ -271,10 +288,8 @@ impl TrelloClient {
 
     /// Resolve `member` to a member id, tagging any fault with `stage`.
     ///
-    /// The single resolution path: [`BoardClient::add_member`] and
-    /// [`BoardClient::resolve_member`] are its only callers, so the `self` memo is
-    /// shared between them while each keeps its own stage label — a swallowed poll
-    /// error still says whether the lifecycle action or the intake gate failed.
+    /// The single resolution path: [`BoardClient::resolve_member`] is its only caller, and
+    /// it keeps the `self` memo.
     fn resolve(
         &self,
         stage: &'static str,
@@ -310,46 +325,25 @@ impl TrelloClient {
             })
     }
 
-    /// Attach member `member_id` to card `card_id`.
+    /// The bytes of the attachment at `url`, an attachment's own `url` as a read of it gave
+    /// it: what `trello.download_attachment` writes to a path, tagged `download attachment`.
     ///
-    /// Unlike the other calls this rides the spine's *tolerating* send, because
-    /// Trello faults a re-add rather than treating it as a no-op: an
-    /// [`already_a_member`] fault is judged off the response body and swallowed so
-    /// the action stays idempotent across retries. Every other status still errors.
-    fn attach_member(
-        &self,
-        stage: &'static str,
-        card_id: &str,
-        member_id: &str,
-    ) -> Result<(), BoardError> {
-        let req = self
-            .http
-            .request("POST", &format!("/cards/{card_id}/idMembers"))
-            .query("value", member_id);
+    /// The credential goes only where the plugin already sends it, so a link to anywhere
+    /// else is refused before it is asked.
+    pub(crate) fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
+        let stage = "download attachment";
+        let at = origin(url);
+        if at.is_none() || !self.download_origins.contains(&at) {
+            let host = at.map_or_else(|| "no host".to_string(), |(_, host, _)| host);
+            return Err(BoardError::Refused {
+                stage,
+                reason: format!(
+                    "the attachment is hosted at {host}, which the plugin sends no credentials to"
+                ),
+            });
+        }
         self.http
-            .send_tolerating(stage, req, already_a_member)
-            .map(|_| ())
-    }
-}
-
-/// Whether an attach-member fault means "this member is already on the card".
-///
-/// Narrow on purpose: only a `400` whose body carries one of Trello's two
-/// phrasings for a re-add. A genuinely bad member id is also a `400`, with a
-/// different body, and must still fault rather than silently claim success.
-fn already_a_member(status: u16, body: &str) -> bool {
-    if status != 400 {
-        return false;
-    }
-    let body = body.to_ascii_lowercase();
-    body.contains("already a member") || body.contains("already on the card")
-}
-
-/// Trello's `pos` query value for a [`ListPosition`].
-pub(crate) fn pos_value(position: ListPosition) -> &'static str {
-    match position {
-        ListPosition::Top => "top",
-        ListPosition::Bottom => "bottom",
+            .get_bytes_at(stage, url, &self.authorization, MAX_ATTACHMENT_BYTES)
     }
 }
 
@@ -436,7 +430,7 @@ impl BoardClient for TrelloClient {
             .query("actions_limit", "1000")
             .query("action_memberCreator_fields", "fullName,username");
         // A 404 is "the card is gone", not a fault — the one status this call reads
-        // as an answer. It rides the tolerating send (as `attach_member` does) with
+        // as an answer. It rides the tolerating send with
         // the verdict latched here, so a body that *is* a 404 but fails to decode
         // still comes back `Ok(None)` while every other status stays an error.
         let gone = Cell::new(false);
@@ -540,26 +534,6 @@ impl BoardClient for TrelloClient {
         self.http.send(stage, req).map(|_| ())
     }
 
-    fn archive_card(&self, card_id: &str) -> Result<(), BoardError> {
-        let stage = "archive card";
-        let req = self
-            .http
-            .request("PUT", &format!("/cards/{card_id}"))
-            .query("closed", "true");
-        self.http.send(stage, req).map(|_| ())
-    }
-
-    fn complete_card(&self, card_id: &str) -> Result<(), BoardError> {
-        let stage = "complete card";
-        // Trello's "done state" for a card is `dueComplete`; the exact mapping
-        // is an open question (see spec/QUESTIONS.md).
-        let req = self
-            .http
-            .request("PUT", &format!("/cards/{card_id}"))
-            .query("dueComplete", "true");
-        self.http.send(stage, req).map(|_| ())
-    }
-
     fn add_label(&self, board_id: &str, card_id: &str, label_name: &str) -> Result<(), BoardError> {
         let stage = "add label";
         // Resolve the label name against the board's existing labels, creating
@@ -620,115 +594,13 @@ impl BoardClient for TrelloClient {
         self.http.send(stage, req).map(|_| ())
     }
 
-    fn add_member(
-        &self,
-        board_id: &str,
-        card_id: &str,
-        member: &MemberRef,
-    ) -> Result<(), BoardError> {
-        let stage = "add member";
-        // Resolve the operand to a member id first, so an unknown username faults
-        // before anything is posted to the card.
-        let member_id = self.resolve(stage, board_id, member)?;
-        self.attach_member(stage, card_id, &member_id)
-    }
-
-    fn remove_member(
-        &self,
-        board_id: &str,
-        card_id: &str,
-        member: &MemberRef,
-    ) -> Result<(), BoardError> {
-        let stage = "remove member";
-        // Resolve the operand to a member id first, so an unknown username faults
-        // before the card is touched. The DELETE is idempotent server-side —
-        // Trello returns the card's remaining members whether or not the member
-        // was attached — so no re-remove swallow is needed (unlike `attach_member`,
-        // which exists only because Trello *faults* a re-add).
-        let member_id = self.resolve(stage, board_id, member)?;
-        let req = self
-            .http
-            .request("DELETE", &format!("/cards/{card_id}/idMembers/{member_id}"));
-        self.http.send(stage, req).map(|_| ())
-    }
-
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError> {
         self.resolve("resolve member", board_id, member)
-    }
-
-    fn attach_file(&self, card_id: &str, name: &str, bytes: &[u8]) -> Result<(), BoardError> {
-        let stage = "post attachment";
-        // Multipart, with the credential in the query like every other write (ADR-0046).
-        let (content_type, body) = multipart(name, bytes);
-        let req = self
-            .http
-            .request("POST", &format!("/cards/{card_id}/attachments"));
-        self.http
-            .send_bytes(stage, req, &content_type, &body)
-            .map(drop)
-    }
-
-    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
-        let stage = "list attachments";
-        let req = self
-            .http
-            .request("GET", &format!("/cards/{card_id}/attachments"))
-            .query("fields", "id,name,date,url,isUpload,bytes");
-        parse_attachments(stage, &self.http.send(stage, req)?)
-    }
-
-    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
-        let stage = "download attachment";
-        // The url is the listing's, verbatim, so the credential goes only where the plugin
-        // already sends it: a link to anywhere else is refused before it is asked.
-        let at = origin(url);
-        if at.is_none() || !self.download_origins.contains(&at) {
-            let host = at.map_or_else(|| "no host".to_string(), |(_, host, _)| host);
-            return Err(BoardError::Refused {
-                stage,
-                reason: format!(
-                    "the attachment is hosted at {host}, which the plugin sends no credentials to"
-                ),
-            });
-        }
-        self.http
-            .get_bytes_at(stage, url, &self.authorization, MAX_ATTACHMENT_BYTES)
     }
 
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         self.http.set_deadline(deadline)
     }
-}
-
-/// Parse a card's attachment listing. An entry with no id or url is passed over: nothing
-/// could fetch it.
-pub(crate) fn parse_attachments(
-    stage: &'static str,
-    body: &str,
-) -> Result<Vec<Attachment>, BoardError> {
-    let value = BoardError::decode_json(stage, body)?;
-    let array = BoardError::as_array(stage, &value, "attachments")?;
-    Ok(array
-        .iter()
-        .filter_map(|a| {
-            Some(Attachment {
-                id: a.get("id")?.as_str()?.to_string(),
-                name: a
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                // To the millisecond: two uploads a second apart often share the second.
-                date: a
-                    .get("date")
-                    .and_then(Value::as_str)
-                    .and_then(parse_rfc3339_millis),
-                url: a.get("url")?.as_str()?.to_string(),
-                is_upload: a.get("isUpload").and_then(Value::as_bool).unwrap_or(false),
-                bytes: a.get("bytes").and_then(Value::as_u64),
-            })
-        })
-        .collect())
 }
 
 /// Recover a Trello action/comment's post time from its id.
@@ -2080,30 +1952,6 @@ mod tests {
     }
 
     #[test]
-    fn archive_card_puts_closed_true() {
-        let stub = Stub::serve(ok_json("{}"));
-        let client = stub.client("k", "t");
-        client.archive_card("CARD").unwrap();
-
-        let req = stub.captured();
-        assert_eq!(req.method, "PUT");
-        assert_eq!(req.path(), "/cards/CARD");
-        assert!(req.has_query("closed", "true"));
-    }
-
-    #[test]
-    fn complete_card_puts_duecomplete_true() {
-        let stub = Stub::serve(ok_json("{}"));
-        let client = stub.client("k", "t");
-        client.complete_card("CARD").unwrap();
-
-        let req = stub.captured();
-        assert_eq!(req.method, "PUT");
-        assert_eq!(req.path(), "/cards/CARD");
-        assert!(req.has_query("dueComplete", "true"));
-    }
-
-    #[test]
     fn add_label_attaches_existing_label_by_id() {
         // The label already exists on the board: two requests — GET the board's
         // labels, then POST the resolved id onto the card's idLabels (no create).
@@ -2206,284 +2054,6 @@ mod tests {
         let reqs = stub.captured_seq(1);
         assert_eq!(reqs[0].method, "GET");
         assert_eq!(reqs[0].path(), "/boards/BID/labels");
-    }
-
-    #[test]
-    fn add_member_self_resolves_me_once_and_posts() {
-        // Two `self` adds on the same client: the authed id is fetched once and
-        // memoized, so the second add goes straight to the attach POST.
-        let me = r#"{"id":"me1","username":"afkd-bot"}"#;
-        let stub = Stub::serve_seq(vec![
-            ok_json_close(me),
-            ok_json_close("{}"),
-            ok_json_close("{}"),
-        ]);
-        let client = stub.client("k", "t");
-
-        client
-            .add_member("BID", "CARD", &MemberRef::SelfMember)
-            .unwrap();
-        client
-            .add_member("BID", "CARD", &MemberRef::SelfMember)
-            .unwrap();
-
-        let reqs = stub.captured_seq(3);
-        assert_eq!(reqs[0].method, "GET");
-        assert_eq!(reqs[0].path(), "/members/me");
-        assert_eq!(reqs[1].method, "POST");
-        assert_eq!(reqs[1].path(), "/cards/CARD/idMembers");
-        assert!(
-            reqs[1].has_query("value", "me1"),
-            "query: {:?}",
-            reqs[1].query()
-        );
-        // The memo holds: the second add issues no second `GET /members/me`.
-        assert_eq!(reqs[2].method, "POST");
-        assert_eq!(reqs[2].path(), "/cards/CARD/idMembers");
-        assert!(reqs[2].has_query("value", "me1"));
-    }
-
-    #[test]
-    fn add_member_by_username_resolves_and_posts() {
-        // A username is resolved against the board's members, then attached by id.
-        let members = r#"[{"id":"m1","username":"marisa"},{"id":"m2","username":"robin"}]"#;
-        let stub = Stub::serve_seq(vec![ok_json_close(members), ok_json_close("{}")]);
-        let client = stub.client("k", "t");
-
-        client
-            .add_member("BID", "CARD", &MemberRef::Username("marisa".into()))
-            .unwrap();
-
-        let reqs = stub.captured_seq(2);
-        assert_eq!(reqs[0].method, "GET");
-        assert_eq!(reqs[0].path(), "/boards/BID/members");
-        assert!(reqs[0].has_query("key", "k"));
-        assert!(reqs[0].has_query("token", "t"));
-        assert_eq!(reqs[1].method, "POST");
-        assert_eq!(reqs[1].path(), "/cards/CARD/idMembers");
-        assert!(
-            reqs[1].has_query("value", "m1"),
-            "query: {:?}",
-            reqs[1].query()
-        );
-    }
-
-    #[test]
-    fn add_member_unknown_username_is_member_not_found_and_posts_nothing() {
-        // Resolution precedes the attach, so an unrecognized username never posts.
-        // Exactly one response is queued: the stub's accept loop ends after the GET,
-        // and the single captured request pins that it was the GET.
-        let stub = Stub::serve_seq(vec![ok_json_close("[]")]);
-        let client = stub.client("k", "t");
-
-        let err = client
-            .add_member("BID", "CARD", &MemberRef::Username("ghost".into()))
-            .unwrap_err();
-        assert!(
-            matches!(&err, BoardError::MemberNotFound { stage: "add member", name } if name == "ghost"),
-            "got {err:?}"
-        );
-
-        let reqs = stub.captured_seq(1);
-        assert_eq!(reqs[0].method, "GET");
-        assert_eq!(reqs[0].path(), "/boards/BID/members");
-    }
-
-    #[test]
-    fn two_add_members_post_both_and_clear_nothing() {
-        // The additive contract at the request level: two members, two attach POSTs
-        // carrying distinct ids, and nothing that replaces or clears the member set.
-        // Board membership is deliberately uncached, so each add re-resolves it.
-        let members = r#"[{"id":"m1","username":"marisa"},{"id":"m2","username":"robin"}]"#;
-        let stub = Stub::serve_seq(vec![
-            ok_json_close(members),
-            ok_json_close("{}"),
-            ok_json_close(members),
-            ok_json_close("{}"),
-        ]);
-        let client = stub.client("k", "t");
-
-        client
-            .add_member("BID", "CARD", &MemberRef::Username("marisa".into()))
-            .unwrap();
-        client
-            .add_member("BID", "CARD", &MemberRef::Username("robin".into()))
-            .unwrap();
-
-        let reqs = stub.captured_seq(4);
-        assert_eq!(reqs[0].path(), "/boards/BID/members");
-        assert_eq!(reqs[2].path(), "/boards/BID/members");
-        assert!(reqs[1].has_query("value", "m1"));
-        assert!(reqs[3].has_query("value", "m2"));
-        // Nothing replaces the member set: no PUT/DELETE, and no request rewrites
-        // the card itself (`PUT /cards/CARD?idMembers=…` would be the replace).
-        for req in &reqs {
-            assert!(
-                req.method == "GET" || req.method == "POST",
-                "unexpected {} {}",
-                req.method,
-                req.target
-            );
-            assert_ne!(req.path(), "/cards/CARD", "nothing rewrites the card");
-        }
-    }
-
-    #[test]
-    fn add_member_swallows_the_already_a_member_fault() {
-        // Trello faults a re-add rather than treating it as a no-op; the narrow
-        // 400-with-that-message swallow keeps `add_member` idempotent across retries.
-        let me = r#"{"id":"me1"}"#;
-        let already = r#"{"message":"member is already on the card"}"#;
-        let fault = format!(
-            "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
-            already.len(),
-            already
-        );
-        let stub = Stub::serve_seq(vec![ok_json_close(me), fault]);
-        let client = stub.client("k", "t");
-
-        client
-            .add_member("BID", "CARD", &MemberRef::SelfMember)
-            .unwrap();
-
-        let reqs = stub.captured_seq(2);
-        assert_eq!(reqs[1].path(), "/cards/CARD/idMembers");
-    }
-
-    #[test]
-    fn add_member_surfaces_an_unrecognized_attach_fault() {
-        // A 400 that is *not* the re-add fault (here: a bad member id) still errors,
-        // rather than silently claiming the member was added.
-        let me = r#"{"id":"me1"}"#;
-        let bad = r#"{"message":"invalid value for idMember"}"#;
-        let fault = format!(
-            "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
-            bad.len(),
-            bad
-        );
-        let stub = Stub::serve_seq(vec![ok_json_close(me), fault]);
-        let client = stub.client("k", "t");
-
-        let err = client
-            .add_member("BID", "CARD", &MemberRef::SelfMember)
-            .unwrap_err();
-        assert!(
-            matches!(
-                err,
-                BoardError::Status {
-                    stage: "add member",
-                    status: 400
-                }
-            ),
-            "got {err:?}"
-        );
-        let _ = stub.captured_seq(2);
-    }
-
-    #[test]
-    fn remove_member_self_resolves_me_and_deletes() {
-        // The mirror of `add_member`: resolve the authed id, then DELETE it off the
-        // card's members — the detach the config's `remove_member self` asks for.
-        let me = r#"{"id":"me1","username":"afkd-bot"}"#;
-        let stub = Stub::serve_seq(vec![ok_json_close(me), ok_json_close("{}")]);
-        let client = stub.client("k", "t");
-
-        client
-            .remove_member("BID", "CARD", &MemberRef::SelfMember)
-            .unwrap();
-
-        let reqs = stub.captured_seq(2);
-        assert_eq!(reqs[0].method, "GET");
-        assert_eq!(reqs[0].path(), "/members/me");
-        assert_eq!(reqs[1].method, "DELETE");
-        assert_eq!(reqs[1].path(), "/cards/CARD/idMembers/me1");
-        assert!(
-            reqs[1].has_query("key", "k"),
-            "query: {:?}",
-            reqs[1].query()
-        );
-        assert!(
-            reqs[1].has_query("token", "t"),
-            "query: {:?}",
-            reqs[1].query()
-        );
-    }
-
-    #[test]
-    fn remove_member_repeat_is_a_no_op() {
-        // Trello's DELETE /idMembers is idempotent server-side, returning a 200 with
-        // the card's remaining members whether or not the member was attached. So two
-        // successive `self` removals both succeed, and the authed id is resolved once
-        // (memoized) — the second removal goes straight to the DELETE.
-        let me = r#"{"id":"me1","username":"afkd-bot"}"#;
-        let stub = Stub::serve_seq(vec![
-            ok_json_close(me),
-            ok_json_close("{}"),
-            ok_json_close("{}"),
-        ]);
-        let client = stub.client("k", "t");
-
-        client
-            .remove_member("BID", "CARD", &MemberRef::SelfMember)
-            .unwrap();
-        client
-            .remove_member("BID", "CARD", &MemberRef::SelfMember)
-            .unwrap();
-
-        let reqs = stub.captured_seq(3);
-        assert_eq!(reqs[0].method, "GET");
-        assert_eq!(reqs[0].path(), "/members/me");
-        assert_eq!(reqs[1].method, "DELETE");
-        assert_eq!(reqs[1].path(), "/cards/CARD/idMembers/me1");
-        // The memo holds: the second removal issues no second `GET /members/me`.
-        assert_eq!(reqs[2].method, "DELETE");
-        assert_eq!(reqs[2].path(), "/cards/CARD/idMembers/me1");
-    }
-
-    #[test]
-    fn remove_member_unknown_username_is_member_not_found_and_deletes_nothing() {
-        // Resolution precedes the DELETE, so an unrecognized username never touches
-        // the card. Exactly one response is queued: the stub's accept loop ends after
-        // the GET, and the single captured request pins that it was the GET.
-        let stub = Stub::serve_seq(vec![ok_json_close("[]")]);
-        let client = stub.client("k", "t");
-
-        let err = client
-            .remove_member("BID", "CARD", &MemberRef::Username("ghost".into()))
-            .unwrap_err();
-        assert!(
-            matches!(&err, BoardError::MemberNotFound { stage: "remove member", name } if name == "ghost"),
-            "got {err:?}"
-        );
-
-        let reqs = stub.captured_seq(1);
-        assert_eq!(reqs[0].method, "GET");
-        assert_eq!(reqs[0].path(), "/boards/BID/members");
-    }
-
-    #[test]
-    fn add_member_maps_a_transport_failure_on_the_attach() {
-        // The attach POST inspects the error body itself, so it cannot reuse `body`'s
-        // outcome mapping and its transport arm needs its own proof. The `me` GET is
-        // served; the attach connection is then closed with no reply at all, which is
-        // a transport failure — tagged with the `add member` stage.
-        let stub = Stub::serve_seq(vec![ok_json_close(r#"{"id":"me1"}"#), String::new()]);
-        let client = stub.client("k", "t");
-
-        let err = client
-            .add_member("BID", "CARD", &MemberRef::SelfMember)
-            .unwrap_err();
-        assert!(
-            matches!(
-                err,
-                BoardError::Transport {
-                    stage: "add member",
-                    ..
-                }
-            ),
-            "got {err:?}"
-        );
-        let _ = stub.captured_seq(2);
     }
 
     #[test]
@@ -2939,21 +2509,6 @@ mod tests {
     }
 
     #[test]
-    fn already_a_member_only_matches_the_documented_fault() {
-        // Trello's two phrasings for a re-add, matched case-insensitively on a 400.
-        assert!(already_a_member(
-            400,
-            "member is already a member of the card"
-        ));
-        assert!(already_a_member(400, "That member is Already On The Card"));
-        // A different 400 (a bad member id) must still fault, as must any other
-        // status carrying the message.
-        assert!(!already_a_member(400, "invalid value for idMember"));
-        assert!(!already_a_member(404, "already a member"));
-        assert!(!already_a_member(500, ""));
-    }
-
-    #[test]
     fn parse_created_id_reads_the_id_else_decode_errors() {
         assert_eq!(
             parse_created_id("add label", r#"{"id":"new1","name":"Problem"}"#).unwrap(),
@@ -3208,10 +2763,8 @@ mod tests {
 
     #[test]
     fn resolve_member_unknown_username_is_tagged_with_the_gate_stage() {
-        // The gate and the lifecycle action share one resolution path but keep their
-        // own stage labels, so a swallowed poll error says which one failed. The
-        // `add member` half is pinned by
-        // `add_member_unknown_username_is_member_not_found_and_posts_nothing`.
+        // The gate keeps its own stage label, so a swallowed poll error says which gate
+        // failed.
         let stub = Stub::serve_seq(vec![ok_json_close("[]")]);
         let client = stub.client("k", "t");
 
@@ -3329,76 +2882,6 @@ mod tests {
         assert_eq!(pos_value(ListPosition::Bottom), "bottom");
     }
 
-    /// An upload is one multipart POST to the card's attachments, the credential in the
-    /// query as on every other write, the name in its own part and the bytes verbatim —
-    /// NULs, invalid UTF-8 and a CRLF included.
-    #[test]
-    fn attach_file_posts_one_multipart_form_with_the_credential_in_the_query() {
-        let stub = Stub::serve(ok_json(r#"{"id":"att1","name":"work.patch"}"#));
-        let bytes = b"diff --git a/x b/x\n\0\xe5\xe4\xf6\r\n".to_vec();
-        stub.client("KEY", "TOK")
-            .attach_file("c1", "work – 計画.patch", &bytes)
-            .unwrap();
-        let req = stub.captured();
-        assert_eq!(req.method, "POST");
-        assert_eq!(req.path(), "/cards/c1/attachments");
-        assert_eq!(
-            req.query(),
-            [("key".into(), "KEY".into()), ("token".into(), "TOK".into())]
-        );
-        let (content_type, body) = multipart("work – 計画.patch", &bytes);
-        assert_eq!(req.header("content-type"), Some(content_type));
-        assert_eq!(req.raw, body);
-    }
-
-    /// The listing asks for the fields the pick reads, and reads them back: a file with
-    /// its date and size, a link, and an entry with no url, which nothing could fetch.
-    #[test]
-    fn card_attachments_reads_files_and_links() {
-        let body = r#"[
-            {"id":"a1","name":"plan – 計画.md","date":"2026-10-25T04:31:07.123Z",
-             "url":"https://trello.com/1/cards/c1/attachments/a1/download/plan.md",
-             "isUpload":true,"bytes":2048},
-            {"id":"a2","name":"plan – 計画.md","date":"2026-10-25T05:00:00.000Z",
-             "url":"https://example.com/elsewhere","isUpload":false,"bytes":null},
-            {"id":"a3","name":"broken","isUpload":true}
-        ]"#;
-        let stub = Stub::serve(ok_json(body));
-        let listed = stub.client("KEY", "TOK").card_attachments("c1").unwrap();
-        assert!(
-            listed[0].date > parse_rfc3339("2026-10-25T04:31:07Z"),
-            "the milliseconds are kept"
-        );
-        let req = stub.captured();
-        assert_eq!(req.path(), "/cards/c1/attachments");
-        assert!(
-            req.has_query("fields", "id,name,date,url,isUpload,bytes"),
-            "{:?}",
-            req.query()
-        );
-        assert_eq!(
-            listed,
-            [
-                Attachment {
-                    id: "a1".into(),
-                    name: "plan – 計画.md".into(),
-                    date: parse_rfc3339_millis("2026-10-25T04:31:07.123Z"),
-                    url: "https://trello.com/1/cards/c1/attachments/a1/download/plan.md".into(),
-                    is_upload: true,
-                    bytes: Some(2048),
-                },
-                Attachment {
-                    id: "a2".into(),
-                    name: "plan – 計画.md".into(),
-                    date: parse_rfc3339_millis("2026-10-25T05:00:00Z"),
-                    url: "https://example.com/elsewhere".into(),
-                    is_upload: false,
-                    bytes: None,
-                },
-            ]
-        );
-    }
-
     /// A download goes to the url verbatim with the OAuth header and no query credential,
     /// and its bytes come back exact.
     #[test]
@@ -3472,7 +2955,7 @@ mod tests {
                 ),
                 "{url}"
             );
-            assert!(!crate::outbox::transient(&err), "{url}");
+            assert!(matches!(err, BoardError::Refused { .. }), "{url}");
         }
     }
 
@@ -3629,7 +3112,7 @@ mod tests {
     }
 
     /// The kind's own client is not retrying: a 429 and a 5xx are the call's error at once,
-    /// for the outbox to retry, and nothing waits.
+    /// for the caller to say or lose, and nothing waits.
     #[test]
     fn the_kinds_own_client_does_not_retry() {
         for code in [429, 503] {
