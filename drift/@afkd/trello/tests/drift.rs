@@ -638,13 +638,16 @@ fn claim_from_the_second_list(home: &Path) {
 /// Why both attempts of the failing service fail: the outage's own sentence.
 const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network went away 🚨";
 
+/// The file under the work dir where `on_fail` notes each write that came back `.err`.
+const REFUSED: &str = "on_fail_refused";
+
 /// What `on_fail` faults with when one of its writes lands while Trello is out of reach.
 const LANDED_IN_OUTAGE: &str = "an on_fail write landed during the outage";
 
 /// The selfdev service's failure path, cut down: two attempts, and the live config's
 /// `on_fail` — to the bottom of Backlog, with the Problem label — except that it matches each
 /// write: one that lands faults the slot, since Trello is out of reach when it runs, and one
-/// that comes back `.err` is the answer expected. Each attempt holds until the test creates
+/// that comes back `.err` is the answer expected, noted in a line of `REFUSED`. Each attempt holds until the test creates
 /// `release`, then fails.
 fn failing_service(home: &Path, base_url: &str) -> String {
     format!(
@@ -669,11 +672,15 @@ widgets :: service(trello) {{
   on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {{
     match trello.update_card(account, card, list="Backlog", at=.bottom) {{
       .ok(_) => fail("{LANDED_IN_OUTAGE}")
-      .err(_) => {{ }}
+      .err(_) => {{
+        $ echo update_card >> {home}/{REFUSED}
+      }}
     }}
     match trello.add_label(account, card, "Problem") {{
       .ok(_) => fail("{LANDED_IN_OUTAGE}")
-      .err(_) => {{ }}
+      .err(_) => {{
+        $ echo add_label >> {home}/{REFUSED}
+      }}
     }}
   }}
 
@@ -722,6 +729,17 @@ fn fail_one_card_through_an_outage(home: &Path) {
                 .stderr_so_far()
                 .contains("afkd holds the claim and releases it on a later beat")
         },
+    );
+    // `on_fail` runs after the finish reply: Trello stays out until both of its writes have
+    // come back `.err`, or one could land once it is restored.
+    let refused = home.join(REFUSED);
+    wait_for(
+        home,
+        &fake,
+        &card,
+        &daemon,
+        "both of on_fail's writes are refused",
+        || std::fs::read_to_string(&refused).is_ok_and(|seen| seen.lines().count() >= 2),
     );
     assert!(!fake.dropped().is_empty(), "the outage dropped requests");
     assert!(
@@ -814,7 +832,7 @@ fn two_lists_leg_claims_a_card_from_the_second_list() {
 }
 
 #[test]
-fn outage_leg_a_failed_card_still_reaches_backlog_with_its_attempt_notes() {
+fn outage_leg_a_failed_card_is_held_then_released_with_nothing_retried_or_queued() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
