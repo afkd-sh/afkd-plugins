@@ -4,19 +4,24 @@
 //! against the afkd it will meet ([`bin_path`]).
 //!
 //! - The **install** leg installs the tree the release tarball holds and runs one card
-//!   through it on a real daemon, its slots' actions crossing as `call`s on the card each
-//!   is passed and its slots reading every field the card's handle declares; its `on_claim`
-//!   reads the board with `trello.cards` and faults the run unless the card it was passed is
-//!   `==` the card read, which holds a claimed card and a read one to be one handle.
+//!   through it end to end on a real daemon: a `service(trello)` against the fake claims the
+//!   card from its `claim_from` list; its `on_claim` reads the board with `trello.cards` and
+//!   faults the run unless the card it was passed is `==` the card read; its `on_run` reads
+//!   the card's comments with `trello.comments(account, card)`, writes one with
+//!   `trello.create_comment(account, card, …)` and reads every field the card's handle
+//!   declares; its `on_done` moves the card with `trello.update_card(account, card, list=…)`.
+//!   The comment landed, the card moved and the claim was released.
 //! - The **two lists** leg claims, on a real daemon, a card from the second of the two
 //!   lists its `claim_from` names, past a held card in the first.
 //! - The **outage** leg fails a card through both its attempts while Trello is out of
-//!   reach, and holds the card to its failed state once Trello is back: both attempt notes
-//!   on it, in Backlog with the Problem label, its claim released.
-//! - The **attachments** leg fetches, in `on_claim`, the newest of two plans an earlier
-//!   attempt left on the card, and finds no patch; its `on_run` then attaches one, and
-//!   the card holds it byte for byte.
-//! - The **handle** leg holds `afkd validate` to refusing an action called without its card.
+//!   reach: `on_fail`'s writes come back `.err`, the notes the plugin could not post are said
+//!   lost and never queued, the finish is held, and once Trello is back afkd's `release`
+//!   frees the claim and the card is left in its list.
+//! - The **attachments** leg downloads, in `on_claim`, the newest of two plans an earlier
+//!   attempt left on the card with `trello.attachments` and `trello.download_attachment`, and
+//!   finds no patch; its `on_run` then uploads one with `trello.create_attachment`, and the
+//!   card holds it byte for byte.
+//! - The **handle** leg holds `afkd validate` to refusing a call made without its card.
 //! - The **required setting** leg holds `afkd validate` to refusing a service that names no
 //!   `claim_from`.
 //! - The **kind** leg holds `afkd validate` to taking a service written `service(trello)` and
@@ -184,6 +189,8 @@ fn seed() -> (FakeTrello, String) {
     for list in ["Up for Grabs", "In Progress", "Review"] {
         fake.list(list);
     }
+    // A label a slot may put on a card: no write makes one the board lacks.
+    fake.board_label(BOARD, "Problem", Some("red"));
     let chen = fake.member("chen", "陳大文");
     let card = fake.card("Up for Grabs", SHORT_LINK, TITLE, BODY);
     for label in LABELS {
@@ -194,15 +201,16 @@ fn seed() -> (FakeTrello, String) {
 }
 
 /// The service that drives the seeded card, `home` its work dir: a v2 file importing the
-/// plugin, whose slots call its actions on the card they are passed — `add_member` with its
-/// `member` left to its default — and whose `on_done` comment afkd interpolates from the outcome and the
-/// card's name. The run holds until the test creates `release` — bounded, so a test that
-/// never does cannot wedge it — which is what lets the test see the claim and the run
-/// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each,
-/// and the description to [`DESCRIPTION`]. Its `on_claim` first reads the board's cards of
-/// the list with `trello.cards`, through the `trello.Account` its slot is passed, and faults the
-/// run unless the card it was passed is `==` the one card read ([`claim_check`]) — the
-/// claimed card and the card read are one handle to a real afkd.
+/// plugin, whose slots reach Trello through the `trello.Account` they are passed — `on_claim`
+/// puts the token's own member on the card (`add_member` with its `member` left to its default)
+/// and moves it, `on_done` moves it to Review. The run holds until the test creates `release`
+/// — bounded, so a test that never does cannot wedge it — which is what lets the test see the
+/// claim and the run mid-flight; then it reads the card's comments with `trello.comments` and
+/// writes one saying how many it read with `trello.create_comment`, writes every field of the
+/// card's handle to [`FIELDS`], a line each, and the description to [`DESCRIPTION`]. Its
+/// `on_claim` first reads the board's cards of the list with `trello.cards` and faults the run
+/// unless the card it was passed is `==` the one card read ([`claim_check`]) — the claimed card
+/// and the card read are one handle to a real afkd.
 fn service(home: &Path, base_url: &str) -> String {
     service_with(
         home,
@@ -259,17 +267,34 @@ widgets :: service(trello) {{
   max_attempts 1
 
   on_claim proc(account: trello.Account, card: trello.Card) {{
-{check}    trello.add_member(card)
-    trello.move_to(card, "In Progress", at=.top)
+{check}    match trello.add_member(account, card) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.add_member: #{{e.message}}")
+    }}
+    match trello.update_card(account, card, list="In Progress", at=.top) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.update_card: #{{e.message}}")
+    }}
   }}
   on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {{
-    trello.move_to(card, "Review", at=.top)
-    trello.comment(card, "done in #{{outcome.duration}}: #{{card.name}}")
+    match trello.update_card(account, card, list="Review", at=.top) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.update_card: #{{e.message}}")
+    }}
   }}
 
   work_dir "{home}"
   on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+    match trello.comments(account, card) {{
+      .ok(thread) => {{
+        match trello.create_comment(account, card, "saw #{{len(thread)}} comments on #{{card.name}}") {{
+          .ok(_) => {{ }}
+          .err(e) => fail("trello.create_comment: #{{e.message}}")
+        }}
+      }}
+      .err(e) => fail("trello.comments: #{{e.message}}")
+    }}
     $ echo number #{{card.number}} >> {FIELDS}
     $ echo name #{{card.name}} >> {FIELDS}
     $ echo url #{{card.url}} >> {FIELDS}
@@ -425,9 +450,10 @@ fn read(path: &Path) -> String {
 /// Drive one card through the plugin, installed in `home`, on a real daemon: it is
 /// **claimed** (the claim comment, and `on_claim`'s calls added the token's own member and
 /// moved it), **run** (its run dir is named for the card, its task carries the card and its
-/// thread whole, and `on_run` read every field of its handle as the plugin sent it) and
-/// **finished** (the claim released, and `on_done`'s calls moved it and commented with its
-/// name), and the daemon then drains clean.
+/// thread whole, and `on_run` read every field of its handle as the plugin sent it, read the
+/// thread with `trello.comments` and wrote a comment saying how long it was) and **finished**
+/// (the claim released, and `on_done`'s call moved the card to Review), and the daemon then
+/// drains clean.
 fn drive_one_card(home: &Path) {
     let (fake, card) = seed();
     // A member already on the card, and a due date marked complete, so the fields the run
@@ -480,13 +506,19 @@ fn drive_one_card(home: &Path) {
     wait_for(home, &fake, &card, &daemon, "the card is finished", || {
         fake.list_of(&card) == "Review" && !claimed(&fake, &card)
     });
+    // `on_run` read the thread — Chen's question and afkd's own claim — and said so on the card,
+    // as the token's member; the claim is released and the card moved.
     let me = fake.me();
     assert!(
-        fake.comments(&card).iter().any(|c| c.author == me
-            && c.text.starts_with("done in ")
-            && c.text.ends_with(&format!(": {TITLE}"))
-            && !c.text.contains("#{")),
-        "on_done's comment landed with its run fact and the card's name filled in:\n{}",
+        fake.comments(&card)
+            .iter()
+            .any(|c| c.author == me && c.text == format!("saw 2 comments on {TITLE}")),
+        "on_run's comment landed with the count it read and the card's name filled in:\n{}",
+        dump(home, &fake, &card, &daemon)
+    );
+    assert!(
+        !claimed(&fake, &card),
+        "the claim is released:\n{}",
         dump(home, &fake, &card, &daemon)
     );
     // The `on_claim` read the board with `trello.cards` and held the card it was passed to
@@ -606,9 +638,14 @@ fn claim_from_the_second_list(home: &Path) {
 /// Why both attempts of the failing service fail: the outage's own sentence.
 const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network went away 🚨";
 
+/// What `on_fail` faults with when one of its writes lands while Trello is out of reach.
+const LANDED_IN_OUTAGE: &str = "an on_fail write landed during the outage";
+
 /// The selfdev service's failure path, cut down: two attempts, and the live config's
-/// `on_fail` — to the bottom of Backlog, with the Problem label. Each attempt holds until
-/// the test creates `release`, then fails.
+/// `on_fail` — to the bottom of Backlog, with the Problem label — except that it matches each
+/// write: one that lands faults the slot, since Trello is out of reach when it runs, and one
+/// that comes back `.err` is the answer expected. Each attempt holds until the test creates
+/// `release`, then fails.
 fn failing_service(home: &Path, base_url: &str) -> String {
     format!(
         r#"import "afkd"
@@ -624,11 +661,20 @@ widgets :: service(trello) {{
   max_attempts 2
 
   on_claim proc(account: trello.Account, card: trello.Card) {{
-    trello.move_to(card, "In Progress", at=.top)
+    match trello.update_card(account, card, list="In Progress", at=.top) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.update_card: #{{e.message}}")
+    }}
   }}
   on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {{
-    trello.move_to(card, "Backlog", at=.bottom)
-    trello.add_label(card, "Problem")
+    match trello.update_card(account, card, list="Backlog", at=.bottom) {{
+      .ok(_) => fail("{LANDED_IN_OUTAGE}")
+      .err(_) => {{ }}
+    }}
+    match trello.add_label(account, card, "Problem") {{
+      .ok(_) => fail("{LANDED_IN_OUTAGE}")
+      .err(_) => {{ }}
+    }}
   }}
 
   work_dir "{home}"
@@ -643,11 +689,12 @@ widgets :: service(trello) {{
 }
 
 /// The 2026-10-01 incident, replayed on a real daemon: Trello goes out of reach once the
-/// card is claimed and stays out through both failed attempts, the finish and every action
-/// `on_fail` calls, and past the first retry. The plugin queues each write it cannot
-/// deliver, and once Trello is back
-/// the card ends in its failed state — both attempt notes and the watermark on it, in
-/// Backlog with the Problem label, its claim released — with nothing given up.
+/// card is claimed and stays out through both failed attempts, the finish and every write
+/// `on_fail` makes. The plugin retries nothing: the attempt notes and the watermark it could
+/// not post are said lost, naming the card, and `on_fail`'s writes come back `.err` — a write
+/// that landed would fault the slot. The finish is held with the claim on the card; once
+/// Trello is back afkd's `release` of its key frees the claim, and the card is left in the
+/// list `on_claim` put it in, with no note, no watermark, no Problem label and nothing queued.
 fn fail_one_card_through_an_outage(home: &Path) {
     let (fake, card) = seed();
     fake.list("Backlog");
@@ -660,83 +707,69 @@ fn fail_one_card_through_an_outage(home: &Path) {
         claimed(&fake, &card) && fake.list_of(&card) == "In Progress"
     });
 
-    let outage_start = Instant::now();
     fake.outage();
     std::fs::write(home.join("release"), "").expect("release the run");
-    // `on_fail`'s last action, queued behind everything before it: the attempt notes, the
-    // watermark and the move. Seeing it means the slot ran to its end during the outage.
-    let queued_last = "adding the label \"Problem\" is queued behind them";
+    // Both attempts failed and the finish could not release the claim: the plugin said it
+    // would hold it for afkd's later `release`. The watermark and both notes went the same way.
     wait_for(
         home,
         &fake,
         &card,
         &daemon,
-        "on_fail runs through the outage",
-        || daemon.stderr_so_far().contains(queued_last),
-    );
-    // And the outage outlasts the first retry, 5 s after the first failure.
-    wait_for(
-        home,
-        &fake,
-        &card,
-        &daemon,
-        "a retry fails in the outage",
+        "the finish is held through the outage",
         || {
             daemon
                 .stderr_so_far()
-                .contains("is tried again in 10s (try 3)")
+                .contains("afkd holds the claim and releases it on a later beat")
         },
     );
-    fake.restore();
-    let outage_for = outage_start.elapsed();
     assert!(!fake.dropped().is_empty(), "the outage dropped requests");
+    assert!(
+        claimed(&fake, &card),
+        "the claim is held, as it could not be released"
+    );
+    fake.restore();
 
-    // The head write (attempt note 1, queued as the outage began) is next tried at most
-    // the outage's length plus the first gap after it failed — the gap doubles from 5 s
-    // and its tries fall at +5, +15, +35 s… — and one pass then lands the card's whole
-    // backlog.
-    let me = fake.me();
-    let notes = || -> Vec<String> {
-        fake.comments(&card)
-            .into_iter()
-            .filter(|c| c.author == me && c.text.starts_with("[afkd-attempt]"))
-            .map(|c| c.text)
-            .collect()
-    };
-    let ran = || {
-        fake.comments(&card)
-            .iter()
-            .filter(|c| c.author == me && c.text.starts_with("[afkd-ran]"))
-            .count()
-    };
-    wait_for_within(
-        outage_for + Duration::from_secs(5) + BUDGET,
+    // Trello is back: afkd's `release` of the held key deletes the claim, and nothing the
+    // outage swallowed is replayed.
+    wait_for(
         home,
         &fake,
         &card,
         &daemon,
-        "the card reaches its failed state",
-        || {
-            fake.list_of(&card) == "Backlog"
-                && fake.labels(&card).contains(&"Problem".to_string())
-                && notes().len() == 2
-                && ran() == 1
-                && !claimed(&fake, &card)
-        },
+        "the held finish is released once Trello is back",
+        || !claimed(&fake, &card),
     );
-    let notes = notes();
-    assert!(
-        notes[0].starts_with("[afkd-attempt] 1/2: ") && notes[0].contains(OUTAGE_FAULT),
-        "{notes:?}"
+    assert_eq!(
+        fake.list_of(&card),
+        "In Progress",
+        "the card is left in the list on_claim put it in:\n{}",
+        dump(home, &fake, &card, &daemon)
     );
     assert!(
-        notes[1].starts_with("[afkd-attempt] 2/2: ") && notes[1].contains(OUTAGE_FAULT),
-        "{notes:?}"
+        fake.labels(&card).is_empty(),
+        "no Problem label: on_fail's writes were refused"
+    );
+    let me = fake.me();
+    let ours: Vec<String> = fake
+        .comments(&card)
+        .into_iter()
+        .filter(|c| c.author == me)
+        .map(|c| c.text)
+        .collect();
+    assert!(
+        ours.iter()
+            .all(|text| !text.starts_with("[afkd-attempt]") && !text.starts_with("[afkd-ran]")),
+        "the notes the outage swallowed were never retried: {ours:?}"
     );
     let stderr = daemon.stderr_so_far();
     assert!(
-        !stderr.contains("gave up") && !stderr.contains("giving up"),
-        "nothing was given up:\n{stderr}"
+        stderr.contains("the comment \"[afkd-attempt] 1/2: ") && stderr.contains("is lost"),
+        "the lost attempt note is said, naming the card and the comment:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(LANDED_IN_OUTAGE) && !stderr.contains("queued"),
+        "no write landed in the outage and nothing was queued:\n{stderr}"
     );
 
     daemon.signal(libc::SIGINT);
@@ -790,10 +823,12 @@ fn outage_leg_a_failed_card_still_reaches_backlog_with_its_attempt_notes() {
 
 // --- files on the card ---------------------------------------------------------------
 
-/// The service the attachments leg drives, `home` its work dir: `on_claim` fetches what an
-/// earlier attempt left on the card — its plan and its patch — into `home`, failing on any
-/// error, and `on_run`, once the test creates `release`, attaches the patch it finds in
-/// `home`, failing if the plugin refuses it.
+/// The service the attachments leg drives, `home` its work dir: `on_claim` lists the card's
+/// attachments with `trello.attachments` and downloads each plan and patch an earlier attempt
+/// left on it into `home` with `trello.download_attachment` — oldest first, so the newest of a
+/// name is the file that stays — failing on any error, and `on_run`, once the test creates
+/// `release`, uploads the patch it finds in `home` with `trello.create_attachment`, failing if
+/// the plugin refuses it.
 fn attaching_service(home: &Path, base_url: &str) -> String {
     format!(
         r#"import "afkd"
@@ -809,26 +844,43 @@ widgets :: service(trello) {{
   max_attempts 1
 
   on_claim proc(account: trello.Account, card: trello.Card) {{
-    match trello.fetch_attachment(card, "plan.md", "{home}/earlier-plan.md") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("trello.fetch_attachment: #{{e.message}}")
+    match trello.attachments(account, card) {{
+      .ok(held) => {{
+        for att in held {{
+          if att.name == "plan.md" {{
+            match trello.download_attachment(account, att, "{home}/earlier-plan.md") {{
+              .ok(_) => {{ }}
+              .err(e) => fail("trello.download_attachment: #{{e.message}}")
+            }}
+          }}
+          if att.name == "work.patch" {{
+            match trello.download_attachment(account, att, "{home}/earlier.patch") {{
+              .ok(_) => {{ }}
+              .err(e) => fail("trello.download_attachment: #{{e.message}}")
+            }}
+          }}
+        }}
+      }}
+      .err(e) => fail("trello.attachments: #{{e.message}}")
     }}
-    match trello.fetch_attachment(card, "work.patch", "{home}/earlier.patch") {{
+    match trello.update_card(account, card, list="In Progress", at=.top) {{
       .ok(_) => {{ }}
-      .err(e) => fail("trello.fetch_attachment: #{{e.message}}")
+      .err(e) => fail("trello.update_card: #{{e.message}}")
     }}
-    trello.move_to(card, "In Progress", at=.top)
   }}
   on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {{
-    trello.move_to(card, "Review", at=.top)
+    match trello.update_card(account, card, list="Review", at=.top) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.update_card: #{{e.message}}")
+    }}
   }}
 
   work_dir "{home}"
   on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
-    match trello.attach(card, "{home}/work.patch", "work.patch") {{
+    match trello.create_attachment(account, card, "{home}/work.patch", name="work.patch") {{
       .ok(_) => {{ }}
-      .err(e) => fail("trello.attach: #{{e.message}}")
+      .err(e) => fail("trello.create_attachment: #{{e.message}}")
     }}
   }}
 }}
@@ -855,10 +907,11 @@ fn synthetic_patch() -> Vec<u8> {
     patch
 }
 
-/// A card an earlier attempt left two plans on, on a real daemon: `on_claim` writes the
-/// newer plan to the work dir and, with no patch on the card, writes none; once released,
-/// `on_run` attaches the patch it is handed, and the card ends holding it byte for byte
-/// beside the two plans, finished into Review, and the daemon drains clean.
+/// A card an earlier attempt left two plans on, on a real daemon: `on_claim` downloads both
+/// plans to one path in the work dir — the newer last, so it is the one left — and, with no
+/// patch on the card, downloads none; once released, `on_run` uploads the patch it is handed,
+/// and the card ends holding it byte for byte beside the two plans, finished into Review, and
+/// the daemon drains clean.
 fn fetch_on_claim_and_attach_on_run(home: &Path) {
     let (fake, card) = seed();
     let newer = "## 計画 — attempt 2\n\n1. Läs kortet 🚧\n2. Bygg.\n";
@@ -877,7 +930,7 @@ fn fetch_on_claim_and_attach_on_run(home: &Path) {
             .ok()
             .as_deref(),
         Some(newer),
-        "on_claim fetched the newer plan:\n{}",
+        "on_claim downloaded the newer plan:\n{}",
         dump(home, &fake, &card, &daemon)
     );
     assert!(
@@ -911,7 +964,7 @@ fn fetch_on_claim_and_attach_on_run(home: &Path) {
 }
 
 #[test]
-fn attachments_leg_on_claim_fetches_the_newest_and_on_run_attaches() {
+fn attachments_leg_on_claim_downloads_the_newest_and_on_run_uploads() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
@@ -920,9 +973,9 @@ fn attachments_leg_on_claim_fetches_the_newest_and_on_run_attaches() {
 
 // --- the handle ----------------------------------------------------------------------
 
-/// An action acts on the card it is passed, so one called without it — the pre-handle
-/// spelling, `trello.move_to("Review")` — is a load error naming the handle type, not a
-/// call on an implied card.
+/// A call acts on the card it is passed, so one made without it — `trello.add_label(account,
+/// "Problem")`, the new label write with its card left out — is a load error naming the
+/// handle type, not a call on an implied card.
 #[test]
 fn a_call_with_the_wrong_handle_is_a_load_error() {
     let home = TempDir::new().expect("tempdir");
@@ -949,7 +1002,10 @@ widgets :: service(trello) {{
 "#
         )
     };
-    write_config(home.path(), &config(r#"trello.move_to("Review")"#));
+    write_config(
+        home.path(),
+        &config(r#"match trello.add_label(account, "Problem") { .ok(_) => { } .err(_) => { } }"#),
+    );
     let (code, report) = validate(home.path());
     assert_eq!(
         code,
@@ -961,7 +1017,12 @@ widgets :: service(trello) {{
         "the refusal names the handle type:\n{report}"
     );
     // The same file with the card passed is valid: the handle is all that was wrong.
-    write_config(home.path(), &config(r#"trello.move_to(card, "Review")"#));
+    write_config(
+        home.path(),
+        &config(
+            r#"match trello.add_label(account, card, "Problem") { .ok(_) => { } .err(_) => { } }"#,
+        ),
+    );
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "the call with its card validates:\n{report}");
 }
@@ -997,7 +1058,7 @@ fn a_service_without_claim_from_fails_validate_naming_the_setting() {
     assert_eq!(code, Some(0), "the service naming one validates:\n{report}");
 }
 
-/// The kind is `card`, the main one, so a service is written `service(trello)` and validates;
+/// The kind is `intake`, the main one, so a service is written `service(trello)` and validates;
 /// and each setting the kind was renamed from is refused as unknown beside `claim_from`, like
 /// any name the manifest does not declare.
 #[test]

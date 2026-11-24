@@ -7,8 +7,8 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   control wire to a browser.
 - [`@afkd/gitea`](@afkd/gitea) — Gitea issues and pull-request reviews as afkd
   triggers, with the skill an agent answers them through.
-- [`@afkd/trello`](@afkd/trello) — Trello cards as afkd triggers, with the skill an
-  agent works the card through.
+- [`@afkd/trello`](@afkd/trello) — Trello cards as afkd triggers, the reads and writes a
+  config makes through a `trello.Account`, and the skill an agent works the card through.
 - [`@afkd/gitlab`](@afkd/gitlab) — GitLab issues and merge-request reviews as afkd
   triggers, with the skill an agent answers them through.
 - [`@afkd/github`](@afkd/github) — GitHub issues and pull-request reviews as afkd

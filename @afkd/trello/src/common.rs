@@ -73,7 +73,7 @@ pub(crate) trait Diag {
     /// Surface one problem.
     fn err(&self, err: &dyn Display);
 
-    /// Narrate one success — a claimed card, a lifecycle action that landed, a released
+    /// Narrate one success — a claimed card, a read or write that landed, a released
     /// claim, a parked card, a takeover — in the built-in trigger's own words.
     fn narrate(&self, line: &str);
 }

@@ -1,6 +1,7 @@
 //! The **account writes** a config calls with a `trello.Account` first: a card made, changed,
-//! archived, unarchived and deleted, a comment made, changed and deleted, a checklist and its
-//! items, and an attachment made and deleted.
+//! archived, unarchived and deleted, a label or a member put on a card and taken off it, a
+//! comment made, changed and deleted, a checklist and its items, and an attachment made and
+//! deleted.
 //!
 //! A write reaches Trello only through the account it is passed ([`Account`]), as a read does
 //! ([`crate::reads`]): it reads no service's settings, and the kind's own client is never used
@@ -29,14 +30,13 @@ use crate::account::{Account, Clients};
 use crate::attachment::read_upload;
 use crate::board::BoardError;
 use crate::card::ACTION_TAG;
-use crate::client::{pos_value, TrelloClient};
+use crate::client::{pos_value, ListPosition, TrelloClient};
 use crate::common::Diag;
 use crate::handles::{
     build_attachment, build_check_items, build_checklist, build_comment, parse_attachment_key,
     parse_check_item_key, parse_read_key, str_of, AttachmentFields, CardFields, CheckItemFields,
     ChecklistFields, CommentFields,
 };
-use crate::lifecycle::ListPosition;
 use crate::reads::{
     array, board_arg, board_labels, board_members, card_arg, card_id, fit_call, handle_arg,
     one_named, optional, read_board, string, HandleArg, ATTACHMENT_FIELDS,
@@ -63,6 +63,10 @@ pub(crate) const WRITES: &[&str] = &[
     "delete_check_item",
     "create_attachment",
     "delete_attachment",
+    "add_label",
+    "remove_label",
+    "add_member",
+    "remove_member",
 ];
 
 /// The most characters Trello takes in a card's description or a comment.
@@ -147,6 +151,33 @@ pub(crate) enum WriteCall {
         name: Option<String>,
     },
     DeleteAttachment(HandleArg),
+    /// Put the label `label` of the card's board on the card.
+    AddLabel {
+        card: HandleArg,
+        label: String,
+    },
+    /// Take the label `label` off the card.
+    RemoveLabel {
+        card: HandleArg,
+        label: String,
+    },
+    /// Put the board member `member`, a username or `me`, on the card.
+    AddMember {
+        card: HandleArg,
+        member: String,
+    },
+    /// Take the board member `member` off the card.
+    RemoveMember {
+        card: HandleArg,
+        member: String,
+    },
+}
+
+/// What a label or member write acts on a card with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tag {
+    Label,
+    Member,
 }
 
 /// Do the write `action` with `args`, and answer it: the reply line, `ok` with the handle of
@@ -265,6 +296,22 @@ pub(crate) fn decode(
         "delete_attachment" => {
             WriteCall::DeleteAttachment(pair_arg(action, args, "attachment", parse_attachment_key)?)
         }
+        "add_label" => WriteCall::AddLabel {
+            card: card_arg(action, args)?,
+            label: string(action, args, "label")?,
+        },
+        "remove_label" => WriteCall::RemoveLabel {
+            card: card_arg(action, args)?,
+            label: string(action, args, "label")?,
+        },
+        "add_member" => WriteCall::AddMember {
+            card: card_arg(action, args)?,
+            member: member(action, args)?,
+        },
+        "remove_member" => WriteCall::RemoveMember {
+            card: card_arg(action, args)?,
+            member: member(action, args)?,
+        },
         _ => return Err(format!("no action `{action}`")),
     };
     Ok((account, call))
@@ -273,6 +320,11 @@ pub(crate) fn decode(
 /// A string value.
 fn text(value: &Value) -> Option<String> {
     value.as_str().map(str::to_string)
+}
+
+/// The `member` a member write was passed: a username, or `me` when it is left out.
+fn member(action: &str, args: &Map<String, Value>) -> Result<String, String> {
+    Ok(optional(action, args, "member", text, "a string")?.unwrap_or_else(|| ME.to_string()))
 }
 
 /// The string argument `param` of `action`, refused past Trello's [`MAX_TEXT`] characters.
@@ -578,7 +630,120 @@ fn run(action: &str, call: &WriteCall, client: &TrelloClient) -> Result<(String,
                 said(format!("deleted attachment {}", attachment.id)),
             )
         }
+        WriteCall::AddLabel { card, label } => {
+            let read = tag(client, action, card, Tag::Label, label, true)?;
+            (
+                handle_line(&read),
+                said(format!("added label {label:?} to card {}", read.id)),
+            )
+        }
+        WriteCall::RemoveLabel { card, label } => {
+            let read = tag(client, action, card, Tag::Label, label, false)?;
+            (
+                handle_line(&read),
+                said(format!("removed label {label:?} from card {}", read.id)),
+            )
+        }
+        WriteCall::AddMember { card, member } => {
+            let read = tag(client, action, card, Tag::Member, member, true)?;
+            (
+                handle_line(&read),
+                said(format!("added member {member:?} to card {}", read.id)),
+            )
+        }
+        WriteCall::RemoveMember { card, member } => {
+            let read = tag(client, action, card, Tag::Member, member, false)?;
+            (
+                handle_line(&read),
+                said(format!("removed member {member:?} from card {}", read.id)),
+            )
+        }
     })
+}
+
+/// Put the label or member `name` of the card's board on `card` (`add`), or take it off, and
+/// read the card back.
+///
+/// The name is matched exactly against the card's own board, `me` being the member the token
+/// acts as, so one the board lacks is refused naming the ones it has: no label is ever made.
+/// Nothing is sent when the card is as asked — it carries the label already, or does not
+/// carry the one to remove — and the card is read back all the same.
+fn tag(
+    client: &TrelloClient,
+    action: &str,
+    card: &HandleArg,
+    what: Tag,
+    name: &str,
+    add: bool,
+) -> Result<WireHandle<CardFields>, String> {
+    let id = card_id(card);
+    let here = client
+        .get_json(
+            "read card",
+            &format!("/cards/{id}"),
+            &[("fields", "idBoard,idLabels,idMembers")],
+        )
+        .map_err(trello)?;
+    let board = str_of(&here, "idBoard");
+    if board.is_empty() {
+        return Err(format!(
+            "{action}: trello read card: undecodable response (card has no board)"
+        ));
+    }
+    // `route` is both the card's field holding the ids it carries and the path under the card
+    // Trello adds to and removes from.
+    let (route, wanted) = match what {
+        Tag::Label => {
+            let labels = candidates(&board_labels(client, board)?, "name");
+            ("idLabels", one_named(action, "label", name, &labels)?)
+        }
+        Tag::Member => {
+            let username = if name == ME {
+                client.me_member("read me").map_err(trello)?.1
+            } else {
+                name.to_string()
+            };
+            let members = candidates(&board_members(client, board)?, "username");
+            (
+                "idMembers",
+                one_named(action, "member", &username, &members)?,
+            )
+        }
+    };
+    let on = here
+        .get(route)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|held| held == wanted);
+    if add && !on {
+        client
+            .write_json(
+                if what == Tag::Label {
+                    "add label"
+                } else {
+                    "add member"
+                },
+                "POST",
+                &format!("/cards/{id}/{route}"),
+                &[("value", &wanted)],
+                None,
+            )
+            .map_err(trello)?;
+    } else if !add && on {
+        client
+            .delete(
+                if what == Tag::Label {
+                    "remove label"
+                } else {
+                    "remove member"
+                },
+                &format!("/cards/{id}/{route}/{wanted}"),
+            )
+            .map_err(trello)?;
+    }
+    read_back(action, "card", client.read_card_handle("read card", id))
 }
 
 /// The card id and the other id a decoded check item's or attachment's key holds: the two
@@ -964,7 +1129,7 @@ fn create_attachment(
         .file_name()
         .map(|file| file.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // `read_upload` speaks as the queued `attach`; this call speaks as itself.
+    // `read_upload` speaks as `attach`, its old name; this call speaks as itself.
     let upload = read_upload(path, name.unwrap_or(&own)).map_err(|refusal| {
         match refusal.strip_prefix("attach: ") {
             Some(rest) => format!("{action}: {rest}"),
@@ -1034,17 +1199,11 @@ mod tests {
         w.iter().map(|s| s.to_string()).collect()
     }
 
-    /// The writes are the fifteen, in the manifest's order, and share no name with a read or
-    /// one of today's actions.
+    /// The writes are the nineteen, in the manifest's order, and share no name with a read.
     #[test]
-    fn the_writes_are_fifteen_and_name_nothing_else() {
-        assert_eq!(WRITES.len(), 15);
-        let mut all: Vec<&str> = crate::lifecycle::ACTIONS
-            .iter()
-            .chain(crate::reads::READS)
-            .chain(WRITES)
-            .copied()
-            .collect();
+    fn the_writes_are_nineteen_and_name_nothing_else() {
+        assert_eq!(WRITES.len(), 19);
+        let mut all: Vec<&str> = crate::reads::READS.iter().chain(WRITES).copied().collect();
         let count = all.len();
         all.sort_unstable();
         all.dedup();
@@ -1281,6 +1440,54 @@ mod tests {
                 json!({"attachment": attachment}),
                 WriteCall::DeleteAttachment(handle("a1", &format!("trello:{CARD_ID}/a1"))),
             ),
+            (
+                "add_label",
+                json!({"card": card_json(), "label": "bug 🐛"}),
+                WriteCall::AddLabel {
+                    card: card(),
+                    label: "bug 🐛".into(),
+                },
+            ),
+            (
+                "remove_label",
+                json!({"card": card_json(), "label": "bug 🐛"}),
+                WriteCall::RemoveLabel {
+                    card: card(),
+                    label: "bug 🐛".into(),
+                },
+            ),
+            (
+                "add_member",
+                json!({"card": card_json()}),
+                WriteCall::AddMember {
+                    card: card(),
+                    member: "me".into(),
+                },
+            ),
+            (
+                "add_member",
+                json!({"card": card_json(), "member": "phil"}),
+                WriteCall::AddMember {
+                    card: card(),
+                    member: "phil".into(),
+                },
+            ),
+            (
+                "remove_member",
+                json!({"card": card_json(), "member": null}),
+                WriteCall::RemoveMember {
+                    card: card(),
+                    member: "me".into(),
+                },
+            ),
+            (
+                "remove_member",
+                json!({"card": card_json(), "member": "phil"}),
+                WriteCall::RemoveMember {
+                    card: card(),
+                    member: "phil".into(),
+                },
+            ),
         ] {
             assert_eq!(call(action, extra.clone()), Ok(want), "{action} {extra}");
         }
@@ -1456,7 +1663,35 @@ mod tests {
                  trello:a1"
                     .to_string(),
             ),
+            (
+                "add_label",
+                json!({"card": card_json()}),
+                "add_label: parameter label is required".to_string(),
+            ),
+            (
+                "remove_label",
+                json!({"card": card_json(), "label": 3}),
+                "remove_label: parameter label must be a string".to_string(),
+            ),
+            (
+                "add_label",
+                json!({"label": "bug"}),
+                "add_label: parameter card is required".to_string(),
+            ),
+            (
+                "add_member",
+                json!({"card": card_json(), "member": 3}),
+                "add_member: parameter member must be a string".to_string(),
+            ),
+            (
+                "remove_member",
+                json!({"card": {"id": "x", "key": "x#y"}}),
+                "remove_member: card x has a key this plugin did not hand out: x#y".to_string(),
+            ),
             ("assign", json!({}), "no action `assign`".to_string()),
+            // The old actions are gone: no write is named for one.
+            ("archive", json!({}), "no action `archive`".to_string()),
+            ("move_to", json!({}), "no action `move_to`".to_string()),
         ] {
             assert_eq!(
                 call(action, extra.clone()),

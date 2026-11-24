@@ -11,8 +11,8 @@ mod common;
 
 use serde_json::{json, Value};
 
-use common::fake::{multipart_parts, oauth_header, utc, FakeTrello, Seen, BOARD, KEY, TOKEN};
-use common::{binary_patch, Plugin, TempDir, DEVELOP, DISCUSS, MAX_LINE, OWNER};
+use common::fake::{utc, FakeTrello, BOARD, KEY, TOKEN};
+use common::{Plugin, TempDir, DEVELOP, DISCUSS, MAX_LINE, OWNER};
 
 /// A card title carrying the delimiter a success line wraps it in, wide CJK, an emoji and
 /// an em dash.
@@ -75,7 +75,7 @@ fn board() -> Board {
 }
 
 /// The live selfdev service's settings, lowered to JSON as afkd lowers them: every value a
-/// string, and no hook, since afkd runs those.
+/// string, and no slot, since afkd runs those.
 fn settings(fake: &FakeTrello) -> Value {
     json!({
         "board": format!("https://trello.com/b/{BOARD}/afkd-selfdev"),
@@ -86,70 +86,16 @@ fn settings(fake: &FakeTrello) -> Value {
     })
 }
 
-/// The selfdev service's slots, as afkd runs them: each action one `call` carrying the
-/// unit's card handle, in written order, every reply `ok`. A comment arrives as afkd
-/// interpolated it.
-///
-/// ```text
-/// on_claim proc(account: trello.Account, card: trello.Card) {
-///   trello.add_member(card)
-///   trello.move_to(card, "In Progress", at=.top)
-/// }
-/// on_done proc(run: core.Run, account: trello.Account, card: trello.Card, outcome: core.Outcome) {
-///   trello.move_to(card, "Review", at=.top)
-///   trello.comment(card, "afkd landed this card in #{outcome.duration}.")
-/// }
-/// on_fail proc(run: core.Run, account: trello.Account, card: trello.Card, outcome: core.Outcome) {
-///   trello.move_to(card, "Backlog", at=.bottom)
-///   trello.add_label(card, "Problem")
-/// }
-/// on_park proc(run: core.Run, account: trello.Account, card: trello.Card, outcome: core.Outcome) {
-///   trello.comment(card, "parked after #{outcome.duration}, waiting on you")
-/// }
-/// ```
-fn hook(plugin: &mut Plugin, name: &str, unit: &Value) {
-    let calls: &[(&str, Value)] = match name {
-        "on_claim" => &[
-            ("add_member", json!({"member": "me"})),
-            ("move_to", json!({"list": "In Progress", "at": "top"})),
-        ],
-        "on_done" => &[
-            ("move_to", json!({"list": "Review", "at": "top"})),
-            ("comment", json!({"text": LANDED})),
-        ],
-        "on_fail" => &[
-            ("move_to", json!({"list": "Backlog", "at": "bottom"})),
-            ("add_label", json!({"label": "Problem"})),
-        ],
-        _ => &[(
-            "comment",
-            json!({"text": "parked after 2m48s, waiting on you"}),
-        )],
-    };
-    for (action, args) in calls {
-        assert_eq!(
-            plugin.act(action, args.clone(), unit),
-            json!({"ok": true}),
-            "{name}: {action}; stderr: {}",
-            plugin.stderr()
-        );
-    }
-}
-
-/// The `on_done` comment, as afkd interpolates `#{outcome.duration}` into it.
-const LANDED: &str = "afkd landed this card in 2m48s.";
-
-/// One beat that hands a unit over, and the `on_claim` afkd runs on it.
+/// One beat that hands a unit over. The slots afkd runs on it reach the board through
+/// `trello.Account` calls, which `writes.rs`'s legs hold to what they do; a leg here that
+/// depends on where a slot left the card puts it there itself, on the fake.
 fn claim_one(plugin: &mut Plugin) -> Value {
     let reply = plugin.poll();
     assert_eq!(reply["fire"], true, "{}", plugin.stderr());
-    let unit = reply["unit"].clone();
-    hook(plugin, "on_claim", &unit);
-    unit
+    reply["unit"].clone()
 }
 
-/// The grooming service's settings: `discuss_with [ "anyone" ]` over its own list, no
-/// hooks.
+/// The grooming service's settings: `discuss_with [ "anyone" ]` over its own list.
 fn discuss_settings(fake: &FakeTrello) -> Value {
     json!({
         "board": format!("https://trello.com/b/{BOARD}/afkd-selfdev"),
@@ -236,7 +182,7 @@ fn hello_arms_and_lists_every_call_it_answers() {
 
 /// What `hello` cannot arm with answers `ok:false`, with the problem on stderr in the
 /// built-in's own sentence — a kind this plugin does not provide (proto 1's
-/// `trello_card` among them), a block the manifest cannot refuse, a block without the
+/// `trello_card` and the `card` the kind was called before it was `intake` among them), a block the manifest cannot refuse, a block without the
 /// `claim_from` afkd requires — one that writes the old `pick_from` in its place among them —
 /// a `hello` from an afkd too old to say who is asking, and the protocol of an afkd from
 /// before v2 of the afk language.
@@ -255,7 +201,7 @@ fn hello_refuses_what_it_cannot_arm_with() {
     let block = pick_from_for_claim_from.as_object_mut().unwrap();
     block.remove("claim_from");
     block.insert("pick_from".into(), json!("Up for Grabs"));
-    let mut anonymous = hello("card", 2, settings(&b.fake));
+    let mut anonymous = hello("intake", 2, settings(&b.fake));
     for field in ["service", "roster", "owner"] {
         anonymous.as_object_mut().unwrap().remove(field);
     }
@@ -269,8 +215,13 @@ fn hello_refuses_what_it_cannot_arm_with() {
             "kind `trello_card` is not provided by @afkd/trello",
         ),
         (
-            hello("card", 2, flag_gate),
-            "trigger card: setting `only_labels`: `only_labels` expects one or more label names",
+            hello("card", 2, settings(&b.fake)),
+            "kind `card` is not provided by @afkd/trello",
+        ),
+        (
+            hello("intake", 2, flag_gate),
+            "trigger intake: setting `only_labels`: `only_labels` expects one or more label \
+             names",
         ),
         (
             anonymous,
@@ -282,8 +233,8 @@ fn hello_refuses_what_it_cannot_arm_with() {
             "afkd speaks plugin protocol 1, and this plugin speaks 2",
         ),
         (
-            hello("card", 2, pick_from_for_claim_from),
-            "trigger card: setting `claim_from`: `claim_from` is required: name the list or \
+            hello("intake", 2, pick_from_for_claim_from),
+            "trigger intake: setting `claim_from`: `claim_from` is required: name the list or \
              lists new cards are claimed from",
         ),
     ] {
@@ -304,8 +255,8 @@ fn hello_refuses_what_it_cannot_arm_with() {
 /// thread, the claim-read thread as `seen`, afkd's member id, the four env names the skill
 /// reads, and the brief unframed — keyed by the card, `trello:<card id>`, with every field the
 /// manifest's `Card` declares, its labels by name and a colour-only one left out, and the board
-/// holds the claim as the built-in leaves it. The `poll` moves nothing itself: `on_claim`'s
-/// calls, sent after it, do, and every line is narrated on stderr.
+/// holds the claim as the built-in leaves it. The `poll` moves nothing itself — the slots afkd
+/// runs after it do their own work through account calls — and the win is narrated on stderr.
 #[test]
 fn a_won_race_hands_over_the_built_ins_unit() {
     let b = board();
@@ -346,22 +297,15 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         })
     );
 
-    assert_eq!(b.fake.list_of(&b.card), "Up for Grabs");
-    assert!(b.fake.members(&b.card).is_empty());
-    hook(&mut plugin, "on_claim", &reply["unit"]);
-    assert_eq!(b.fake.list_of(&b.card), "In Progress");
     assert_eq!(
-        b.fake.members(&b.card),
-        ["afkd-bot"],
-        "`me` is the token's member"
+        b.fake.list_of(&b.card),
+        "Up for Grabs",
+        "the poll moves nothing"
     );
+    assert!(b.fake.members(&b.card).is_empty());
     assert_eq!(
-        plugin.stderr_soon("In Progress"),
-        format!(
-            "[trello] claimed card \"{TITLE}\"\n\
-             [trello] adding member \"me\" to card \"{TITLE}\"\n\
-             [trello] moving card \"{TITLE}\" to list \"In Progress\" (at top)\n"
-        )
+        plugin.stderr_soon("claimed card"),
+        format!("[trello] claimed card \"{TITLE}\"\n")
     );
     // The race is post → settle → re-read: the claim went up before the thread was read.
     let seen = b.fake.seen();
@@ -378,7 +322,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         seen[post].body,
         r#"{"text":"[afkd-claim] owner=afkd-4242"}"#
     );
-    // And the claimed card, now out of `claim_from`, is not claimed again.
+    // And the claimed card, holding our live claim, is stepped over.
     assert_eq!(plugin.poll(), json!({"fire": false}));
     plugin.finish();
 }
@@ -454,12 +398,8 @@ fn a_lost_race_takes_its_marker_back_and_moves_on() {
         ["[afkd-claim] owner=afkd-17"],
         "only the rival's claim is left"
     );
-    assert_eq!(
-        b.fake.list_of(&b.card),
-        "Up for Grabs",
-        "no on_claim ran on it"
-    );
-    assert_eq!(b.fake.list_of(&next), "In Progress");
+    assert_eq!(b.fake.list_of(&b.card), "Up for Grabs", "nothing moved it");
+    assert_eq!(b.fake.list_of(&next), "Up for Grabs");
     plugin.finish();
 }
 
@@ -485,7 +425,7 @@ fn a_live_claim_is_stepped_over_in_silence() {
         "nothing was written to the held card: {:?}",
         b.fake.seen()
     );
-    assert_eq!(b.fake.list_of(&next), "In Progress");
+    assert_eq!(b.fake.list_of(&next), "Up for Grabs");
     plugin.finish();
 }
 
@@ -709,14 +649,6 @@ fn release_reverses_a_crashed_claim_and_reads_every_key_shape() {
         json!({"ok": false}),
         "a released unit is forgotten"
     );
-    assert_eq!(
-        plugin.act("comment", json!({"text": "late"}), &unit),
-        json!({"ok": false, "error": format!(
-            "comment for {}, which this plugin holds no card for",
-            unit["key"].as_str().unwrap()
-        )}),
-        "by `call` too"
-    );
 
     for key in ["garbage", ""] {
         assert_eq!(
@@ -772,7 +704,7 @@ fn claim_from_names_two_lists_and_claims_from_the_second() {
         "the key is the card's, whichever list it came from"
     );
     assert!(claims(&b.fake, &b.card).is_empty());
-    assert_eq!(b.fake.list_of(&card), "In Progress");
+    assert_eq!(b.fake.list_of(&card), "Hjälpvideor 🎬");
     assert_eq!(b.fake.list_of(&b.card), "Up for Grabs");
     plugin.finish();
 }
@@ -794,7 +726,8 @@ fn release_after_a_restart_returns_a_second_list_card_to_its_list() {
     );
     let unit = claim_one(&mut before);
     assert_eq!(unit["id"], "Hj4lpV1d");
-    assert_eq!(b.fake.list_of(&card), "In Progress");
+    // The slot afkd runs on the claim puts it out of `claim_from`.
+    b.fake.move_card(&card, "In Progress");
     assert!(
         state.path().join("claims").is_dir(),
         "the record is written before the unit is handed over"
@@ -831,7 +764,7 @@ fn release_after_a_restart_returns_a_second_list_card_to_its_list() {
 /// process is armed under another claim owner — releases a `trello:` key by the rule that
 /// holds without one: every claim this account's member posted is pruned but the ones
 /// carrying the new owner, a rival member's claim is kept, and the card moves back to the
-/// bottom of the `claim_from` list it sits in — here none, since `on_claim` moved it out, so
+/// bottom of the `claim_from` list it sits in — here none, since the slot moved it out, so
 /// the first.
 #[test]
 fn a_restart_with_no_record_prunes_the_first_processs_claim_and_keeps_a_rivals() {
@@ -841,6 +774,8 @@ fn a_restart_with_no_record_prunes_the_first_processs_claim_and_keeps_a_rivals()
     let mut before = Plugin::armed(two_list_settings(&b.fake));
     let unit = claim_one(&mut before);
     assert_eq!(unit["id"], "Hj4lpV1d");
+    // The slot afkd runs on the claim puts it out of `claim_from`.
+    b.fake.move_card(&card, "In Progress");
     before.finish();
     let rival = b.fake.member("rival-host", "Rival");
     let rivals = b
@@ -1053,13 +988,13 @@ fn a_parked_card_answered_outside_claim_from_goes_to_the_first_list() {
     }
 }
 
-// --- finish, per outcome, and the hook afkd runs after it ---
+// --- finish, per outcome ---
 
 /// A clean finish moves nothing: it posts one `[afkd-ran]` watermark carrying the
 /// boundary fixed at the claim read (pruning the prior one) and releases the claim last.
-/// `on_done`'s calls, sent after it, move the card and post the comment verbatim.
+/// What `on_done` does after it is afkd's, through account calls.
 #[test]
-fn a_clean_finish_leaves_one_watermark_and_on_done_lands_after_it() {
+fn a_clean_finish_leaves_one_watermark_and_releases_the_claim() {
     let b = board();
     let phil_at = b.fake.comments(&b.card)[0].posted;
     let prior = b.fake.comment(
@@ -1085,7 +1020,7 @@ fn a_clean_finish_leaves_one_watermark_and_on_done_lands_after_it() {
     );
     assert_eq!(
         b.fake.list_of(&b.card),
-        "In Progress",
+        "Up for Grabs",
         "finish moves nothing"
     );
     let chen_at = b
@@ -1105,15 +1040,14 @@ fn a_clean_finish_leaves_one_watermark_and_on_done_lands_after_it() {
     assert!(plugin
         .stderr_soon("released claim")
         .ends_with(&format!("[trello] released claim on card \"{TITLE}\"\n")));
-
-    hook(&mut plugin, "on_done", &unit);
-    assert_eq!(b.fake.list_of(&b.card), "Review");
-    assert_eq!(said(&b.fake, &b.card, "afkd landed"), [LANDED]);
     plugin.finish();
 }
 
+/// A failed finish leaves the one watermark and releases the claim, and labels and moves
+/// nothing: the Problem label and the move to the backlog are `on_fail`'s, through account
+/// calls.
 #[test]
-fn a_failed_finish_then_on_fail_moves_the_card_to_the_bottom_of_the_backlog() {
+fn a_failed_finish_leaves_the_watermark_and_releases_the_claim_alone() {
     let b = board();
     let queued = b
         .fake
@@ -1132,135 +1066,14 @@ fn a_failed_finish_then_on_fail_moves_the_card_to_the_bottom_of_the_backlog() {
     assert!(b.fake.labels(&b.card).is_empty(), "finish labels nothing");
     assert_eq!(said(&b.fake, &b.card, "[afkd-ran]").len(), 1);
     assert!(claims(&b.fake, &b.card).is_empty());
-    hook(&mut plugin, "on_fail", &unit);
-    assert_eq!(
-        b.fake.cards_in("Backlog"),
-        [queued, b.card.clone()],
-        "at the bottom"
-    );
-    assert_eq!(b.fake.labels(&b.card), ["Problem"]);
+    assert_eq!(b.fake.cards_in("Backlog"), [queued], "finish moves nothing");
+    assert_eq!(b.fake.list_of(&b.card), "Up for Grabs");
     plugin.finish();
-}
-
-/// Poll `done` for up to `budget`, every 50 ms.
-fn within(budget: std::time::Duration, mut done: impl FnMut() -> bool) -> bool {
-    let deadline = std::time::Instant::now() + budget;
-    while std::time::Instant::now() < deadline {
-        if done() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    done()
-}
-
-/// Trello out of reach while `on_fail` runs: each action still answers `ok`, so the slot
-/// runs to its last statement, and each is said queued. Once Trello is back the
-/// plugin's own worker lands both — the first retry is due 5 s after the failure — in
-/// the order the slot asked for them, with their ordinary success lines.
-#[test]
-fn a_call_during_an_outage_answers_ok_and_lands_when_trello_returns() {
-    let b = board();
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    let seen_before = b.fake.seen().len();
-
-    b.fake.outage();
-    hook(&mut plugin, "on_fail", &unit);
-    assert!(
-        b.fake.dropped().iter().any(|r| r.path.ends_with("/lists")),
-        "the move tried the board: {:?}",
-        b.fake.dropped()
-    );
-    let stderr = plugin.stderr_soon("queued behind them");
-    let named = format!("card \"{TITLE}\" ({SHORT_LINK})");
-    assert!(
-        stderr.contains(&format!(
-            "trello is unreachable for {named}: trello resolve list: "
-        )),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("moving it to \"Backlog\" is queued and retried for up to 1h"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!(
-            "trello still owes {named} earlier writes; adding the label \"Problem\" is queued \
-             behind them"
-        )),
-        "{stderr}"
-    );
-    b.fake.restore();
-
-    assert!(
-        within(std::time::Duration::from_secs(15), || {
-            b.fake.labels(&b.card) == ["Problem"] && b.fake.list_of(&b.card) == "Backlog"
-        }),
-        "the outbox never delivered; stderr: {}",
-        plugin.stderr()
-    );
-    let landed: Vec<String> = b.fake.seen()[seen_before..]
-        .iter()
-        .filter(|r| r.method != "GET")
-        .map(|r| {
-            format!(
-                "{} {}",
-                r.method,
-                r.path.rsplit('/').next().unwrap_or_default()
-            )
-        })
-        .collect();
-    assert_eq!(
-        landed,
-        [
-            format!("PUT {}", b.card),
-            "POST labels".to_string(),
-            "POST idLabels".to_string()
-        ],
-        "the move, then the label (created on the board first)"
-    );
-    let stderr = plugin.stderr_soon("adding label");
-    assert!(
-        stderr.contains(&format!(
-            "[trello] moving card \"{TITLE}\" to list \"Backlog\" (at bottom)\n"
-        )),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!(
-            "[trello] adding label \"Problem\" to card \"{TITLE}\"\n"
-        )),
-        "{stderr}"
-    );
-    plugin.finish();
-}
-
-/// afkd closing the pipe with writes still owed ends the process cleanly, and names each
-/// write it takes with it.
-#[test]
-fn closing_stdin_with_writes_owed_names_them() {
-    let b = board();
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    b.fake.outage();
-    assert_eq!(
-        plugin.act("add_label", json!({"label": "Problem"}), &unit),
-        json!({"ok": true})
-    );
-    let stderr = plugin.finish();
-    assert!(
-        stderr.contains(&format!(
-            "afkd-trello: afkd ended the plugin with adding the label \"Problem\" for card \
-             \"{TITLE}\" ({SHORT_LINK}) still owed\n"
-        )),
-        "{stderr}"
-    );
 }
 
 /// A park badges the card itself, posts the owner marker naming the configured service,
-/// and only then releases the claim — leaving the card where `on_claim` put it; the
-/// `on_park` comment afkd sends after the finish lands after all of that.
+/// and only then releases the claim, leaving the card where it was; what `on_park` does
+/// after the finish is afkd's, through account calls.
 #[test]
 fn a_park_finish_badges_marks_and_releases() {
     let b = board();
@@ -1287,7 +1100,7 @@ fn a_park_finish_badges_marks_and_releases() {
     assert_eq!(b.fake.labels(&b.card), ["Awaiting Reply"]);
     assert_eq!(
         b.fake.list_of(&b.card),
-        "In Progress",
+        "Up for Grabs",
         "a park does not move"
     );
     assert_eq!(
@@ -1311,16 +1124,6 @@ fn a_park_finish_badges_marks_and_releases() {
     assert!(plugin.stderr_soon("parked card").contains(&format!(
         "[trello] parked card \"{TITLE}\" awaiting a reply (label \"Awaiting Reply\")\n"
     )));
-
-    hook(&mut plugin, "on_park", &unit);
-    assert_eq!(
-        said(&b.fake, &b.card, "parked after"),
-        ["parked after 2m48s, waiting on you"]
-    );
-    assert_eq!(
-        writes(&b.fake).last().map(String::as_str),
-        Some("POST comments")
-    );
     plugin.finish();
 }
 
@@ -1353,10 +1156,9 @@ fn a_discuss_turn_that_said_nothing_is_backstopped() {
     plugin.finish();
 }
 
-/// A finish that does not land is `held`: the claim stays on the card, `on_done`'s calls
-/// after it still reach the card, and afkd's later `release` of the key replays what is
-/// owed — `false` while the board is still down, `true` once it lands — without repeating
-/// a hook action. A child that did not hold the finish — afkd restarted in between, under a
+/// A finish that does not land is `held`: the claim stays on the card, and afkd's later
+/// `release` of the key replays what is owed — `false` while the board is still down, `true`
+/// once it lands — and nothing else. A child that did not hold the finish — afkd restarted in between, under a
 /// claim owner of its own — takes the crash reversal for the same key instead: the first
 /// process's claim is pruned, since it carries another owner.
 #[test]
@@ -1383,8 +1185,6 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
         plugin.stderr()
     );
     assert_eq!(claims(&b.fake, &b.card).len(), 1, "the lease is held");
-    hook(&mut plugin, "on_done", &unit);
-    assert_eq!(b.fake.list_of(&b.card), "Review");
     assert_eq!(
         plugin.call(json!({"call": "release", "key": key})),
         json!({"released": false}),
@@ -1397,13 +1197,12 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
         plugin.call(json!({"call": "release", "key": key})),
         json!({"released": true})
     );
-    assert_eq!(b.fake.list_of(&b.card), "Review");
-    assert!(claims(&b.fake, &b.card).is_empty());
     assert_eq!(
-        said(&b.fake, &b.card, "afkd landed").len(),
-        1,
-        "posted once"
+        b.fake.list_of(&b.card),
+        "Up for Grabs",
+        "the owed release moves no card"
     );
+    assert!(claims(&b.fake, &b.card).is_empty());
     plugin.finish();
 
     // After a restart: the same shape, held by a child that is gone.
@@ -1432,153 +1231,31 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
     after.finish();
 }
 
-// --- call: every action, over the real wire ---
+// --- a call that is no read and no write ---
 
-/// A call acts on the card its handle names, never on a claim it implies: with the first
-/// card finished and the next one claimed and live, the first card's `on_done` — sent
-/// after `finish`, as afkd sends it — moves and comments on the finished card over the
-/// real wire and leaves the live one where its `on_claim` put it.
+/// The actions a slot used to call on a claimed card are gone — the four label and member ones
+/// are now writes that take an account, the other six nothing — and each of the six is refused
+/// by name, in the armed child of a service that claimed the very card it names and in a child
+/// of its own alike, and nothing reaches the board.
 #[test]
-fn a_post_run_call_acts_on_the_finished_card_its_handle_names() {
+fn an_action_a_slot_used_to_call_is_refused_by_name() {
     let b = board();
-    let next = b
-        .fake
-        .card("Up for Grabs", "N3xtC4rd", "次のカード — the next one", "");
     let mut plugin = Plugin::armed(settings(&b.fake));
-    let first = claim_one(&mut plugin);
-    assert_eq!(
-        finish(&mut plugin, &first, "clean", facts("proceed", None)),
-        json!({"ok": true})
-    );
-    let second = claim_one(&mut plugin);
-    assert_eq!(second["id"], "N3xtC4rd", "{second}");
-
-    hook(&mut plugin, "on_done", &first);
-    assert_eq!(b.fake.list_of(&b.card), "Review");
-    assert_eq!(said(&b.fake, &b.card, "afkd landed"), [LANDED]);
-    assert_eq!(b.fake.list_of(&next), "In Progress");
-    assert!(said(&b.fake, &next, "afkd landed").is_empty());
-    plugin.finish();
-}
-
-/// Every action afkd's hooks may call, one `call` each on a claimed card over the real
-/// wire and a real HTTP board: each answers `ok`, lands on the board and narrates one line
-/// naming the card. `me` resolves to the token's own member and a username to that
-/// member; a new label is created on the board; the comment — multi-line markdown with CJK
-/// and a literal `@{run:x}` — arrives byte for byte. A card finished since is still
-/// reached, and what cannot be done answers `ok:false` with the sentence.
-#[test]
-fn every_action_over_call_reaches_the_board() {
-    let b = board();
-    let bottom = b
-        .fake
-        .card("Discussion", "B0tt0m00", "Already discussed", "");
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = plugin.poll()["unit"].clone();
-    let mut act = |action: &str, args: Value| plugin.act(action, args, &unit);
-    let ok = json!({"ok": true});
-
-    assert_eq!(act("add_member", json!({"member": "me"})), ok);
-    assert_eq!(act("add_member", json!({"member": "chen"})), ok);
-    assert_eq!(b.fake.members(&b.card), ["afkd-bot", "chen"]);
-    assert_eq!(act("remove_member", json!({"member": "chen"})), ok);
-    assert_eq!(b.fake.members(&b.card), ["afkd-bot"]);
-
-    assert_eq!(
-        act("move_to", json!({"list": "Discussion", "at": "bottom"})),
-        ok
-    );
-    assert_eq!(
-        b.fake.cards_in("Discussion"),
-        [bottom.clone(), b.card.clone()]
-    );
-    assert_eq!(
-        act("move_to", json!({"list": "Discussion", "at": "top"})),
-        ok
-    );
-    assert_eq!(b.fake.cards_in("Discussion"), [b.card.clone(), bottom]);
-    assert_eq!(
-        act("move_to", json!({"list": "In Progress"})),
-        ok,
-        "at defaults to top"
-    );
-    assert_eq!(b.fake.list_of(&b.card), "In Progress");
-
-    let label = "needs review 👀 レビュー";
-    assert_eq!(act("add_label", json!({"label": label})), ok);
-    assert_eq!(b.fake.labels(&b.card), [label], "created on the board");
-    assert_eq!(act("remove_label", json!({"label": label})), ok);
-    assert!(b.fake.labels(&b.card).is_empty());
-
-    let text = "## 完了 ✅\n\n- capped the backoff at 30s\n- log: `@{run:x}` stays literal\n\n> 陳大文 asked for it";
-    assert_eq!(act("comment", json!({"text": text})), ok);
-    assert_eq!(said(&b.fake, &b.card, "## 完了"), [text]);
-
-    assert_eq!(act("mark_complete", json!({})), ok);
-    assert!(b.fake.complete(&b.card));
-
-    // afkd sends a post-run hook's calls after `finish`: the finished card is reached.
-    assert_eq!(
-        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
-        json!({"ok": true})
-    );
-    assert_eq!(
-        plugin.act("move_to", json!({"list": "Review", "at": "top"}), &unit),
-        ok
-    );
-    assert_eq!(b.fake.list_of(&b.card), "Review");
-    assert_eq!(plugin.act("archive", json!({}), &unit), ok);
-    assert!(b.fake.archived(&b.card));
-
-    let stderr = plugin.stderr_soon("archiving");
-    let done: Vec<&str> = stderr
-        .lines()
-        .filter(|l| !l.contains("claimed card") && !l.contains("released claim"))
-        .collect();
-    assert_eq!(
-        done,
-        [
-            format!("[trello] adding member \"me\" to card \"{TITLE}\""),
-            format!("[trello] adding member \"chen\" to card \"{TITLE}\""),
-            format!("[trello] removing member \"chen\" from card \"{TITLE}\""),
-            format!("[trello] moving card \"{TITLE}\" to list \"Discussion\" (at bottom)"),
-            format!("[trello] moving card \"{TITLE}\" to list \"Discussion\" (at top)"),
-            format!("[trello] moving card \"{TITLE}\" to list \"In Progress\" (at top)"),
-            format!("[trello] adding label \"{label}\" to card \"{TITLE}\""),
-            format!("[trello] removing label \"{label}\" from card \"{TITLE}\""),
-            format!("[trello] commenting on card \"{TITLE}\""),
-            format!("[trello] marking card \"{TITLE}\" complete"),
-            format!("[trello] moving card \"{TITLE}\" to list \"Review\" (at top)"),
-            format!("[trello] archiving card \"{TITLE}\""),
-        ]
-    );
-
-    // What cannot be done answers its sentence.
-    b.fake.fail("add label", 400);
-    for (action, args, error) in [
-        (
-            "add_label",
-            json!({"label": "Problem"}),
-            "trello add label: board returned status 400".to_string(),
-        ),
-        (
-            "archive",
-            json!({"card": SHORT_LINK}),
-            "archive: parameter card must be an item handle".to_string(),
-        ),
-        (
-            "move_to",
-            json!({"list": "Nirgendwo 🚫"}),
-            "trello resolve list: no list named 'Nirgendwo 🚫'".to_string(),
-        ),
-        (
-            "rename",
-            json!({"to": "x"}),
-            "no action `rename`".to_string(),
-        ),
+    let unit = claim_one(&mut plugin);
+    let card = json!({"id": unit["id"], "key": unit["key"]});
+    let writes = |fake: &FakeTrello| fake.seen().iter().filter(|r| r.method != "GET").count();
+    let before = writes(&b.fake);
+    for action in [
+        "mark_complete",
+        "archive",
+        "move_to",
+        "comment",
+        "attach",
+        "fetch_attachment",
     ] {
+        let error = format!("no action `{action}`");
         assert_eq!(
-            plugin.act(action, args, &unit),
+            plugin.read_armed(action, json!({"card": card, "text": "x"})),
             json!({"ok": false, "error": error}),
             "{action}"
         );
@@ -1586,7 +1263,15 @@ fn every_action_over_call_reaches_the_board() {
             .stderr_soon(&error)
             .contains(&format!("afkd-trello: {error}\n")));
     }
+    assert_eq!(writes(&b.fake), before, "nothing reached the board");
     plugin.finish();
+
+    let mut alone = Plugin::spawn();
+    assert_eq!(
+        alone.read("archive", json!({"card": card})),
+        json!({"ok": false, "error": "no action `archive`"})
+    );
+    alone.finish();
 }
 
 // --- the park owner across two services ---
@@ -1796,449 +1481,197 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
     plugin.finish();
 }
 
-// --- files on the card ---
+// --- cards a 0.17 release claimed or parked ---
 
-/// The requests that uploaded an attachment, in order.
-fn uploads(fake: &FakeTrello) -> Vec<Seen> {
-    fake.seen()
-        .into_iter()
-        .filter(|r| r.method == "POST" && r.path.ends_with("/attachments"))
-        .collect()
-}
-
-/// The requests that downloaded an attachment's bytes, in order.
-fn downloads(fake: &FakeTrello) -> Vec<Seen> {
-    fake.seen()
-        .into_iter()
-        .filter(|r| r.path.contains("/download/"))
-        .collect()
-}
-
-/// `path` as a call's string argument.
-fn arg(path: &std::path::Path) -> String {
-    path.to_str().expect("a UTF-8 temp path").to_string()
-}
-
-/// A real `git diff --binary` attached under a wide, dashed name crosses as one multipart
-/// POST to the card's attachments: the credential in the query, the `name` part the name
-/// byte for byte, the `file` part the patch byte for byte under an ASCII file name. The
-/// card then holds it, and the line naming it names the card.
+/// A card a 0.17 release claimed carries its `[afkd-claim] owner=… renewal=N` comment, by the
+/// token's member, and the release's record in the plugin's directory. A 0.18 child, armed in
+/// the same directory under an owner of its own, recognises the claim as live — posted past the
+/// claim's lifetime ago, but renewed by an edit since, as 0.17 renews one — and steps over it in
+/// silence; and releases it by the `trello:<id>` key, deleting the claim and returning the card
+/// to the list the record names.
 #[test]
-fn attach_uploads_the_file_once_as_multipart_with_its_name_and_bytes() {
+fn a_card_a_0_17_release_claimed_is_stepped_over_renewed_and_released() {
     let b = board();
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    let dir = TempDir::new("attach");
-    let patch = binary_patch(dir.path());
-    let path = dir.path().join("work.patch");
-    std::fs::write(&path, &patch).unwrap();
-    let name = "work – 計画.patch";
+    let (list, card) = second_list(&b);
+    let queued = b.fake.card("Hjälpvideor 🎬", "Qu3u3d00", "Nästa video", "");
+    let state = TempDir::new("carry-over");
+    // What 0.17 left: the claim, by the token's own member, from the second list, posted two
+    // hours ago and renewed since; its record naming that list; and the card out where its
+    // `on_claim` put it.
+    let claim = b.fake.comment(
+        &card,
+        &b.fake.me(),
+        "[afkd-claim] owner=afkd-17 renewal=3",
+        7200,
+    );
+    b.fake
+        .edit_comment(&claim, "[afkd-claim] owner=afkd-17 renewal=4");
+    std::fs::create_dir_all(state.path().join("claims")).unwrap();
+    std::fs::write(
+        state.path().join(format!("claims/{card}.json")),
+        serde_json::to_vec(&json!({"card_id": card, "claim_id": claim,
+                                   "list_id": b.fake.list_id("Hjälpvideor 🎬")}))
+        .unwrap(),
+    )
+    .unwrap();
+    b.fake.move_card(&card, "In Progress");
+    let key = json!(format!("trello:{card}"));
 
+    let mut plugin = Plugin::armed_with(
+        DEVELOP,
+        "afkd-5151",
+        Some(state.path()),
+        two_list_settings(&b.fake),
+    );
+    // It is recognised as live: the scan steps over it to the card queued behind, and no claim
+    // is posted on it — the board holds it as it was.
+    let polled = plugin.poll();
+    assert_eq!(polled["unit"]["id"], "Qu3u3d00", "{}", plugin.stderr());
+    assert_eq!(claims(&b.fake, &card).len(), 1, "the 0.17 claim alone");
     assert_eq!(
-        plugin.act("attach", json!({"path": arg(&path), "name": name}), &unit),
-        json!({"ok": true}),
+        b.fake
+            .comments(&card)
+            .into_iter()
+            .filter(|c| c.text.starts_with("[afkd-claim]"))
+            .map(|c| c.id)
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&claim),
+        "stepped over in silence"
+    );
+    let held = b.fake.comments(&card);
+    assert_eq!(
+        held.iter().find(|c| c.id == claim).map(|c| c.text.as_str()),
+        Some("[afkd-claim] owner=afkd-17 renewal=4"),
+        "left as its holder renewed it"
+    );
+
+    // The release by its `trello:<id>` key finds the record: the claim goes, and the card
+    // returns to the bottom of the list the record names, not the first `claim_from` list.
+    assert_eq!(
+        plugin.call(json!({"call": "release", "key": key})),
+        json!({"released": true}),
         "{}",
         plugin.stderr()
     );
-    let sent = uploads(&b.fake);
-    assert_eq!(sent.len(), 1, "{sent:?}");
-    let upload = &sent[0];
-    assert_eq!(upload.path, format!("/1/cards/{}/attachments", b.card));
-    assert_eq!(
-        upload.query,
-        [("key".into(), KEY.into()), ("token".into(), TOKEN.into())]
-    );
-    let content_type = upload.content_type.clone().unwrap_or_default();
+    assert!(b
+        .fake
+        .comments(&card)
+        .iter()
+        .all(|c| !c.text.starts_with("[afkd-claim]")));
+    assert_eq!(b.fake.cards_in("Hjälpvideor 🎬"), [queued, card.clone()]);
     assert!(
-        content_type.starts_with("multipart/form-data; boundary="),
-        "{content_type}"
+        !state.path().join(format!("claims/{card}.json")).exists(),
+        "the record goes with the release"
     );
-    let parts = multipart_parts(&content_type, &upload.raw);
-    assert_eq!(parts.len(), 2, "{parts:?}");
-    assert_eq!(
-        (parts[0].name.as_str(), parts[0].bytes.as_slice()),
-        ("name", name.as_bytes())
-    );
-    assert_eq!(parts[1].name, "file");
-    assert_eq!(
-        parts[1].bytes, patch,
-        "the file part is the patch, byte for byte"
-    );
-    let filename = parts[1].filename.clone().unwrap_or_default();
-    assert!(
-        filename.is_ascii() && filename.ends_with(".patch"),
-        "{filename}"
-    );
-    assert_eq!(
-        b.fake.attachments(&b.card),
-        [(name.to_string(), patch.clone())]
-    );
-
-    let stderr = plugin.finish();
-    assert!(
-        stderr.contains(&format!(
-            "[trello] attaching \"{name}\" ({} bytes) to card \"{TITLE}\"\n",
-            patch.len()
-        )),
-        "{stderr}"
-    );
+    assert_eq!(list, b.fake.list_id("Hjälpvideor 🎬"));
+    plugin.finish();
 }
 
-/// An upload Trello answers with a 503 is queued and the call answers ok; the file is
-/// deleted straight after, so what lands is what the call read. A comment after it waits
-/// behind it, and once Trello heals the outbox lands the attachment — exactly once, its
-/// bytes exact — and then the comment.
+/// A 0.18 child that claims a card renews its own claim in place — the comment a 0.17 release
+/// would have edited the same way, its text `[afkd-claim] owner=… renewal=N` — and the claim it
+/// leaves is one a 0.17 release reads as live: its renewal is the edit, its owner the 0.18
+/// child's, and its author the token's member.
 #[test]
-fn an_attach_trello_answers_5xx_is_queued_and_lands_from_the_outbox() {
+fn a_claim_this_release_renews_reads_as_a_0_17_claim_does() {
     let b = board();
     let mut plugin = Plugin::armed(settings(&b.fake));
     let unit = claim_one(&mut plugin);
-    let dir = TempDir::new("attach-5xx");
-    let patch = binary_patch(dir.path());
-    let path = dir.path().join("work.patch");
-    std::fs::write(&path, &patch).unwrap();
-
-    b.fake.fail("post attachment", 503);
     assert_eq!(
-        plugin.act(
-            "attach",
-            json!({"path": arg(&path), "name": "work.patch"}),
-            &unit
-        ),
+        plugin.call(json!({"call": "renew", "key": unit["key"], "renewal": 7})),
         json!({"ok": true})
     );
-    std::fs::remove_file(&path).unwrap();
+    let held = claims(&b.fake, &b.card);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].text, "[afkd-claim] owner=afkd-4242 renewal=7");
+    assert_eq!(held[0].author, b.fake.me());
+    assert!(held[0].edited.is_some(), "renewed by an edit in place");
+    plugin.finish();
+}
+
+/// A card a 0.17 release parked — badged `Awaiting Reply`, carrying its `[afkd-park]
+/// service=…` marker — is claimed again, after a human reply, by the service that parked it:
+/// the badge and the marker come off, a service that did not park it leaves it alone, and the
+/// 0.18 finish releases it.
+#[test]
+fn a_card_a_0_17_release_parked_is_claimed_again_by_its_service_and_released() {
+    let b = board();
+    let parked = b
+        .fake
+        .card("In Progress", "P4rk3d00", "Bakgrundsvideo: färjan ⛴️", "");
+    b.fake.label(&parked, "Awaiting Reply");
+    b.fake.comment(
+        &parked,
+        &b.fake.me(),
+        "[afkd-ran] owner=afkd-17 upto=0",
+        300,
+    );
+    let question = b
+        .fake
+        .comment(&parked, &b.fake.me(), "Med eller utan speakerröst?", 120);
+    let marker = b.fake.comment(
+        &parked,
+        &b.fake.me(),
+        &format!("[afkd-park] service={DEVELOP}"),
+        110,
+    );
+    let mut develop = Plugin::armed(settings(&b.fake));
+    let mut discuss = Plugin::armed_as(DISCUSS, discuss_settings(&b.fake));
+
+    // Unanswered, it is left alone by everyone, badge and marker kept.
+    let writes = |fake: &FakeTrello| fake.seen().iter().filter(|r| r.method != "GET").count();
+    let before = writes(&b.fake);
     assert_eq!(
-        plugin.act(
-            "comment",
-            json!({"text": "attempt 1 failed; the patch is attached"}),
-            &unit
-        ),
+        discuss.poll(),
+        json!({"fire": false}),
+        "not the discusser's"
+    );
+    assert_eq!(writes(&b.fake), before, "the discusser wrote nothing");
+    assert_eq!(b.fake.labels(&parked), ["Awaiting Reply"]);
+    assert_eq!(said(&b.fake, &parked, "[afkd-park]").len(), 1);
+    let first = develop.poll();
+    assert_eq!(
+        first["unit"]["thread"],
+        SHORT_LINK,
+        "the board's own card is claimed on: {}",
+        develop.stderr()
+    );
+    assert!(
+        claims(&b.fake, &parked).is_empty(),
+        "no claim on the unanswered card"
+    );
+    assert_eq!(b.fake.labels(&parked), ["Awaiting Reply"]);
+
+    // A human answers; the parking service claims it again, ahead of `claim_from`.
+    b.fake.comment(&parked, &b.phil, "Utan — bara musik.", 0);
+    let again = develop.poll();
+    assert_eq!(again["fire"], true, "{}", develop.stderr());
+    let unit = again["unit"].clone();
+    assert_eq!(unit["id"], "P4rk3d00");
+    assert_eq!(unit["key"], format!("trello:{parked}"));
+    assert!(b.fake.labels(&parked).is_empty(), "the badge comes off");
+    assert!(
+        said(&b.fake, &parked, "[afkd-park]").is_empty(),
+        "and the marker"
+    );
+    assert!(b.fake.comments(&parked).iter().all(|c| c.id != marker));
+    let brief = unit["files"][0]["text"].as_str().unwrap();
+    assert!(
+        brief.ends_with("**Phil Ek:** Utan — bara musik.\n"),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("Med eller utan speakerröst?")
+            && b.fake.comments(&parked).iter().any(|c| c.id == question),
+        "the question is the earlier conversation"
+    );
+
+    // Its 0.18 finish releases it, leaving the watermark.
+    assert_eq!(
+        finish(&mut develop, &unit, "clean", facts("proceed", None)),
         json!({"ok": true})
     );
-    let stderr = plugin.stderr_soon("queued behind them");
-    let named = format!("card \"{TITLE}\" ({SHORT_LINK})");
-    assert!(
-        stderr.contains(&format!(
-            "trello is unreachable for {named}: trello post attachment: board returned status \
-             503; attaching \"work.patch\" is queued and retried for up to 1h"
-        )),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!(
-            "trello still owes {named} earlier writes; the comment \"attempt 1 failed; the patch \
-             is attached\" is queued behind them"
-        )),
-        "{stderr}"
-    );
-    b.fake.heal("post attachment");
-
-    assert!(
-        within(std::time::Duration::from_secs(15), || {
-            b.fake
-                .comments(&b.card)
-                .iter()
-                .any(|c| c.text.starts_with("attempt 1 failed"))
-        }),
-        "the outbox never delivered; stderr: {}",
-        plugin.stderr()
-    );
-    assert_eq!(
-        b.fake.attachments(&b.card),
-        [("work.patch".to_string(), patch.clone())]
-    );
-    assert_eq!(
-        uploads(&b.fake).len(),
-        2,
-        "the 503, then the one that landed"
-    );
-    let seen = b.fake.seen();
-    let at = |want: &dyn Fn(&Seen) -> bool| seen.iter().rposition(want).unwrap();
-    assert!(
-        at(&|r| r.method == "POST" && r.path.ends_with("/attachments"))
-            < at(&|r| r.method == "POST" && r.path.ends_with("/actions/comments")),
-        "the attachment lands before the comment queued behind it"
-    );
-    let stderr = plugin.stderr_soon("attaching \"work.patch\" (");
-    assert!(
-        stderr.contains(&format!(
-            "[trello] attaching \"work.patch\" ({} bytes) to card \"{TITLE}\"\n",
-            patch.len()
-        )),
-        "{stderr}"
-    );
-    plugin.finish();
-}
-
-/// A path the plugin cannot attach is refused with its sentence and nothing reaches
-/// Trello: a relative path, a missing one, a directory, a file one byte over 10 MiB, and
-/// an empty name.
-#[test]
-fn attach_refuses_a_relative_missing_or_oversized_file_and_sends_nothing() {
-    let b = board();
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    let dir = TempDir::new("attach-refused");
-    let big = dir.path().join("big.bin");
-    std::fs::File::create(&big)
-        .unwrap()
-        .set_len(10 * 1024 * 1024 + 1)
-        .unwrap();
-    let small = dir.path().join("plan.md");
-    std::fs::write(&small, "plan").unwrap();
-    let missing = dir.path().join("gone.patch");
-    for (path, name, error) in [
-        (
-            "work.patch".to_string(),
-            "work.patch",
-            "attach: path must be absolute, not \"work.patch\"".to_string(),
-        ),
-        (
-            arg(&missing),
-            "work.patch",
-            format!("attach: no file at {}", arg(&missing)),
-        ),
-        (
-            arg(dir.path()),
-            "work.patch",
-            format!("attach: {} is not a regular file", arg(dir.path())),
-        ),
-        (
-            arg(&big),
-            "big.bin",
-            format!(
-                "attach: {} is over the 10 MiB Trello takes in one attachment",
-                arg(&big)
-            ),
-        ),
-        (
-            arg(&small),
-            "",
-            "attach: name must not be empty".to_string(),
-        ),
-    ] {
-        assert_eq!(
-            plugin.act("attach", json!({"path": path, "name": name}), &unit),
-            json!({"ok": false, "error": error}),
-            "{path}"
-        );
-    }
-    assert!(uploads(&b.fake).is_empty(), "{:?}", uploads(&b.fake));
-    assert!(b.fake.attachments(&b.card).is_empty());
-    plugin.finish();
-}
-
-/// Of two uploads named `plan.md`, the newer is written to `to` — past a newer link of
-/// that name pointing elsewhere and a newer upload of another name. The one download asks
-/// for that upload with the OAuth header and no query credential.
-#[test]
-fn fetch_attachment_writes_the_newest_of_two_with_the_name() {
-    let b = board();
-    let newer = "## 計画 — v2\n\n1. Läs kortet.\n2. Bygg 🚧\n\n```rust\nlet x = 1;\n```\n";
-    b.fake.attachment(&b.card, "plan.md", b"old plan\n", 3600);
-    let wanted = b
-        .fake
-        .attachment(&b.card, "plan.md", newer.as_bytes(), 1800);
-    b.fake
-        .link_attachment(&b.card, "plan.md", "https://example.com/plan.md", 900);
-    b.fake
-        .attachment(&b.card, "critique.md", b"the critique\n", 60);
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    let dir = TempDir::new("fetch-newest");
-    let to = dir.path().join("earlier-plan.md");
-
-    assert_eq!(
-        plugin.act(
-            "fetch_attachment",
-            json!({"name": "plan.md", "to": arg(&to)}),
-            &unit
-        ),
-        json!({"ok": true}),
-        "{}",
-        plugin.stderr()
-    );
-    assert_eq!(std::fs::read(&to).unwrap(), newer.as_bytes());
-    let fetched = downloads(&b.fake);
-    assert_eq!(fetched.len(), 1, "{fetched:?}");
-    assert!(
-        fetched[0].path.starts_with(&format!(
-            "/1/cards/{}/attachments/{wanted}/download/",
-            b.card
-        )),
-        "{}",
-        fetched[0].path
-    );
-    assert_eq!(fetched[0].authorization, Some(oauth_header()));
-    assert!(fetched[0].query.is_empty(), "{:?}", fetched[0].query);
-    assert_eq!(
-        std::fs::read_dir(dir.path()).unwrap().count(),
-        1,
-        "no temp file outlives the write"
-    );
-    let stderr = plugin.finish();
-    assert!(
-        stderr.contains(&format!(
-            "[trello] fetching attachment \"plan.md\" from card \"{TITLE}\" into {} ({} bytes)\n",
-            arg(&to),
-            newer.len()
-        )),
-        "{stderr}"
-    );
-}
-
-/// Two uploads of `work.patch` in one second, the later millisecond minted the lower id —
-/// as a live board minted two back-to-back uploads — fetch as the later one: the time
-/// decides, never the id.
-#[test]
-fn fetch_attachment_takes_the_later_millisecond_of_two_uploads_in_one_second() {
-    let b = board();
-    let later = b
-        .fake
-        .attachment_at(&b.card, "work.patch", b"the second attach\n\0", 30, 954);
-    let earlier = b
-        .fake
-        .attachment_at(&b.card, "work.patch", b"the first attach\n\0", 30, 87);
-    assert!(earlier > later, "the ids run against the times");
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    let dir = TempDir::new("fetch-same-second");
-    let to = dir.path().join("earlier.patch");
-    assert_eq!(
-        plugin.act(
-            "fetch_attachment",
-            json!({"name": "work.patch", "to": arg(&to)}),
-            &unit
-        ),
-        json!({"ok": true}),
-        "{}",
-        plugin.stderr()
-    );
-    assert_eq!(std::fs::read(&to).unwrap(), b"the second attach\n\0");
-    plugin.finish();
-}
-
-/// With no upload of the name — only a link and another name — the call answers ok,
-/// writes nothing and leaves a file already at `to` as it was, says so, and downloads
-/// nothing.
-#[test]
-fn fetch_attachment_with_no_attachment_of_the_name_writes_nothing() {
-    let b = board();
-    b.fake
-        .link_attachment(&b.card, "work.patch", "https://example.com/work.patch", 60);
-    b.fake.attachment(&b.card, "plan.md", b"plan\n", 60);
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    let dir = TempDir::new("fetch-none");
-    let to = dir.path().join("earlier.patch");
-    let kept = dir.path().join("kept.patch");
-    std::fs::write(&kept, "an earlier attempt's patch\n").unwrap();
-    for dest in [&to, &kept] {
-        assert_eq!(
-            plugin.act(
-                "fetch_attachment",
-                json!({"name": "work.patch", "to": arg(dest)}),
-                &unit
-            ),
-            json!({"ok": true})
-        );
-    }
-    assert!(!to.exists());
-    assert_eq!(
-        std::fs::read_to_string(&kept).unwrap(),
-        "an earlier attempt's patch\n"
-    );
-    assert!(downloads(&b.fake).is_empty());
-    let listed = b
-        .fake
-        .seen()
-        .into_iter()
-        .filter(|r| r.method == "GET" && r.path.ends_with("/attachments"))
-        .count();
-    assert_eq!(listed, 2, "one listing per call");
-    let stderr = plugin.finish();
-    assert!(
-        stderr.contains(&format!(
-            "[trello] no attachment named \"work.patch\" on card \"{TITLE}\"; nothing written\n"
-        )),
-        "{stderr}"
-    );
-}
-
-/// The card's round trip: a `git diff --binary` attached, then fetched back to another
-/// path, is the same bytes — the `cmp` a later attempt relies on.
-#[test]
-fn attach_then_fetch_returns_a_git_binary_patch_byte_for_byte() {
-    let b = board();
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    let dir = TempDir::new("round-trip");
-    let patch = binary_patch(dir.path());
-    let (from, to) = (
-        dir.path().join("work.patch"),
-        dir.path().join("earlier.patch"),
-    );
-    std::fs::write(&from, &patch).unwrap();
-    for (action, args) in [
-        ("attach", json!({"path": arg(&from), "name": "work.patch"})),
-        (
-            "fetch_attachment",
-            json!({"name": "work.patch", "to": arg(&to)}),
-        ),
-    ] {
-        assert_eq!(
-            plugin.act(action, args, &unit),
-            json!({"ok": true}),
-            "{action}: {}",
-            plugin.stderr()
-        );
-    }
-    let back = std::fs::read(&to).unwrap();
-    assert!(back.len() > 100_000, "{}", back.len());
-    assert!(back == patch, "the patch came back changed");
-    plugin.finish();
-}
-
-/// A relative `to` is refused before Trello is asked; and while Trello is out of reach a
-/// fetch answers the transport failure — the slot decides — and nothing is queued for it.
-#[test]
-fn fetch_attachment_refuses_a_relative_to_and_answers_an_outage_with_an_error() {
-    let b = board();
-    b.fake.attachment(&b.card, "plan.md", b"plan\n", 60);
-    let mut plugin = Plugin::armed(settings(&b.fake));
-    let unit = claim_one(&mut plugin);
-    let seen = b.fake.seen().len();
-    assert_eq!(
-        plugin.act(
-            "fetch_attachment",
-            json!({"name": "plan.md", "to": "earlier-plan.md"}),
-            &unit
-        ),
-        json!({"ok": false,
-               "error": "fetch_attachment: to must be absolute, not \"earlier-plan.md\""})
-    );
-    assert_eq!(b.fake.seen().len(), seen, "nothing was asked");
-
-    let dir = TempDir::new("fetch-outage");
-    let to = dir.path().join("earlier-plan.md");
-    b.fake.outage();
-    let reply = plugin.act(
-        "fetch_attachment",
-        json!({"name": "plan.md", "to": arg(&to)}),
-        &unit,
-    );
-    assert_eq!(reply["ok"], false, "{reply}");
-    let error = reply["error"].as_str().unwrap_or_default();
-    assert!(
-        error.starts_with("trello list attachments: no response ("),
-        "{error}"
-    );
-    b.fake.restore();
-    assert!(!to.exists());
-    let stderr = plugin.finish();
-    assert!(
-        !stderr.contains("queued"),
-        "a fetch is never queued: {stderr}"
-    );
+    assert!(claims(&b.fake, &parked).is_empty());
+    assert_eq!(said(&b.fake, &parked, "[afkd-ran]").len(), 1);
+    develop.finish();
+    discuss.finish();
 }

@@ -319,6 +319,72 @@ fn cards_cuts_at_the_limit() {
     plugin.finish();
 }
 
+// --- card ---
+
+/// The `handle` an ok reply carries.
+fn handle(reply: &Value) -> &Value {
+    assert_eq!(reply["ok"], true, "{reply}");
+    &reply["handle"]
+}
+
+/// One card read by its short link, and by its Trello id, is the handle `cards` gives for it,
+/// field for field — so `==` in a config — from a child started for the call and from an armed
+/// child alike; and the read is narrated.
+#[test]
+fn card_reads_one_card_by_short_link_or_id_as_cards_gives_it() {
+    let b = rich();
+    let mut plugin = Plugin::spawn();
+    let listed = plugin.read("cards", b.args(json!({})));
+    let from_cards = handles(&listed)
+        .iter()
+        .find(|h| h["id"] == "BklgOne1")
+        .expect("the card is on the board")
+        .clone();
+    assert_eq!(from_cards["fields"]["name"], NAME);
+
+    let by_link = plugin.read("card", json!({"acct": b.fake.account(), "id": "BklgOne1"}));
+    assert_eq!(handle(&by_link), &from_cards, "{}", plugin.stderr());
+    let by_id = plugin.read(
+        "card",
+        json!({"acct": b.fake.account(), "id": b.id("BklgOne1")}),
+    );
+    assert_eq!(handle(&by_id), &from_cards);
+    // A card `cards` leaves out is read all the same: an archived one, with its flag.
+    let archived = plugin.read("card", json!({"acct": b.fake.account(), "id": "Archived"}));
+    assert_eq!(handle(&archived)["fields"]["archived"], true);
+    assert!(
+        plugin.stderr().contains("[trello] read card BklgOne1"),
+        "{}",
+        plugin.stderr()
+    );
+    plugin.finish();
+
+    let mut armed = Plugin::armed(settings(&b.fake));
+    let reply = armed.read_armed("card", json!({"acct": b.fake.account(), "id": "BklgOne1"}));
+    assert_eq!(handle(&reply), &from_cards);
+    armed.finish();
+}
+
+/// A card Trello has none of is an `.err` naming the id, and an empty or absent id is refused
+/// before anything is sent.
+#[test]
+fn card_refuses_an_unknown_id_naming_it_and_an_id_it_cannot_use() {
+    let b = rich();
+    let mut plugin = Plugin::spawn();
+    let reply = plugin.read("card", json!({"acct": b.fake.account(), "id": "Nope0000"}));
+    assert_eq!(
+        refusal(&reply),
+        "card: no card \"Nope0000\" on this account: trello read card: board returned status 404"
+    );
+    let before = b.fake.seen().len();
+    let reply = plugin.read("card", json!({"acct": b.fake.account()}));
+    assert_eq!(refusal(&reply), "card: parameter id is required");
+    let reply = plugin.read("card", json!({"acct": b.fake.account(), "id": " "}));
+    assert_eq!(refusal(&reply), "card: id must name a card, not \" \"");
+    assert_eq!(b.fake.seen().len(), before, "nothing was sent");
+    plugin.finish();
+}
+
 /// A board of more than Trello's 1000 cards is read to its end, in two pages, and ordered as a
 /// whole: the first thousand, top to bottom, are the oldest, which the newest-first first page
 /// does not hold. A default read gives a hundred, and `include_archived` reads the closed
@@ -1084,7 +1150,7 @@ fn download_attachment_saves_an_upload_and_refuses_the_rest() {
 
 /// A 429 that carries rate-limit headers is waited out as they say and the read answers `ok`;
 /// one that carries none is waited out one second; and neither queues anything, in the armed
-/// child that has an outbox.
+/// child of a service.
 #[test]
 fn a_429_is_retried_to_ok_with_and_without_rate_headers() {
     let b = rich();

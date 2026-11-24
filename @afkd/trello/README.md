@@ -1,25 +1,28 @@
 # `@afkd/trello`
 
-A **provider** plugin with one trigger kind, [`service(trello)`](#servicetrello-cards): it
-fires when a card lands in a watched list of a Trello board, and gives the service's slots
-the actions that move the card across the board as work starts, finishes, or fails, and
-that attach a file to the card and fetch one back. Beside it, a config
-[reads Trello through a `trello.Account`](#reading-trello-through-a-trelloaccount): a board's
-cards, a card's comments, checklists and attachments, and a board's lists, labels and members,
-from any service's slots or run, and
-[writes it through the same account](#writing-trello-through-a-trelloaccount): cards,
-comments, checklists, check items and attachments made, changed and deleted. It also
-ships the `trello` skill an agent works the card through, one script per Trello operation:
-read the card, its comments, checklists and attachments, and the board around it; write
-them; and ask a question that parks the card until a human replies.
+A **provider** plugin with one trigger kind, [`service(trello)`](#servicetrello-intake): it
+fires when a card lands in a watched list of a Trello board, and passes the service's slots
+the claimed card and a `trello.Account`, through which they move the card across the board as
+work starts, finishes, or fails, and attach a file to it or fetch one back. The same account
+[reads Trello](#reading-trello-through-a-trelloaccount): a board's cards, one card, a card's
+comments, checklists and attachments, and a board's lists, labels and members, from any
+service's slots or run, and
+[writes it](#writing-trello-through-a-trelloaccount): cards, labels, members, comments,
+checklists, check items and attachments made, changed and deleted. A call is a read, a write,
+or refused: there is no other kind. The plugin also ships the `trello` skill an agent works
+the card through, one script per Trello operation: read the card, its comments, checklists
+and attachments, and the board around it; write them; and ask a question that parks the card
+until a human replies.
 
 It is afkd's built-in Trello trigger, moved out of afkd: the same keys, renamed to match
 the other plugins', the same claim,
 watermark, attempt and park comments on the card, the same claim-journal keys and session
 threads, the same run environment and the same brief. A claim or a park the built-in left
 on a live card is recognised, renewed and released by the plugin, and the other way round,
-so switching from one to the other strands nothing. The few places the plugin behaves
-differently are listed [at the end](#where-it-differs-from-the-built-in). See
+so switching from one to the other strands nothing; so does a card a 0.17 release claimed or
+parked. The few places the plugin behaves differently are listed
+[at the end](#where-it-differs-from-the-built-in), and what 0.18 changed for a config
+[just before](#what-breaks). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
 [the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
@@ -52,9 +55,8 @@ $ afkd install /tmp/afkd-release/afkd-trello
 Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
 sends with a claim: this is a manifest v2 plugin, which a
 [config in the afk language](https://afkd.sh/docs/reference/) imports; afkd passes its slots the
-claimed card as a `trello.Card`, and sends each action a slot calls on a card as a `call`.
-afkd 0.2.197 to 0.2.240 install and run it too, but there a slot reading any field beyond
-`id` and `key` fails; an older afkd refuses the manifest when it is installed.
+claimed card as a `trello.Card` and the service's `trello.Account`, and sends each call a slot
+makes as a `call`. An older afkd refuses the manifest when it is installed.
 
 The configs below are written in the afk language of **afkd 0.2.704 or newer**, the
 first that writes a top-level agent as a block, `agent(claude) { … }`; an older afkd still
@@ -85,19 +87,40 @@ develop :: service(trello) {
   every        1m~3m
 
   on_claim proc(account: trello.Account, card: trello.Card) {
-    trello.add_member(card)
-    trello.move_to(card, "In Progress", at=.top)
+    match trello.add_member(account, card) {
+      .ok(_) => { }
+      .err(e) => fail("trello.add_member: #{e.message}")
+    }
+    match trello.update_card(account, card, list="In Progress", at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
   }
   on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
-    trello.move_to(card, "Review", at=.top)
-    trello.comment(card, "afkd landed this card in #{outcome.duration}.")
+    match trello.update_card(account, card, list="Review", at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+    match trello.create_comment(account, card, "afkd landed this card in #{outcome.duration}.") {
+      .ok(_) => { }
+      .err(e) => fail("trello.create_comment: #{e.message}")
+    }
   }
   on_park proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
-    trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
+    match trello.create_comment(account, card, "parked after #{outcome.duration}: waiting for a reply.") {
+      .ok(_) => { }
+      .err(e) => fail("trello.create_comment: #{e.message}")
+    }
   }
   on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
-    trello.move_to(card, "Backlog", at=.bottom)
-    trello.add_label(card, "Problem")
+    match trello.update_card(account, card, list="Backlog", at=.bottom) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+    match trello.add_label(account, card, "Problem") {
+      .ok(_) => { }
+      .err(e) => fail("trello.add_label: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
@@ -105,12 +128,14 @@ develop :: service(trello) {
 }
 ```
 
-The credentials come from the daemon's environment, so they never sit in the file. Each
-action names the card it acts on — the `card` its slot is passed — so it reads the same
-wherever it is written, and a slot may act on another card than the one its run claimed.
-Each slot is also passed the `account` the service's `api_key`, `token` and `base_url` build,
-so a slot reads or writes Trello [through it](#reading-trello-through-a-trelloaccount) as
-the service does.
+The credentials come from the daemon's environment, so they never sit in the file. Every
+slot is passed the `account` the service's `api_key`, `token` and `base_url` build, and
+reaches Trello [through it](#reading-trello-through-a-trelloaccount), as a config does
+anywhere else; each call names the card it acts on — the `card` its slot is passed, or any
+other — so it reads the same wherever it is written. Each returns a result: a call Trello
+refuses is an `.err` the slot sees, and a slot that does not match it has not noticed. A
+failing `on_claim` gives the card back and fails the run; a failing post-run slot is logged
+and changes nothing.
 
 ## Name the skill
 
@@ -143,7 +168,7 @@ alone.
 
 | Script                   | Does                                           |
 |--------------------------|------------------------------------------------|
-| `card.py`                | reads one card, as its `trello.Card` handle    |
+| `card.py`                | `trello.card`                                  |
 | `cards.py`               | `trello.cards`                                 |
 | `comments.py`            | `trello.comments`                              |
 | `checklists.py`          | `trello.checklists`                            |
@@ -178,11 +203,12 @@ alone.
 
 The skill's `SKILL.md` says when to use each and what each can reach.
 
-## `service(trello)` (cards)
+## `service(trello)` (intake)
 
 Fires when a card lands in a watched list; its slots move cards across the board as work
-starts, finishes, or fails. Its secrets stay with the plugin and the run. The kind is the
-plugin's main one, so a config writes it `service(trello)`.
+starts, finishes, or fails, by [calls through the account](#writing-trello-through-a-trelloaccount)
+they are passed. Its secrets stay with the plugin and the run. The kind is named `intake` in
+the plugin's manifest and is its main one, so a config writes it `service(trello)`.
 
 | Key            | Type        | Notes                                  |
 |----------------|-------------|----------------------------------------|
@@ -220,7 +246,8 @@ and a slot writes every one of them, in order, each with its type:
 `run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`duration`,
 `error`). `account` is the [`trello.Account`](#reading-trello-through-a-trelloaccount) of the
 service's own `api_key`, `token` and `base_url`. `card` is a **`trello.Card`**, the plugin's
-handle for the card, the same handle [`trello.cards`](#the-reads) hands back:
+handle for the card, the same handle [`trello.cards`](#the-reads) and
+[`trello.card`](#the-reads) hand back:
 
 | Field              | Type           | What it is                                         |
 |--------------------|----------------|----------------------------------------------------|
@@ -243,60 +270,42 @@ field once the claim is won — after a parked card's `Awaiting Reply` badge has
 the claim comment is on it — and they hold for the whole run: `list` is where the claim
 found the card, whatever `on_claim` then does, and `labels` leaves out a colour-only label,
 which has no name. The `key` is the card's own, so a claimed card and the same card read
-with `trello.cards` are `==`; the claim comment and the list a card was claimed from, which
-the key no longer carries, are the plugin's [to keep](#the-claim-the-key-no-longer-carries).
+with `trello.cards` or `trello.card` are `==`; the claim comment and the list a card was
+claimed from, which the key no longer carries, are the plugin's
+[to keep](#the-claim-the-key-no-longer-carries).
 
-afkd runs a slot's statements in the order they are written, and each action it calls is
-one request to the plugin, which does it on the card the action is passed first:
-
-| Action                                    | Effect                                  |
-|-------------------------------------------|-----------------------------------------|
-| `trello.add_member(card, <member>)`       | add a member to the card; additive and idempotent |
-| `trello.remove_member(card, <member>)`    | remove a member from the card; idempotent (removing a member not on the card is a no-op) |
-| `trello.mark_complete(card)`              | mark the card complete                  |
-| `trello.move_to(card, "<list>", at=.top)` | move the card to a list, at `.top` (the default) or `.bottom` |
-| `trello.remove_label(card, "<name>")`     | remove a named label from the card; idempotent (removing a label not on the card is a no-op) |
-| `trello.add_label(card, "<name>")`        | add a named label to the card           |
-| `trello.comment(card, "<text>")`          | post a comment on the card, verbatim; in a post-run slot, `#{outcome.duration}` interpolates how long the run took |
-| `trello.attach(card, "<path>", "<name>")` | upload the file at `<path>` to the card as an attachment named `<name>` |
-| `trello.fetch_attachment(card, "<name>", "<to>")` | write the newest file on the card named `<name>` to `<to>`; nothing when there is none |
-| `trello.archive(card)`                    | archive the card                        |
-
-The card is a `trello.Card` and nothing else: `trello.move_to("Review")`, with no card, or
-passed another plugin's handle, is refused when the config loads.
+afkd runs a slot's statements in the order they are written, and each call it makes is one
+request to the plugin, which does it through the account it is passed first. A call is one of
+the [reads](#the-reads) or [writes](#the-writes) below and nothing else: the plugin refuses
+any other name with `no action `…``. A card is passed as a `trello.Card` and nothing else:
+`trello.update_card(account, list="Review")`, with no card, or a call passed another
+plugin's handle, is refused when the config loads.
 
 A `<member>`, in a call or a setting, is a username or **`"me"`**, Trello's own alias for
 the member the plugin's credentials authenticate as; it cannot name a real member, since a
 Trello username is at least three characters long. `add_member` and `remove_member`
-default it to `"me"`, so `trello.add_member(card)` adds that member.
+default it to `"me"`, so `trello.add_member(account, card)` adds that member.
 
-Each action returns a result, like any call: one the board refused — a list the board does
-not have, a member not on it — fails with the plugin's sentence. A failing `on_claim` gives
-the card back and fails the run; a failing post-run slot is logged and changes nothing.
-afkd never retries a slot's action; the plugin retries what Trello could not take.
-
-**When Trello cannot be reached.** An action Trello could not be reached for, or answered
-with a 429 or a 5xx, is queued and the call answers ok, so the slot's next action still runs
-and is queued behind it. The plugin retries the queue in the background, each card's writes
-in the order they were asked for: the first retry 5 seconds after the failure, the gap
-doubling to 5 minutes, for up to an hour. The `[afkd-attempt]` notes and the run-end
-`[afkd-ran]` watermark are retried the same way. Every write queued is one line in the
-service log; one given up is a loud line naming the card and what was lost. The queue is
-held in memory, so a plugin afkd ends names each write it still owes.
+**When Trello cannot be reached.** A call Trello could not be reached for, or answered with
+a 429 or a 5xx, is refused at once as a write is (a 429 is waited out within the call's
+deadline), and nothing is queued or retried in the background: the slot sees an `.err` and
+decides. The plugin's own notes, the `[afkd-attempt]` notes of a failed attempt, the
+`[afkd-ran]` watermark and a discuss service's backstop comment, are posted once; one Trello
+does not take is said in one line in the service log, naming the card and the quoted
+comment, and **lost**. A watermark that is lost prunes none of the earlier ones, since the
+newest of them is the boundary the next run reads. A finish whose release does not land is
+not lost: it is held, and afkd releases it on a later beat, as
+[below](#where-it-differs-from-the-built-in).
 
 **Files on the card.** A comment holds at most 16 384 characters, so a plan, a review or a
-patch goes on the card as a file. `attach` reads the file at `path` when the slot calls it
-and uploads it under `name`, at most 10 MiB; a file it cannot read, or a larger one, fails
-the call. It is a write like the others: when Trello cannot take it, the bytes it read are
-queued and retried, so a file the slot then moves or deletes still lands as it was. If an
-upload landed but Trello answered with a 5xx, the retry puts a second, identical copy on the
-card. `fetch_attachment` writes the newest file on the card named exactly `name` to the
-path `to` — a link of that name is not a file and is passed over — and when there is none it
-writes nothing and leaves a file already at `to` as it was. It writes through a temp file
-beside `to`, so `to` never holds half a download, and it does not create `to`'s directory.
-A fetch is a read the slot needs now, so it is never queued: when Trello cannot be reached
-it fails with the reason, and an `attach` still queued behind an outage is not on the card
-yet. Both paths must be absolute, since the plugin does not run in the slot's `work_dir`.
+patch goes on the card as a file. `trello.create_attachment` reads the file at `path` when
+the slot calls it and uploads it under `name`, at most 10 MiB; a file it cannot read, or a
+larger one, is an `.err`. `trello.attachments` lists the card's files and links, oldest first,
+and `trello.download_attachment` writes one file to an absolute path, through a temp file
+beside it, so the path never holds half a download; it does not create the path's directory.
+A link, or a file over 10 MiB, is refused. To fetch the newest file of a name, download the
+last one of that name in the list. Both paths must be absolute, since the plugin does not run
+in the slot's `work_dir`.
 
 ```conf
 import "afkd"
@@ -309,14 +318,29 @@ develop :: service(trello) {
   claim_from "Up for Grabs"
 
   on_claim proc(account: trello.Account, card: trello.Card) {
-    match trello.fetch_attachment(card, "plan.md", "/srv/acme/widgets/earlier-plan.md") {
-      .ok(_) => { }
-      .err(e) => fail("trello.fetch_attachment: #{e.message}")
+    match trello.attachments(account, card) {
+      .ok(held) => {
+        for att in held {
+          if att.name == "plan.md" {
+            match trello.download_attachment(account, att, "/srv/acme/widgets/earlier-plan.md") {
+              .ok(_) => { }
+              .err(e) => fail("trello.download_attachment: #{e.message}")
+            }
+          }
+        }
+      }
+      .err(e) => fail("trello.attachments: #{e.message}")
     }
   }
   on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
-    trello.attach(card, "#{run.scratch_dir}/plan.md", "plan.md")
-    trello.comment(card, "the attempt failed; its plan is attached as plan.md")
+    match trello.create_attachment(account, card, "#{run.scratch_dir}/plan.md", name="plan.md") {
+      .ok(_) => { }
+      .err(e) => fail("trello.create_attachment: #{e.message}")
+    }
+    match trello.create_comment(account, card, "the attempt failed; its plan is attached as plan.md") {
+      .ok(_) => { }
+      .err(e) => fail("trello.create_comment: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
@@ -326,15 +350,14 @@ develop :: service(trello) {
 }
 ```
 
-**Repeating an action.** The label and member actions are all idempotent, so a retried card
-cannot fault on its own slots: `add_label` and `add_member` are additive — attaching
-what is already attached is a no-op — and `remove_label` and `remove_member` succeed
-against a card that never carried the label or the member. The asymmetry to know is
-board-level: `add_label` **creates** the named label on the board when it does not exist
-yet, while `remove_label` never does (a name the board does not know simply has nothing to
-remove); a *member* who is not on the board is an error either way. `move_to` is the one
-action whose effect is positional rather than additive — it re-lists the card at the
-target's `top` or `bottom` — so two `move_to`s leave the card wherever the last one put it.
+**Repeating a call.** The label and member writes are idempotent, so a retried card cannot
+fault on its own slots: `add_label` and `add_member` on a card that carries the label or the
+member send nothing and answer the card as it is, and `remove_label` and `remove_member`
+against a card that never carried it do the same. A label or a member the board does not have
+is an `.err` naming the ones it has, either way: `add_label` **never creates a label**.
+`update_card` with a `list` or an `at` is positional rather than additive — it re-lists the
+card at the target's `.top` or `.bottom` — so two moves leave the card wherever the last one
+put it.
 
 **Cadence.** The plugin checks the board for work the moment the service starts, then
 `every` after each check that claimed nothing or whose card failed; a card run to a finish
@@ -384,8 +407,14 @@ implement :: service(trello) {
   min_age      10m
 
   on_claim proc(account: trello.Account, card: trello.Card) {
-    trello.move_to(card, "In Progress", at=.top)
-    trello.remove_label(card, "ready")
+    match trello.update_card(account, card, list="In Progress", at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+    match trello.remove_label(account, card, "ready") {
+      .ok(_) => { }
+      .err(e) => fail("trello.remove_label: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
@@ -428,7 +457,12 @@ groom :: service(trello) {
   claim_from   "Ideas"
   discuss_with [ "alice", "bob" ]
 
-  on_claim proc(account: trello.Account, card: trello.Card) { trello.add_member(card) }
+  on_claim proc(account: trello.Account, card: trello.Card) {
+    match trello.add_member(account, card) {
+      .ok(_) => { }
+      .err(e) => fail("trello.add_member: #{e.message}")
+    }
+  }
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
@@ -469,7 +503,7 @@ card instead of failing it: it adds the `Awaiting Reply` label, releases the cla
 **moves nothing** — the card keeps its place, its list, and its unspent attempts. `on_fail`
 does not run, no `[afkd-attempt]` marker goes up, and the poll goes on to the next card. The
 label is managed by the plugin itself, so the gate holds with no `on_park` slot; `on_park`
-is only for extras (`on_park proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Discussion") }` for a board
+is only for extras (an `on_park` slot that calls `trello.update_card(account, card, list="Discussion")` for a board
 that wants parked cards gathered somewhere).
 
 The badge is also how afkd **finds the card again**. Once a beat, before it reads
@@ -513,7 +547,12 @@ widgets :: service(trello) {
   token      "REPLACE_ME"
   claim_from "To Do"
 
-  on_claim proc(account: trello.Account, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_claim proc(account: trello.Account, card: trello.Card) {
+    match trello.update_card(account, card, list="In Progress", at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+  }
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
@@ -534,8 +573,8 @@ down and agent, gate, and plugin all name the same file.
 **The badge is a lock**, held by the service that parked the card — it is the findability
 too, but only its holder takes it off. A service whose `on_claim` does not move the card out
 of `claim_from` will re-claim **its own** parked card on the next beat, exactly as an
-`on_done`-less config re-fires — drag it elsewhere, or give the service an
-`on_claim proc(account: trello.Account, card: trello.Card) { trello.move_to(card, …) }`, as the example below does. A human who
+`on_done`-less config re-fires — drag it elsewhere, or give the service an `on_claim` that
+calls `trello.update_card(account, card, list=…)`, as the example below does. A human who
 drags a badged card back into the parking service's own `claim_from` gets it claimed and
 unbadged there, answered or not.
 
@@ -549,11 +588,29 @@ widgets :: service(trello) {
   token      "REPLACE_ME"
   claim_from "To Do"
 
-  on_claim proc(account: trello.Account, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
-  on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Review", at=.top) }
-  on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Backlog", at=.bottom) }
+  on_claim proc(account: trello.Account, card: trello.Card) {
+    match trello.update_card(account, card, list="In Progress", at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+  }
+  on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
+    match trello.update_card(account, card, list="Review", at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+  }
+  on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
+    match trello.update_card(account, card, list="Backlog", at=.bottom) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+  }
   on_park proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
-    trello.comment(card, "parked after #{outcome.duration} — waiting on you")
+    match trello.create_comment(account, card, "parked after #{outcome.duration} — waiting on you") {
+      .ok(_) => { }
+      .err(e) => fail("trello.create_comment: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
@@ -582,11 +639,21 @@ widgets :: service(trello) {
   claim_from "To Do"
   every      2m~3m
 
-  on_claim proc(account: trello.Account, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_claim proc(account: trello.Account, card: trello.Card) {
+    match trello.update_card(account, card, list="In Progress", at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+  }
   on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
-    trello.mark_complete(card)
-    trello.move_to(card, "Done", at=.bottom)
-    trello.archive(card)
+    match trello.update_card(account, card, list="Done", at=.bottom, due_complete=true) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
+    match trello.archive_card(account, card) {
+      .ok(_) => { }
+      .err(e) => fail("trello.archive_card: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
@@ -606,14 +673,13 @@ flight. All of this is afkd's own mid-run watch; the plugin only reads the threa
 
 ## Reading Trello through a `trello.Account`
 
-Beside the card a service claims, a config reads a whole board: its cards, a card's comments,
-checklists, check items and attachments, the member the token acts as, the boards it
-reaches, and a board's lists, labels and members, and it saves an attachment to a path. Each
-read takes a `trello.Account` first, the credential it reaches Trello with, and reaches
-Trello through nothing else: no read takes a service's settings, so it reads the same from
-an interval service's run, from another plugin's service and from a `service(trello)`'s
-slots. Called outside the plugin's own services, a read is a child afkd starts for that one
-call.
+A config reads a whole board: its cards, one card, a card's comments, checklists, check items
+and attachments, the member the token acts as, the boards it reaches, and a board's lists,
+labels and members, and it saves an attachment to a path. Each read takes a `trello.Account`
+first, the credential it reaches Trello with, and reaches Trello through nothing else: no read
+takes a service's settings, so it reads the same from an interval service's run, from another
+plugin's service and from a `service(trello)`'s slots. Called outside the plugin's own
+services, a read is a child afkd starts for that one call.
 
 ```conf
 import "afkd"
@@ -658,8 +724,8 @@ A struct the plugin declares, built as `trello.Account{ … }`:
   side by side.
 - `"me"` is resolved once per account and kept, for as long as the process that answers the
   calls lives, since Trello allows only 100 requests to `/1/members` per 900 seconds. A
-  service's trigger child answers every read called in its slots, so it asks once per account;
-  a read called outside a service is a child of its own, which asks once.
+  service's trigger child answers every call made in its slots, so it asks once per account;
+  a call made outside a service is a child of its own, which asks once.
 - The credential is sent only to `base_url`'s origin and, for a download, to trello.com,
   where Trello's own attachments live. A link to anywhere else is never fetched.
 
@@ -672,7 +738,7 @@ a write finds the object by it.
 
 | Handle              | Fields |
 |---------------------|--------|
-| `trello.Card`       | `id` (the short link), `key`, and the fields [above](#servicetrello-cards) |
+| `trello.Card`       | `id` (the short link), `key`, and the fields [above](#servicetrello-intake) |
 | `trello.Comment`    | `id` (Trello's id for the action), `card` (the card's short link), `body`, `author: str?` (a username), `created_at: time.Time`, `edited_at: time.Time?` |
 | `trello.Checklist`  | `id` (Trello's id), `card`, `name`, `items: list[str]` (the items' names, in order) |
 | `trello.Check_Item` | `id` (Trello's id), `card`, `checklist` (its id), `name`, `done: bool` |
@@ -692,6 +758,7 @@ A card's comment, and a checklist, is found by its own id alone.
 
 | Call                                                | Gives |
 |-----------------------------------------------------|-------|
+| `trello.card(acct, id)`                             | the `trello.Card` whose short link or Trello id is `id`, the same handle `cards` hands back for it; a card Trello has none of is an `.err` naming the id |
 | `trello.cards(acct, board, ~filters…)`              | `list[trello.Card]` of the board matching every filter given, list by list in the board's order, each list top to bottom. The plugin reads the whole board, paging past Trello's 1000 cards, then filters, orders and cuts at `limit` |
 | `trello.comments(acct, card, ~limit = 200)`         | `list[trello.Comment]`: the newest `limit` (1 to 1000), oldest first, paging Trello's actions with `before` |
 | `trello.checklists(acct, card)`                     | `list[trello.Checklist]`, in the card's order |
@@ -707,8 +774,8 @@ A card's comment, and a checklist, is found by its own id alone.
 A **board** is named by its address or its short link, `"https://trello.com/b/Qb7eLy2w/widgets"`
 or `"Qb7eLy2w"`; a card, a comment, a checklist or an attachment is passed as the handle a read
 gave back, or the card a service claimed; a **list** or a **label** by its name on the board,
-and a **member** by username or `"me"`, each matched exactly. `trello.card(acct, id)`, a read of
-one card by its id, is not offered: the kind is named `card`.
+and a **member** by username or `"me"`, each matched exactly. `trello.card(acct, id)` takes the
+card's short link or its Trello id as a string, for a card whose handle a config does not hold.
 
 ### `trello.cards`'s filters
 
@@ -741,7 +808,8 @@ sentence, which names the call.
 
 - An empty `api_key` or `token`: `cards: acct.api_key is empty`.
 - A board Trello does not have: `lists: no board "Nowhere1" on this account: trello read
-  board: board returned status 404`; a card or an attachment it does not have likewise.
+  board: board returned status 404`; a card, `card: no card "Nope0000" on this account:
+  trello read card: board returned status 404`, or an attachment it does not have likewise.
 - A handle this plugin did not hand out, such as a key of another shape: `comments: card
   Qb7eLy2w has a key this plugin did not hand out: <key>`.
 - `download_attachment` of a link, `attachment "the spec" is a link to https://example.com/spec,
@@ -757,10 +825,8 @@ with a 429 is tried again, on every verb, and one answered with a 5xx on every v
 `POST`, which Trello may already have carried out. Each wait is the largest of the
 `x-rate-limit-*-interval-ms` headers the answer carries, or, when it carries none, one
 second, then two, doubling. A wait that would end past the call's deadline, 45 seconds, is
-not taken: the call is refused with the last answer it got. The writes of the kind, the
-actions on a claimed card, are not retried this way: the outbox retries those. The
-[writes through an account](#writing-trello-through-a-trelloaccount) are retried as a read is,
-bar the `POST`.
+not taken: the call is refused with the last answer it got. The
+[writes](#writing-trello-through-a-trelloaccount) are retried as a read is, bar the `POST`.
 
 ### Two accounts, and from a slot
 
@@ -812,7 +878,10 @@ develop :: service(trello) {
       }
       .err(e) => fail("trello.boards: #{e.message}")
     }
-    trello.move_to(card, "In Progress", at=.top)
+    match trello.update_card(account, card, list="In Progress", at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.update_card: #{e.message}")
+    }
   }
 
   work_dir "/srv/acme/widgets"
@@ -822,7 +891,7 @@ develop :: service(trello) {
 }
 ```
 
-The `card` a read is passed may be the one the service claimed or one a read handed back:
+The `card` a call is passed may be the one the service claimed or one a read handed back:
 both are `trello:<card id>`.
 
 ### The claim the key no longer carries
@@ -835,7 +904,8 @@ names the plugin a directory to keep state in, in a file there, `claims/<card id
 written before the poll's reply and removed once the claim is finished or released. A process
 afkd restarts reads it back, so a card claimed from a later list still returns to that list,
 and a key an older release journaled, `card#claim` or `card#claim#list`, is still released as
-it was.
+it was. A card a 0.17 release claimed and left a record for is released from that record by
+the `trello:<card id>` key, and a claim it renewed is recognised as live by its last edit.
 
 A `trello:` key whose record is gone — the directory is not kept, or the card was claimed
 before the record was — is released by a rule that holds without one: every `[afkd-claim]`
@@ -854,19 +924,25 @@ backstop alike.
 ## Writing Trello through a `trello.Account`
 
 A config also writes a board through an account: files a card, edits its description, moves
-a card no run claimed, ticks a checklist item, rewrites or deletes a comment. Each write takes
-a `trello.Account` first, as a read does, and reaches Trello through nothing else, so it works
-the same from any service's slots or run. Each is done now or refused, never queued, and gives
-back what it made or changed, read back the way the reads read it: the handle it answers is
-`==` to the one `trello.cards`, `comments`, `checklists`, `check_items` or `attachments` hands
-back. The four deletes give nil.
+a card no run claimed, puts a label or a member on a card, ticks a checklist item, rewrites or
+deletes a comment. Each write takes a `trello.Account` first, as a read does, and reaches
+Trello through nothing else, so it works the same from any service's slots or run. Each is
+done now or refused, never queued, and gives back what it made or changed, read back the way
+the reads read it: the handle it answers is `==` to the one `trello.card`, `trello.cards`,
+`comments`, `checklists`, `check_items` or `attachments` hands back. The four deletes give nil.
+
+### The writes
 
 | Call                                                          | Gives |
 |---------------------------------------------------------------|-------|
 | `trello.create_card(acct, board, list, name, ~description, ~at, ~labels, ~members, ~due)` | the `trello.Card` made |
-| `trello.update_card(acct, card, ~name, ~description, ~list, ~at, ~due, ~due_complete)` | the `trello.Card` as Trello now holds it; `at` places it in its list, the new one or the one it is in; a card moved to another list with no `at` lands at the top, as `move_to` puts it |
+| `trello.update_card(acct, card, ~name, ~description, ~list, ~at, ~due, ~due_complete)` | the `trello.Card` as Trello now holds it; `at` places it in its list, the new one or the one it is in; a card moved to another list with no `at` lands at the top |
 | `trello.archive_card(acct, card)`, `trello.unarchive_card(acct, card)` | the `trello.Card`, `archived` set or unset |
 | `trello.delete_card(acct, card)`                              | nil; Trello deletes the card for good, with its comments and attachments |
+| `trello.add_label(acct, card, label)`                         | the `trello.Card` with the board's label named `label` on it; one the card carries already is left, and one the board lacks is an `.err` |
+| `trello.remove_label(acct, card, label)`                      | the `trello.Card` without the label; one the card lacks is left |
+| `trello.add_member(acct, card, ~member = "me")`               | the `trello.Card` with the board member `member` — a username, or `"me"` — on it |
+| `trello.remove_member(acct, card, ~member = "me")`            | the `trello.Card` without the member |
 | `trello.create_comment(acct, card, body)`                     | the `trello.Comment` made |
 | `trello.update_comment(acct, comment, body)`                  | the `trello.Comment`, rewritten |
 | `trello.delete_comment(acct, comment)`                        | nil |
@@ -887,7 +963,9 @@ back. The four deletes give nil.
 | `at`                     | `.top`, `.bottom` | the place in the list or the checklist; left out, `.bottom` in `create_card` and `create_check_item`, and in `update_card` the place the card has unless it moves list, and then `.top` |
 | `items`                  | `list[str]`       | the new checklist's items' names |
 | `done`                   | `bool`            | whether the item is ticked |
+| `label`                  | `str`             | the name of a label on the card's board |
 | `labels`                 | `list[str]`       | names on the board |
+| `member`                 | `str = "me"`      | the username of a member of the card's board, or `"me"` |
 | `members`                | `list[str]`       | usernames, or `"me"`, of members of the board |
 | `due`                    | `time.Time?`      | left out, it leaves the due date; `nil` clears it |
 | `due_complete`           | `bool`            | whether the due date is marked complete |
@@ -898,15 +976,17 @@ does with neither `name` nor `done`. A `due` is written to the millisecond, and 
 it.
 
 - **A name is matched exactly.** A list, label or member the board has none of is an `.err`
-  naming the ones there are, `create_card: the board has no label named "Hold"; its labels are
+  naming the ones there are, `add_label: the board has no label named "Hold"; its labels are
   "afkd/ready", "Problem"`, and a name several of them share is an `.err` listing their ids,
   `create_card: 2 labels are named "dup" (ids <id>, <id>); name one of them by renaming the
   other`. `create_card` resolves its list, every label and every member, `"me"` through the
   token's own username, before it sends anything, and `update_card` resolves a new `list` on
   the card's own board. No label is ever created: a label the board lacks is an `.err`.
-- **Labels and members on a card** are added and removed by today's `add_label`,
-  `remove_label`, `add_member` and `remove_member`, which keep those names until the actions
-  on a claimed card are replaced by calls that take an account.
+- **Labels and members on a card** are put on and taken off by the card's own board: `add_label`
+  and `add_member` read the card's labels or members, send the one request only when the card
+  lacks the label or the member, and read the card back; `remove_label` and `remove_member`
+  send it only when the card has it. What is already as asked is `.ok` with the card, and no
+  write is sent.
 - **A description or a body past Trello's 16 384 characters** is an `.err` before anything is
   sent, counted in characters: `create_card: description is 16385 characters, over the 16384
   Trello takes`.
@@ -931,8 +1011,8 @@ they name none, one second, then two, doubling, for as long as the wait ends bef
 deadline, 45 seconds; past it the write is refused with the last answer Trello gave. A 5xx is
 tried again on a `PUT`, a `DELETE` and the reads that check what was written, and **never on a
 `POST`**, which Trello may already have carried out: a 5xx on `create_card`, `create_comment`,
-`create_checklist`, `create_check_item` or `create_attachment` is refused at once, and none of
-them is ever sent twice.
+`create_checklist`, `create_check_item`, `create_attachment`, `add_label` or `add_member` is
+refused at once, and none of them is ever sent twice.
 
 ```conf
 import "afkd"
@@ -978,6 +1058,112 @@ planner :: service(interval) {
 }
 ```
 
+A sweep that archives, once a day, the cards of `Klart` nothing has touched for a week:
+
+```conf
+import "std:env"
+import "std:time"
+import "svc:daily"
+import "@afkd/trello"
+
+ACME  :: trello.Account{ api_key: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset"), token: env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset") }
+BOARD :: "https://trello.com/b/REPLACE_ME/board"
+
+sweep :: service(daily) {
+  at "04:00"
+
+  on_run proc(run) {
+    match trello.cards(ACME, BOARD, list=[ "Klart" ]) {
+      .ok(done) => {
+        for card in done {
+          if time.since(card.last_activity_at) > 168h {
+            match trello.archive_card(ACME, card) {
+              .ok(_) => { }
+              .err(e) => fail("trello.archive_card #{card.id}: #{e.message}")
+            }
+          }
+        }
+      }
+      .err(e) => fail("trello.cards: #{e.message}")
+    }
+  }
+}
+```
+
+A claiming service that files a follow-up card when a run fails, in the `Backlog` of the
+failed card's board, naming it and the run:
+
+```conf
+import "afkd"
+import "@afkd/trello"
+
+develop :: service(trello) {
+  board      "https://trello.com/b/REPLACE_ME/board"
+  api_key    "REPLACE_ME"
+  token      "REPLACE_ME"
+  claim_from "Up for Grabs"
+
+  on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
+    match trello.create_card(account, "https://trello.com/b/REPLACE_ME/board", "Backlog", "Follow up: #{card.name}", description="Run #{run.id} failed after #{outcome.duration}: #{card.url}", labels=[ "Problem" ], at=.top) {
+      .ok(_) => { }
+      .err(e) => fail("trello.create_card: #{e.message}")
+    }
+  }
+
+  work_dir "/srv/acme/widgets"
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
+  }
+}
+```
+
+## What breaks
+
+0.18 finishes moving what a slot does to a card onto calls that take a `trello.Account`, and
+the plugin's own retry queue goes with the actions it served. A config written for 0.17 or
+earlier changes as follows; `afkd validate` refuses a call to an action that is gone and a
+setting that was renamed.
+
+- **The ten actions are gone**, and a config calling one is refused when it loads. Each has a
+  call in place of it, which takes the account its slot is passed first and returns a result:
+
+  | Removed                                   | Use                                                              |
+  |-------------------------------------------|------------------------------------------------------------------|
+  | `trello.move_to(card, "<list>", at=.top)` | `trello.update_card(account, card, list="<list>", at=.top)`      |
+  | `trello.comment(card, "<text>")`          | `trello.create_comment(account, card, "<text>")`                 |
+  | `trello.add_label(card, "<name>")`        | `trello.add_label(account, card, "<name>")`, which no longer creates the label |
+  | `trello.remove_label(card, "<name>")`     | `trello.remove_label(account, card, "<name>")`                   |
+  | `trello.add_member(card, <member>)`       | `trello.add_member(account, card, member=<member>)`              |
+  | `trello.remove_member(card, <member>)`    | `trello.remove_member(account, card, member=<member>)`           |
+  | `trello.mark_complete(card)`              | `trello.update_card(account, card, due_complete=true)`           |
+  | `trello.archive(card)`                    | `trello.archive_card(account, card)`                             |
+  | `trello.attach(card, "<path>", "<name>")` | `trello.create_attachment(account, card, "<path>", name="<name>")` |
+  | `trello.fetch_attachment(card, "<name>", "<to>")` | `trello.attachments(account, card)`, then `trello.download_attachment(account, att, "<to>")` for the newest of the name |
+
+  A call is a read, a write, or refused as `no action`; the plugin answers no other.
+- **A call is done or refused, never queued.** The background queue that retried an action
+  Trello could not take, and the `[afkd-attempt]` notes and `[afkd-ran]` watermark with it, is gone: a slot
+  sees the `.err` and decides, and a note or watermark Trello does not take is said in one log
+  line and lost. A card whose finish could not release its claim is still held for afkd to
+  release.
+- **`trello.Card` has no `title`**; it is the card's `name`.
+- **`add_label` no longer creates a label.** A label the board lacks is an `.err` naming the
+  ones it has; make it on Trello first.
+- **The settings are renamed.** `pick_from` is `claim_from`, `require_member` is
+  `only_members` (a list: any one on the card is enough), `require_label` is `only_labels`
+  and `without_label` is `skip_labels`; the old names are refused as unknown. `claim_from` is
+  required. `every` and `max_attempts` are afkd's own and are written beside them.
+- **The kind is `intake` in the manifest.** A config still writes `service(trello)`; only a
+  tool that names the kind, such as a `hello` written by hand, has to say `intake`.
+- **The skill's scripts are renamed** for the operation they do, one script each:
+  `list_cards.py` is `cards.py`, `list_comments.py` is `comments.py`, `list_checklists.py` is
+  `checklists.py`, `check_item.py` is `check_items.py`, `list_attachments.py` is
+  `attachments.py`, `list_labels.py` is `labels.py`, `list_lists.py` is `lists.py`,
+  `post_comment.py` is `create_comment.py`, `post_attachment.py` is `create_attachment.py`,
+  `fetch_attachment.py` is `download_attachment.py`, `move_card.py` is `update_card.py` (its
+  `--above` and `--below` are `--at top` and `--at bottom`) and `read_description.py` is
+  `card.py`, which reads the whole card as `trello.card` does. `ask.py` is unchanged.
+
 ## Where it differs from the built-in
 
 The plugin speaks afkd's plugin wire rather than living inside afkd, and the wire shapes a
@@ -985,13 +1171,13 @@ few things. Each is deliberate, and none changes what a config means.
 
 - **afkd runs the slots.** The built-in ran its lifecycle blocks itself, in a fixed order
   and inside its own claim and finish. Here a slot is code afkd runs in the order it is
-  written, and each action is one request to the plugin naming the card it acts on, sent
-  once the plugin's own claim or finish has landed: `on_claim` after the claim is won, and
-  the post-run slot after the claim is released — so a card moved by `on_done` is, for a
-  moment, unclaimed in its old list. afkd retries no slot's action.
+  written, and each call is one request to the plugin, sent once the plugin's own claim or
+  finish has landed: `on_claim` after the claim is won, and the post-run slot after the claim
+  is released — so a card moved by `on_done` is, for a moment, unclaimed in its old list.
+  afkd retries no slot's call, and neither does the plugin.
 - **`me`, not `self`.** The member the credentials authenticate as is `"me"` in a call or a
   setting — Trello's own alias for it — where the built-in reserved the word `self`; a
-  member action left without one adds or removes that member.
+  member call left without one adds or removes that member.
 - **Some settings are refused when the service starts, not at `afkd validate`.** afkd types
   the settings against the plugin's manifest before the plugin ever runs. What it cannot
   see — a list that names nothing, a `min_age` that is a range — the plugin refuses when it

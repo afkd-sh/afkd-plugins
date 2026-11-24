@@ -1,5 +1,5 @@
 name = "@afkd/trello"
-version = "0.17.0"
+version = "0.18.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -304,7 +304,7 @@ doc = "A Trello member"
 # The one kind, `service(trello)` in a config: a Trello board whose
 # cards are claimed one per run.
 [[kind]]
-name = "card"
+name = "intake"
 doc = "A Trello board whose cards are claimed one per run"
 role = "trigger"
 main = true
@@ -368,8 +368,8 @@ claims = true
   type = "list[str]"
 
   # The slots afkd runs, each passed the run, the account the credential settings build and
-  # its card, and after them the run's outcome; each action a slot calls is one `call` to
-  # this plugin. `on_claim` runs before there is a run, so it has none.
+  # its card, and after them the run's outcome; each read or write a slot calls is one `call`
+  # to this plugin. `on_claim` runs before there is a run, so it has none.
   [[kind.slot]]
   name = "on_run"
   doc = "Runs for a claimed card, and does the work on it"
@@ -462,187 +462,35 @@ claims = true
     name = "outcome"
     type = "afkd.Outcome"
 
-# The actions a slot calls, each on the card it is passed first.
-[[action]]
-name = "mark_complete"
-doc = "Marks the card complete"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to mark"
-  type = "Card"
-  required = true
-
-[[action]]
-name = "archive"
-doc = "Archives the card"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to archive"
-  type = "Card"
-  required = true
-
-[[action]]
-name = "move_to"
-doc = "Moves the card to a list"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to move"
-  type = "Card"
-  required = true
-
-  [[action.param]]
-  name = "list"
-  doc = "The name of the list to move the card to"
-  type = "str"
-  required = true
-
-  [[action.param]]
-  name = "at"
-  doc = "Whether the card lands at the top or the bottom of the list"
-  type = "enum"
-  values = ["top", "bottom"]
-  named_only = true
-  default = "top"
-
-[[action]]
-name = "add_label"
-doc = "Puts a label on the card"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to label"
-  type = "Card"
-  required = true
-
-  [[action.param]]
-  name = "label"
-  doc = "The name of the label to add"
-  type = "str"
-  required = true
-
-[[action]]
-name = "remove_label"
-doc = "Takes a label off the card"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to take the label off"
-  type = "Card"
-  required = true
-
-  [[action.param]]
-  name = "label"
-  doc = "The name of the label to remove"
-  type = "str"
-  required = true
-
-[[action]]
-name = "add_member"
-doc = "Adds a member to the card"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to add the member to"
-  type = "Card"
-  required = true
-
-  # A username, or "me": Trello's own alias for the member the credentials authenticate as.
-  [[action.param]]
-  name = "member"
-  doc = "A username, or me for the member the token belongs to"
-  type = "str"
-  default = "me"
-
-[[action]]
-name = "remove_member"
-doc = "Removes a member from the card"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to remove the member from"
-  type = "Card"
-  required = true
-
-  # A username, or "me": Trello's own alias for the member the credentials authenticate as.
-  [[action.param]]
-  name = "member"
-  doc = "A username, or me for the member the token belongs to"
-  type = "str"
-  default = "me"
-
-[[action]]
-name = "comment"
-doc = "Writes a comment on the card"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to comment on"
-  type = "Card"
-  required = true
-
-  [[action.param]]
-  name = "text"
-  doc = "The text of the comment"
-  type = "str"
-  required = true
-
-# A file on the card: the one at `path`, absolute, read when the action is called and
-# uploaded as `name`; queued and retried like every write when Trello is down.
-[[action]]
-name = "attach"
-doc = "Uploads a file to the card, retried when Trello is down"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to attach the file to"
-  type = "Card"
-  required = true
-
-  [[action.param]]
-  name = "path"
-  doc = "The absolute path of the file to upload"
-  type = "str"
-  required = true
-
-  [[action.param]]
-  name = "name"
-  doc = "The name the file is uploaded as"
-  type = "str"
-  required = true
-
-# The newest file on the card named `name`, written to the absolute path `to`; nothing is
-# written when there is none. A read, never queued.
-[[action]]
-name = "fetch_attachment"
-doc = "Saves the newest file of a name on the card, if there is one"
-
-  [[action.param]]
-  name = "card"
-  doc = "The card to take the file from"
-  type = "Card"
-  required = true
-
-  [[action.param]]
-  name = "name"
-  doc = "The name of the file to fetch"
-  type = "str"
-  required = true
-
-  [[action.param]]
-  name = "to"
-  doc = "The absolute path to write the file to"
-  type = "str"
-  required = true
-
+# What a slot does to a card it does through a call, a read or a write below, each taking a
+# `trello.Account` first. There is no other action: a call that is neither is refused, as
+# `no action`.
+#
 # The reads. Each takes a `trello.Account` first and reaches Trello only through it, so a read
 # answers alike from any service's slots, and reads no service's settings. A read is done now
 # or refused, never queued: a 429 is tried again within the call's deadline, after the wait
 # Trello's rate-limit headers name or else one second doubling, and a 5xx too, since a read
 # repeats harmlessly. A reply is at most 8 MiB; a larger one is refused, naming the `limit`
 # to lower where there is one.
+
+# One card, by its short link or its Trello id: the same handle `cards` hands back for it, `==`
+# to the claimed card's. A card Trello has none of is refused naming the id.
+[[action]]
+name = "card"
+doc = "Reads one card by its short link or its id"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "id"
+  doc = "The card's short link or its Trello id"
+  type = "str"
+  required = true
 
 # The cards of a board, every filter given keeping a card. The board is read whole, past
 # Trello's 1000 cards, then filtered, ordered list by list in the board's order, each list top
@@ -899,8 +747,8 @@ returns = "list[Member]"
 # have carried out, so nothing is made twice. A name is matched exactly: a list, label or member
 # the board has none of is refused naming the ones there are, and a name several share is
 # refused listing their ids. A description or a body past Trello's 16 384 characters is refused
-# before anything is sent. Adding and removing a label or a member on a card stays with today's
-# `add_label`, `remove_label`, `add_member` and `remove_member`.
+# before anything is sent. `add_label` and `add_member`, and their removes, put a name the board
+# has on a card and take it off, and never make a label.
 
 # A card made in a list of a board, at the top or the bottom of it. `create_card` never makes a
 # label the board lacks.
@@ -1269,7 +1117,7 @@ doc = "Deletes a check item"
   required = true
 
 # The file at the absolute path `path`, read when the write is called, at most 10 MiB, put on the
-# card as `name`, or as the file's own name. Done now or refused, unlike `attach`, which is queued.
+# card as `name`, or as the file's own name.
 [[action]]
 name = "create_attachment"
 doc = "Uploads a file to a card as an attachment"
@@ -1314,3 +1162,107 @@ doc = "Deletes an attachment from its card"
   doc = "The attachment to delete"
   type = "Attachment"
   required = true
+
+# A label of the card's board by its exact name, put on the card. A label the board lacks is
+# refused naming the ones there are: no label is ever made. A card that carries it already is
+# given back as it is, with nothing sent.
+[[action]]
+name = "add_label"
+doc = "Puts a label the board has on a card"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to label"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "label"
+  doc = "The name of the label to add"
+  type = "str"
+  required = true
+
+# A label of the card's board by its exact name, taken off the card. A label the board lacks is
+# refused naming the ones there are; a card that does not carry it is given back as it is, with
+# nothing sent.
+[[action]]
+name = "remove_label"
+doc = "Takes a label off a card"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to take the label off"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "label"
+  doc = "The name of the label to remove"
+  type = "str"
+  required = true
+
+# A member of the card's board by username, or "me" for the member the token acts as, put on
+# the card. A member the board lacks is refused naming the ones there are; a card the member is
+# on already is given back as it is, with nothing sent.
+[[action]]
+name = "add_member"
+doc = "Puts a member of the board on a card"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to add the member to"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "member"
+  doc = "A username, or me for the member the token belongs to"
+  type = "str"
+  default = "me"
+
+# A member of the card's board by username, or "me", taken off the card. A member the board
+# lacks is refused naming the ones there are; a card the member is not on is given back as it
+# is, with nothing sent.
+[[action]]
+name = "remove_member"
+doc = "Takes a member off a card"
+returns = "Card"
+
+  [[action.param]]
+  name = "acct"
+  doc = "The account to reach Trello through"
+  type = "Account"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card to remove the member from"
+  type = "Card"
+  required = true
+
+  [[action.param]]
+  name = "member"
+  doc = "A username, or me for the member the token belongs to"
+  type = "str"
+  default = "me"

@@ -6,9 +6,9 @@
 //! value is of its declared type. What is left here is the part a manifest cannot say — a
 //! list that names nothing, a `min_age` that is not a plain duration — in the built-in
 //! trigger's own sentences. The cadence and the attempt bound (`every`, `max_attempts`) are
-//! afkd's own, declared by afkd for every claiming kind, and are not read here; the hooks
-//! never arrive here at all: afkd runs them, and each action they call is one `call`
-//! ([`crate::lifecycle`]). The credential settings are also the `trello.Account` every
+//! afkd's own, declared by afkd for every claiming kind, and are not read here; the slots
+//! never arrive here at all: afkd runs them, and each read or write they call is one `call`
+//! ([`crate::reads`], [`crate::writes`]). The credential settings are also the `trello.Account` every
 //! slot is passed ([`BoardConfig::account`]).
 //!
 //! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a duration

@@ -145,8 +145,8 @@ say — move it, by the list's name (matched exactly, on this card's own board) 
 A list the board lacks is refused naming the lists it has, and one that two lists share is
 refused listing their ids (use the id). `--at top|bottom` says where in the list the card
 lands: a card moved to another list lands at the **top** unless `--at bottom` says otherwise,
-matching where a service's own `move_to` puts it, and `--at` alone places the card in the list
-it is in:
+matching where a service's own `trello.update_card(account, card, list=…)` puts it, and
+`--at` alone places the card in the list it is in:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/trello/update_card.py" --at bottom`
 
