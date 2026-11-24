@@ -62,8 +62,7 @@ use crate::wire::{
 };
 use crate::writes::{self, WRITES};
 
-/// The one kind this plugin provides, its main one: a config writes `service(trello)` or
-/// `service(trello.card)`.
+/// The one kind this plugin provides, its main one: a config writes `service(trello)`.
 pub(crate) const TRELLO_KIND: &str = "card";
 
 /// The sentence the process ends on when a request that is no call for a child of its own

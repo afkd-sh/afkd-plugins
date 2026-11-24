@@ -182,8 +182,7 @@ The skill's `SKILL.md` says when to use each and what each can reach.
 
 Fires when a card lands in a watched list; its slots move cards across the board as work
 starts, finishes, or fails. Its secrets stay with the plugin and the run. The kind is the
-plugin's main one, so a config writes it `service(trello)` or `service(trello.card)`, and the
-two are the same service.
+plugin's main one, so a config writes it `service(trello)`.
 
 | Key            | Type        | Notes                                  |
 |----------------|-------------|----------------------------------------|

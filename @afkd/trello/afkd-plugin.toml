@@ -301,7 +301,7 @@ doc = "A Trello member"
   doc = "The member's full name"
   type = "str"
 
-# The one kind, `service(trello)` or `service(trello.card)` in a config: a Trello board whose
+# The one kind, `service(trello)` in a config: a Trello board whose
 # cards are claimed one per run.
 [[kind]]
 name = "card"

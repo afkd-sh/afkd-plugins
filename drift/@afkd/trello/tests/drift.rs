@@ -20,8 +20,7 @@
 //! - The **required setting** leg holds `afkd validate` to refusing a service that names no
 //!   `claim_from`.
 //! - The **kind** leg holds `afkd validate` to taking a service written `service(trello)` and
-//!   the same written `service(trello.card)`, and to refusing, as unknown, each setting the
-//!   kind was renamed from.
+//!   to refusing, as unknown, each setting the kind was renamed from.
 //! - The **cadence** leg holds `afkd validate` to refusing a service that writes the claim
 //!   key afkd renamed to `every`, pointing it at `every`, and to taking the same service
 //!   with `every`.
@@ -998,11 +997,11 @@ fn a_service_without_claim_from_fails_validate_naming_the_setting() {
     assert_eq!(code, Some(0), "the service naming one validates:\n{report}");
 }
 
-/// The kind is `card`, the main one, so a service is written `service(trello)` or
-/// `service(trello.card)` and both validate; and each setting the kind was renamed from is
-/// refused as unknown beside `claim_from`, like any name the manifest does not declare.
+/// The kind is `card`, the main one, so a service is written `service(trello)` and validates;
+/// and each setting the kind was renamed from is refused as unknown beside `claim_from`, like
+/// any name the manifest does not declare.
 #[test]
-fn the_kind_is_card_and_the_renamed_settings_are_unknown() {
+fn the_kind_is_service_trello_and_the_renamed_settings_are_unknown() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
@@ -1010,12 +1009,6 @@ fn the_kind_is_card_and_the_renamed_settings_are_unknown() {
     write_config(home.path(), &service);
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "service(trello) validates:\n{report}");
-    write_config(
-        home.path(),
-        &service.replace("service(trello)", "service(trello.card)"),
-    );
-    let (code, report) = validate(home.path());
-    assert_eq!(code, Some(0), "service(trello.card) validates:\n{report}");
 
     for old in [
         "pick_from",
