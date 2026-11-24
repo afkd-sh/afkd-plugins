@@ -161,9 +161,7 @@ fn settings(fake: &FakeTrello) -> Value {
         "base_url": fake.base_url(),
         "api_key": KEY,
         "token": TOKEN,
-        "pick_from": "Backlog",
-        "every": "30s",
-        "max_attempts": "1",
+        "claim_from": "Backlog",
     })
 }
 
@@ -195,7 +193,7 @@ fn create_card_answers_the_card_as_trello_holds_it() {
     assert_eq!(card["id"].as_str().unwrap().len(), 8, "the short link");
     let fields = &card["fields"];
     assert_eq!(fields["name"], NAME);
-    assert_eq!(fields["title"], NAME);
+    assert!(fields.get("title").is_none(), "a Card has no title");
     assert_eq!(fields["number"], 5);
     assert_eq!(fields["description"], "## 背景\n\nIt retries forever.");
     assert_eq!(fields["board"], BOARD);

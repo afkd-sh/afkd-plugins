@@ -941,8 +941,8 @@ pub(crate) fn parse_members_field(card: &Value) -> Vec<String> {
 
 /// Parse a card object's `labels` array into label names. Like `idMembers`, the
 /// full `labels` array (id/name/color) arrives for free in Trello's default card
-/// fields (the `list_cards` fetch passes no `fields=`), so the `require_label` gate
-/// costs no extra request. An absent or non-array field yields an empty vec, and a
+/// fields (the `list_cards` fetch passes no `fields=`), so the `only_labels` and
+/// `skip_labels` gates cost no extra request. An absent or non-array field yields an empty vec, and a
 /// colour-only label — one whose `name` is missing, empty, or not a string — is
 /// skipped rather than matched. Never panics.
 pub(crate) fn parse_labels_field(card: &Value) -> Vec<String> {
@@ -3002,7 +3002,7 @@ mod tests {
     #[test]
     fn parse_cards_lifts_labels() {
         // The `labels` array's names become `Card.labels`, in board order — the
-        // field the `require_label` gate filters on. An absent key and a non-array
+        // field the `only_labels` gate filters on. An absent key and a non-array
         // field both read as "no labels"; a colour-only label (missing, empty, or
         // non-string `name`) is skipped rather than matched, and never panics.
         let body = r#"[{"id":"c1","name":"Two","labels":[{"id":"l1","name":"Redo","color":"green"},{"id":"l2","name":"Bug","color":"red"}]},
@@ -3140,7 +3140,7 @@ mod tests {
         // passes no `fields=`, so Trello returns its DEFAULT card fields — which
         // include `idMembers` and `shortLink`. Narrowing the fetch with a `fields=`
         // param for some future need would silently drop `idMembers` and make
-        // `require_member` match no card at all, and drop `shortLink` so every run
+        // `only_members` match no card at all, and drop `shortLink` so every run
         // fell back to being named from the internal id; so the two params it does
         // send are pinned too.
         let stub = Stub::serve(ok_json("[]"));
@@ -3706,7 +3706,7 @@ mod tests {
         assert_eq!(fields.board, "1Rkelydw");
         assert_eq!(fields.members, ["phil"]);
         assert_eq!(fields.labels, ["afkd/ready"]);
-        assert_eq!(fields.title, "Fix 修复");
+        assert_eq!(fields.name, "Fix 修复");
         assert_eq!(fields.due, Some(1_798_106_400_000));
         assert!(fields.due_complete && !fields.archived);
         assert_eq!(fields.last_activity_at, 1_793_607_330_000);

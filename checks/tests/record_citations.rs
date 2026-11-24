@@ -13,9 +13,7 @@
 //!   wrapped between the name and the section.
 //!
 //! What is not a hit: a name that cites no section, such as the record's file (`docs/lang-v2.md`)
-//! a test reads. A line that names the record as where a copied text came from, not as the
-//! source of a rule, is listed with its file in [`RECORD_SOURCES`]; an entry that no longer
-//! matches a line fails the gate.
+//! a test reads.
 //!
 //! This file spells the record to forbid it, so it is outside its own walk.
 
@@ -36,13 +34,6 @@ const COMMENT_LEADERS: &[&str] = &["///", "//!", "//", "*", "#"];
 
 /// This file, which names [`RECORD`] to forbid it.
 const THIS_FILE: &str = "checks/tests/record_citations.rs";
-
-/// Each line that names the record as where a copied text came from, as `(path, fragment of
-/// its line)`: Trello's drift test copied its §24 fixture from the record.
-const RECORD_SOURCES: &[(&str, &str)] = &[(
-    "drift/@afkd/trello/tests/drift.rs",
-    "copied from `docs/lang-v2.md` at afkd master",
-)];
 
 /// Whether `line`, once its comment leader is removed, starts with a `§`.
 fn starts_with_a_section(line: &str) -> bool {
@@ -81,13 +72,6 @@ fn line_at(text: &str, at: usize) -> (usize, &str) {
     (text[..at].matches('\n').count() + 1, &text[start..end])
 }
 
-/// The index in [`RECORD_SOURCES`] of the entry that excuses `line` of `path`, if one does.
-fn record_source(path: &str, line: &str) -> Option<usize> {
-    RECORD_SOURCES
-        .iter()
-        .position(|&(listed, fragment)| listed == path && line.contains(fragment))
-}
-
 /// The text of `path` under the repository root, or `None` for a file with none to read: one
 /// deleted in the working tree but not yet from the index, or a binary (an image, a font).
 fn read(path: &str) -> Option<String> {
@@ -112,9 +96,7 @@ fn no_tracked_text_cites_the_design_record() {
         let Some(text) = read(path) else { continue };
         for at in hits(&text) {
             let (number, line) = line_at(&text, at);
-            if record_source(path, line).is_none() {
-                found.push(format!("{path}:{number}: {}", line.trim()));
-            }
+            found.push(format!("{path}:{number}: {}", line.trim()));
         }
     }
     assert!(
@@ -123,22 +105,6 @@ fn no_tracked_text_cites_the_design_record() {
          https://afkd.sh/docs/reference/, or cite it as `reference §N.M`:\n{}",
         found.len(),
         found.join("\n")
-    );
-}
-
-#[test]
-fn every_record_source_still_matches_a_line() {
-    let stale: Vec<String> = RECORD_SOURCES
-        .iter()
-        .filter(|&&(path, fragment)| {
-            !read(path).is_some_and(|text| text.lines().any(|line| line.contains(fragment)))
-        })
-        .map(|(path, fragment)| format!("{path}: {fragment}"))
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "these sources match no line any more; drop them from RECORD_SOURCES:\n{}",
-        stale.join("\n")
     );
 }
 
@@ -176,17 +142,4 @@ fn the_records_file_and_an_uncited_name_are_not_hits() {
     ] {
         assert!(hits(text).is_empty(), "{text}: {:?}", hits(text));
     }
-}
-
-#[test]
-fn a_source_is_excused_only_in_its_own_file() {
-    let (path, fragment) = RECORD_SOURCES[0];
-    let line = format!("/// §24's fixture, {fragment}, up to the");
-    assert_eq!(hits(&line).len(), 1, "{line}");
-    assert_eq!(record_source(path, &line), Some(0), "in {path}");
-    assert_eq!(
-        record_source("@afkd/web_top/fold.mjs", &line),
-        None,
-        "elsewhere"
-    );
 }

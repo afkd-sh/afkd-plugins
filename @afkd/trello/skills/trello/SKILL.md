@@ -152,10 +152,10 @@ it is in:
 
 **Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card` override can move
 **any** card the token reaches. Sharper still: moving a card **into** the list the afkd trello
-trigger picks from (`pick_from`) **enqueues autonomous work for afkd itself**, exactly as
+trigger claims from (`claim_from`) **enqueues autonomous work for afkd itself**, exactly as
 creating one there does. Do it only when your run's instructions say to, and then only with a
 card that is a finished spec — one another agent can build without asking a question. The
-script never learns `pick_from` and cannot enforce this — you are the guardrail.
+script never learns `claim_from` and cannot enforce this — you are the guardrail.
 
 ## Archive the card
 
@@ -207,11 +207,11 @@ not tied to this run the way the active card is.
 
 **Blast radius:** the board token is account-wide (ADR-0046 §A), so a list can belong to
 **any** board the token reaches. Sharper still: creating a card into the list the afkd trello
-trigger picks from (`pick_from`) **enqueues autonomous work for afkd itself**. File a follow-up
+trigger claims from (`claim_from`) **enqueues autonomous work for afkd itself**. File a follow-up
 into the list and at the place your run's instructions name. Only when they name none, file it
 into `Backlog`, where a human promotes it. Filing into the build queue is right only when the
 instructions say so, and then the card must be a finished spec — one another agent can build
-without asking a question. The script never learns `pick_from` and cannot enforce this — you
+without asking a question. The script never learns `claim_from` and cannot enforce this — you
 are the guardrail.
 
 ## Checklists
