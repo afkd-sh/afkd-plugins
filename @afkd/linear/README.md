@@ -931,9 +931,10 @@ Linear's reason.
 - **Every `[afkd-` comment is afkd's.** One opening `[afkd-`, a config's own note as much as
   a marker, is left out of the brief and of `files`, where trello leaves out only its claim,
   attempt, ran and park markers.
-- **The skill's scripts are the plugin's actions.** Each is named for the action it does and
-  prints the action's value as JSON, where trello's print lines of text: `update_issue.py`
-  does what trello's `set_name.py`, `set_description.py` and `move_card.py` do, and
-  `create_comment.py` what its `post_comment.py` and `post_attachment.py` do. `ask.py` keeps
-  its name. A state or a label is named by its id or its exact name in one argument, where
-  trello takes an id or `--name`.
+- **The skill's scripts are the plugin's actions, as trello's are.** Each is named for the
+  action it does and prints the action's value as JSON: `update_issue.py` is trello's
+  `update_card.py` for an issue, and `create_comment.py` does what trello's
+  `create_comment.py` and `create_attachment.py` do. `ask.py` keeps its name. Linear's scripts
+  take the issue as an argument, where trello's take the card with `--card` and the board
+  with `--board`, each defaulting to the run's. A state or a label is named by its id or its
+  exact name in one argument, as trello names a list or a label.

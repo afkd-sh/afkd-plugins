@@ -11,7 +11,7 @@
 //! read when `actions=commentCard` is asked for; an edited comment carries
 //! `data.dateLastEdited`; the board-wide card read answers only open cards, narrowed to
 //! `fields=name,labels`; a card is addressed by its id or its short link, and a card read
-//! carries the board's `idBoard`; a list's cards carry a `pos` of 16384 × their place,
+//! carries the board's `idBoard` and its `idLabels`; a list's cards carry a `pos` of 16384 × their place,
 //! counted from one; a card created or moved (its `idList` and `pos` in the query or a
 //! JSON body) lands at the top or bottom of its list, or before the first other card
 //! whose `pos` is greater than the number it names, as those positions stood before the
@@ -521,6 +521,7 @@ impl State {
             "desc": card.desc,
             "idList": card.list,
             "idMembers": card.members,
+            "idLabels": card.labels,
             "labels": card.labels.iter().map(|l| self.label_json(l)).collect::<Vec<_>>(),
             "closed": card.closed,
             "due": card.due.map(|secs| {
@@ -2021,7 +2022,12 @@ fn route(s: &mut State, request: &Request) -> (u16, Value) {
                 return not_found;
             };
             let card = s.cards[at].id.clone();
-            let text = payload["text"].as_str().unwrap_or("").to_string();
+            // The text rides the JSON body, or the query as `ask.py` sends it.
+            let text = payload["text"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| param("text"))
+                .unwrap_or_default();
             if let Some((_, status)) = s.post_faults.iter().find(|(n, _)| text.contains(n)) {
                 return (*status, json!({ "message": "injected" }));
             }

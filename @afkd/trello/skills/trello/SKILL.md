@@ -1,37 +1,78 @@
 ---
 name: trello
-description: Navigate and work the Trello card this run works on — read and post comments, rewrite the card's title and description, move it to another list, work the card's checklists, browse the board's lists and cards, handle attachments, and file a follow-up card. List the comments already on the card; re-read the card's checklists and tick an item you have genuinely completed; browse lists and cards to find related work; fetch an attachment (that is where a pasted screenshot lives, not in the comment text) so you can look at it; post a comment to report a finished plan, a blocker, or a changed approach; ask a question that parks the card until a human replies, when it does not say enough to build or its premise does not hold; rename a groomed card into house style and move it out of the column it was groomed in; archive a card that has resolved to nothing so it leaves the board; attach an artifact back onto the card; or file follow-up work you discovered as a new card — where your run's instructions say, else in Backlog — instead of derailing onto it. Not for routine chatter.
-allowed-tools: Bash(*/list_lists.py *), Bash(*/list_lists.py), Bash(*/list_cards.py *), Bash(*/list_comments.py *), Bash(*/list_comments.py), Bash(*/list_checklists.py *), Bash(*/list_checklists.py), Bash(*/check_item.py *), Bash(*/list_attachments.py *), Bash(*/list_attachments.py), Bash(*/fetch_attachment.py *), Bash(*/post_comment.py *), Bash(*/ask.py *), Bash(*/post_attachment.py *), Bash(*/create_card.py *), Bash(*/read_description.py *), Bash(*/read_description.py), Bash(*/set_description.py *), Bash(*/set_name.py *), Bash(*/move_card.py *), Bash(*/archive_card.py *), Bash(*/archive_card.py), Bash(*/list_labels.py *), Bash(*/list_labels.py), Bash(*/add_label.py *), Bash(*/remove_label.py *)
+description: Navigate and work the Trello card this run works on, and the board around it — read the card whole, its comments, checklists and attachments, and find cards on the board by list, label or member; post, edit and delete comments; rewrite the card's name and description, set its due date, move it to another list, label it, put members on it, archive it; work the card's checklists and tick an item you have genuinely completed; browse the board's lists, labels and members; fetch an attachment (that is where a pasted screenshot lives, not in the comment text) so you can look at it, or attach an artifact back onto the card; ask a question that parks the card until a human replies, when it does not say enough to build or its premise does not hold; or file follow-up work you discovered as a new card — where your run's instructions say, else in Backlog — instead of derailing onto it. Not for routine chatter.
+allowed-tools: Bash(*/card.py *), Bash(*/card.py), Bash(*/cards.py *), Bash(*/cards.py), Bash(*/comments.py *), Bash(*/comments.py), Bash(*/checklists.py *), Bash(*/checklists.py), Bash(*/check_items.py *), Bash(*/check_items.py), Bash(*/attachments.py *), Bash(*/attachments.py), Bash(*/download_attachment.py *), Bash(*/me.py *), Bash(*/me.py), Bash(*/boards.py *), Bash(*/boards.py), Bash(*/lists.py *), Bash(*/lists.py), Bash(*/labels.py *), Bash(*/labels.py), Bash(*/members.py *), Bash(*/members.py), Bash(*/create_card.py *), Bash(*/update_card.py *), Bash(*/archive_card.py *), Bash(*/archive_card.py), Bash(*/unarchive_card.py *), Bash(*/unarchive_card.py), Bash(*/delete_card.py *), Bash(*/create_comment.py *), Bash(*/update_comment.py *), Bash(*/delete_comment.py *), Bash(*/create_checklist.py *), Bash(*/delete_checklist.py *), Bash(*/create_check_item.py *), Bash(*/update_check_item.py *), Bash(*/delete_check_item.py *), Bash(*/create_attachment.py *), Bash(*/delete_attachment.py *), Bash(*/add_label.py *), Bash(*/remove_label.py *), Bash(*/add_member.py *), Bash(*/add_member.py), Bash(*/remove_member.py *), Bash(*/remove_member.py), Bash(*/ask.py *)
 requires-executables: [python3]
 ---
 
-## Read the active card's comments
+## How the scripts work
 
-Run the bundled reader yourself through the Bash tool, with no argument:
+Each script is one of the `@afkd/trello` plugin's operations, under the operation's name, and
+does what the operation does: `update_card.py` is `trello.update_card`. It takes the
+operation's parameters — the required ones as arguments, in the operation's order, the others
+as flags of their own names (`--due_complete true`) — and prints what the operation gives
+back, as JSON:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/list_comments.py"`
+- a card as a `trello.Card` handle: `{"id": "Qb7eLy2w", "key": …, "fields": {…}}`, its `id`
+  the card's short link, its fields `number`, `name`, `url`, `description`, `board`, `list`,
+  `labels`, `members`, `due`, `due_complete`, `archived`, `created_at` and `last_activity_at`
+  (unix milliseconds);
+- a comment, a checklist, a check item, an attachment, a board, a list, a label or a member as
+  its handle, its `id` Trello's own (a board's its short link, a member's their username), and
+  its own fields (a comment's `card`, `body`, `author`, `created_at`, `edited_at`);
+- a list as a JSON array, and nothing as `null`.
 
-It prints each comment's author, time, and text. A card with no comments prints a
-single `no comments on card …` line and succeeds.
+A write prints what it made or changed as Trello then holds it, so you never need to read it
+back. **This run's card** is `$TRELLO_CARD_ID` and its board `$TRELLO_BOARD_ID`: a script that
+acts on a card takes it as `--card ID`, and one that reads a board as `--board ID`, each
+defaulting to the run's, so you pass neither to work this card on this board. A list, a label
+and a member are named by their name as Trello shows it, matched **exactly** (a member by
+username, or `"me"` — whoever this run acts as), and a list or a label by its id as well. A name
+the board lacks is refused naming the ones it has, and one two share is refused listing their
+ids. A flag that takes a list is given once per item: `--labels ready --labels "Needs Info"`.
 
-Optional flags:
+## Read the card, its comments, checklists and attachments
 
-- `--limit N` — how many comments to fetch (default 50).
-- `--card ID` — read a different card (overrides `$TRELLO_CARD_ID`).
+Read the card whole — its name, its description verbatim, its list, labels, members and due
+date:
 
-## Post a comment to the active card
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/card.py"`
 
-Run the bundled helper yourself through the Bash tool, **substituting your real
-message** for the placeholder. Never run it with the placeholder text — the helper
-rejects it and exits non-zero.
+Read its comments, oldest first, each one's `body` verbatim and its `author`:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/post_comment.py" "<REPLACE WITH YOUR COMMENT>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/comments.py"`
 
-Pass `--card ID` to post to a different card (overrides `$TRELLO_CARD_ID`).
+`--limit N` bounds how many (the newest N; default 200). afkd's own comments, such as
+`[afkd-claim]`, are among them. The card's checklists, each with its items' names, and then its
+check items one by one, each with its id and whether it is `done`:
 
-A comment holds at most 16 384 characters. Anything longer — a plan, a review, a
-patch — goes on the card as a file with `post_attachment.py` (see
-[Attachments](#attachments)), with a short comment saying what it is.
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/checklists.py"`
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/check_items.py"`
+
+Its attachments are read under [Attachments](#attachments). Each of these takes `--card ID` to
+read a different card.
+
+## Post a comment
+
+Run it yourself, **substituting your real message** for the placeholder — the script refuses
+the placeholder and exits non-zero:
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/create_comment.py" "<REPLACE WITH YOUR COMMENT>"`
+
+The comment is posted verbatim, as markdown; `--body_file PATH` takes it from a file instead
+(use it for a real, multi-line comment, written into `$AFKD_SCRATCH_DIR` first), and
+`--card ID` posts to a different card. It prints the new comment. A comment holds at most
+16 384 characters. Anything longer — a plan, a review, a patch — goes on the card as a file
+with `create_attachment.py` (see [Attachments](#attachments)), with a short comment saying
+what it is.
+
+To correct a comment you wrote, give its id from `comments.py` and the whole new text; to take
+it back, delete it. Trello lets a token change only its own comments:
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/update_comment.py" "<COMMENT-ID>" "<REPLACE WITH YOUR COMMENT>"`
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/delete_comment.py" "<COMMENT-ID>"`
 
 ## Ask for clarification and park the run
 
@@ -60,290 +101,264 @@ fresh run starts with the answer under **New comments** in its brief.
 After a successful call, **stop** — do not start implementing; the work resumes in
 the next run. Ask only about genuine ambiguities and genuine contradictions, not
 things the code itself would answer. Pass `--card ID` to ask on a different card
-(overrides `$TRELLO_CARD_ID`).
+(overrides `$TRELLO_CARD_ID`). Unlike the other scripts it prints a line of text, not JSON.
 
-## Read and update the card description
+## Update the card
 
-To change the card **description**, read the current description, change it, then
-write the **whole** description back. First read it:
+To change the card's **description**, read the current one with `card.py`, change it, then
+write the **whole** description back — from a file, for a real multi-line body, written into
+`$AFKD_SCRATCH_DIR` first:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/read_description.py"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/update_card.py" --description_file "$AFKD_SCRATCH_DIR/desc.md"`
 
-It prints the card's current `desc` verbatim (an empty description prints an empty
-line and succeeds). Make your change in that text — keeping every part you did not
-mean to change as it is — write the result into `$AFKD_SCRATCH_DIR`, then set it back:
+`update_card.py` **replaces** the whole description and the whole name — there is no append or
+edit-in-place — so always write back the full text you read with your change made in it, never
+just the part you changed. To rename a groomed card whose name no longer says what it is,
+**substitute your real title** for the placeholder; the script refuses the placeholder and
+exits non-zero:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/set_description.py" --desc-file "$AFKD_SCRATCH_DIR/desc.md"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/update_card.py" --name "<REPLACE WITH YOUR NEW TITLE>"`
 
-`set_description.py` **replaces** the whole description, so always write back the
-full text you read with your change made in it, never just the part you changed.
-Its flags:
+Its flags, each leaving what it is not given as it is, all sent in one request (with no flag
+it sends nothing, and prints the card):
 
-- `--desc "text"` — the new description inline. Mutually exclusive with `--desc-file`.
-- `--desc-file PATH` — read the new description from a file (use this for a real,
-  multi-line body). One of `--desc` / `--desc-file` is **required**.
-- `--card ID` — read/write a different card (overrides `$TRELLO_CARD_ID`).
+- `--name TEXT` — the new name.
+- `--description TEXT` — the new description inline; exclusive with `--description_file PATH`.
+  A description holds at most 16 384 characters.
+- `--due RFC3339` — when the card is due (`2026-12-24T10:00:00Z`); `--clear due` takes the
+  due date away. `--due_complete true|false` marks it done or not.
+- `--list NAME` and `--at top|bottom` — see [Move the card](#move-the-card-to-another-list).
+- `--card ID` — change a different card (overrides `$TRELLO_CARD_ID`).
 
-**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card`
-override can rewrite the description of **any** card the token reaches, and
-`set_description.py` overwrites the whole field — read first, change, write back.
-The default (no flag) stays scoped to this run's card.
-
-## Rename the card
-
-When a groomed card's title no longer says what the card is, rewrite it —
-**substituting your real title** for the placeholder. Never run it with the
-placeholder text; the helper rejects it and exits non-zero.
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/set_name.py" "<REPLACE WITH YOUR NEW TITLE>"`
-
-`set_name.py` **replaces** the whole title — there is no append or edit-in-place —
-so pass the finished title you want the card to carry. Pass `--card ID` to rename a
-different card (overrides `$TRELLO_CARD_ID`).
-
-**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card`
-override can rename **any** card the token reaches, and the old title is gone. The
-default (no flag) stays scoped to this run's card.
+**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card` override can
+rewrite **any** card the token reaches, and the old text is gone. The default (no flag) stays
+scoped to this run's card.
 
 ## Move the card to another list
 
-When you are done with the card in the column it lives in — a groomed card leaving
-grooming, say — move it. Get the target list's id from `list_lists.py` (see
-"Navigate the board"):
+When you are done with the card in the column it lives in — a groomed card leaving grooming,
+say — move it, by the list's name (matched exactly, on this card's own board) or its id from
+`lists.py`:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/move_card.py" "<LIST-ID>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/update_card.py" --list "Backlog"`
 
-or address the list by name instead of id (resolved against this card's own board):
+A list the board lacks is refused naming the lists it has, and one that two lists share is
+refused listing their ids (use the id). `--at top|bottom` says where in the list the card
+lands: a card moved to another list lands at the **top** unless `--at bottom` says otherwise,
+matching where a service's own `move_to` puts it, and `--at` alone places the card in the list
+it is in:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/move_card.py" --name "Backlog"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/update_card.py" --at bottom`
 
-Take exactly one of a list id or `--name`; a `--name` that matches no list on the
-board — or more than one, which Trello permits — errors non-zero and moves nothing
-(use the id). Optional flags:
-
-- `--pos top|bottom` — where in the target list the card lands (default `top`,
-  matching where a service's own `move_to` puts a card).
-- `--above CARD` / `--below CARD` — put the card directly above or below CARD, a card
-  already in the target list, named by its id or its short link. It lands between
-  CARD and CARD's neighbour (at the very top or bottom when CARD is at that end). A
-  CARD that is not in the target list exits non-zero and moves nothing, and a CARD
-  that is the card being moved is refused. Exclusive with `--pos` and with each
-  other.
-- `--card ID` — move a different card (overrides `$TRELLO_CARD_ID`).
-
-**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card`
-override can move **any** card the token reaches, and a list id can address **any**
-list on **any** board the token can. Sharper still: moving a card **into** the list
-the afkd trello trigger picks from (`pick_from`) **enqueues autonomous work for afkd
-itself**, exactly as creating one there does. Do it only when your run's
-instructions say to, and then only with a card that is a finished spec — one another
-agent can build without asking a question. The helper never learns `pick_from` and
-cannot enforce this — you are the guardrail.
+**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card` override can move
+**any** card the token reaches. Sharper still: moving a card **into** the list the afkd trello
+trigger picks from (`pick_from`) **enqueues autonomous work for afkd itself**, exactly as
+creating one there does. Do it only when your run's instructions say to, and then only with a
+card that is a finished spec — one another agent can build without asking a question. The
+script never learns `pick_from` and cannot enforce this — you are the guardrail.
 
 ## Archive the card
 
-When a card has resolved to nothing — a bug that did not reproduce, a duplicate, work
-already done — and the owner has declared it a non-bug, archive it so it leaves the
-board. It takes no argument; the card is this run's own:
+When a card has resolved to nothing — a bug that did not reproduce, a duplicate, work already
+done — and the owner has declared it a non-bug, archive it so it leaves the board. It takes no
+argument; the card is this run's own, and it prints the card with `archived` true:
 
 !`"${CLAUDE_PLUGIN_ROOT}/skills/trello/archive_card.py"`
 
-To restore a card you (or someone) archived, unarchive it — you must already know its
-id, since an archived card no longer appears in any list read:
+To restore a card you (or someone) archived, unarchive it — you must already know its id,
+since an archived card no longer appears in any list read:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/archive_card.py" --unarchive --card "<CARD-ID>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/unarchive_card.py" --card "<CARD-ID>"`
 
-Pass `--card ID` to archive a different card (overrides `$TRELLO_CARD_ID`). Re-archiving
-an already-archived card is a no-op success (it never errors and issues no extra read).
+To delete a card for good — its comments, checklists and attachments with it, with no way
+back — run `delete_card.py`; prefer archiving, and delete only a card you filed yourself by
+mistake:
 
-**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card` override
-can archive **any** card the token reaches. An archived card leaves **every** list
-view — nothing in this skill can list or find it again (a list read omits archived
-cards); the only way back is `--unarchive` with the id you already know. The default (no
-flag) stays scoped to this run's card.
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/delete_card.py" --card "<CARD-ID>"`
+
+**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card` override can
+archive or delete **any** card the token reaches. An archived card leaves **every** list view
+— `cards.py` shows it only with `--include_archived`. The default (no flag) stays scoped to this
+run's card.
 
 ## File a new card
 
-When you discover follow-up work while running this card, **file it instead of
-doing it**: a new card keeps you on the task you were given. Get the target list's
-id from `list_lists.py` (see "Navigate the board"), then, **substituting your real
-title** for the placeholder — the helper rejects it and exits non-zero:
+When you discover follow-up work while running this card, **file it instead of doing it**: a
+new card keeps you on the task you were given. Take the target list's name from `lists.py`
+(see [Navigate the board](#navigate-the-board)), then, **substituting your real title** for the
+placeholder — the script refuses it and exits non-zero:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/create_card.py" "<LIST-ID>" "<REPLACE WITH YOUR CARD TITLE>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/create_card.py" "<LIST>" "<REPLACE WITH YOUR CARD TITLE>"`
 
 Optional flags:
 
-- `--desc "text"` — the card's description.
-- `--desc-file PATH` — read the description from a file instead. Use this for a
-  real, multi-line card body; write it into `$AFKD_SCRATCH_DIR` first. It is
-  mutually exclusive with `--desc`.
-- `--pos top|bottom` — where in the list the card lands (default `bottom`).
-- `--above CARD` / `--below CARD` — file it directly above or below CARD, a card
-  already in the target list, named by its id or its short link. It lands between
-  CARD and CARD's neighbour (at the very top or bottom when CARD is at that end). A
-  CARD that is not in the target list exits non-zero and files nothing. Exclusive
-  with `--pos` and with each other.
+- `--description TEXT` — the card's description; exclusive with `--description_file PATH`,
+  which reads it from a file. Use that for a real, multi-line card body; write it into
+  `$AFKD_SCRATCH_DIR` first. At most 16 384 characters.
+- `--at top|bottom` — where in the list the card lands (default `bottom`).
+- `--labels NAME`, `--members USERNAME` — a label of the board, a member of the board (`me`
+  for this run's); each repeatable. Each is resolved before the card is made, so one the board
+  lacks is refused and **nothing is filed**; a label is never created.
+- `--due RFC3339` — when it is due.
+- `--board ID` — file on a different board (overrides `$TRELLO_BOARD_ID`).
 
-On success it prints the created card's short url. The list id is **required** —
-there is no default, because a list is not tied to this run the way the active card
-is.
+It prints the card it made. The list is **required** — there is no default, because a list is
+not tied to this run the way the active card is.
 
-**Blast radius:** the board token is account-wide (ADR-0046 §A), so a list id can
-address **any** list on **any** board the token reaches. Sharper still: creating a
-card into the list the afkd trello trigger picks from (`pick_from`) **enqueues
-autonomous work for afkd itself**. File a follow-up into the list and at the place
-your run's instructions name. Only when they name none, file it into `Backlog`, where
-a human promotes it. Filing into the build queue is right only when the instructions
-say so, and then the card must be a finished spec — one another agent can build
-without asking a question. The helper never learns `pick_from` and cannot enforce
-this — you are the guardrail.
+**Blast radius:** the board token is account-wide (ADR-0046 §A), so a list can belong to
+**any** board the token reaches. Sharper still: creating a card into the list the afkd trello
+trigger picks from (`pick_from`) **enqueues autonomous work for afkd itself**. File a follow-up
+into the list and at the place your run's instructions name. Only when they name none, file it
+into `Backlog`, where a human promotes it. Filing into the build queue is right only when the
+instructions say so, and then the card must be a finished spec — one another agent can build
+without asking a question. The script never learns `pick_from` and cannot enforce this — you
+are the guardrail.
 
 ## Checklists
 
-A card's checklist is its **acceptance contract**, not a scratchpad — the brief
-already shows each checklist's items and their checkItem ids under `## Checklists`.
-When you have **genuinely completed** an item, tick it by its id:
+A card's checklist is its **acceptance contract**, not a scratchpad — the brief already shows
+each checklist's items and their ids under `## Checklists`. When you have **genuinely
+completed** an item, tick it by its id (from `check_items.py`):
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/check_item.py" "<CHECK-ITEM-ID>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/update_check_item.py" "<CHECK-ITEM-ID>" --done`
 
-Tick only what you truly finished; do not tick an item just to clear the box. Pass
-`--uncheck` to mark an item incomplete again. Re-running the same tick is
-idempotent (setting an already-set state is not an error).
+Tick only what you truly finished; do not tick an item just to clear the box. `--undone` marks
+an item incomplete again, `--name TEXT` renames it, and with neither flag it sends nothing.
+Ticking an item that is ticked is not an error. It prints the item.
 
-To re-read the current checklist state on demand (the brief is the primary read
-path), list the card's checklists:
+To make a checklist, give its name and its items, in order; it prints the checklist:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/list_checklists.py"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/create_checklist.py" "<NAME>" --items "<FIRST ITEM>" --items "<SECOND ITEM>"`
 
-It prints each checklist grouped, one line per item as `<checkItemId>  [x]  <name>`
-(`[ ]` when incomplete). A card with no checklists prints a single
-`no checklists on card …` line and succeeds.
+An item Trello refuses leaves the checklist as far as it got, and the failure says how far.
+To add one item to a checklist, by the checklist's id from `checklists.py` (`--at top` puts it
+first; it goes last by default), and then to delete an item or a whole checklist:
 
-Both take `--card ID` to work a different card (overrides `$TRELLO_CARD_ID`).
-**Blast radius:** the board token is account-wide (ADR-0046 §A), so a
-`check_item.py --card` can tick items on **any** card the token reaches — use the
-override deliberately; the default (no flag) stays scoped to this run's card.
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/create_check_item.py" "<CHECKLIST-ID>" "<ITEM>"`
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/delete_check_item.py" "<CHECK-ITEM-ID>"`
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/delete_checklist.py" "<CHECKLIST-ID>"`
+
+The scripts that name an item or a checklist's card take `--card ID` to work a different card
+(overrides `$TRELLO_CARD_ID`). **Blast radius:** the board token is account-wide (ADR-0046 §A),
+so a `--card` override can tick, add or delete items on **any** card the token reaches — use it
+deliberately; the default (no flag) stays scoped to this run's card.
 
 ## Labels
 
-A card's labels are the board-level flags on it (e.g. mark a groomed card `ready`,
-or clear that flag). Labels are defined at **board** level and add/remove operate
-on label **ids**, so start by listing the board's labels — this also flags the ones
-already on the active card:
+A card's labels are the board-level flags on it (e.g. mark a groomed card `ready`, or clear
+that flag). They are defined at **board** level, so start by listing the board's labels — name,
+colour and id of each:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/list_labels.py"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/labels.py"`
 
-It prints one `id  color  name` line per board label, appending `[on card]` to the
-ones the active card carries. A board with no labels prints a single
-`no labels defined on board …` line and succeeds. Pass `--card ID` to resolve and
-flag against a different card.
+Then put one on the active card, by its exact name or its id; it prints the card:
 
-With an id from that output, add a label to the active card:
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/add_label.py" "ready"`
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/add_label.py" "<LABEL-ID>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/remove_label.py" "ready"`
 
-or address it by name instead of id (resolved against the board's labels):
+`add_label.py` **never creates a label**: a name the board lacks is refused, naming the labels
+the board has. A name two labels share is refused listing their ids — use the id. Adding a
+label the card already has, or removing one it does not have, is not an error: the script
+prints the card and changes nothing. Both take `--card ID` to work a different card (overrides
+`$TRELLO_CARD_ID`).
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/add_label.py" --name "ready"`
+**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card` override can flag
+or unflag **any** card the token reaches. The default (no flag) stays scoped to this run's card.
 
-Remove a label the same way, by id or `--name`:
+## Members
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/remove_label.py" "<LABEL-ID>"`
+A card's members are who works it. To put a member on the active card, by username, and to
+take one off; the member defaults to `me`, whoever this run acts as:
 
-Both `add_label.py` and `remove_label.py` take exactly one of a label id or
-`--name`; a `--name` that matches no board label — or more than one — errors
-non-zero (pass `--color` to disambiguate a repeated name, or use the id). Adding a
-label the card already has, or removing one it does not, is a no-op success (it
-never duplicates and never errors). Both take `--card ID` to work a different card
-(overrides `$TRELLO_CARD_ID`).
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/add_member.py"`
 
-**Blast radius:** the board token is account-wide (ADR-0046 §A), so a `--card`
-override can flag or unflag **any** card the token reaches. The default (no flag)
-stays scoped to this run's card.
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/remove_member.py" "<USERNAME>"`
+
+A username the board lacks is refused, naming the board's members (`members.py` lists them).
+Adding a member already on the card, or removing one who is not, is not an error: the script
+prints the card and changes nothing. Both take `--card ID` to work a different card (overrides
+`$TRELLO_CARD_ID`). **Blast radius:** a `--card` override can change the members of **any**
+card the token reaches; the default stays scoped to this run's card.
 
 ## Navigate the board
 
-To find work related to this card, browse the board's lists then a list's cards.
-First list the board's lists (columns):
+To find work related to this card, browse the board — the boards the token reaches, who it acts
+as, the board's lists, members and cards:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/list_lists.py"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/boards.py"`
 
-It prints one `id  name` line per list. The board defaults from the environment;
-pass `--board ID` to browse a different board.
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/me.py"`
 
-Then, with a list id from that output, list the cards in it:
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/lists.py"`
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/list_cards.py" "<LIST-ID>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/members.py"`
 
-It prints one `id  name` line per card. The list id is **required** — there is no
-default, because a list is not tied to this run the way the active card is. Pass
-`--limit N` to bound how many cards are returned (default 50).
+`lists.py` prints the board's open lists in the board's order; it, `labels.py` and
+`members.py` take `--board ID` to browse a different board (overrides `$TRELLO_BOARD_ID`).
+Then find cards:
+
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/cards.py" --list "<LIST>"`
+
+It prints the board's cards that every filter given keeps, list by list in the board's order,
+each list top to bottom. The filters, each a flag:
+
+- `--list NAME` — in any of the lists named; `--labels NAME` keeps a card carrying **every**
+  label given, `--without_labels NAME` one carrying none of them; `--members USERNAME` — on any
+  of the members given (`me` included). Each is repeatable, and a name the board lacks is
+  refused naming the ones it has.
+- `--include_archived` — archived cards, and cards in archived lists, too.
+- `--limit N` — 1 to 1000 (default 100).
+- `--board ID` — a different board (overrides `$TRELLO_BOARD_ID`).
 
 ## Attachments
 
-A screenshot a human "pasted into a comment" is stored by Trello as a **card
-attachment**, not as comment text — so `list_comments.py` will not show it. To
-see it, list the card's attachments, fetch the one you want, and `Read` the
-downloaded file:
+A screenshot a human "pasted into a comment" is stored by Trello as a **card attachment**, not
+as comment text — so `comments.py` will not show it. To see it, list the card's attachments,
+oldest first, each one's `name`, `bytes`, `mime_type` and `url`, and whether it is a file Trello
+holds (`is_upload`) or a link:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/list_attachments.py"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/attachments.py"`
 
-It prints one `id  name  mimeType  bytes` line per attachment. A card with none
-prints a single `no attachments on card …` line and succeeds. Pass `--card ID` to
-inspect a different card.
+Then save a file by its id to an absolute path — under `$AFKD_SCRATCH_DIR`, say — and open it
+with the `Read` tool to view an image:
 
-Then fetch a single attachment by its id:
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/download_attachment.py" "<ATTACHMENT-ID>" "<ABSOLUTE-PATH>"`
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/fetch_attachment.py" "<ATTACHMENT-ID>"`
+It prints `null`; a link is refused, since it holds no file, and so is a file over 10 MiB or a
+relative path. To hand an artifact back — an annotated screenshot, a rendered diff, a report —
+attach a local file to the card, by its absolute path:
 
-It downloads that attachment into `$AFKD_SCRATCH_DIR/attachments/` and prints the
-written path — open it with the `Read` tool to view an image. Pass `--card ID` to
-fetch from a different card.
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/create_attachment.py" "/path/to/file"`
 
-Or fetch by name — the newest uploaded file named exactly that, say an earlier
-attempt's plan — and choose where it lands:
+`--name TEXT` gives the attachment a display name (default: the file's own name). A file over
+10 MiB is refused before any upload. It prints the attachment. To take one off the card:
 
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/fetch_attachment.py" --name "<ATTACHMENT-NAME>" --to "<ABSOLUTE-PATH>"`
+!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/delete_attachment.py" "<ATTACHMENT-ID>"`
 
-`--name` takes the place of the id (give one or the other), and a link of that
-name is passed over. With no file of that name it prints `no attachment named …`,
-writes nothing and succeeds. `--to` works with an id too.
-
-To hand an artifact back — an annotated screenshot, a rendered diff, a report —
-attach a local file to the card:
-
-!`"${CLAUDE_PLUGIN_ROOT}/skills/trello/post_attachment.py" "/path/to/file"`
-
-Optional flags:
-
-- `--name "text"` — a display name for the attachment (defaults to the file's
-  basename).
-- `--card ID` — attach to a different card (overrides `$TRELLO_CARD_ID`).
-
-A file larger than the ~10 MB Trello attachment cap fails cleanly before any
-upload. An attachment is an artifact, not conversation, so it never enters the
-comment-delta bookkeeping.
+Each takes `--card ID` to work a different card (overrides `$TRELLO_CARD_ID`). An attachment
+is an artifact, not conversation, so it never enters the comment-delta bookkeeping.
 
 ## How locators and credentials are resolved
 
-Every helper reads its board credentials from the environment afkd already merged
-into this run (`TRELLO_API_KEY` / `TRELLO_TOKEN`); you do not pass them. The
-locators are read **from the environment only** — the active card from
-`$TRELLO_CARD_ID` and the board from `$TRELLO_BOARD_ID` — each overridable with the
-`--card` / `--board` flag (there is no `$AFKD_SCRATCH_DIR/card/id` fallback). The
-helper paths are passed on the command line because `CLAUDE_PLUGIN_ROOT` is not
-exported into Bash subprocesses (ADR-0017).
+Every script reads its board credentials from the environment afkd already merged into this
+run (`TRELLO_API_KEY` / `TRELLO_TOKEN`); you do not pass them. The locators are read **from the
+environment only** — the active card from `$TRELLO_CARD_ID` and the board from
+`$TRELLO_BOARD_ID` — each overridable with the `--card` / `--board` flag. A script that needs
+one that is unset exits 1 naming it. The script paths are passed on the command line because
+`CLAUDE_PLUGIN_ROOT` is not exported into Bash subprocesses (ADR-0017).
 
-`AFKD_SCRATCH_DIR` — the per-run scratch dir — is additionally required by
-`fetch_attachment.py` without `--to` (the download destination) and by `ask.py`
-(where its park marker, `park`, is written). Both fail loudly when it is unset.
+`AFKD_SCRATCH_DIR` — the per-run scratch dir — is additionally required by `ask.py` (where its
+park marker, `park`, is written); it fails loudly when it is unset.
 
-**Blast radius of the overrides.** The board token is account-wide, so `--card`
-and `--board` (and `list_cards.py`'s list id) can reach **any** board, list, or
-card the token can — not just this run's. Use the overrides deliberately; the
-default (no flag) stays scoped to this run's card and board.
+**Blast radius of the overrides.** The board token is account-wide, so `--card` and `--board`
+(and a list or a board named in an argument) can reach **any** board, list, or card the token
+can — not just this run's. Use the overrides deliberately; the default (no flag) stays scoped
+to this run's card and board.
 
 The staged directory is the flattened `trello` (ADR-0021).
 
-If a helper exits non-zero it has failed — **surface that failure** (report it as a
-blocker), do not retry it blindly.
+If a script exits non-zero it has failed — **surface that failure** (report it as a blocker),
+do not retry it blindly.

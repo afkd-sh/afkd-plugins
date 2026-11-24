@@ -9,9 +9,9 @@ cards, a card's comments, checklists and attachments, and a board's lists, label
 from any service's slots or run, and
 [writes it through the same account](#writing-trello-through-a-trelloaccount): cards,
 comments, checklists, check items and attachments made, changed and deleted. It also
-ships the `trello` skill an agent works the card through: read and post comments, fetch and
-attach files, tick checklist items, move and label the card, and ask a question that parks
-the card until a human replies.
+ships the `trello` skill an agent works the card through, one script per Trello operation:
+read the card, its comments, checklists and attachments, and the board around it; write
+them; and ask a question that parks the card until a human replies.
 
 It is afkd's built-in Trello trigger, moved out of afkd: the same keys, the same claim,
 watermark, attempt and park comments on the card, the same claim-journal keys and session
@@ -122,9 +122,57 @@ builder :: agent(claude) {
 }
 ```
 
-Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
+Nothing hands it to an agent on its own; a `skills` list has to name it. Each of its scripts
+is one Trello operation under the operation's name: it takes the operation's parameters, the
+required ones as arguments and the others as flags of their own names
+(`update_card.py --list "Review" --at bottom`), does what the operation does, and prints what
+the operation gives back, as JSON — a handle as `{"id", "key", "fields"}`, shaped as the
+plugin's own, a list as an array, and nothing as `null`. A script reaches Trello through the
 `TRELLO_API_KEY`, `TRELLO_TOKEN`, `TRELLO_BOARD_ID` and `TRELLO_CARD_ID` every
-`service(trello)` run carries.
+`service(trello)` run carries: the card defaults to the run's, `--card` names another, and the
+board defaults to the run's, `--board` names another. A list, a label and a member are named
+by their exact name, and one the board lacks is refused naming what it has. A script refuses
+as the operation does, with the operation's own sentence, and exits non-zero; `add_label.py`
+never creates a label, and `remove_label.py` and `remove_member.py` on something the card
+lacks print the card and write nothing. Each is a `python3` program of the standard library
+alone.
+
+| Script                   | Does                                           |
+|--------------------------|------------------------------------------------|
+| `card.py`                | reads one card, as its `trello.Card` handle    |
+| `cards.py`               | `trello.cards`                                 |
+| `comments.py`            | `trello.comments`                              |
+| `checklists.py`          | `trello.checklists`                            |
+| `check_items.py`         | `trello.check_items`                           |
+| `attachments.py`         | `trello.attachments`                           |
+| `download_attachment.py` | `trello.download_attachment`                   |
+| `me.py`                  | `trello.me`                                    |
+| `boards.py`              | `trello.boards`                                |
+| `lists.py`               | `trello.lists`                                 |
+| `labels.py`              | `trello.labels`                                |
+| `members.py`             | `trello.members`                               |
+| `create_card.py`         | `trello.create_card`                           |
+| `update_card.py`         | `trello.update_card`                           |
+| `archive_card.py`        | `trello.archive_card`                          |
+| `unarchive_card.py`      | `trello.unarchive_card`                        |
+| `delete_card.py`         | `trello.delete_card`                           |
+| `create_comment.py`      | `trello.create_comment`                        |
+| `update_comment.py`      | `trello.update_comment`                        |
+| `delete_comment.py`      | `trello.delete_comment`                        |
+| `create_checklist.py`    | `trello.create_checklist`                      |
+| `delete_checklist.py`    | `trello.delete_checklist`                      |
+| `create_check_item.py`   | `trello.create_check_item`                     |
+| `update_check_item.py`   | `trello.update_check_item`                     |
+| `delete_check_item.py`   | `trello.delete_check_item`                     |
+| `create_attachment.py`   | `trello.create_attachment`                     |
+| `delete_attachment.py`   | `trello.delete_attachment`                     |
+| `add_label.py`           | `trello.add_label`                             |
+| `remove_label.py`        | `trello.remove_label`                          |
+| `add_member.py`          | `trello.add_member`, the member defaulting to `me` |
+| `remove_member.py`       | `trello.remove_member`, the member defaulting to `me` |
+| `ask.py`                 | posts a question and parks the run             |
+
+The skill's `SKILL.md` says when to use each and what each can reach.
 
 ## `service(trello)` (cards)
 

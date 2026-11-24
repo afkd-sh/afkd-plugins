@@ -1026,7 +1026,8 @@ pub(crate) fn parse_posted(stage: &'static str, body: &str) -> Result<Comment, B
 /// The action carries both halves of the commenter: `idMemberCreator` (the
 /// identity key the claim path and `discuss_with` gate match on) and, under
 /// `memberCreator`, a human-readable name. The name resolves `fullName` →
-/// `username` → the raw id, mirroring `skills/trello/list_comments.py`; a blank
+/// `username` → the raw id, as the brief names an author (the skill's `comments.py`
+/// prints the `trello.Comment` handle's own `author`, the username alone); a blank
 /// field counts as absent, so an empty `fullName` degrades rather than rendering
 /// an empty attribution.
 fn action_to_comment(action: &Value) -> Option<Comment> {
