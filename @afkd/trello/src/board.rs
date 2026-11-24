@@ -39,10 +39,10 @@ pub(crate) struct Card {
     /// agent sees each item and its checkItem id.
     pub(crate) checklists: Vec<Checklist>,
     /// The ids of the members on the card, in board order. Read by the
-    /// `require_member` intake gate and by nothing else.
+    /// `only_members` intake gate and by nothing else.
     pub(crate) members: Vec<String>,
-    /// The card's label names, in board order. Read by the `require_label` intake
-    /// gate, and handed to afkd as the handle's `labels`.
+    /// The card's label names, in board order. Read by the `only_labels` and
+    /// `skip_labels` intake gates, and handed to afkd as the handle's `labels`.
     pub(crate) labels: Vec<String>,
     /// When the card was created, when the board said so for free: decoded from the
     /// card's own id, the same way [`Comment::posted_at`] is. `None` when the id
@@ -330,8 +330,8 @@ pub(crate) trait BoardClient {
     /// [`Username`](MemberRef::Username) against `board_id`'s membership. An
     /// unknown username is a [`BoardError::MemberNotFound`].
     ///
-    /// A read, safe to call once per poll — which is what the `require_member`
-    /// intake gate does.
+    /// A read, safe to call once per poll — which is what the `only_members`
+    /// intake gate does, once for each member it names.
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError>;
 
     /// Upload `bytes` to card `card_id` as an attachment named `name`.
@@ -718,7 +718,7 @@ mod mock {
         }
 
         /// Seed a member id onto a card, as the board reports it in `idMembers` —
-        /// what the `require_member` intake gate filters on.
+        /// what the `only_members` intake gate filters on.
         pub(crate) fn seed_card_member(&self, card: &str, member_id: &str) {
             lock(&self.cards)
                 .get_mut(card)
@@ -728,7 +728,8 @@ mod mock {
         }
 
         /// Seed a label name onto a card, as the board reports it in the card's
-        /// `labels` array — what the `require_label` intake gate filters on.
+        /// `labels` array — what the `only_labels` and `skip_labels` intake gates filter
+        /// on.
         pub(crate) fn seed_card_label(&self, card: &str, label_name: &str) {
             lock(&self.cards)
                 .get_mut(card)
@@ -1169,7 +1170,6 @@ mod mock {
             };
             let created = c.created_at.map_or(0, millis);
             Ok(CardFields {
-                title: c.title.clone(),
                 number: c.number,
                 name: c.title.clone(),
                 url: card_url(card_id),
@@ -1360,7 +1360,7 @@ mod mock {
         ) -> Result<(), BoardError> {
             self.guard("remove label")?;
             // Unlike `add_label` (record-only), detach the label too, so a
-            // `require_label` + `remove_label` round-trip observes the change
+            // `only_labels` + `remove_label` round-trip observes the change
             // through `list_cards`.
             if let Some(card) = lock(&self.cards).get_mut(card_id) {
                 card.labels.retain(|l| l != label_name);
@@ -1797,7 +1797,7 @@ mod mock {
     fn remove_label_records_and_detaches() {
         // Unlike `add_label` (record-only), the mock actually detaches the label,
         // so a seeded label is gone from `list_cards` afterward — the round-trip a
-        // `require_label` + `remove_label` config observes.
+        // `only_labels` + `remove_label` config observes.
         let board = MockBoard::new();
         board.add_list("src");
         board.add_card("src", "c1", "one", "");

@@ -171,7 +171,6 @@ fn handle_fields() -> Vec<(&'static str, [Value; 2])> {
     }
     let words = |w: &[&str]| -> Vec<String> { w.iter().map(|s| s.to_string()).collect() };
     let rich_card = CardFields {
-        title: "修复 the retry storm 🚨 — \"backoff\" resets".into(),
         number: 12,
         name: "修复 the retry storm 🚨 — \"backoff\" resets".into(),
         url: "https://trello.com/c/Rk7eLy5w/12-the-retry-storm".into(),
@@ -187,7 +186,6 @@ fn handle_fields() -> Vec<(&'static str, [Value; 2])> {
         last_activity_at: 1_793_095_380_500,
     };
     let bare_card = CardFields {
-        title: String::new(),
         number: 0,
         name: String::new(),
         url: String::new(),
@@ -354,7 +352,6 @@ fn every_declared_handle_field_is_sent_with_its_declared_type() {
     assert_eq!(
         types,
         [
-            ("title", "str"),
             ("number", "int"),
             ("name", "str"),
             ("url", "str"),
@@ -373,7 +370,9 @@ fn every_declared_handle_field_is_sent_with_its_declared_type() {
 }
 
 /// The one `[[kind]]` is the main trigger, claiming one card per run, and declares the
-/// settings the code reads, key for key and in order, and the five slots afkd runs.
+/// settings the code reads, key for key and in order — `base_url` defaulting to the public
+/// API the client is pointed at — and the five slots afkd runs, each passed the account the
+/// credential settings build.
 #[test]
 fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
     let tables = tables(MANIFEST);
@@ -400,8 +399,14 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
         .cloned()
         .collect();
     assert_eq!(settings, want);
+    let base_url = settings
+        .iter()
+        .find(|s| s["name"] == quoted("base_url"))
+        .expect("base_url is declared");
+    assert_eq!(base_url["default"], quoted(TRELLO_BASE));
     // `on_run` first and without `when`; each slot passed the run, except `on_claim`, run
-    // before any run exists; the card; and after the run the outcome, in that order.
+    // before any run exists; the account; the card; and after them the outcome, in that
+    // order.
     let param = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
     let slot = |name: &str, when: Option<&str>| {
         let mut t = table(&[("name", &quoted(name))]);
@@ -409,6 +414,7 @@ fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
         if when != Some("pre") {
             params.push(param("run", "afkd.Run"));
         }
+        params.push(param("account", "Account"));
         params.push(param(HANDLE, "Card"));
         if let Some(when) = when {
             t.insert("when".into(), quoted(when));

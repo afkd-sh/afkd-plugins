@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::attachment::{self, write_atomic};
 use crate::board::{BoardClient, BoardError, Card, Checklist, Comment};
@@ -89,7 +90,7 @@ const PARK_MARKER: &str = "[afkd-park]";
 /// off again on the next claim. Spelled in title case because a board label is furniture
 /// a person reads next to `Problem`.
 ///
-/// It also does the finding: Trello claims strictly from `pick_from`'s lists, so a parked
+/// It also does the finding: Trello claims strictly from `claim_from`'s lists, so a parked
 /// card sitting anywhere else is somewhere nothing looks, and the badge rides the card
 /// record, which makes "which cards are parked?" one small board read a beat.
 const AWAITING_LABEL: &str = "Awaiting Reply";
@@ -121,13 +122,13 @@ pub(crate) struct Unit {
     /// afkd's own member id, taken from the posted claim's author: the self identity the
     /// brief and the feedback delta key on, and the backstop's last-speaker diff matches.
     self_author: String,
-    /// The `pick_from` list the card was claimed from, when it is not the first one
+    /// The `claim_from` list the card was claimed from, when it is not the first one
     /// named; `None` for the first. The parked sweep sets it from the list the card sat
-    /// in, so a card parked outside every `pick_from` list has `None` too.
+    /// in, so a card parked outside every `claim_from` list has `None` too.
     source: Option<Source>,
 }
 
-/// One `pick_from` list, resolved for a poll.
+/// One `claim_from` list, resolved for a poll.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Source {
     id: String,
@@ -168,7 +169,7 @@ impl Unit {
 }
 
 /// What a release needs of a claim, which the unit's key no longer carries: the card, the
-/// claim comment to delete, and the `pick_from` list the card was claimed from when it is
+/// claim comment to delete, and the `claim_from` list the card was claimed from when it is
 /// not the first one named, where the reversal returns it.
 ///
 /// Kept by the plugin in memory and, when afkd named a directory for it, in
@@ -184,7 +185,7 @@ pub(crate) struct ClaimRecord {
 /// What a release of a key does, as the key and the plugin's records read it.
 enum Release {
     /// The claim comment `claim_id` is known: it is deleted, and the card returns to the
-    /// list `list_id` names, or the first `pick_from` list.
+    /// list `list_id` names, or the first `claim_from` list.
     Claim(ClaimRecord),
     /// A `trello:` key nothing recorded: the plugin was restarted, or never held the claim.
     Unrecorded { card_id: String },
@@ -255,11 +256,11 @@ enum ClaimRound {
 /// What the parked-card scan decided for the whole badged set.
 enum ParkScan {
     /// A parked card was answered and re-claimed; this is the beat's unit and
-    /// `pick_from` is not read at all.
+    /// `claim_from` is not read at all.
     Claimed(Box<Unit>),
     /// The scan ran past its budget: the beat ends idle, and the rest waits.
     Spent,
-    /// Nothing parked, or nothing answered: fall through to the `pick_from` scan.
+    /// Nothing parked, or nothing answered: fall through to the `claim_from` scan.
     Nothing,
 }
 
@@ -293,10 +294,15 @@ pub(crate) struct TrelloUnits {
     board: Box<dyn BoardClient>,
     board_id: String,
     /// The source lists new work is claimed from, in the order written.
-    pick_from: Vec<String>,
-    require_member: Option<MemberRef>,
-    require_label: Option<String>,
-    without_label: Vec<String>,
+    claim_from: Vec<String>,
+    /// The members one of whom a card must be on, when set.
+    only_members: Option<Vec<MemberRef>>,
+    /// The labels a card must carry every one of, when set.
+    only_labels: Option<Vec<String>>,
+    /// The labels a card carrying any of is never claimed.
+    skip_labels: Vec<String>,
+    /// The `trello.Account` every slot is passed, sent with each unit as `args.account`.
+    account: Value,
     discuss_with: Option<DiscussWith>,
     min_age: Duration,
     settle: Duration,
@@ -346,10 +352,11 @@ impl TrelloUnits {
             records: Mutex::new(BTreeMap::new()),
             board,
             board_id: cfg.board_id.clone(),
-            pick_from: cfg.pick_from.clone(),
-            require_member: cfg.require_member.clone(),
-            require_label: cfg.require_label.clone(),
-            without_label: cfg.without_label.clone(),
+            claim_from: cfg.claim_from.clone(),
+            only_members: cfg.only_members.clone(),
+            only_labels: cfg.only_labels.clone(),
+            skip_labels: cfg.skip_labels.clone(),
+            account: cfg.account(),
             discuss_with: cfg.discuss_with.clone(),
             min_age: cfg.min_age,
             settle: CLAIM_SETTLE,
@@ -525,23 +532,23 @@ impl TrelloUnits {
         }))
     }
 
-    /// The parked-card sweep, run **ahead of** the `pick_from` resolves on every beat: ask
+    /// The parked-card sweep, run **ahead of** the `claim_from` resolves on every beat: ask
     /// the board which of its open cards carry [`AWAITING_LABEL`], and re-claim the first
     /// one a human has answered — wherever on the board it sits.
     ///
     /// The reply test is the feedback delta ([`feedback_comments`] against
     /// [`feedback_boundary`]), so afkd's own tail comments cannot re-arm a card, and
     /// neither can comments a run already answered, whatever watermark the card carries:
-    /// only a human comment after afkd's question does. Only the deny gate is re-applied:
-    /// `require_label`, `require_member` and `min_age` were passed at the first claim,
-    /// while `without_label` is a human's live veto.
+    /// only a human comment after afkd's question does. Only `skip_labels` is re-applied:
+    /// `only_labels`, `only_members` and `min_age` were passed at the first claim,
+    /// while `skip_labels` is a human's live veto.
     ///
     /// A card's [`PARK_MARKER`] names who parked it, and only that service resumes it
     /// ([`parked_elsewhere`](Self::parked_elsewhere)); a card naming a service off the
     /// roster is an orphan, taken over with one narrated line.
     ///
     /// A card claimed here goes back, on a put-back, to the list it sat in when that is
-    /// one of `pick_from`'s, and otherwise to the first
+    /// one of `claim_from`'s, and otherwise to the first
     /// ([`sweep_source`](Self::sweep_source)).
     fn scan_parked(
         &self,
@@ -576,7 +583,7 @@ impl TrelloUnits {
             *cursor = start + take;
             start
         };
-        // The `pick_from` lists, resolved once a card is about to be taken, and then
+        // The `claim_from` lists, resolved once a card is about to be taken, and then
         // once per scan however many claim races it loses.
         let mut sources = None;
         for step in 0..take {
@@ -595,7 +602,7 @@ impl TrelloUnits {
                     continue;
                 }
             };
-            if self.without_label.iter().any(|l| full.labels.contains(l)) {
+            if self.skip_labels.iter().any(|l| full.labels.contains(l)) {
                 continue;
             }
             let source = {
@@ -639,9 +646,9 @@ impl TrelloUnits {
         Ok(ParkScan::Nothing)
     }
 
-    /// The `pick_from` list a card the sweep claims returns to: the later list it sits
+    /// The `claim_from` list a card the sweep claims returns to: the later list it sits
     /// in, or `None` — the key's default, the first list — for a card in the first list,
-    /// in no `pick_from` list, or in a list the board did not name. A lone `pick_from`
+    /// in no `claim_from` list, or in a list the board did not name. A lone `claim_from`
     /// resolves nothing, since its answer is always the first list. `sources` caches the
     /// resolve for the rest of the scan.
     fn sweep_source(
@@ -649,7 +656,7 @@ impl TrelloUnits {
         card: &Card,
         sources: &mut Option<Vec<Source>>,
     ) -> Result<Option<Source>, BoardError> {
-        if self.pick_from.len() < 2 {
+        if self.claim_from.len() < 2 {
             return Ok(None);
         }
         let sources = match sources {
@@ -663,10 +670,10 @@ impl TrelloUnits {
             .cloned())
     }
 
-    /// Every `pick_from` name resolved to its list, in the order named. An unknown name
+    /// Every `claim_from` name resolved to its list, in the order named. An unknown name
     /// fails with the board's `no list named` error.
     fn sources(&self) -> Result<Vec<Source>, BoardError> {
-        self.pick_from
+        self.claim_from
             .iter()
             .map(|name| {
                 Ok(Source {
@@ -701,7 +708,7 @@ impl TrelloUnits {
     }
 
     /// Claim the next card via the comment lock: the parked sweep first, then the source
-    /// lists in the order `pick_from` names them, and in each the first card that passes
+    /// lists in the order `claim_from` names them, and in each the first card that passes
     /// every gate and wins its claim race. Every name resolves before any list is read, so
     /// a name the board lacks fails the poll even while an earlier list holds work.
     ///
@@ -739,7 +746,7 @@ impl TrelloUnits {
                 return Ok(None);
             }
             let cards = self.board.list_cards(&source.id)?;
-            let (required_member, discuss) = match &gates {
+            let (only_members, discuss) = match &gates {
                 Some(gates) => gates,
                 None => gates.insert(self.resolve_gates()?),
             };
@@ -749,18 +756,20 @@ impl TrelloUnits {
                 if budget.spent() {
                     return Ok(None);
                 }
-                if let Some(member_id) = required_member {
-                    if !card.members.contains(member_id) {
+                // Any one of `only_members` on the card is enough.
+                if let Some(member_ids) = only_members {
+                    if !card.members.iter().any(|m| member_ids.contains(m)) {
                         continue;
                     }
                 }
-                // Deny first: a card carrying any excluded label is skipped regardless of
-                // the other gates, so deny wins over `require_label`.
-                if self.without_label.iter().any(|l| card.labels.contains(l)) {
+                // Skip first: a card carrying any excluded label is skipped regardless of
+                // the other gates, so skip wins over `only_labels`.
+                if self.skip_labels.iter().any(|l| card.labels.contains(l)) {
                     continue;
                 }
-                if let Some(label) = &self.require_label {
-                    if !card.labels.contains(label) {
+                // Every one of `only_labels` must be on the card.
+                if let Some(labels) = &self.only_labels {
+                    if !labels.iter().all(|l| card.labels.contains(l)) {
                         continue;
                     }
                 }
@@ -826,14 +835,19 @@ impl TrelloUnits {
         Ok(None)
     }
 
-    /// The intake gates' identities for one poll: the `require_member` member id, and the
-    /// resolved `discuss_with` gate.
-    fn resolve_gates(&self) -> Result<(Option<String>, Option<DiscussGate>), BoardError> {
-        let required_member = match &self.require_member {
+    /// The intake gates' identities for one poll: the member ids `only_members` names,
+    /// each resolved once, and the resolved `discuss_with` gate.
+    fn resolve_gates(&self) -> Result<(Option<HashSet<String>>, Option<DiscussGate>), BoardError> {
+        let only_members = match &self.only_members {
             None => None,
-            Some(who) => Some(self.board.resolve_member(&self.board_id, who)?),
+            Some(members) => Some(
+                members
+                    .iter()
+                    .map(|who| self.board.resolve_member(&self.board_id, who))
+                    .collect::<Result<HashSet<_>, _>>()?,
+            ),
         };
-        Ok((required_member, self.resolve_discuss_gate()?))
+        Ok((only_members, self.resolve_discuss_gate()?))
     }
 
     /// Race one candidate for the comment lock: post a claim, settle so a rival's earlier
@@ -1122,7 +1136,7 @@ impl TrelloUnits {
     ///
     /// **Otherwise it is a crash victim**, or a unit afkd handed back unrun: prune the
     /// `[afkd-claim]` comment and move the card back to the **bottom** of the list it was
-    /// claimed from — the first `pick_from` list for a claim that names none — so a
+    /// claimed from — the first `claim_from` list for a claim that names none — so a
     /// repeatedly-crashing card cannot starve the queue head. Best-effort: a board
     /// failure is diagnosed and the key still released, so a persistently-failing board
     /// cannot loop the reap.
@@ -1177,15 +1191,15 @@ impl TrelloUnits {
         }))
     }
 
-    /// Move card `card_id` to the bottom of `list_id`, or of the first `pick_from` list when
+    /// Move card `card_id` to the bottom of `list_id`, or of the first `claim_from` list when
     /// there is none. `first()` is `None` only for units the greeting would have refused to
-    /// arm, since `pick_from` is required: then there is no list to return it to.
+    /// arm, since `claim_from` is required: then there is no list to return it to.
     /// Best-effort, diagnosed.
     fn move_back(&self, card_id: &str, list_id: Option<&str>, diag: &dyn Diag) {
         let list_id = match list_id {
             Some(list_id) => Some(Ok(list_id.to_string())),
             None => self
-                .pick_from
+                .claim_from
                 .first()
                 .map(|name| self.board.resolve_list(&self.board_id, name)),
         };
@@ -1207,7 +1221,7 @@ impl TrelloUnits {
     /// restart: prune every `[afkd-claim]` comment on the card posted by this account's own
     /// member — the author a claim's `self_author` is taken from — except one carrying this
     /// process's current owner, which is a live claim of this process. A claim by another
-    /// member is kept. Then the card goes to the bottom of the `pick_from` list it sits in
+    /// member is kept. Then the card goes to the bottom of the `claim_from` list it sits in
     /// ([`sweep_source`](Self::sweep_source)'s pick), else the first.
     ///
     /// One Trello account is one identity to the kind: every comment by the token's member
@@ -1292,6 +1306,7 @@ impl TrelloUnits {
                 (ENV_BOARD_ID.to_string(), self.board_id.clone()),
                 (ENV_CARD_ID.to_string(), unit.card.id.clone()),
             ]),
+            args: Map::from_iter([("account".to_string(), self.account.clone())]),
             files: vec![WireFile {
                 path: TASK_FILE.to_string(),
                 text: brief_text(&unit.card, &unit.comments, &unit.self_author),
@@ -1444,7 +1459,7 @@ impl TrelloUnits {
             self.remember_pending(PendingFinish {
                 key: unit.key(),
                 returns_to: unit.source.as_ref().map_or_else(
-                    || self.pick_from.first().cloned().unwrap_or_default(),
+                    || self.claim_from.first().cloned().unwrap_or_default(),
                     |source| source.name.clone(),
                 ),
                 card: unit.card.clone(),
@@ -1493,9 +1508,9 @@ fn instance_base(name: &str) -> Option<&str> {
 
 /// The claim-journal key an older release kept a card's in-flight claim under (ADR-0059): the
 /// card id (the move-back subject at reap), the claim comment id (the prune target) and, for
-/// a card claimed from a `pick_from` list after the first, that list's id (where the reversal
+/// a card claimed from a `claim_from` list after the first, that list's id (where the reversal
 /// returns it), joined by `#`. A first-list claim names no list, so its key is
-/// `<card_id>#<claim_id>` whatever else `pick_from` names. This release journals
+/// `<card_id>#<claim_id>` whatever else `claim_from` names. This release journals
 /// `trello:<card id>` and keeps the rest in a [`ClaimRecord`]; the older shape is still
 /// released ([`split_card_key`]), and built here only to say so in tests.
 #[cfg(test)]
@@ -2011,7 +2026,7 @@ mod tests {
             base_url: crate::client::TRELLO_BASE.into(),
             api_key: "k".into(),
             token: "t".into(),
-            pick_from: vec!["Up for Grabs".into()],
+            claim_from: vec!["Up for Grabs".into()],
             ..BoardConfig::default()
         }
     }
@@ -2859,11 +2874,11 @@ mod tests {
         assert_eq!(h.clock.sleeps(), [CLAIM_SETTLE]);
     }
 
-    // --- The `require_member` intake gate ---
+    // --- The `only_members` intake gate ---
 
     fn gated_cfg(who: MemberRef) -> BoardConfig {
         BoardConfig {
-            require_member: Some(who),
+            only_members: Some(vec![who]),
             ..cfg()
         }
     }
@@ -2877,7 +2892,7 @@ mod tests {
     }
 
     #[test]
-    fn require_member_skips_ineligible_head_and_claims_the_next() {
+    fn only_members_skips_ineligible_head_and_claims_the_next() {
         let h = Harness::new(gated_cfg(MemberRef::SelfMember), "me");
         seed_two_cards_second_is_ours(&h.board);
         h.board.set_clock(1000);
@@ -2888,7 +2903,7 @@ mod tests {
     }
 
     #[test]
-    fn require_member_with_no_eligible_card_claims_nothing() {
+    fn only_members_with_no_eligible_card_claims_nothing() {
         let h = Harness::new(gated_cfg(MemberRef::SelfMember), "me");
         seed_source_card(&h.board, "card1");
         h.board.add_card("Up for Grabs", "card2", "Second", "Body");
@@ -2903,7 +2918,7 @@ mod tests {
     }
 
     #[test]
-    fn without_require_member_the_head_card_is_claimed_and_no_member_resolved() {
+    fn without_only_members_the_head_card_is_claimed_and_no_member_resolved() {
         let h = Harness::new(cfg(), "me");
         seed_two_cards_second_is_ours(&h.board);
         h.board.set_clock(1000);
@@ -2913,7 +2928,7 @@ mod tests {
     }
 
     #[test]
-    fn require_member_resolves_once_per_poll() {
+    fn only_members_resolves_once_per_poll() {
         let h = Harness::new(gated_cfg(MemberRef::SelfMember), "me");
         seed_two_cards_second_is_ours(&h.board);
         h.board.set_clock(1000);
@@ -2923,8 +2938,57 @@ mod tests {
         assert_eq!(h.board.resolve_count(), 3);
     }
 
+    /// Each member is resolved once a poll, across every list the poll reads: two members
+    /// over two lists cost two resolves a poll, not one per card or per list.
     #[test]
-    fn require_member_unknown_username_is_logged_and_claims_nothing() {
+    fn only_members_resolves_each_member_once_per_poll_across_lists() {
+        let h = Harness::new(
+            BoardConfig {
+                only_members: Some(vec![
+                    MemberRef::SelfMember,
+                    MemberRef::Username("marisa".into()),
+                ]),
+                ..two_lists_cfg()
+            },
+            "me",
+        );
+        seed_two_lists(&h.board);
+        h.board.seed_board_member("marisa", "marisa-id");
+        h.board.add_card("Ideas 💡", "idea1", "First", "Body");
+        h.board.add_card("Ideas 💡", "idea2", "Second", "Body");
+        h.board.set_clock(1000);
+        for _ in 0..3 {
+            let _ = h.poll();
+        }
+        assert_eq!(h.board.resolve_count(), 6);
+    }
+
+    /// Any one of the members on the card is enough: a card carrying only the second of two
+    /// is claimed, and one carrying neither is stepped over, unposted.
+    #[test]
+    fn only_members_lets_a_card_through_when_either_member_is_on_it() {
+        let h = Harness::new(
+            BoardConfig {
+                only_members: Some(vec![
+                    MemberRef::SelfMember,
+                    MemberRef::Username("marisa".into()),
+                ]),
+                ..cfg()
+            },
+            "me",
+        );
+        h.board.seed_board_member("marisa", "marisa-id");
+        seed_source_card(&h.board, "card1");
+        h.board.add_card("Up for Grabs", "card2", "Second", "Body");
+        h.board.seed_card_member("card2", "marisa-id");
+        h.board.set_clock(1000);
+
+        assert_eq!(h.poll_claim().as_deref(), Some("card2"));
+        assert!(h.board.comments_on("card1").is_empty());
+    }
+
+    #[test]
+    fn only_members_unknown_username_is_logged_and_claims_nothing() {
         let h = Harness::new(gated_cfg(MemberRef::Username("ghost".into())), "me");
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
@@ -2938,12 +3002,12 @@ mod tests {
         assert!(h.board.comments_on("card1").is_empty());
     }
 
-    // --- Several `pick_from` lists ---
+    // --- Several `claim_from` lists ---
 
-    /// A `pick_from` naming two lists: `Ideas 💡` first, then the suite's `Up for Grabs`.
+    /// A `claim_from` naming two lists: `Ideas 💡` first, then the suite's `Up for Grabs`.
     fn two_lists_cfg() -> BoardConfig {
         BoardConfig {
-            pick_from: vec!["Ideas 💡".into(), "Up for Grabs".into()],
+            claim_from: vec!["Ideas 💡".into(), "Up for Grabs".into()],
             ..cfg()
         }
     }
@@ -2959,10 +3023,10 @@ mod tests {
     /// unassigned card at its head; and once the first holds only that card, the second's
     /// assigned card is claimed rather than held up behind it.
     #[test]
-    fn pick_from_scans_its_lists_in_order_with_the_gates_in_each() {
+    fn claim_from_scans_its_lists_in_order_with_the_gates_in_each() {
         let h = Harness::new(
             BoardConfig {
-                require_member: Some(MemberRef::SelfMember),
+                only_members: Some(vec![MemberRef::SelfMember]),
                 ..two_lists_cfg()
             },
             "me",
@@ -3173,7 +3237,7 @@ mod tests {
         );
     }
 
-    /// A swept card in the first list, or in no `pick_from` list at all, records no list,
+    /// A swept card in the first list, or in no `claim_from` list at all, records no list,
     /// and its reversal returns it to the first list.
     #[test]
     fn the_sweep_records_no_list_for_a_first_list_or_outside_card() {
@@ -3241,10 +3305,10 @@ mod tests {
     /// Every name resolves before any list is read, so a name the board lacks fails the
     /// poll naming it, even while an earlier list holds a claimable card.
     #[test]
-    fn pick_from_names_a_list_the_board_lacks_and_the_poll_fails_naming_it() {
+    fn claim_from_names_a_list_the_board_lacks_and_the_poll_fails_naming_it() {
         let h = Harness::new(
             BoardConfig {
-                pick_from: vec!["Up for Grabs".into(), "Nirgendwo 🚫".into()],
+                claim_from: vec!["Up for Grabs".into(), "Nirgendwo 🚫".into()],
                 ..cfg()
             },
             "me",
@@ -3330,15 +3394,42 @@ mod tests {
         assert_eq!(h.units.wire_unit(&unit).fields, fields);
         assert_eq!(
             (
-                fields.title.as_str(),
                 fields.name.as_str(),
                 fields.list.as_str(),
                 fields.board.as_str()
             ),
-            ("Title", "Title", "Up for Grabs", "mockboard")
+            ("Title", "Up for Grabs", "mockboard")
         );
         assert_eq!(fields.labels, ["afkd/ready"]);
         assert_eq!(fields.members, ["phil"]);
+    }
+
+    /// The unit carries the account the settings name — key, token and base URL — as
+    /// `args.account`, the one value every slot is passed beside the run and the card.
+    #[test]
+    fn wire_unit_args_carry_the_account_from_the_settings() {
+        let h = Harness::new(
+            BoardConfig {
+                api_key: "KEY".into(),
+                token: "TOKEN".into(),
+                base_url: "http://127.0.0.1:9/1".into(),
+                ..cfg()
+            },
+            "me",
+        );
+        seed_source_card(&h.board, "card1");
+        h.board.set_clock(1000);
+        let unit = h.poll().expect("claimed");
+
+        let wire = h.units.wire_unit(&unit);
+        assert_eq!(
+            serde_json::Value::Object(wire.args),
+            serde_json::json!({"account": {
+                "api_key": "KEY",
+                "token": "TOKEN",
+                "base_url": "http://127.0.0.1:9/1",
+            }})
+        );
     }
 
     /// A claim won on a card whose handle cannot be read is not kept: the claim comment is
@@ -3439,11 +3530,11 @@ mod tests {
         assert!(second.diag.errs().is_empty(), "{:?}", second.diag.errs());
     }
 
-    /// The card goes to the bottom of the `pick_from` list it sits in — the second list for
+    /// The card goes to the bottom of the `claim_from` list it sits in — the second list for
     /// a card in it, the first for one in the first list or in none — and a card the board
     /// has gone from is left alone, or a card that cannot be read goes to the first list.
     #[test]
-    fn a_key_with_no_record_moves_the_card_to_the_bottom_of_its_pick_from_list() {
+    fn a_key_with_no_record_moves_the_card_to_the_bottom_of_its_claim_from_list() {
         for (list, to) in [
             ("Up for Grabs", "Up for Grabs"),
             ("Ideas 💡", "Ideas 💡"),
@@ -4005,17 +4096,17 @@ mod tests {
         assert!(h.board.card_reads().is_empty());
     }
 
-    // --- The `require_label` intake gate ---
+    // --- The `only_labels` intake gate ---
 
     fn labelled_cfg(label: &str) -> BoardConfig {
         BoardConfig {
-            require_label: Some(label.to_string()),
+            only_labels: Some(vec![label.to_string()]),
             ..cfg()
         }
     }
 
     #[test]
-    fn require_label_claims_only_a_labelled_card() {
+    fn only_labels_claims_only_a_labelled_card() {
         let h = Harness::new(labelled_cfg("Redo"), "me");
         seed_source_card(&h.board, "card1");
         h.board.add_card("Up for Grabs", "card2", "Second", "Body");
@@ -4027,7 +4118,7 @@ mod tests {
     }
 
     #[test]
-    fn require_label_with_no_labelled_card_claims_nothing() {
+    fn only_labels_with_no_labelled_card_claims_nothing() {
         let h = Harness::new(labelled_cfg("Redo"), "me");
         seed_source_card(&h.board, "card1");
         h.board.add_card("Up for Grabs", "card2", "Second", "Body");
@@ -4042,10 +4133,33 @@ mod tests {
     }
 
     #[test]
-    fn require_label_and_require_member_both_must_hold() {
+    fn only_labels_requires_every_label_it_names() {
+        let h = Harness::new(
+            BoardConfig {
+                only_labels: Some(vec!["Redo".into(), "Ready".into()]),
+                ..cfg()
+            },
+            "me",
+        );
+        seed_source_card(&h.board, "redo-only");
+        h.board.seed_card_label("redo-only", "Redo");
+        h.board.add_card("Up for Grabs", "ready-only", "R", "Body");
+        h.board.seed_card_label("ready-only", "Ready");
+        h.board.add_card("Up for Grabs", "both", "B", "Body");
+        h.board.seed_card_label("both", "Ready");
+        h.board.seed_card_label("both", "Redo");
+        h.board.set_clock(1000);
+
+        assert_eq!(h.poll_claim().as_deref(), Some("both"));
+        assert!(h.board.comments_on("redo-only").is_empty());
+        assert!(h.board.comments_on("ready-only").is_empty());
+    }
+
+    #[test]
+    fn only_labels_and_only_members_both_must_hold() {
         let both_cfg = BoardConfig {
-            require_member: Some(MemberRef::SelfMember),
-            require_label: Some("Redo".into()),
+            only_members: Some(vec![MemberRef::SelfMember]),
+            only_labels: Some(vec!["Redo".into()]),
             ..cfg()
         };
         let h = Harness::new(both_cfg, "me");
@@ -4066,7 +4180,7 @@ mod tests {
     #[test]
     fn on_claim_remove_label_clears_the_gate_label() {
         let cfg = BoardConfig {
-            require_label: Some("Redo".into()),
+            only_labels: Some(vec!["Redo".into()]),
             ..cfg()
         };
         let h =
@@ -4095,12 +4209,12 @@ mod tests {
         );
     }
 
-    // --- The `without_label` negative intake gate ---
+    // --- The `skip_labels` negative intake gate ---
 
     #[test]
-    fn without_label_skips_a_carrying_card() {
+    fn skip_labels_skips_a_carrying_card() {
         let cfg = BoardConfig {
-            without_label: vec!["Hold".into()],
+            skip_labels: vec!["Hold".into()],
             ..cfg()
         };
         let h = Harness::new(cfg, "me");
@@ -4114,10 +4228,10 @@ mod tests {
     }
 
     #[test]
-    fn without_label_wins_over_require_label() {
+    fn skip_labels_wins_over_only_labels() {
         let cfg = BoardConfig {
-            require_label: Some("Redo".into()),
-            without_label: vec!["Hold".into()],
+            only_labels: Some(vec!["Redo".into()]),
+            skip_labels: vec!["Hold".into()],
             ..cfg()
         };
         let h = Harness::new(cfg, "me");
@@ -4133,9 +4247,9 @@ mod tests {
     }
 
     #[test]
-    fn without_label_excludes_any_of_many() {
+    fn skip_labels_excludes_any_of_many() {
         let cfg = BoardConfig {
-            without_label: vec!["Hold".into(), "WIP".into()],
+            skip_labels: vec!["Hold".into(), "WIP".into()],
             ..cfg()
         };
         let h = Harness::new(cfg, "me");
@@ -4259,9 +4373,9 @@ mod tests {
     #[test]
     fn min_age_composes_with_the_other_gates() {
         let cfg = BoardConfig {
-            require_member: Some(MemberRef::SelfMember),
-            require_label: Some("ready".into()),
-            without_label: vec!["blocked".into()],
+            only_members: Some(vec![MemberRef::SelfMember]),
+            only_labels: Some(vec!["ready".into()]),
+            skip_labels: vec!["blocked".into()],
             min_age: TEN_MINUTES,
             ..cfg()
         };
@@ -4759,7 +4873,6 @@ mod tests {
     /// The handle fields a unit built by hand over `card` carries.
     fn fields_of(card: &Card) -> CardFields {
         CardFields {
-            title: card.title.clone(),
             number: 1,
             name: card.title.clone(),
             url: card.url.clone(),
@@ -5967,15 +6080,15 @@ mod tests {
     /// The agent's question, as the skill's `ask.py` posts it — multi-paragraph, fenced,
     /// non-ASCII, with the trailing whitespace the brief trims.
     const PARK_QUESTION: &str = "I can't build this confidently — the card reads two ways:\n\n\
-         1. `pick_from` names the **list** a card is claimed from, or\n\
+         1. `claim_from` names the **list** a card is claimed from, or\n\
          2. it names the label 名前 the card must carry\n\n\
-         ```afk\ndevelop :: service(trello) { pick_from \"Up for Grabs\" }\n```\n\n\
+         ```afk\ndevelop :: service(trello) { claim_from \"Up for Grabs\" }\n```\n\n\
          which did you mean? 🙏   ";
 
     /// The human's answer, posted after afkd's last word — the comment that re-arms a
     /// badged card.
     const PARK_REPLY: &str = "reading 1 — the **list**. 看 gallery/06:\n\n\
-         ```conf\npick_from \"Up for Grabs\"\n```\n\n\
+         ```conf\nclaim_from \"Up for Grabs\"\n```\n\n\
          drop the label idea entirely.  ";
 
     /// The realistic service shape: `on_claim` moves the card into `In Progress`,
@@ -5994,7 +6107,7 @@ mod tests {
         )
     }
 
-    /// One card in `pick_from` with a human's opening comment, a second card queued
+    /// One card in `claim_from` with a human's opening comment, a second card queued
     /// behind it, and the `Backlog` list `on_fail` would use.
     fn seed_park_board(board: &MockBoard) {
         seed_source_card(board, "card1");
@@ -6066,7 +6179,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parked_card_is_re_armed_by_a_reply_ahead_of_pick_from() {
+    fn a_parked_card_is_re_armed_by_a_reply_ahead_of_claim_from() {
         let h = Harness::new(park_cfg(), "me").with_hooks(park_hooks());
         seed_park_board(&h.board);
         assert_eq!(park_beat(&h), None);
@@ -6080,8 +6193,8 @@ mod tests {
             .try_claim()
             .expect("no fault")
             .expect("the answered card is claimed");
-        assert_eq!(unit.card.id, "card1", "ahead of the head of pick_from");
-        // A lone `pick_from` resolves nothing in the sweep, and keys the card by default.
+        assert_eq!(unit.card.id, "card1", "ahead of the head of claim_from");
+        // A lone `claim_from` resolves nothing in the sweep, and keys the card by default.
         assert!(
             !h.board.calls()[before..].contains(&"resolve list"),
             "{:?}",
@@ -6244,7 +6357,7 @@ mod tests {
 
     /// CGRDWyFv as it stood when it was re-claimed: built once, every human comment since
     /// answered, then parked on afkd's question — badged in `In Progress` with its
-    /// `[afkd-park]` marker — and an ordinary card at the head of `pick_from`.
+    /// `[afkd-park]` marker — and an ordinary card at the head of `claim_from`.
     fn built_then_parked(h: &Harness, upto: u64) {
         h.board.add_list("Up for Grabs");
         h.board.add_list("In Progress");
@@ -6383,7 +6496,7 @@ mod tests {
     // --- The parked scan: what it reads, what it skips, what it costs ---
 
     /// A board with one badged card parked in `In Progress` and one ordinary card at the
-    /// head of `pick_from`; `marker` is posted as afkd's own comment between the
+    /// head of `claim_from`; `marker` is posted as afkd's own comment between the
     /// watermark and the human's reply, and `reply` adds the answer.
     fn parked_board_owned_by(h: &Harness, reply: bool, marker: Option<&str>) {
         h.board.add_list("Up for Grabs");
@@ -6506,8 +6619,8 @@ mod tests {
     fn a_badged_card_carrying_a_denied_label_is_skipped() {
         let h = Harness::new(
             BoardConfig {
-                without_label: vec!["Hold".into()],
-                require_label: Some("Ready".into()),
+                skip_labels: vec!["Hold".into()],
+                only_labels: Some(vec!["Ready".into()]),
                 ..cfg()
             },
             "me",
@@ -6528,7 +6641,7 @@ mod tests {
         // though it carries no `Ready`.
         let h2 = Harness::new(
             BoardConfig {
-                require_label: Some("Ready".into()),
+                only_labels: Some(vec!["Ready".into()]),
                 ..cfg()
             },
             "me",
@@ -6555,7 +6668,7 @@ mod tests {
     }
 
     #[test]
-    fn a_badged_card_dragged_into_pick_from_is_claimed_once_and_unbadged() {
+    fn a_badged_card_dragged_into_claim_from_is_claimed_once_and_unbadged() {
         let h = Harness::new(cfg(), "me");
         h.board.add_list("Up for Grabs");
         h.board
@@ -6601,7 +6714,7 @@ mod tests {
         let discuss = Harness::on_board(
             Arc::clone(&board),
             BoardConfig {
-                pick_from: vec!["Discussion".into()],
+                claim_from: vec!["Discussion".into()],
                 ..park_cfg()
             },
             "me",
@@ -6646,7 +6759,7 @@ mod tests {
         let discuss = Harness::on_board(
             Arc::clone(&board),
             BoardConfig {
-                pick_from: vec!["Discussion".into()],
+                claim_from: vec!["Discussion".into()],
                 ..park_cfg()
             },
             "me",
@@ -6914,9 +7027,9 @@ mod tests {
         assert!(!discuss_tail_passes(&unanswered, &gate));
     }
 
-    /// A badged, unanswered card at the head of `pick_from`, with `marker` under it: the
+    /// A badged, unanswered card at the head of `claim_from`, with `marker` under it: the
     /// sweep stops at its feedback gate, so only the list scan can reach it.
-    fn badged_card_in_pick_from(board: &MockBoard, marker: Option<&str>) {
+    fn badged_card_in_claim_from(board: &MockBoard, marker: Option<&str>) {
         board.add_list("Up for Grabs");
         board.add_list("In Progress");
         board.add_card("Up for Grabs", "parked", NARRATED_TITLE, "Body");
@@ -6929,7 +7042,7 @@ mod tests {
     }
 
     #[test]
-    fn a_badged_card_in_another_services_pick_from_is_left_for_its_owner() {
+    fn a_badged_card_in_another_services_claim_from_is_left_for_its_owner() {
         let h = Harness::on_board(
             Arc::new(MockBoard::new()),
             cfg(),
@@ -6937,7 +7050,7 @@ mod tests {
             OTHER_SERVICE,
             &[TEST_SERVICE, OTHER_SERVICE],
         );
-        badged_card_in_pick_from(&h.board, Some(&park_text(TEST_SERVICE)));
+        badged_card_in_claim_from(&h.board, Some(&park_text(TEST_SERVICE)));
         let before = h.board.comments_on("parked");
 
         assert_eq!(h.poll_claim(), None);
@@ -6959,7 +7072,7 @@ mod tests {
     }
 
     #[test]
-    fn the_parking_service_claims_its_own_badged_card_from_its_own_pick_from() {
+    fn the_parking_service_claims_its_own_badged_card_from_its_own_claim_from() {
         for parked_by in [
             TEST_SERVICE,
             &format!("{TEST_SERVICE}+1"),
@@ -6972,7 +7085,7 @@ mod tests {
                 TEST_SERVICE,
                 &[TEST_SERVICE, OTHER_SERVICE],
             );
-            badged_card_in_pick_from(&h.board, Some(&park_text(parked_by)));
+            badged_card_in_claim_from(&h.board, Some(&park_text(parked_by)));
 
             assert_eq!(h.poll_claim().as_deref(), Some("parked"), "{parked_by}");
             assert!(!is_badged(&h.board, "parked"), "{parked_by}");
@@ -6985,7 +7098,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unmarked_badged_card_in_another_services_pick_from_is_still_claimed() {
+    fn an_unmarked_badged_card_in_another_services_claim_from_is_still_claimed() {
         let h = Harness::on_board(
             Arc::new(MockBoard::new()),
             cfg(),
@@ -6993,7 +7106,7 @@ mod tests {
             OTHER_SERVICE,
             &[TEST_SERVICE, OTHER_SERVICE],
         );
-        badged_card_in_pick_from(&h.board, None);
+        badged_card_in_claim_from(&h.board, None);
 
         assert_eq!(h.poll_claim().as_deref(), Some("parked"));
         assert!(!is_badged(&h.board, "parked"));
@@ -7015,7 +7128,7 @@ mod tests {
                     OTHER_SERVICE,
                     &[TEST_SERVICE, OTHER_SERVICE],
                 );
-                badged_card_in_pick_from(&h.board, None);
+                badged_card_in_claim_from(&h.board, None);
                 let (first, second) = if newest_first {
                     (("new", newest, 300), ("old", stale, 220))
                 } else {
@@ -7047,7 +7160,7 @@ mod tests {
             cfg(),
             two_service_identity(TEST_SERVICE),
         );
-        badged_card_in_pick_from(&swept.board, Some(&park_text(gone)));
+        badged_card_in_claim_from(&swept.board, Some(&park_text(gone)));
         swept
             .board
             .move_card("parked", "In Progress", ListPosition::Top)
@@ -7062,13 +7175,13 @@ mod tests {
             .board
             .seed_comment_named("parked", "reply", PARK_REPLY, "mem-phil", "Phil Ek", 300);
 
-        // Route 2 — the ordinary list scan: unanswered, sitting in `pick_from`.
+        // Route 2 — the ordinary list scan: unanswered, sitting in `claim_from`.
         let scanned = Harness::as_service(
             Arc::new(MockBoard::new()),
             cfg(),
             two_service_identity(TEST_SERVICE),
         );
-        badged_card_in_pick_from(&scanned.board, Some(&park_text(gone)));
+        badged_card_in_claim_from(&scanned.board, Some(&park_text(gone)));
 
         let mut lines = Vec::new();
         for h in [&swept, &scanned] {
@@ -7392,7 +7505,7 @@ mod tests {
     }
 
     #[test]
-    fn a_park_owed_past_the_retry_window_returns_the_card_to_pick_from_with_the_question_on_it() {
+    fn a_park_owed_past_the_retry_window_returns_the_card_to_claim_from_with_the_question_on_it() {
         let (h, held) = a_park_whose_badge_cannot_land();
         assert_eq!(h.release(&held), Some(false));
         h.clock.advance(RETRY_FOR);
@@ -7582,7 +7695,7 @@ mod tests {
     }
 
     /// The sweep checks the budget before each card read, so a slow board stops it too,
-    /// and the beat ends idle rather than reaching `pick_from`. Every clock read here
+    /// and the beat ends idle rather than reaching `claim_from`. Every clock read here
     /// costs ten seconds: the first card is read, the second check finds the budget
     /// spent.
     #[test]
@@ -7607,7 +7720,7 @@ mod tests {
         assert_eq!(h.board.card_reads(), ["p0"], "no card read past the budget");
         assert!(
             !h.board.calls().contains(&"resolve list"),
-            "pick_from is not reached: {:?}",
+            "claim_from is not reached: {:?}",
             h.board.calls()
         );
         assert_eq!(h.diag.errs().len(), 1, "{:?}", h.diag.errs());
@@ -7686,7 +7799,7 @@ mod tests {
         assert_eq!(claim_posts(&h.board), 0, "{:?}", h.board.calls());
         assert!(
             !h.board.calls().contains(&"resolve list"),
-            "pick_from is not reached: {:?}",
+            "claim_from is not reached: {:?}",
             h.board.calls()
         );
         assert_eq!(h.diag.errs(), [RESERVE_LINE]);

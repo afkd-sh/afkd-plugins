@@ -69,8 +69,6 @@ pub(crate) fn parse_check_item_key(key: &str) -> Option<(&str, &str)> {
 /// The fields of a `trello.Card` handle, in the manifest's order.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct CardFields {
-    /// The card's name, as today's handle has it until the actions are removed.
-    pub(crate) title: String,
     /// Trello's `idShort`, the number in the card's address.
     pub(crate) number: i64,
     pub(crate) name: String,
@@ -261,7 +259,6 @@ pub(crate) fn build_card(card: &Value, lookups: &Lookups) -> Option<WireHandle<C
         id: some_str(card, "shortLink").unwrap_or_else(|| id.to_string()),
         key: read_key(id),
         fields: CardFields {
-            title: name.clone(),
             number: card.get("idShort").and_then(Value::as_i64).unwrap_or(0),
             name,
             url: str_of(card, "url").to_string(),
@@ -549,7 +546,6 @@ mod tests {
         assert_eq!(
             handle.fields,
             CardFields {
-                title: "修复 the retry storm 🚨".into(),
                 number: 12,
                 name: "修复 the retry storm 🚨".into(),
                 url: "https://trello.com/c/Qb7eLy2w/12-retry-storm".into(),
@@ -579,7 +575,6 @@ mod tests {
         assert_eq!(
             handle.fields,
             CardFields {
-                title: String::new(),
                 number: 0,
                 name: String::new(),
                 url: String::new(),

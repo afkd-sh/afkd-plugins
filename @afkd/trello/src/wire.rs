@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::handles::CardFields;
 
@@ -145,6 +146,8 @@ pub(crate) struct WireUnit {
     #[serde(rename = "self")]
     pub(crate) me: String,
     pub(crate) env: BTreeMap<String, String>,
+    /// The values every slot of the kind is passed beside the run and the card, by name.
+    pub(crate) args: Map<String, Value>,
     pub(crate) files: Vec<WireFile>,
 }
 
@@ -328,7 +331,6 @@ mod tests {
             id: "1Rkelydw".into(),
             key: "trello:6a4dd5de1234abcd5678ef90".into(),
             fields: CardFields {
-                title: "修复 the retry storm 🚨".into(),
                 number: 12,
                 name: "修复 the retry storm 🚨".into(),
                 url: "https://trello.com/c/1Rkelydw/12-retry-storm".into(),
@@ -355,6 +357,14 @@ mod tests {
                 ),
                 ("TRELLO_TOKEN".to_string(), "t".to_string()),
             ]),
+            args: Map::from_iter([(
+                "account".to_string(),
+                serde_json::json!({
+                    "api_key": "k",
+                    "token": "t",
+                    "base_url": "https://api.trello.com/1",
+                }),
+            )]),
             files: vec![WireFile {
                 path: crate::TASK_FILE.into(),
                 text: text.into(),
@@ -575,6 +585,12 @@ mod tests {
             reply["unit"]["fields"]["description"],
             "It retries forever."
         );
+        assert_eq!(
+            reply["unit"]["args"],
+            serde_json::to_value(&u.args).unwrap(),
+            "the account survives the cut"
+        );
+        assert_eq!(reply["unit"]["args"]["account"]["token"], "t");
     }
 
     /// A description over the line beside a short brief is the field cut, at a char

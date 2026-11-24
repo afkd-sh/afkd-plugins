@@ -75,16 +75,14 @@ fn board() -> Board {
 }
 
 /// The live selfdev service's settings, lowered to JSON as afkd lowers them: every value a
-/// string — afkd's own two keys along for the ride — and no hook, since afkd runs those.
+/// string, and no hook, since afkd runs those.
 fn settings(fake: &FakeTrello) -> Value {
     json!({
         "board": format!("https://trello.com/b/{BOARD}/afkd-selfdev"),
         "base_url": fake.base_url(),
         "api_key": KEY,
         "token": TOKEN,
-        "pick_from": "Up for Grabs",
-        "every": "30s",
-        "max_attempts": "2",
+        "claim_from": "Up for Grabs",
     })
 }
 
@@ -93,19 +91,19 @@ fn settings(fake: &FakeTrello) -> Value {
 /// interpolated it.
 ///
 /// ```text
-/// on_claim proc(card: trello.Card) {
+/// on_claim proc(account: trello.Account, card: trello.Card) {
 ///   trello.add_member(card)
 ///   trello.move_to(card, "In Progress", at=.top)
 /// }
-/// on_done proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+/// on_done proc(run: core.Run, account: trello.Account, card: trello.Card, outcome: core.Outcome) {
 ///   trello.move_to(card, "Review", at=.top)
 ///   trello.comment(card, "afkd landed this card in #{outcome.duration}.")
 /// }
-/// on_fail proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+/// on_fail proc(run: core.Run, account: trello.Account, card: trello.Card, outcome: core.Outcome) {
 ///   trello.move_to(card, "Backlog", at=.bottom)
 ///   trello.add_label(card, "Problem")
 /// }
-/// on_park proc(run: core.Run, card: trello.Card, outcome: core.Outcome) {
+/// on_park proc(run: core.Run, account: trello.Account, card: trello.Card, outcome: core.Outcome) {
 ///   trello.comment(card, "parked after #{outcome.duration}, waiting on you")
 /// }
 /// ```
@@ -158,7 +156,7 @@ fn discuss_settings(fake: &FakeTrello) -> Value {
         "base_url": fake.base_url(),
         "api_key": KEY,
         "token": TOKEN,
-        "pick_from": "Discussion",
+        "claim_from": "Discussion",
         "discuss_with": ["anyone"],
     })
 }
@@ -173,7 +171,6 @@ fn made(id: &str) -> u64 {
 /// it is in, and the last activity the fake has stamped on it.
 fn card_fields(b: &Board, list: &str, labels: &[&str], members: &[&str]) -> Value {
     json!({
-        "title": TITLE,
         "number": 1,
         "name": TITLE,
         "url": b.fake.url(&b.card),
@@ -240,8 +237,9 @@ fn hello_arms_and_lists_every_call_it_answers() {
 /// What `hello` cannot arm with answers `ok:false`, with the problem on stderr in the
 /// built-in's own sentence — a kind this plugin does not provide (proto 1's
 /// `trello_card` among them), a block the manifest cannot refuse, a block without the
-/// `pick_from` afkd requires, a `hello` from an afkd too old to say who is asking, and the
-/// protocol of an afkd from before v2 of the afk language.
+/// `claim_from` afkd requires — one that writes the old `pick_from` in its place among them —
+/// a `hello` from an afkd too old to say who is asking, and the protocol of an afkd from
+/// before v2 of the afk language.
 #[test]
 fn hello_refuses_what_it_cannot_arm_with() {
     let b = board();
@@ -250,12 +248,13 @@ fn hello_refuses_what_it_cannot_arm_with() {
                "roster": [DEVELOP, DISCUSS], "owner": OWNER, "settings": settings})
     };
     let mut flag_gate = settings(&b.fake);
-    flag_gate["require_label"] = json!(true);
-    let mut without_pick_from = settings(&b.fake);
-    without_pick_from
-        .as_object_mut()
-        .unwrap()
-        .remove("pick_from");
+    flag_gate["only_labels"] = json!(true);
+    // The old name where `claim_from` belongs: afkd refuses it as unknown, and a `hello`
+    // that carries it anyway has no `claim_from`.
+    let mut pick_from_for_claim_from = settings(&b.fake);
+    let block = pick_from_for_claim_from.as_object_mut().unwrap();
+    block.remove("claim_from");
+    block.insert("pick_from".into(), json!("Up for Grabs"));
     let mut anonymous = hello("card", 2, settings(&b.fake));
     for field in ["service", "roster", "owner"] {
         anonymous.as_object_mut().unwrap().remove(field);
@@ -271,8 +270,7 @@ fn hello_refuses_what_it_cannot_arm_with() {
         ),
         (
             hello("card", 2, flag_gate),
-            "trigger card: setting `require_label`: setting `require_label` expects a single \
-             value",
+            "trigger card: setting `only_labels`: `only_labels` expects one or more label names",
         ),
         (
             anonymous,
@@ -284,8 +282,8 @@ fn hello_refuses_what_it_cannot_arm_with() {
             "afkd speaks plugin protocol 1, and this plugin speaks 2",
         ),
         (
-            hello("card", 2, without_pick_from),
-            "trigger card: setting `pick_from`: `pick_from` is required: name the list or \
+            hello("card", 2, pick_from_for_claim_from),
+            "trigger card: setting `claim_from`: `claim_from` is required: name the list or \
              lists new cards are claimed from",
         ),
     ] {
@@ -337,6 +335,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
                 "TRELLO_CARD_ID": b.card,
                 "TRELLO_TOKEN": TOKEN,
             },
+            "args": {"account": b.fake.account()},
             "files": [{"path": "task/README.md", "text": format!(
                 "{TITLE}\n\n{BODY}\n\n## Checklists\n\n### Acceptance (1/2)\
                  \n- [x] retry stops after 5 tries · id: {}\
@@ -379,7 +378,7 @@ fn a_won_race_hands_over_the_built_ins_unit() {
         seen[post].body,
         r#"{"text":"[afkd-claim] owner=afkd-4242"}"#
     );
-    // And the claimed card, now out of `pick_from`, is not claimed again.
+    // And the claimed card, now out of `claim_from`, is not claimed again.
     assert_eq!(plugin.poll(), json!({"fire": false}));
     plugin.finish();
 }
@@ -671,7 +670,7 @@ fn classify_parks_on_the_marker_and_echoes_otherwise() {
 // --- release ---
 
 /// A crashed run's claim is reversed — the claim deleted and the card moved to the
-/// bottom of `pick_from`, where the poll finds it again; a unit afkd hands straight back
+/// bottom of `claim_from`, where the poll finds it again; a unit afkd hands straight back
 /// is reversed and forgotten; and a key with no `#` names nothing.
 #[test]
 fn release_reverses_a_crashed_claim_and_reads_every_key_shape() {
@@ -728,10 +727,10 @@ fn release_reverses_a_crashed_claim_and_reads_every_key_shape() {
     plugin.finish();
 }
 
-// --- several `pick_from` lists ---
+// --- several `claim_from` lists ---
 
 /// A second source list beside the suite's board, its card claimable; the board's own card
-/// in `Up for Grabs` is held back by a `without_label` gate. Returns the list's id and its
+/// in `Up for Grabs` is held back by a `skip_labels` gate. Returns the list's id and its
 /// card's id.
 fn second_list(b: &Board) -> (String, String) {
     b.fake.label(&b.card, "afkd/hold");
@@ -745,20 +744,20 @@ fn second_list(b: &Board) -> (String, String) {
     (list, card)
 }
 
-/// The suite's settings with `pick_from` naming two lists, in the shape afkd lowers a
+/// The suite's settings with `claim_from` naming two lists, in the shape afkd lowers a
 /// list setting to — one entry holding both names — and the gate that holds the first
 /// list's card back.
 fn two_list_settings(fake: &FakeTrello) -> Value {
     let mut settings = settings(fake);
-    settings["pick_from"] = json!([["Up for Grabs", "Hjälpvideor 🎬"]]);
-    settings["without_label"] = json!([["afkd/hold"]]);
+    settings["claim_from"] = json!([["Up for Grabs", "Hjälpvideor 🎬"]]);
+    settings["skip_labels"] = json!([["afkd/hold"]]);
     settings
 }
 
 /// With nothing claimable in the first list, the poll claims from the second, and the
 /// key is the card's own — the list the card came from is the plugin's to keep.
 #[test]
-fn pick_from_names_two_lists_and_claims_from_the_second() {
+fn claim_from_names_two_lists_and_claims_from_the_second() {
     let b = board();
     let (_, card) = second_list(&b);
     let mut plugin = Plugin::armed(two_list_settings(&b.fake));
@@ -832,7 +831,7 @@ fn release_after_a_restart_returns_a_second_list_card_to_its_list() {
 /// process is armed under another claim owner — releases a `trello:` key by the rule that
 /// holds without one: every claim this account's member posted is pruned but the ones
 /// carrying the new owner, a rival member's claim is kept, and the card moves back to the
-/// bottom of the `pick_from` list it sits in — here none, since `on_claim` moved it out, so
+/// bottom of the `claim_from` list it sits in — here none, since `on_claim` moved it out, so
 /// the first.
 #[test]
 fn a_restart_with_no_record_prunes_the_first_processs_claim_and_keeps_a_rivals() {
@@ -1004,11 +1003,11 @@ fn a_parked_card_answered_in_the_second_list_goes_back_there() {
     }
 }
 
-/// A card parked outside every `pick_from` list — where the selfdev `on_claim` put it —
+/// A card parked outside every `claim_from` list — where the selfdev `on_claim` put it —
 /// is recorded under no list when the sweep claims it, and goes back to the first list,
 /// before a restart or after one.
 #[test]
-fn a_parked_card_answered_outside_pick_from_goes_to_the_first_list() {
+fn a_parked_card_answered_outside_claim_from_goes_to_the_first_list() {
     for restart in [false, true] {
         let b = board();
         second_list(&b);
@@ -1428,7 +1427,7 @@ fn an_undelivered_finish_is_held_and_release_delivers_it() {
     assert_eq!(
         b.fake.cards_in("Up for Grabs").last(),
         Some(&b.card),
-        "reversed to the bottom of pick_from"
+        "reversed to the bottom of claim_from"
     );
     after.finish();
 }

@@ -62,7 +62,7 @@ use crate::wire::{
 };
 use crate::writes::{self, WRITES};
 
-/// The one kind this plugin provides, its main one: `service(trello)` in a config.
+/// The one kind this plugin provides, its main one: a config writes `service(trello)`.
 pub(crate) const TRELLO_KIND: &str = "card";
 
 /// The sentence the process ends on when a request that is no call for a child of its own
@@ -636,6 +636,7 @@ mod tests {
     use super::*;
     use crate::board::{Action, MockBoard, SELF_ID};
     use crate::claim::{claim_text, is_claim};
+    use crate::client::TRELLO_BASE;
     use crate::common::{CaptureDiag, FakeClock, TempDir};
     use crate::lifecycle::ListPosition;
     use crate::outbox::RETRY_FIRST;
@@ -781,7 +782,7 @@ mod tests {
 
     fn settings() -> serde_json::Value {
         json!({"board": "https://trello.com/b/BID/afkd", "api_key": "k", "token": "t",
-               "pick_from": "Up for Grabs"})
+               "claim_from": "Up for Grabs"})
     }
 
     /// The board every test polls: `Up for Grabs` holding `card1`, and the two lists the
@@ -833,14 +834,17 @@ mod tests {
         let mut wrong_kind = hello(settings());
         wrong_kind["kind"] = json!("trello_card");
         let mut settings_fault = hello(settings());
-        settings_fault["settings"]["require_label"] = json!(true);
+        settings_fault["settings"]["only_labels"] = json!(true);
         let mut min_range = hello(settings());
         min_range["settings"]["min_age"] = json!("2m..3m");
-        let mut without_pick_from = hello(settings());
-        without_pick_from["settings"]
+        // The old name in place of `claim_from`: afkd refuses it as unknown, and a `hello`
+        // that carries it anyway has no `claim_from`.
+        let mut pick_from_for_claim_from = hello(settings());
+        let lists = pick_from_for_claim_from["settings"]
             .as_object_mut()
-            .unwrap()
-            .remove("pick_from");
+            .unwrap();
+        lists.remove("claim_from");
+        lists.insert("pick_from".into(), json!("Up for Grabs"));
         let identity = "afkd did not say which service this is; @afkd/trello needs an afkd \
                         whose `hello` carries `service`, `roster` and `owner`";
         for (request, problem) in [
@@ -857,8 +861,8 @@ mod tests {
             ),
             (
                 settings_fault,
-                "trigger card: setting `require_label`: setting `require_label` expects a \
-                 single value",
+                "trigger card: setting `only_labels`: `only_labels` expects one or more label \
+                 names",
             ),
             (
                 min_range,
@@ -866,8 +870,8 @@ mod tests {
                  `30s`, `5m`, `1h`): `2m..3m`",
             ),
             (
-                without_pick_from,
-                "trigger card: setting `pick_from`: `pick_from` is required: name the list or \
+                pick_from_for_claim_from,
+                "trigger card: setting `claim_from`: `claim_from` is required: name the list or \
                  lists new cards are claimed from",
             ),
         ] {
@@ -986,7 +990,12 @@ mod tests {
         let unit = f.poll()["unit"].clone();
         assert_eq!(unit["key"], "trello:card1");
         assert_eq!(unit["fields"]["list"], "Up for Grabs");
-        assert_eq!(unit["fields"]["title"], TITLE);
+        assert_eq!(unit["fields"]["name"], TITLE);
+        assert_eq!(unit["fields"].get("title"), None, "a card has no title");
+        assert_eq!(
+            unit["args"],
+            json!({"account": {"api_key": "k", "token": "t", "base_url": TRELLO_BASE}})
+        );
         assert_eq!(unit["self"], SELF_ID);
         assert_eq!(
             f.diag.narrated(),

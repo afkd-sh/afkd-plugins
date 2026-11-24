@@ -13,7 +13,8 @@ ships the `trello` skill an agent works the card through, one script per Trello 
 read the card, its comments, checklists and attachments, and the board around it; write
 them; and ask a question that parks the card until a human replies.
 
-It is afkd's built-in Trello trigger, moved out of afkd: the same keys, the same claim,
+It is afkd's built-in Trello trigger, moved out of afkd: the same keys, renamed to match
+the other plugins', the same claim,
 watermark, attempt and park comments on the card, the same claim-journal keys and session
 threads, the same run environment and the same brief. A claim or a park the built-in left
 on a live card is recognised, renewed and released by the plugin, and the other way round,
@@ -78,35 +79,38 @@ develop :: service(trello) {
   board        TRELLO_BOARD
   api_key      TRELLO_API_KEY
   token        TRELLO_TOKEN
-  pick_from    "Up for Grabs"
+  claim_from   "Up for Grabs"
   min_age      1m
   max_attempts 2
   every        1m~3m
 
-  on_claim proc(card: trello.Card) {
+  on_claim proc(account: trello.Account, card: trello.Card) {
     trello.add_member(card)
     trello.move_to(card, "In Progress", at=.top)
   }
-  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
     trello.move_to(card, "Review", at=.top)
     trello.comment(card, "afkd landed this card in #{outcome.duration}.")
   }
-  on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_park proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
     trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.")
   }
-  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
     trello.move_to(card, "Backlog", at=.bottom)
     trello.add_label(card, "Problem")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) { task() }
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) { task() }
 }
 ```
 
 The credentials come from the daemon's environment, so they never sit in the file. Each
 action names the card it acts on — the `card` its slot is passed — so it reads the same
 wherever it is written, and a slot may act on another card than the one its run claimed.
+Each slot is also passed the `account` the service's `api_key`, `token` and `base_url` build,
+so a slot reads or writes Trello [through it](#reading-trello-through-a-trelloaccount) as
+the service does.
 
 ## Name the skill
 
@@ -177,47 +181,51 @@ The skill's `SKILL.md` says when to use each and what each can reach.
 ## `service(trello)` (cards)
 
 Fires when a card lands in a watched list; its slots move cards across the board as work
-starts, finishes, or fails. Its secrets stay with the plugin and the run.
+starts, finishes, or fails. Its secrets stay with the plugin and the run. The kind is the
+plugin's main one, so a config writes it `service(trello)`.
 
-| Key              | Type           | Notes                                  |
-|------------------|----------------|----------------------------------------|
-| `board`          | `str`          | board address; required                |
-| `api_key`        | `str`          | Trello API key; required               |
-| `token`          | `str`          | Trello token; required                 |
-| `base_url`       | `str`          | API base; defaults to the public Trello API (a test/overseer seam) |
-| `pick_from`      | `list[str]`    | the lists new cards are drawn from, in the order written; one name or several; required |
-| `require_member` | `str`          | `"me"` or a username: only claim cards this member is already on; default unset (the head card is claimed) |
-| `require_label`  | `str`          | only claim cards carrying the named label; default unset (no label filter) |
-| `without_label`  | `list[str]`    | never claim cards carrying any of these labels (deny mirror of `require_label`, deny wins); default unset |
-| `discuss_with`   | `list[str]`    | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
-| `min_age`        | `duration`     | don't claim a card younger than this, measured from card creation; default `0` (no filter) |
-| `max_attempts`   | `int`          | retries per card; default `1`          |
-| `every`          | `duration`     | the gap between two checks for work; default `30s`; a range `2m~3m` jitters |
+| Key            | Type        | Notes                                  |
+|----------------|-------------|----------------------------------------|
+| `api_key`      | `str`       | Trello API key; required               |
+| `token`        | `str`       | Trello token; required                 |
+| `base_url`     | `str`       | API base; defaults to the public Trello API, `https://api.trello.com/1` (a test/overseer seam) |
+| `board`        | `str`       | board address; required                |
+| `claim_from`   | `list[str]` | the lists new cards are claimed from, in the order written, each from the top; one name or several; required |
+| `only_labels`  | `list[str]` | claim only a card carrying **every** one of these labels; default unset (no label filter) |
+| `only_members` | `list[str]` | `"me"` or usernames, `[ "me", "alice" ]`: claim only a card **one of** these members is already on; default unset (the head card is claimed) |
+| `skip_labels`  | `list[str]` | never claim a card carrying any of these labels; skip wins over `only_labels`; default unset |
+| `min_age`      | `duration`  | don't claim a card younger than this, measured from card creation; default `0` (no filter) |
+| `discuss_with` | `list[str]` | `[ "anyone" ]` or members, `[ "alice", "me" ]`: claim a card on first sight (afkd never commented) or when an allowed author comments after afkd last did; default unset |
 
-The last two are afkd's own, read by afkd for every kind that claims its work.
+afkd's own `every` (the gap between two checks for work, default `30s`, a range `2m~3m`
+jitters) and `max_attempts` (retries per card, default `1`) are written beside these, as
+for every kind that claims its work. The first three are the fields of a `trello.Account`,
+which every slot is passed. The settings that were named `pick_from`, `require_member`,
+`require_label` and `without_label` are refused as unknown, like any other name the plugin
+does not declare.
 
 The service's slots are code ([reference §10.3](https://afkd.sh/docs/reference/#103-slots)), each
-passed the run (all but `on_claim`, which runs before one exists), the claimed card, and
-after the run its outcome — by position, and a slot writes every one of them, in order,
-each with its type:
+passed the run (all but `on_claim`, which runs before one exists), the `trello.Account` the
+credential settings build, the claimed card, and after them the run's outcome — by position,
+and a slot writes every one of them, in order, each with its type:
 
-| Slot                                                                    | Runs                                            |
-|-------------------------------------------------------------------------|-------------------------------------------------|
-| `on_run proc(run: afkd.Run, card: trello.Card)`                         | the run itself                                  |
-| `on_claim proc(card: trello.Card)`                                      | once the card is claimed, before the run        |
-| `on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)` | after a run that finished                       |
-| `on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)` | after a run that ended waiting on a human reply |
-| `on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome)` | after a run that failed                         |
+| Slot                                                                                          | Runs                                            |
+|-----------------------------------------------------------------------------------------------|-------------------------------------------------|
+| `on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card)`                         | the run itself                                  |
+| `on_claim proc(account: trello.Account, card: trello.Card)`                                      | once the card is claimed, before the run        |
+| `on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome)` | after a run that finished                       |
+| `on_park proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome)` | after a run that ended waiting on a human reply |
+| `on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome)` | after a run that failed                         |
 
 `run` is an `afkd.Run` (`id`, `scratch_dir`) and `outcome` an `afkd.Outcome` (`duration`,
-`error`). `card` is a **`trello.Card`**, the plugin's handle for the card, the same handle
-[`trello.cards`](#the-reads) hands back:
+`error`). `account` is the [`trello.Account`](#reading-trello-through-a-trelloaccount) of the
+service's own `api_key`, `token` and `base_url`. `card` is a **`trello.Card`**, the plugin's
+handle for the card, the same handle [`trello.cards`](#the-reads) hands back:
 
 | Field              | Type           | What it is                                         |
 |--------------------|----------------|----------------------------------------------------|
 | `id`               | `str`          | the card's short link, `Qb7eLy2w`                  |
 | `key`              | `str`          | `trello:<Trello's 24-character id>`, for every card, claimed or read |
-| `title`            | `str`          | the card's name, the same text as `name`, kept beside it until the actions above are removed |
 | `number`           | `int`          | Trello's `idShort`, the number in the card's address |
 | `name`, `url`      | `str`          | the card's name and its address on trello.com      |
 | `description`      | `str`          | markdown, `""` when empty                          |
@@ -295,24 +303,24 @@ import "afkd"
 import "@afkd/trello"
 
 develop :: service(trello) {
-  board     "https://trello.com/b/REPLACE_ME/board"
-  api_key   "REPLACE_ME"
-  token     "REPLACE_ME"
-  pick_from "Up for Grabs"
+  board      "https://trello.com/b/REPLACE_ME/board"
+  api_key    "REPLACE_ME"
+  token      "REPLACE_ME"
+  claim_from "Up for Grabs"
 
-  on_claim proc(card: trello.Card) {
+  on_claim proc(account: trello.Account, card: trello.Card) {
     match trello.fetch_attachment(card, "plan.md", "/srv/acme/widgets/earlier-plan.md") {
       .ok(_) => { }
       .err(e) => fail("trello.fetch_attachment: #{e.message}")
     }
   }
-  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
     trello.attach(card, "#{run.scratch_dir}/plan.md", "plan.md")
     trello.comment(card, "the attempt failed; its plan is attached as plan.md")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
@@ -330,30 +338,30 @@ target's `top` or `bottom` — so two `move_to`s leave the card wherever the las
 
 **Cadence.** The plugin checks the board for work the moment the service starts, then
 `every` after each check that claimed nothing or whose card failed; a card run to a finish
-is followed by the next check at once. It fires for cards in `pick_from`'s lists; a
+is followed by the next check at once. It fires for cards in `claim_from`'s lists; a
 service works **one card at a time, to completion**, and `max_attempts` bounds the retries
 per card. The slots move, complete, or archive the card as work starts, finishes, or fails.
 
-**Intake.** `pick_from` names one list or several, `pick_from "To Do"` or
-`pick_from "Ideas", "To Do"`. The poll goes through them in the order written, each from
+**Intake.** `claim_from` names one list or several, `claim_from "To Do"` or
+`claim_from "Ideas", "To Do"`. The poll goes through them in the order written, each from
 the top, and claims the first card that passes every gate below; the gates mean the same in
 every list. A name the board has no list for fails the poll, naming it. A card the plugin
 puts back — its run crashed, or afkd handed it back unrun — goes to the bottom of the list
 it was claimed from, so a card that keeps crashing cannot starve the head of the queue. A
 parked card claimed again once answered goes back to the list it sat in when that is one of
-`pick_from`'s, and otherwise to the first.
+`claim_from`'s, and otherwise to the first.
 
 By default the poll claims the first card it comes to, the head of the first list that
 holds one. With
-`require_member` set, it claims the **first eligible** card instead — the first one the
-named member is already on — so an unassigned card at the top of the list does not block
-the ones under it. `require_label` is the label mirror: it claims only cards carrying a
-label of that exact name, and composes with `require_member` (both must hold), so a
-grooming service and an implementer can share one list — the implementer building only the
-labelled cards. `without_label` is the negative gate — a card carrying any of the named
-labels is left in place (a lighter opt-out than unassigning or moving lists), and it
-accepts one or many labels; **deny wins** over `require_label`, so a card carrying both a
-required and an excluded label is skipped. `min_age` is the one gate about **time** rather
+`only_members` set, it claims the **first eligible** card instead — the first one a named
+member is already on, any one of the members listed being enough — so an unassigned card at
+the top of the list does not block the ones under it. `only_labels` is the label mirror: it
+claims only cards carrying **every** label it names, by exact name, and composes with
+`only_members` (both must hold), so a grooming service and an implementer can share one
+list — the implementer building only the labelled cards. `skip_labels` is the negative
+gate — a card carrying any of the named labels is left in place (a lighter opt-out than
+unassigning or moving lists), and it accepts one or many labels; **skip wins** over
+`only_labels`, so a card carrying both a required and an excluded label is skipped. `min_age` is the one gate about **time** rather
 than card content: a card younger than it is left alone — long enough for a human to finish
 typing one — and, like the others, it *skips* rather than blocks, so a brand-new card at the
 top does not hold up the settled ones under it. Age is measured from the card's
@@ -366,22 +374,22 @@ import "afkd"
 import "@afkd/trello"
 
 implement :: service(trello) {
-  board          "https://trello.com/b/REPLACE_ME/board"
-  api_key        "REPLACE_ME"
-  token          "REPLACE_ME"
-  pick_from      "To Do"
-  require_member "me"
-  require_label  "ready"
-  without_label  [ "blocked", "needs design — ask 陳大文" ]
-  min_age        10m
+  board        "https://trello.com/b/REPLACE_ME/board"
+  api_key      "REPLACE_ME"
+  token        "REPLACE_ME"
+  claim_from   "To Do"
+  only_members [ "me" ]
+  only_labels  [ "ready" ]
+  skip_labels  [ "blocked", "needs design — ask 陳大文" ]
+  min_age      10m
 
-  on_claim proc(card: trello.Card) {
+  on_claim proc(account: trello.Account, card: trello.Card) {
     trello.move_to(card, "In Progress", at=.top)
     trello.remove_label(card, "ready")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
@@ -393,7 +401,7 @@ groomed on the next poll (assignment is the opt-in) — or, once afkd has spoken
 **tail** (the comments posted after afkd's own last comment on that card) carries a comment
 from an allowed author. `discuss_with [ "anyone" ]` allows any author but afkd itself;
 `discuss_with [ "alice", "bob" ]` allows only those named members (resolved the same
-`"me"`-or-username way as `require_member`, with afkd's own member always excluded, and a
+`"me"`-or-username way as `only_members`, with afkd's own member always excluded, and a
 list naming `"anyone"` beside a member reading it as a username); on first sight the
 allow-list does not apply — both fire the moment the card is seen. This turns a card into a
 comment-driven back-and-forth in place, with no list moves: it **fires on first sight**,
@@ -417,19 +425,19 @@ groom :: service(trello) {
   board        "https://trello.com/b/REPLACE_ME/board"
   api_key      "REPLACE_ME"
   token        "REPLACE_ME"
-  pick_from    "Ideas"
+  claim_from   "Ideas"
   discuss_with [ "alice", "bob" ]
 
-  on_claim proc(card: trello.Card) { trello.add_member(card) }
+  on_claim proc(account: trello.Account, card: trello.Card) { trello.add_member(card) }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-A board whose lists are all worked alike needs one service for all of them: `pick_from`
+A board whose lists are all worked alike needs one service for all of them: `claim_from`
 names each list, and this one discusses every card where it sits, in either list, with no
 moves.
 
@@ -441,11 +449,11 @@ discuss :: service(trello) {
   board        "https://trello.com/b/REPLACE_ME/board"
   api_key      "REPLACE_ME"
   token        "REPLACE_ME"
-  pick_from    "Bakgrundsvideor", "Hjälpvideor 🎬"
+  claim_from   "Bakgrundsvideor", "Hjälpvideor 🎬"
   discuss_with [ "anyone" ]
 
   work_dir "/srv/acme/videos"
-  on_run proc(run: afkd.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
@@ -461,16 +469,16 @@ card instead of failing it: it adds the `Awaiting Reply` label, releases the cla
 **moves nothing** — the card keeps its place, its list, and its unspent attempts. `on_fail`
 does not run, no `[afkd-attempt]` marker goes up, and the poll goes on to the next card. The
 label is managed by the plugin itself, so the gate holds with no `on_park` slot; `on_park`
-is only for extras (`on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Discussion") }` for a board
+is only for extras (`on_park proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Discussion") }` for a board
 that wants parked cards gathered somewhere).
 
 The badge is also how afkd **finds the card again**. Once a beat, before it reads
-`pick_from`, the plugin asks the board which of its open cards carry `Awaiting Reply`; a
+`claim_from`, the plugin asks the board which of its open cards carry `Awaiting Reply`; a
 badged card whose thread has gained a comment afkd did not write, newer than afkd's own last
 word, is claimed again right there — wherever it sits on the board, ahead of anything queued
 — the badge comes off, and the reply arrives under **New comments** in the fresh brief. Put
-back, it returns to that list when `pick_from` names it, and to the first list otherwise. A
-badged card nobody has answered is left alone. Badge it with a `without_label` name to veto
+back, it returns to that list when `claim_from` names it, and to the first list otherwise. A
+badged card nobody has answered is left alone. Badge it with a `skip_labels` name to veto
 it; archive it and it stops being scanned at all. An idle beat costs exactly one extra board
 request.
 
@@ -479,7 +487,7 @@ copy resumes what its base asked, and no other service's sweep takes it. A card 
 service you have since renamed or removed is nobody's, so it is picked up by whoever can
 take it, with one line in the log naming the service that let go of it. While the service
 that parked a card is still configured, no other service takes that card, **in any list** —
-dragging it into another service's `pick_from` changes nothing. Answer the question, or take
+dragging it into another service's `claim_from` changes nothing. Answer the question, or take
 the badge off by hand.
 
 **Stop the run at the ask, yourself.** The marker is read whatever signal the run ended
@@ -500,15 +508,15 @@ builder :: agent(claude) {
 }
 
 widgets :: service(trello) {
-  board     "https://trello.com/b/REPLACE_ME/board"
-  api_key   "REPLACE_ME"
-  token     "REPLACE_ME"
-  pick_from "To Do"
+  board      "https://trello.com/b/REPLACE_ME/board"
+  api_key    "REPLACE_ME"
+  token      "REPLACE_ME"
+  claim_from "To Do"
 
-  on_claim proc(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_claim proc(account: trello.Account, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
     match builder("build the card; ask through the trello skill if unclear") {
       .ok(_) => { }
       .err(e) => fail(e.message)
@@ -525,10 +533,10 @@ down and agent, gate, and plugin all name the same file.
 
 **The badge is a lock**, held by the service that parked the card — it is the findability
 too, but only its holder takes it off. A service whose `on_claim` does not move the card out
-of `pick_from` will re-claim **its own** parked card on the next beat, exactly as an
+of `claim_from` will re-claim **its own** parked card on the next beat, exactly as an
 `on_done`-less config re-fires — drag it elsewhere, or give the service an
-`on_claim proc(card: trello.Card) { trello.move_to(card, …) }`, as the example below does. A human who
-drags a badged card back into the parking service's own `pick_from` gets it claimed and
+`on_claim proc(account: trello.Account, card: trello.Card) { trello.move_to(card, …) }`, as the example below does. A human who
+drags a badged card back into the parking service's own `claim_from` gets it claimed and
 unbadged there, answered or not.
 
 ```conf
@@ -536,20 +544,20 @@ import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {
-  board     "https://trello.com/b/REPLACE_ME/board"
-  api_key   "REPLACE_ME"
-  token     "REPLACE_ME"
-  pick_from "To Do"
+  board      "https://trello.com/b/REPLACE_ME/board"
+  api_key    "REPLACE_ME"
+  token      "REPLACE_ME"
+  claim_from "To Do"
 
-  on_claim proc(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
-  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Review", at=.top) }
-  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Backlog", at=.bottom) }
-  on_park proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_claim proc(account: trello.Account, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Review", at=.top) }
+  on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) { trello.move_to(card, "Backlog", at=.bottom) }
+  on_park proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
     trello.comment(card, "parked after #{outcome.duration} — waiting on you")
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
@@ -568,21 +576,21 @@ import "afkd"
 import "@afkd/trello"
 
 widgets :: service(trello) {
-  board     "https://trello.com/b/REPLACE_ME/board"
-  api_key   "REPLACE_ME"
-  token     "REPLACE_ME"
-  pick_from "To Do"
-  every     2m~3m
+  board      "https://trello.com/b/REPLACE_ME/board"
+  api_key    "REPLACE_ME"
+  token      "REPLACE_ME"
+  claim_from "To Do"
+  every      2m~3m
 
-  on_claim proc(card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
-  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {
+  on_claim proc(account: trello.Account, card: trello.Card) { trello.move_to(card, "In Progress", at=.top) }
+  on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {
     trello.mark_complete(card)
     trello.move_to(card, "Done", at=.bottom)
     trello.archive(card)
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
@@ -756,8 +764,9 @@ bar the `POST`.
 
 ### Two accounts, and from a slot
 
-A read called in a slot passes the account a config builds, never the service's own settings,
-so two accounts, one per Trello, are read side by side:
+A read called in a slot passes an account: the `account` the slot is passed, built from the
+service's own settings, or one a config builds, so two accounts, one per Trello, are read
+side by side:
 
 ```conf
 import "afkd"
@@ -768,13 +777,13 @@ ACME   :: trello.Account{ api_key: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API
 GLOBEX :: trello.Account{ api_key: env.get("GLOBEX_TRELLO_API_KEY") ?? fail("GLOBEX_TRELLO_API_KEY is unset"), token: env.get("GLOBEX_TRELLO_TOKEN") ?? fail("GLOBEX_TRELLO_TOKEN is unset") }
 
 develop :: service(trello) {
-  board     "https://trello.com/b/REPLACE_ME/board"
-  api_key   env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset")
-  token     env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset")
-  pick_from "Up for Grabs"
+  board      "https://trello.com/b/REPLACE_ME/board"
+  api_key    env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset")
+  token      env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset")
+  claim_from "Up for Grabs"
 
-  on_claim proc(card: trello.Card) {
-    match trello.comments(ACME, card, limit=50) {
+  on_claim proc(account: trello.Account, card: trello.Card) {
+    match trello.comments(account, card, limit=50) {
       .ok(comments) => {
         for comment in comments {
           $ echo #{comment.author ?? "nobody"}: #{comment.body}
@@ -807,7 +816,7 @@ develop :: service(trello) {
   }
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) {
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {
     $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
@@ -819,7 +828,7 @@ both are `trello:<card id>`.
 ### The claim the key no longer carries
 
 A claimed card's key was `<card id>#<claim comment id>`, with the list it was claimed from
-after a second `#` when `pick_from` names several. It is `trello:<card id>` now, the key a read
+after a second `#` when `claim_from` names several. It is `trello:<card id>` now, the key a read
 of the card hands out, so the two are one handle. The claim comment, which a release deletes,
 and the list the card returns to are the plugin's own **record**, kept in memory and, when afkd
 names the plugin a directory to keep state in, in a file there, `claims/<card id>.json`,
@@ -832,12 +841,12 @@ A `trello:` key whose record is gone — the directory is not kept, or the card 
 before the record was — is released by a rule that holds without one: every `[afkd-claim]`
 comment on the card posted by the member the token acts as is deleted, except one carrying this
 process's current claim owner, which is a live claim of this process; a claim by any other
-member is kept; and the card goes to the bottom of the `pick_from` list it sits in, or the
+member is kept; and the card goes to the bottom of the `claim_from` list it sits in, or the
 first. Another afkd process on the same Trello account posts claims under the same member with
 an owner of its own, so this rule can delete theirs. Such a claim can only be on the card if
 the one the plugin holds had lapsed — a live claim is stepped over, so the other process
 could only claim after the first went an hour unrenewed — and then the other run meets a 404
-on its next renewal, which it diagnoses, and the card returns to `pick_from`. **Give each afkd
+on its next renewal, which it diagnoses, and the card returns to `claim_from`. **Give each afkd
 process its own Trello account**: one account is one identity to the kind, which reads every
 comment by the token's member as afkd's own in the brief, the feedback delta and the
 backstop alike.

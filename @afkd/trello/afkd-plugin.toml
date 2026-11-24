@@ -27,7 +27,7 @@ name = "Account"
   type = "str"
   default = "https://api.trello.com/1"
 
-# A card: the item a `service(trello)` run claims, and every card a read hands back. afkd
+# A card: the item a `service(trello)` claims, one per run, and every card a read hands back. afkd
 # carries `id` (the card's short link) and `key` for every handle: `trello:<Trello's id>` for
 # every card, claimed or read, so the claimed card and the same card read are `==`. The fields
 # below are the rest of what the plugin knows about a card. Every one is always sent, since a
@@ -36,12 +36,6 @@ name = "Account"
 [[handle]]
 name = "Card"
 doc = "A card on a Trello board, claimed by a service or read from a board"
-
-  # The same text as `name`, kept until the actions that claimed cards alone are removed.
-  [[handle.field]]
-  name = "title"
-  doc = "The card's name, kept beside name until the actions are removed"
-  type = "str"
 
   # Trello's `idShort`, the number in the card's address.
   [[handle.field]]
@@ -307,8 +301,8 @@ doc = "A Trello member"
   doc = "The member's full name"
   type = "str"
 
-# The one kind, `service(trello)` in a config: a Trello board whose cards are claimed one
-# per run.
+# The one kind, `service(trello)` in a config: a Trello board whose
+# cards are claimed one per run.
 [[kind]]
 name = "card"
 doc = "A Trello board whose cards are claimed one per run"
@@ -316,17 +310,7 @@ role = "trigger"
 main = true
 claims = true
 
-  [[kind.setting]]
-  name = "board"
-  doc = "The address of the board to take cards from"
-  type = "str"
-  required = true
-
-  [[kind.setting]]
-  name = "base_url"
-  doc = "The Trello API address, when not the public one"
-  type = "str"
-
+  # The first three are `Account`'s own fields, and are the account every slot is passed.
   [[kind.setting]]
   name = "api_key"
   doc = "The API key of the Trello app"
@@ -340,29 +324,36 @@ claims = true
   required = true
 
   [[kind.setting]]
-  name = "pick_from"
-  doc = "The lists to take cards from, first one first"
+  name = "base_url"
+  doc = "The Trello API address, when not the public one"
+  type = "str"
+  default = "https://api.trello.com/1"
+
+  [[kind.setting]]
+  name = "board"
+  doc = "The address of the board to take cards from"
+  type = "str"
+  required = true
+
+  [[kind.setting]]
+  name = "claim_from"
+  doc = "The lists to claim cards from, first one first, each from the top"
   type = "list[str]"
   required = true
 
   [[kind.setting]]
-  name = "require_member"
-  doc = "Only cards this member is on"
-  type = "str"
-
-  [[kind.setting]]
-  name = "require_label"
-  doc = "Only cards with this label"
-  type = "str"
-
-  [[kind.setting]]
-  name = "without_label"
-  doc = "Skip cards with any of these labels"
+  name = "only_labels"
+  doc = "Claim only a card that carries every one of these labels"
   type = "list[str]"
 
   [[kind.setting]]
-  name = "discuss_with"
-  doc = "Who may drive a card by commenting: anyone, or these members"
+  name = "only_members"
+  doc = "Claim only a card one of these members is on, me being the token's own"
+  type = "list[str]"
+
+  [[kind.setting]]
+  name = "skip_labels"
+  doc = "Never claim a card carrying any of these labels; skip wins over only_labels"
   type = "list[str]"
 
   # A threshold, so no range: it is not resampled per read.
@@ -371,22 +362,14 @@ claims = true
   doc = "How old a card must be before it is claimed"
   type = "duration"
 
-  # These two afkd reads itself, as it declares them for every claiming kind.
   [[kind.setting]]
-  name = "max_attempts"
-  doc = "How many times a card is tried"
-  type = "int"
-  default = 1
+  name = "discuss_with"
+  doc = "Who may drive a card by commenting: anyone, or these members"
+  type = "list[str]"
 
-  [[kind.setting]]
-  name = "every"
-  doc = "How often to look for a card"
-  type = "duration"
-  jitter = true
-  default = "30s"
-
-  # The slots afkd runs, each passed the run and its card, and after the run its outcome;
-  # each action a slot calls is one `call` to this plugin.
+  # The slots afkd runs, each passed the run, the account the credential settings build and
+  # its card, and after them the run's outcome; each action a slot calls is one `call` to
+  # this plugin. `on_claim` runs before there is a run, so it has none.
   [[kind.slot]]
   name = "on_run"
   doc = "Runs for a claimed card, and does the work on it"
@@ -396,6 +379,10 @@ claims = true
     type = "afkd.Run"
 
     [[kind.slot.param]]
+    name = "account"
+    type = "Account"
+
+    [[kind.slot.param]]
     name = "card"
     type = "Card"
 
@@ -403,6 +390,10 @@ claims = true
   name = "on_claim"
   doc = "Runs once a card is claimed, before the run starts"
   when = "pre"
+
+    [[kind.slot.param]]
+    name = "account"
+    type = "Account"
 
     [[kind.slot.param]]
     name = "card"
@@ -416,6 +407,10 @@ claims = true
     [[kind.slot.param]]
     name = "run"
     type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "account"
+    type = "Account"
 
     [[kind.slot.param]]
     name = "card"
@@ -435,6 +430,10 @@ claims = true
     type = "afkd.Run"
 
     [[kind.slot.param]]
+    name = "account"
+    type = "Account"
+
+    [[kind.slot.param]]
     name = "card"
     type = "Card"
 
@@ -450,6 +449,10 @@ claims = true
     [[kind.slot.param]]
     name = "run"
     type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "account"
+    type = "Account"
 
     [[kind.slot.param]]
     name = "card"

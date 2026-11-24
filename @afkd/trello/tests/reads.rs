@@ -144,9 +144,7 @@ fn settings(fake: &FakeTrello) -> Value {
         "base_url": fake.base_url(),
         "api_key": KEY,
         "token": TOKEN,
-        "pick_from": "Backlog",
-        "every": "30s",
-        "max_attempts": "1",
+        "claim_from": "Backlog",
     })
 }
 
@@ -175,7 +173,6 @@ fn cards_reads_a_board_list_by_list_top_to_bottom_with_every_field() {
             "id": "BklgOne1",
             "key": format!("trello:{id}"),
             "fields": {
-                "title": NAME,
                 "number": 2,
                 "name": NAME,
                 "url": b.fake.url(id),
@@ -191,6 +188,10 @@ fn cards_reads_a_board_list_by_list_top_to_bottom_with_every_field() {
                 "last_activity_at": b.fake.last_activity(id) * 1000,
             }
         })
+    );
+    assert!(
+        handles(&reply)[2]["fields"].get("title").is_none(),
+        "a Card has no title"
     );
     // A card with a colour-only label and no due date: the label is left out, and `due` is nil.
     let bare = &handles(&reply)[1]["fields"];
