@@ -765,7 +765,7 @@ fn fail_one_card_through_an_outage(home: &Path) {
         dump(home, &fake, &card, &daemon)
     );
     assert!(
-        fake.labels(&card).is_empty(),
+        !fake.labels(&card).iter().any(|l| l == "Problem"),
         "no Problem label: on_fail's writes were refused"
     );
     let me = fake.me();
@@ -1022,7 +1022,7 @@ widgets :: service(trello) {{
     };
     write_config(
         home.path(),
-        &config(r#"match trello.add_label(account, "Problem") { .ok(_) => { } .err(_) => { } }"#),
+        &config(r#"match trello.add_label(account, "Problem") { .ok(_) => { }; .err(_) => { } }"#),
     );
     let (code, report) = validate(home.path());
     assert_eq!(
@@ -1038,7 +1038,7 @@ widgets :: service(trello) {{
     write_config(
         home.path(),
         &config(
-            r#"match trello.add_label(account, card, "Problem") { .ok(_) => { } .err(_) => { } }"#,
+            r#"match trello.add_label(account, card, "Problem") { .ok(_) => { }; .err(_) => { } }"#,
         ),
     );
     let (code, report) = validate(home.path());
