@@ -28,6 +28,7 @@ use crate::common::{
     ScanBudget, Target, CLAIMED_LABEL, ENV_PR_BRANCH, ENV_PR_NUMBER, ENV_REPO,
 };
 use crate::feedback::{self, FeedbackItem};
+use crate::issue::FetchedFile;
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{Vocabulary, PR_VOCABULARY};
 use crate::outbox::{lost_line, Item, Outbox, Write};
@@ -72,6 +73,10 @@ impl ClaimedUnit for Unit {
     /// every claim, so an agent session resumes per PR across the review rounds.
     fn thread(&self) -> String {
         unit_key(&self.repo, self.number)
+    }
+
+    fn key(&self) -> String {
+        Unit::key(self)
     }
 
     fn claimed_as(&self) -> &str {
@@ -221,8 +226,9 @@ impl Units for PrUnits {
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim-time comment ids as
     /// `seen`, the claim identity as `self` and the PR's handle fields. The PR number and
     /// head branch ride the env so a prompted `git fetch`/checkout reconstructs the
-    /// branch. The brief is unframed — afkd frames `task/README.md` itself (ADR-0081).
-    fn wire_unit(&self, unit: &Unit) -> WireUnit {
+    /// branch. The brief is unframed — afkd frames `task/README.md` itself (ADR-0081). This
+    /// kind links no file: it fetches none, so `_fetched` is always empty.
+    fn wire_unit(&self, unit: &Unit, _fetched: &[FetchedFile]) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
         env.insert(ENV_PR_NUMBER.to_string(), unit.number.to_string());
@@ -241,14 +247,8 @@ impl Units for PrUnits {
             me: unit.claimed_as.clone(),
             env,
             files: vec![
-                WireFile {
-                    path: TASK_FILE.to_string(),
-                    text: feedback::pr_brief(unit.number, &unit.feedback),
-                },
-                WireFile {
-                    path: format!("{PR_DIR}/{NUMBER_FILE}"),
-                    text: unit.number.to_string(),
-                },
+                WireFile::text(TASK_FILE, feedback::pr_brief(unit.number, &unit.feedback)),
+                WireFile::text(format!("{PR_DIR}/{NUMBER_FILE}"), unit.number.to_string()),
             ],
         }
     }
@@ -336,6 +336,7 @@ mod tests {
     use crate::common::{CaptureDiag, FakeClock, CALL_BUDGET, CLAIM_RESERVE};
     use crate::feedback::review_thread;
     use crate::lifecycle::LifecycleAction;
+    use crate::wire::FileSource;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -438,6 +439,14 @@ mod tests {
             .collect()
     }
 
+    /// The text of a wire file that carries it inline.
+    fn pr_brief_text(file: &WireFile) -> &str {
+        match &file.source {
+            FileSource::Text(text) => text,
+            FileSource::From(from) => panic!("{} is copied from {from}", file.path),
+        }
+    }
+
     /// The brief this kind hands over is the **shared** renderer's text (parity, not a
     /// second hand-written string): `wire_unit` is driven for real over the adversarial
     /// `review_thread` fixture, and what lands in `task/README.md` must equal
@@ -445,15 +454,12 @@ mod tests {
     #[test]
     fn the_brief_in_the_wire_unit_is_the_shared_renderers_text() {
         let h = Harness::new(cfg("acme/widgets"));
-        let wire = h.units.wire_unit(&unit(1, review_thread()));
+        let wire = h.units.wire_unit(&unit(1, review_thread()), &[]);
         assert_eq!(wire.files[0].path, TASK_FILE);
-        assert_eq!(wire.files[0].text, feedback::pr_brief(7, &review_thread()));
+        let text = pr_brief_text(&wire.files[0]);
+        assert_eq!(text, feedback::pr_brief(7, &review_thread()));
         // Not vacuous: the thread really did reach the brief, attributed by speaker.
-        assert!(
-            wire.files[0].text.contains("**bob-döner:**"),
-            "{}",
-            wire.files[0].text
-        );
+        assert!(text.contains("**bob-döner:**"), "{text}");
     }
 
     // --- Eligibility + claim ---
@@ -795,7 +801,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>()
         };
         assert_eq!(
-            h.units.wire_unit(&unit),
+            h.units.wire_unit(&unit, &[]),
             WireUnit {
                 id: "7".into(),
                 key: "acme/widgets#7#1000001".into(),
@@ -816,16 +822,12 @@ mod tests {
                     ("GITEA_TOKEN", "PAT"),
                 ]),
                 files: vec![
-                    WireFile {
-                        path: "task/README.md".into(),
-                        text: "Address review feedback on PR #7.\n\n## New feedback\n\n\
-                               **alice:** please rename the flag\n"
-                            .into(),
-                    },
-                    WireFile {
-                        path: "task/pr/number".into(),
-                        text: "7".into(),
-                    },
+                    WireFile::text(
+                        "task/README.md",
+                        "Address review feedback on PR #7.\n\n## New feedback\n\n\
+                         **alice:** please rename the flag\n"
+                    ),
+                    WireFile::text("task/pr/number", "7"),
                 ],
             }
         );

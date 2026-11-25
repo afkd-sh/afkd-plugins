@@ -108,6 +108,19 @@ impl Plugin {
         )
     }
 
+    /// Spawn and greet with `settings` for the `issue` kind as a current afkd does, which
+    /// names the plugin's own directory `state_dir`, asserting it arms.
+    pub fn armed_in(settings: Value, state_dir: &Path) -> Self {
+        let mut plugin = Self::spawn();
+        plugin.kind = "issue".to_string();
+        let reply = plugin.call(
+            json!({"call": "hello", "proto": 2, "kind": "issue", "service": "afkd::develop",
+                         "settings": settings, "state_dir": state_dir}),
+        );
+        assert_eq!(reply["ok"], true, "hello refused: {}", plugin.stderr());
+        plugin
+    }
+
     /// The kind the last `hello` armed.
     pub fn kind(&self) -> &str {
         &self.kind

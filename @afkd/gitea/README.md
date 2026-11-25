@@ -342,6 +342,23 @@ earns the issue another round of the same fire. Cost: one comment read every 25-
 running issue**, plus one at the end of each run, and nothing at all while no run is in
 flight. All of this is afkd's own mid-run watch; the plugin only reads the thread for it.
 
+**Files on the issue.** A Gitea attachment is a link in an issue's markdown: an image
+embedded `![shot.png](/attachments/<uuid>)`, any other file linked `[report.pdf](/attachments/<uuid>)`.
+The files an issue's body and comments link arrive with the claim, in the run's `task/`
+folder: the plugin downloads each attachment of this instance when it wins the claim — a
+relative link, or an absolute one at the `base_url`'s own origin (such as the
+`browser_download_url`), with or without the owner and repository before `attachments`, and
+under the sub-path of an instance served at one, `https://host/gitea/` — and `task/README.md`
+links each by its relative path, `![shot.png](<shot.png>)`, instead of the Gitea url. A file
+only a comment links, which the brief does not carry, is listed in a closing `## Files`
+section. Each file is fetched from `<base_url>/attachments/<uuid>` with the token, up to
+10 MiB, and handed to afkd byte for byte. A file that cannot be downloaded never fails the
+claim: its README link keeps the Gitea url, the service log says why, and the agent can fetch
+it with the skill's `fetch_attachment.py`. The downloads live in the plugin's own state
+directory until the unit finishes or is released, and are deleted then; an afkd that sends no
+state directory gets no downloads, and every link stays Gitea's. The pull-request kind
+downloads nothing.
+
 ## `service(gitea.pr)` (pull-request review)
 
 Fires on open pull requests — optionally only the bot's own — and re-fires when a human
