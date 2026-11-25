@@ -228,7 +228,7 @@ WRAPPER_KINDS = ("sandbox", "worktree")
 # because the engine's enums have no unknown variant. Mirrored rather than passed through so
 # a browser and a terminal reading the same corpus render the same node.
 NODE_KINDS = ("workflow", "agent", "cmd", "tool", "sandbox", "worktree", "queue",
-              "queue_wait", "guard", "parallel", "repeat", "sleep", "fs", "lifecycle", "http", "call")
+              "queue_wait", "unqueue", "guard", "parallel", "repeat", "sleep", "fs", "lifecycle", "http", "call")
 NODE_STATUSES = ("ok", "failed", "skipped", "killed", "running")
 UNKNOWN_KIND = "cmd"
 UNKNOWN_STATUS = "failed"
