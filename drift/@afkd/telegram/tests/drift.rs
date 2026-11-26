@@ -70,7 +70,8 @@ fn built_binary() -> &'static Path {
 }
 
 /// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
-/// the skill, exactly what the release archive holds — and return the staged root.
+/// the skill and the two licence texts, exactly what the release archive holds — and return
+/// the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("telegram")
@@ -82,6 +83,8 @@ fn stage(dst: &Path) -> PathBuf {
     let staged = dst.join("afkd-telegram");
     for present in [
         "afkd-plugin.toml",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
         "afkd-telegram",
         "skills/telegram/SKILL.md",
         "skills/telegram/reply.py",
@@ -391,7 +394,12 @@ fn install_leg_places_the_plugin_and_runs_one_message_through_it() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     let staged = stage(stage_dir.path());
-    let mut shipped = vec!["afkd-telegram".to_string(), "afkd-plugin.toml".to_string()];
+    let mut shipped = vec![
+        "afkd-telegram".to_string(),
+        "afkd-plugin.toml".to_string(),
+        "LICENSE-MIT".to_string(),
+        "LICENSE-APACHE".to_string(),
+    ];
     shipped.extend(
         tree_of(&plugin_root().join("skills"))
             .into_iter()
@@ -403,7 +411,7 @@ fn install_leg_places_the_plugin_and_runs_one_message_through_it() {
     assert_eq!(
         tree_of(&staged),
         shipped,
-        "the release holds the manifest, the binary and the skill, and nothing else"
+        "the release holds the manifest, the binary, the skill and the licence texts, and nothing else"
     );
     install(home.path(), &staged);
     let placed = plugins_root(home.path()).join(NAME);
@@ -431,7 +439,7 @@ fn install_leg_places_the_plugin_and_runs_one_message_through_it() {
     let brief = || {
         run_dirs(home, "ops")
             .into_iter()
-            .map(|dir| dir.join("task.md"))
+            .map(|dir| dir.join("task/README.md"))
             .find(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, &fake, &daemon, "the message's run starts", || {
@@ -445,7 +453,10 @@ fn install_leg_places_the_plugin_and_runs_one_message_through_it() {
         "デプロイ failed here — see the log ⬇",
         &format!("- photo, 1280x960, 102400 bytes: {PHOTO}"),
     ] {
-        assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
+        assert!(
+            task.contains(part),
+            "task/README.md carries {part:?}:\n{task}"
+        );
     }
     wait_for(home, &fake, &daemon, "the message is done", || {
         home.join(DONE).exists()

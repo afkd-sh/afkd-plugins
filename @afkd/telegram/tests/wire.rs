@@ -182,7 +182,7 @@ fn a_poll_hands_over_the_first_message_a_listed_chat_sent() {
         })
     );
     let brief = unit["files"][0]["text"].as_str().unwrap();
-    assert_eq!(unit["files"][0]["path"], "task.md");
+    assert_eq!(unit["files"][0]["path"], "task/README.md");
     assert!(brief.starts_with(&format!(
         "# Telegram message 4711 in chat {GROUP} (Drift 🚀)"
     )));

@@ -87,6 +87,17 @@ pub(crate) fn format_utc(t: SystemTime) -> String {
     )
 }
 
+/// Render `t` as `YYYY-MM-DDTHH:MM:SS.mmmZ`, in UTC and to the millisecond — what
+/// [`parse_rfc3339_millis`] reads back, so a card's `due` written from unix milliseconds
+/// reads back to the millisecond. A time before the epoch renders as the epoch.
+pub(crate) fn format_utc_millis(t: SystemTime) -> String {
+    let millis = t
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_millis());
+    let whole = format_utc(t);
+    format!("{}.{millis:03}Z", &whole[..whole.len() - 1])
+}
+
 /// Split a time string from its trailing timezone designator, returning the bare
 /// `HH:MM:SS[.fff]` and the offset in seconds (positive east of UTC). A `Z` or an
 /// absent designator is zero offset.
@@ -204,6 +215,23 @@ mod tests {
         // Sub-second precision is dropped, exactly as the reader drops it.
         let t = UNIX_EPOCH + Duration::from_millis(1_609_459_200_999);
         assert_eq!(format_utc(t), "2021-01-01T00:00:00Z");
+    }
+
+    /// The millisecond writer renders the three digits, zero-padded, and the millisecond
+    /// reader reads each back: the epoch, a `.250` and a `.007`, and a far-future stamp.
+    #[test]
+    fn format_utc_millis_round_trips_through_the_millisecond_reader() {
+        for (millis, text) in [
+            (0, "1970-01-01T00:00:00.000Z"),
+            (1_609_459_200_250, "2021-01-01T00:00:00.250Z"),
+            (1_798_106_400_007, "2026-12-24T10:00:00.007Z"),
+            (1_609_459_200_999, "2021-01-01T00:00:00.999Z"),
+            (253_402_300_799_123, "9999-12-31T23:59:59.123Z"),
+        ] {
+            let t = UNIX_EPOCH + Duration::from_millis(millis);
+            assert_eq!(format_utc_millis(t), text, "{millis}");
+            assert_eq!(parse_rfc3339_millis(text), Some(t), "{text} reads back");
+        }
     }
 
     /// The millisecond reader agrees with the second reader on the whole second and adds

@@ -7,8 +7,8 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   control wire to a browser.
 - [`@afkd/gitea`](@afkd/gitea) — Gitea issues and pull-request reviews as afkd
   triggers, with the skill an agent answers them through.
-- [`@afkd/trello`](@afkd/trello) — Trello cards as afkd triggers, with the skill an
-  agent works the card through.
+- [`@afkd/trello`](@afkd/trello) — Trello cards as afkd triggers, the reads and writes a
+  config makes through a `trello.Account`, and the skill an agent works the card through.
 - [`@afkd/gitlab`](@afkd/gitlab) — GitLab issues and merge-request reviews as afkd
   triggers, with the skill an agent answers them through.
 - [`@afkd/github`](@afkd/github) — GitHub issues and pull-request reviews as afkd
@@ -19,7 +19,7 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
   triggers, the calls a config sends, replies, reacts, edits and fetches with, and
   the skill an agent does the same through.
 - [`@afkd/afkd_board`](@afkd/afkd_board) — the cards, comments, lists and labels of a board
-  on app.afkd.sh, read through an `afkd_board.Board`.
+  on app.afkd.sh, read and written through an `afkd_board.Board`.
 
 Each plugin carries its own README, its own `node --test` suite and its own
 fixtures. A script a plugin is built with but does not ship lives under
@@ -43,11 +43,12 @@ suites on every push, and a red suite does not publish.
 
 Plugins here are published as per-plugin release tarballs and listed in afkd's
 plugin index, so a name is enough. A release is finished and holds only what the
-plugin runs: the seven compiled plugins publish one archive per platform (x86_64
-and aarch64 Linux, a static binary each) beside their manifest and any skill, and
-web_top the relay, the page and its modules. afkd never builds a plugin, so no
-operator's host needs a toolchain. `tools/pack-release` is the one list of what
-each release ships.
+plugin runs, and each archive also carries the two licence texts, `LICENSE-MIT`
+and `LICENSE-APACHE`: the seven compiled plugins publish one archive per platform
+(x86_64 and aarch64 Linux, a static binary each) beside their manifest and any
+skill, and web_top the relay, the page and its modules. afkd never builds a
+plugin, so no operator's host needs a toolchain. `tools/pack-release` is the one
+list of what each release ships.
 
 ```
 afkd install @afkd/web_top
@@ -58,3 +59,16 @@ afkd install @afkd/web_top
 already current on the version alone. Each plugin's release tag is fixed and
 moves onto the newest release, because `afkd update` re-fetches the source URL
 it recorded at install time.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE))
+- MIT license ([`LICENSE-MIT`](LICENSE-MIT))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this repository by you, as defined in the Apache-2.0 license,
+shall be dual-licensed as above, without any additional terms or conditions.

@@ -353,11 +353,42 @@ pub(crate) struct CycleFields {
     pub(crate) active: bool,
 }
 
-/// One file of the attempt's scratch layout, as data: afkd writes it.
+/// One file of the attempt's task folder, as data: afkd writes it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct WireFile {
+    /// Where it lands, under `task/`.
     pub(crate) path: String,
-    pub(crate) text: String,
+    #[serde(flatten)]
+    pub(crate) source: FileSource,
+}
+
+/// Where afkd gets a file's bytes: the text the reply carries, or a file on this machine it
+/// copies in byte for byte on each attempt.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FileSource {
+    /// Inline text.
+    Text(String),
+    /// The absolute path of a file to copy.
+    From(String),
+}
+
+impl WireFile {
+    /// A file at `path` holding `text`.
+    pub(crate) fn text(path: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            source: FileSource::Text(text.into()),
+        }
+    }
+
+    /// A file at `path` that afkd copies from the absolute path `from`.
+    pub(crate) fn from_path(path: impl Into<String>, from: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            source: FileSource::From(from.into()),
+        }
+    }
 }
 
 /// One comment in a `comments` reply.
@@ -386,7 +417,7 @@ pub(crate) struct Fitted {
     pub(crate) line: String,
     /// Whether the handle's `description` field was cut.
     pub(crate) description_cut: bool,
-    /// Whether the `task.md` brief was cut.
+    /// Whether the `task/README.md` brief was cut.
     pub(crate) brief_cut: bool,
 }
 
@@ -432,7 +463,7 @@ fn longest_fitting(text: &str, line: impl Fn(usize) -> String) -> Option<usize> 
 
 /// Fit a `poll` reply under [`MAX_REPLY`], and return the line and what was cut: nothing
 /// when it fits as it is, else the handle's `description` field, the brief whole beside it if
-/// it can be, and only then the unit's `task.md` text too.
+/// it can be, and only then the unit's `task/README.md` text too.
 ///
 /// Each cut keeps the longest prefix, at a char boundary, that still fits beside a trailer
 /// saying what was cut and where the whole issue is. `None` when not even both trailers
@@ -471,10 +502,13 @@ pub(crate) fn fit_poll(unit: &WireUnit) -> Option<Fitted> {
         }
     }
     let brief = unit.files.iter().position(|f| f.path == crate::TASK_FILE)?;
-    let text = unit.files[brief].text.clone();
+    let FileSource::Text(text) = &unit.files[brief].source else {
+        return None;
+    };
+    let text = text.clone();
     let with_brief = |n: usize| {
         let mut cut = unit.clone();
-        cut.files[brief].text = cut_text(&text, n, "brief");
+        cut.files[brief].source = FileSource::Text(cut_text(&text, n, "brief"));
         fire_line(&cut)
     };
     let n = longest_fitting(&text, with_brief)?;
@@ -540,10 +574,7 @@ mod tests {
                 serde_json::json!({"api_key": "lin_api_k", "client_id": null,
                                    "client_secret": null, "base_url": "https://api.linear.app"}),
             )]),
-            files: vec![WireFile {
-                path: crate::TASK_FILE.into(),
-                text: text.into(),
-            }],
+            files: vec![WireFile::text(crate::TASK_FILE, text)],
         }
     }
 
@@ -755,6 +786,24 @@ mod tests {
                 "created_at": 1_793_000_000_000_u64, "updated_at": 1_793_000_500_000_u64,
                 "completed_at": null, "canceled_at": null, "archived": false, "trashed": false,
             })
+        );
+    }
+
+    /// A file serializes as its path and exactly one source: `text` for inline text, `from`
+    /// for a file afkd copies in.
+    #[test]
+    fn a_file_serializes_with_one_source() {
+        assert_eq!(
+            serde_json::to_value(WireFile::text("task/README.md", "# 修复")).unwrap(),
+            serde_json::json!({"path": "task/README.md", "text": "# 修复"})
+        );
+        assert_eq!(
+            serde_json::to_value(WireFile::from_path(
+                "task/shot.png",
+                "/state/task-files/k/shot.png"
+            ))
+            .unwrap(),
+            serde_json::json!({"path": "task/shot.png", "from": "/state/task-files/k/shot.png"})
         );
     }
 

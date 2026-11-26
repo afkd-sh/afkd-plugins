@@ -71,7 +71,8 @@ fn built_binary() -> &'static Path {
 }
 
 /// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
-/// the skill, exactly what the release archive holds — and return the staged root.
+/// the skill and the two licence texts, exactly what the release archive holds — and return
+/// the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("gitlab")
@@ -81,7 +82,13 @@ fn stage(dst: &Path) -> PathBuf {
         .expect("run tools/pack-release");
     assert!(status.success(), "tools/pack-release gitlab");
     let staged = dst.join("afkd-gitlab");
-    for present in ["afkd-plugin.toml", "afkd-gitlab", "skills/gitlab/SKILL.md"] {
+    for present in [
+        "afkd-plugin.toml",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "afkd-gitlab",
+        "skills/gitlab/SKILL.md",
+    ] {
         assert!(staged.join(present).exists(), "the release holds {present}");
     }
     for absent in [
@@ -199,7 +206,8 @@ widgets :: service(gitlab) {{
     for label in issue.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ echo file $(cat $AFKD_SCRATCH_DIR/task/issue/number) >> {FIELDS}
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
 "#,
@@ -342,7 +350,7 @@ fn drive_one_issue(home: &Path) {
                 dir.file_name()
                     .is_some_and(|name| name.to_string_lossy().ends_with(&run_suffix))
             })
-            .map(|dir| dir.join("task.md"))
+            .map(|dir| dir.join("task/README.md"))
             .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, &fake, &daemon, "the issue's run starts", || {
@@ -350,7 +358,10 @@ fn drive_one_issue(home: &Path) {
     });
     let task = read(&brief().expect("waited for"));
     for part in [TITLE, "> \"backoff\" — nobody", "```\nretry: 0\n```"] {
-        assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
+        assert!(
+            task.contains(part),
+            "task/README.md carries {part:?}:\n{task}"
+        );
     }
 
     std::fs::write(home.join("release"), "").expect("release the run");
@@ -375,7 +386,7 @@ fn drive_one_issue(home: &Path) {
     assert_eq!(
         read(&home.join(FIELDS)),
         format!(
-            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd::ready\nlabel 優先::high\n",
+            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd::ready\nlabel 優先::high\nfile {ISSUE}\n",
             fake.issue_url(PROJECT, ISSUE)
         )
     );
@@ -428,6 +439,7 @@ reviews :: service(gitlab.mr) {{
     $ echo url #{{mr.url}} >> {FIELDS}
     $ echo number #{{mr.number}} >> {FIELDS}
     $ echo branch #{{mr.branch}} >> {FIELDS}
+    $ echo file $(cat $AFKD_SCRATCH_DIR/task/mr/number) >> {FIELDS}
   }}
 }}
 "#,
@@ -492,7 +504,7 @@ fn drive_one_mr(home: &Path) {
     assert_eq!(
         read(&fields),
         format!(
-            "title {MR_TITLE}\nurl {}\nnumber {MR}\nbranch {BRANCH}\n",
+            "title {MR_TITLE}\nurl {}\nnumber {MR}\nbranch {BRANCH}\nfile {MR}\n",
             fake.mr_url(PROJECT, MR)
         ),
         "{}",
@@ -728,7 +740,7 @@ issues :: service(gitlab) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitlab.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 
@@ -753,7 +765,7 @@ reviews :: service(gitlab.mr) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, mr: gitlab.Merge_Request) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 "##;

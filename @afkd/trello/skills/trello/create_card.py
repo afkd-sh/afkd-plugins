@@ -1,244 +1,77 @@
 #!/usr/bin/env python3
-# create_card.py — file a new card onto a Trello list (ADR-0046 §A).
+# create_card.py — `trello.create_card`: a card filed in a list.
 #
-# The "file a follow-up" half of the bundled `trello` skill (its read half is
-# list_cards.py): given a list id and a title, it creates one card in that list,
-# so an agent that discovers follow-up work while running a card can file it as a
-# real card and stay on the one it was given, instead of derailing onto the new
-# work or burying it in a comment nobody re-reads. On a create failure it exits
-# non-zero so the agent surfaces the failure rather than retrying blindly.
-#
-# The list id is a REQUIRED positional argument — unlike the card/board locators
-# there is no env default, because a list is not tied to this run the way the
-# active card is; the agent gets the id from list_lists.py. The account-wide token
-# means the list id can reach any list the token can — an intended, accepted
-# widening (ADR-0046 §A), and a sharper edge here than for the readers: a card
-# created into the trigger's `pick_from` list enqueues autonomous work for afkd
-# itself. SKILL.md carries that guardrail; this helper never learns `pick_from`.
-#
-# It reads the board credentials FROM THE ENVIRONMENT — the env the afkd trello
-# trigger already merges into the worker child (crates/trello/src/trigger.rs:
-# TRELLO_API_KEY / TRELLO_TOKEN). No card id is read: the new card has none yet.
-#
-# PAYLOAD SHAPE: idList/name/desc/pos ride in a JSON REQUEST BODY, and only the
-# creds ride in the query string. This is the one place create_card.py must not
-# copy post_comment.py, which rides its text in the query: a card description is
-# easily multi-kilobyte and Trello's edge answers HTTP 414 for a query string that
-# long (verified empirically — a 7 KB `desc` in the query 414s; the same payload
-# as a JSON body succeeds). post_attachment.py is the precedent for the resulting
-# shape: a POST body with the creds in the query.
-#
-# PLACEMENT: --pos top|bottom sends that word as `pos`, as Trello takes it. --above
-# CARD / --below CARD put the new card directly above or below a card already in the
-# target list (CARD is its id or short link): one GET of the list's open cards and
-# their `pos`, then the POST with the number half-way between CARD and its
-# neighbour, or `top`/`bottom` when CARD is at that end. A CARD that is not in the
-# list, or a list read that fails, exits non-zero before the POST, so nothing is
-# created.
-#
-# TRELLO_API_BASE overrides the API host. It defaults to the production host, so
-# field behavior is unchanged; the override exists ONLY so tests can point the
-# create at a local stub listener, mirroring the seam in list_comments.py.
+# It files a card NAME in the list LIST of the board, at the bottom of it unless --at top, and
+# prints the card as its `trello.Card` handle, read back. The list, each label and each member
+# (`me` included) are named as the board names them, matched exactly, and resolved BEFORE the
+# card is made: a name the board lacks exits 1 naming what it has, one several share lists
+# their ids, and nothing is created. The description is --description, or the text of
+# --description_file, at most 16 384 characters, as is checked before any request, and the
+# placeholder title is refused (exit 2). --due is an RFC 3339 time. The board is --board, else
+# $TRELLO_BOARD_ID. It reads TRELLO_API_KEY and TRELLO_TOKEN. Ports src/writes.rs's
+# `create_card`.
 
 import argparse
-import base64
-import http.client
-import json
 import os
 import sys
-import urllib.parse
-import urllib.request
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+
+import trello_api as trello  # noqa: E402
 
 PLACEHOLDER = "<REPLACE WITH YOUR CARD TITLE>"
 
 
-def connection(base):
-    """Open an HTTP(S) connection to the API host parsed from `base`, tunnelled through
-    the proxy the environment names for its scheme, minus the hosts NO_PROXY lists: a sandbox
-    with a network list reaches its names only through afkd's proxy (ADR-0084)."""
-    parts = urllib.parse.urlsplit(base)
-    https = parts.scheme == "https"
-    kind = http.client.HTTPSConnection if https else http.client.HTTPConnection
-    proxy = urllib.request.getproxies().get(parts.scheme)
-    if not proxy or urllib.request.proxy_bypass(parts.hostname):
-        return kind(parts.hostname, parts.port)
-    via = urllib.parse.urlsplit(proxy)
-    conn = kind(via.hostname, via.port)
-    headers = {}
-    if via.username is not None:
-        user = urllib.parse.unquote(via.username)
-        password = urllib.parse.unquote(via.password or "")
-        token = base64.b64encode(f"{user}:{password}".encode()).decode()
-        headers["Proxy-Authorization"] = f"Basic {token}"
-    conn.set_tunnel(parts.hostname, parts.port or (443 if https else 80), headers=headers)
-    return conn
-
-
-def get(base, path, query):
-    """GET `path?query`; return (status, body-bytes). The token is never echoed."""
-    conn = connection(base)
-    try:
-        conn.request("GET", f"{path}?{query}")
-        response = conn.getresponse()
-        return response.status, response.read()
-    finally:
-        conn.close()
-
-
-def placement(base, list_id, anchor, above, query):
-    """The `pos` that puts a card directly above (or below) `anchor` in the list.
-
-    `anchor` is matched against each open card's id and short link. The answer is
-    the mean of the anchor's `pos` and its neighbour's, or `top`/`bottom` when the
-    anchor is at that end of the list. A failed read, an anchor not in the list, or
-    two neighbours with no float between them prints why and exits non-zero.
-    """
-    status, body = get(
-        base, f"/1/lists/{list_id}/cards", f"fields=pos,shortLink&{query}"
-    )
-    if not 200 <= status < 300:
-        print(
-            f"create_card.py: failed to read cards for list {list_id}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    cards = sorted(json.loads(body), key=lambda c: float(c.get("pos", 0)))
-    at = next(
-        (i for i, c in enumerate(cards) if anchor in (c.get("id"), c.get("shortLink"))),
-        None,
-    )
-    if at is None:
-        print(f"create_card.py: no card {anchor} in list {list_id}", file=sys.stderr)
-        sys.exit(1)
-    if above and at == 0:
-        return "top"
-    if not above and at == len(cards) - 1:
-        return "bottom"
-    lo, hi = (cards[at - 1], cards[at]) if above else (cards[at], cards[at + 1])
-    lo, hi = float(lo.get("pos", 0)), float(hi.get("pos", 0))
-    pos = (lo + hi) / 2
-    if not lo < pos < hi:
-        print(
-            f"create_card.py: no position left between {anchor} and its neighbour; "
-            f"move one of them first",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return pos
-
-
-def create_card(base, list_id, name, desc, pos, query):
-    """POST one card into the list; return (status, body-bytes).
-
-    The card's fields travel as a JSON body (see the header comment: a query-string
-    `desc` 414s); `query` carries the creds and nothing else. The token is never
-    echoed.
-    """
-    payload = json.dumps({"idList": list_id, "name": name, "desc": desc, "pos": pos})
-    conn = connection(base)
-    try:
-        conn.request(
-            "POST",
-            f"/1/cards?{query}",
-            payload.encode("utf-8"),
-            {"Content-Type": "application/json"},
-        )
-        response = conn.getresponse()
-        return response.status, response.read()
-    finally:
-        conn.close()
-
-
 def main():
-    parser = argparse.ArgumentParser()
-    # Both positionals are required and have no env default: argparse emits its own
-    # error (exit 2) when either is missing, before any network.
-    parser.add_argument("list_id", help="the list id (from list_lists.py)")
-    parser.add_argument("title", help="the new card's title")
-    # A card may have an empty description, so both sources are optional — but a
-    # description cannot come from two places at once: argparse rejects the pair
-    # (exit 2) before any network. --desc-file is the one to use for a real
-    # multi-line body.
-    desc_source = parser.add_mutually_exclusive_group()
-    desc_source.add_argument("--desc", help="the card's description text")
-    desc_source.add_argument("--desc-file", help="read the description from this file")
-    # Where in the list the card lands: an end (by default the bottom), or directly
-    # above or below a named card. Only one may be given: argparse rejects a pair
-    # (exit 2) before any network.
-    place = parser.add_mutually_exclusive_group()
-    place.add_argument("--pos", choices=["top", "bottom"], default="bottom")
-    place.add_argument("--above", metavar="CARD", help="file it directly above CARD")
-    place.add_argument("--below", metavar="CARD", help="file it directly below CARD")
+    parser = argparse.ArgumentParser(description="File a card in a list.")
+    parser.add_argument("list", help="the list's name, or its id")
+    parser.add_argument("name", help="the card's name")
+    trello.add_board_arg(parser)
+    trello.add_description_args(parser)
+    trello.add_place_arg(parser, "the top or the bottom of the list (default bottom)")
+    parser.add_argument("--labels", action="append", metavar="NAME", help="a label; repeatable")
+    parser.add_argument(
+        "--members", action="append", metavar="USERNAME", help='a member or "me"; repeatable'
+    )
+    parser.add_argument("--due", type=trello.rfc3339, metavar="RFC3339", help="when it is due")
     args = parser.parse_args()
+    trello.refuse_placeholder(args.name, PLACEHOLDER)
+    description = trello.description_of(args)
 
-    # --- Refuse the SKILL.md placeholder: never file the fill-me-in example. ---
-    if args.title == PLACEHOLDER:
-        print(
-            "create_card.py: refusing to file the placeholder title; substitute your real title",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    board_id, _ = trello.read_board(trello.board_ref(args))
+    lists = trello.open_lists(board_id)
+    labels = trello.board_labels(board_id)
+    members = trello.candidates(trello.board_members(board_id), "username")
 
-    # --- Credentials: required, from the inherited environment. Name what is
-    #     missing so the config author knows which var to wire (ADR-0023). ---
-    key = os.environ.get("TRELLO_API_KEY")
-    token = os.environ.get("TRELLO_TOKEN")
-    missing = []
-    if not key:
-        missing.append("TRELLO_API_KEY")
-    if not token:
-        missing.append("TRELLO_TOKEN")
-    if missing:
-        print(
-            f"create_card.py: {' and '.join(missing)} must be set in the environment",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    list_id = trello.named_or_id("list", args.list, lists)
+    label_ids = []
+    for name in args.labels or []:
+        id_ = trello.named_or_id("label", name, labels)
+        if id_ not in label_ids:
+            label_ids.append(id_)
+    member_ids = []
+    for who in args.members or []:
+        id_ = trello.one_named("member", trello.username_of(who), members)
+        if id_ not in member_ids:
+            member_ids.append(id_)
 
-    # --- The description: --desc, else --desc-file's contents, else empty. The
-    #     read happens before any connection is opened, so an unreadable path —
-    #     missing, a directory, or unpermitted alike — never reaches the network. ---
-    desc = args.desc or ""
-    if args.desc_file:
-        try:
-            with open(args.desc_file, encoding="utf-8") as handle:
-                desc = handle.read()
-        except OSError as err:
-            print(
-                f"create_card.py: cannot read the description file {args.desc_file}: {err.strerror}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    # --- The API host: production by default, overridable only for tests. ---
-    base = os.environ.get("TRELLO_API_BASE", "https://api.trello.com")
-
-    query = urllib.parse.urlencode({"key": key, "token": token})
-
-    # --- The position: --pos as given, else the place next to the named card,
-    #     read off the list before anything is written. ---
-    pos = args.pos
-    above = args.above is not None
-    if above or args.below is not None:
-        anchor = args.above if above else args.below
-        pos = placement(base, args.list_id, anchor, above, query)
-
-    # --- Create the card. A non-2xx (e.g. an auth failure or an unknown list) is a
-    #     non-zero exit the agent surfaces. The token is never echoed. ---
-    status, body = create_card(base, args.list_id, args.title, desc, pos, query)
-    if not 200 <= status < 300:
-        print(
-            f'create_card.py: failed to create card "{args.title}" in list {args.list_id}',
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # --- Report the short url, not the 24-hex id: it is the clickable one, so a
-    #     human reading the log can open the card. ---
-    created = json.loads(body)
-    url = created.get("shortUrl") or created.get("url") or "(no url returned)"
-    print(f'create_card.py: created card "{args.title}" {url}')
+    body = {"idList": list_id, "name": args.name}
+    if description is not None:
+        body["desc"] = description
+    body["pos"] = args.at or "bottom"
+    if label_ids:
+        body["idLabels"] = label_ids
+    if member_ids:
+        body["idMembers"] = member_ids
+    if args.due is not None:
+        body["due"] = trello.iso(args.due)
+    made = trello.request("create card", "POST", "/cards", body=body)
+    id_ = trello.str_of(made, "id")
+    if not id_:
+        raise trello.undecodable("create card", "card has no id")
+    trello.emit(trello.read_back("card", lambda: trello.read_card(id_)))
 
 
 if __name__ == "__main__":
-    main()
+    trello.run(main)

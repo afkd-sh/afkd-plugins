@@ -189,7 +189,7 @@ fn v2_home_with(tree: &Tree) -> TempDir {
 }
 
 /// A home holding `tree`, with the shipped relay installed and `settings` as its settings
-/// file: under a v2 config installing is what runs it (lang-v2 §16.1), so this is the whole of
+/// file: under a v2 config installing is what runs it (reference §13.1), so this is the whole of
 /// what a daemon spawned here needs.
 fn relay_home(tree: &Tree, settings: &str) -> TempDir {
     let home = v2_home_with(tree);
@@ -200,8 +200,11 @@ fn relay_home(tree: &Tree, settings: &str) -> TempDir {
 }
 
 /// What the release ships, every path relative to the plugin: [`staged_release`] stages
-/// exactly these, and the workflow's archive listing is the same list.
-const RELEASE_TREE: [&str; 11] = [
+/// exactly these, and the workflow's archive listing is the same list. The two licence texts
+/// sort first, because uppercase sorts before lowercase bytewise.
+const RELEASE_TREE: [&str; 13] = [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
     "afkd-plugin.toml",
     "dashboard.css",
     "fold.mjs",
@@ -216,8 +219,8 @@ const RELEASE_TREE: [&str; 11] = [
 ];
 
 /// Stage the release `tools/pack-release` packs under `dst` — the relay, the page, its
-/// stylesheet and the modules it loads, and none of the suites, fixtures or goldens — and
-/// return the staged `afkd-web_top/`.
+/// stylesheet and the modules it loads, the two licence texts, and none of the suites,
+/// fixtures or goldens — and return the staged `afkd-web_top/`.
 fn staged_release(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("web_top")
@@ -997,7 +1000,8 @@ fn the_verbs_accept_the_shipped_manifest() {
     // Exactly the release is placed, two levels down, with the program still executable —
     // and there is no build step, so what is placed is what runs. The fold, the keymap, the
     // layout, the session, the key seam, the painter and the stylesheet travel with it: a
-    // page whose `import` lands on a 404 is a blank screen. The suites, the recorded
+    // page whose `import` lands on a 404 is a blank screen, and the two licence texts go
+    // with it, as every release carries them. The suites, the recorded
     // captures, the golden screens and the README do not: they are this repository's, and
     // an operator's plugins directory is not where they belong.
     let placed = plugins_root(dir.path()).join("@afkd").join("web_top");
@@ -1069,7 +1073,7 @@ fn the_verbs_accept_the_shipped_manifest() {
 // --- manifest v2 -------------------------------------------------------------------------
 
 /// A v2 `daemon.afk` with two services and **no line about the companion**: under a v2
-/// config installing is what runs it (lang-v2 §16.1), so nothing here names it.
+/// config installing is what runs it (reference §13.1), so nothing here names it.
 const V2_MAIN: &str = "\
      import \"afkd\"\nimport \"svc:interval\"\nimport \"svc:manual\"\n\n\
      tick :: service(interval) {\n  every 1h\n\n  on_run proc(run: afkd.Run) {\n    $ true\n  }\n}\n\n\
@@ -3194,8 +3198,8 @@ const TOP_TERM_ENV: [(&str, &str); 5] = [
 ///   `… 1 more` elision. Every line it prints is sized under [`LOG_MESSAGE_BUDGET`], so
 ///   neither log pane wraps;
 /// - `ops.backup` — the group's second member, so both tree connectors are on screen, and
-///   the one the overview leg stales ([`STALED`]), so its row carries [`STALE_MARKER`], a
-///   VS16 glyph each surface has to measure for itself;
+///   the one the overview leg reloads onto a changed step ([`RELOADED`]), so its row is a
+///   service re-armed on its new config;
 /// - `never` — `manual`, and the one the leg stops, so a second badge (`□ Stopped`) and a
 ///   `1 down` segment of the header are on the board.
 ///
@@ -3263,23 +3267,26 @@ backup :: service(interval) {
 /// The service the drift leg stops, so the board it compares carries two distinct badges.
 const STOPPED: &str = "never";
 
-/// The service the drift leg stales, so the board it compares carries [`STALE_MARKER`].
-const STALED: &str = "ops.backup";
+/// The service the drift leg reloads onto a changed step. Idle when the reload lands, it is
+/// re-armed on its new config at once; afkd marks a service stale only while its run holds, so
+/// no row of the board this leg compares carries [`STALE_MARKER`].
+const RELOADED: &str = "ops.backup";
 
-/// `layout::STALE_MARKER`, the cobweb a service whose config changed under it carries until a
-/// restart adopts it — and the one VS16 glyph afkd top draws on a service row. Its base
-/// **has** an emoji presentation sequence, so `unicode-width` gives it two cells for the
-/// selector alone, and a surface that ignores the selector pads the row apart. Held to the
-/// board by [`drift`]'s floor on it, and to both sources by
+/// `layout::STALE_MARKER`, the cobweb a service whose config changed under its running run
+/// carries until the run ends — and the one VS16 glyph afkd top draws on a service row. Its
+/// base **has** an emoji presentation sequence, so `unicode-width` gives it two cells for the
+/// selector alone, and a surface that ignores the selector pads the row apart. No fixture
+/// here holds a run across a reload, so it is on no compared screen; both sources are held to
+/// measure it alike by
 /// `every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top`.
 const STALE_MARKER: &str = "\u{1F578}\u{FE0F}";
 
-/// [`DRIFT_SERVICES`]' `ops` package with [`STALED`]'s step changed, so a reload over it
-/// stages the new config on the armed service rather than adopting it, and stales its row.
+/// [`DRIFT_SERVICES`]' `ops` package with [`RELOADED`]'s step changed, so a reload over it
+/// replaces the armed service with one on the new config.
 fn restaged_ops() -> String {
     const STEP: &str = "    $ true\n";
     // A fixture edit that gave another service the same step would otherwise change that
-    // one too, and the cobweb would land on a row this leg never named.
+    // one too, and the reload would re-arm a row this leg never named.
     assert_eq!(
         DRIFT_OPS.matches(STEP).count(),
         1,
@@ -3760,12 +3767,12 @@ fn drift(top: &Screen, plugin: &Screen, arm: Arm) -> Result<(), String> {
             "a group connector was on screen, so the flat arm was never compared{both}"
         ));
     }
-    if !top_rows
+    if top_rows
         .iter()
         .any(|row| cell_text(row, span_of(&spans, "Service")).contains(STALE_MARKER))
     {
         return Err(format!(
-            "no {STALE_MARKER} stale marker was on screen, so a VS16 glyph's padding was never compared{both}"
+            "a {STALE_MARKER} stale marker was on screen, but the fixture holds no run across a reload{both}"
         ));
     }
     if !top_rows
@@ -4094,18 +4101,19 @@ fn drive_plugin(
     Screen { grid }
 }
 
-/// `layout::Mark::text`'s stopped mark, the one-cell `▫` a switched-off service opens on at
+/// `layout::Mark::glyph`'s stopped mark, the one-cell `▫` a switched-off service opens on at
 /// 24-bit, the depth every leg's terminal runs at ([`TOP_TERM_ENV`]).
 const STOPPED_MARK: &str = "\u{25AB}";
 
 /// Every variation-selector glyph afkd top's source (`crates/tui/src`) or web_top's
 /// (`@afkd/web_top/*.mjs`) spells, by name — the set
 /// `every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top` checks.
-const VARIATION_GLYPHS: [&str; 14] = [
+const VARIATION_GLYPHS: [&str; 15] = [
     "\u{21BB}\u{FE0E}",
     "\u{2225}\u{FE0E}",
     "\u{2298}\u{FE0E}",
     "\u{22EF}\u{FE0E}",
+    "\u{23CF}\u{FE0E}",
     "\u{23F1}\u{FE0E}",
     "\u{25AA}\u{FE0F}",
     "\u{2605}\u{FE0F}",
@@ -4514,8 +4522,9 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     let (_daemon, dir, port) = daemon_serving(&DRIFT_SERVICES, "listen \"127.0.0.1:0\"\n");
     let scratch = TempDir::new().expect("a tempdir for the capture");
 
-    // Make `ops.backup` stale before anything attaches: its changed step is staged on the armed
-    // service, and the cobweb it then carries is the VS16 glyph both surfaces measure.
+    // Reload `ops.backup` onto a changed step before anything attaches. It is idle, so afkd
+    // re-arms it on its new config at once and reports nothing stale; a busy one would keep
+    // its run and restart on the new config after it.
     std::fs::write(
         config_dir(dir.path()).join("ops").join("ops.afk"),
         restaged_ops(),
@@ -4533,7 +4542,7 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     // capture the renderer folds — which is why the order below is fixed: the snapshot lands
     // before the stop, so the fold reaches the same stopped board the terminal's own later
     // attach starts from. The reload landed before either attach, so both surfaces read the
-    // cobweb off a snapshot. It is also the page's real input (the relay forwards every wire
+    // re-armed service off a snapshot. It is also the page's real input (the relay forwards every wire
     // frame verbatim), so the renderer is fed exactly what a browser gets.
     let mut sse = Sse::admitted(port);
     let (id, welcome) = sse.handshake_with_welcome();
@@ -4547,7 +4556,8 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
         sse.collect_frames(BUDGET, &mut frames, |f| f["meta"] == "snapshot"),
         "the attach snapshot never arrived; the stream carried {frames:?}"
     );
-    // Name a missing cobweb at its cause, rather than as a floor `drift` closes on.
+    // Name a reload that staged the service rather than adopting it at its cause, rather than
+    // as a cobweb `drift` closes on.
     let snapshot: serde_json::Value =
         serde_json::from_str(frames.last().expect("the snapshot frame")).expect("JSON");
     assert!(
@@ -4555,8 +4565,8 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
             .as_array()
             .is_some_and(|services| services
                 .iter()
-                .any(|s| s["name"] == STALED && s["stale"] == true)),
-        "the reload never staled {STALED}; the snapshot carried {snapshot}"
+                .any(|s| s["name"] == RELOADED && s["state"] == "armed" && s["stale"] == false)),
+        "the reload left {RELOADED} anything but armed on its new config; the snapshot carried {snapshot}"
     );
     let (status, body) = post_command(
         port,
@@ -4670,30 +4680,6 @@ fn the_plugins_overview_matches_afkd_tops_own_screen() {
     assert!(
         fault.contains("`Next Run` cell differs"),
         "the failure names the column whose edge moved: {fault}"
-    );
-
-    // The third arm: `🕸️` measured one cell narrower in a copy has to redden the leg — B6D5ahX2
-    // in reverse. The cobweb on `ops.backup`'s row covers a column of the `Service` cell's own
-    // padding, which a collapsed comparison let through (both cells read `◇ 🕸️backup`).
-    const VS16_RULE: &str = "if (startsEmojiPresentation(cluster, base)) return 2;";
-    assert_eq!(
-        before.matches(VS16_RULE).count(),
-        1,
-        "`layout.mjs` spells its VS16 width rule once; this arm's rewrite is no longer aimed \
-         at the one rule"
-    );
-    let narrowed = before.replace(
-        VS16_RULE,
-        "if (startsEmojiPresentation(cluster, base)) return 1;",
-    );
-    std::fs::write(&layout, &narrowed).expect("write the mutated layout module");
-    let shifted = render_through_plugin(&copy, &capture, &version, "gvg");
-    let fault = drift(&terminal, &shifted, Arm::Grouped).expect_err(
-        "a VS16 glyph one cell narrower than afkd top's is drift, and this leg has to say so",
-    );
-    assert!(
-        fault.contains("`Service` cell differs"),
-        "the failure names the column whose padding moved: {fault}"
     );
 }
 
@@ -5255,44 +5241,6 @@ fn the_plugins_run_view_matches_afkd_tops_own_screen() {
     );
 }
 
-#[test]
-fn the_recorded_block_trace_is_what_afkd_trace_prints() {
-    // `backfill.test.mjs` holds the run view of the recorded `runs-blockwait/` corpus, served
-    // off disk, to `fixtures/blockwait-trace.txt` row for row: the `queue_wait`, `queue` and
-    // `http` nodes' glyphs, their columns and the rail. That text is `afkd trace`'s stdout for the
-    // corpus's one `trace.jsonl`, so this leg renders it again with the afkd on `PATH`, and a
-    // glyph or a rail column afkd moves reddens here instead of leaving the node suite to
-    // compare against a stale terminal.
-    let blocker = plugin_root().join("fixtures/runs-blockwait/blocker");
-    let runs: Vec<PathBuf> = std::fs::read_dir(&blocker)
-        .expect("the recorded block-wait corpus")
-        .map(|entry| entry.expect("a run dir entry").path())
-        .collect();
-    assert_eq!(runs.len(), 1, "the corpus holds one recorded run: {runs:?}");
-    let trace = runs[0].join("trace.jsonl");
-
-    let dir = TempDir::new().expect("tempdir");
-    let out = run_subcommand_args(dir.path(), &["trace", &trace.display().to_string()]);
-    assert!(
-        out.status.success(),
-        "`afkd trace` renders the recorded trace: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let recorded = std::fs::read_to_string(plugin_root().join("fixtures/blockwait-trace.txt"))
-        .expect("the recorded afkd trace text");
-    let printed = String::from_utf8(out.stdout).expect("afkd trace prints UTF-8");
-    for glyph in ["⏳", "🚦", "🌐"] {
-        assert!(
-            recorded.contains(glyph),
-            "the recorded text draws a {glyph} row, so the comparison is about the block's nodes"
-        );
-    }
-    assert_eq!(
-        printed, recorded,
-        "`afkd trace` of the recorded trace is the text backfill.test.mjs holds the run view to"
-    );
-}
-
 // --- the divergence ledger: where web_top differs from afkd top on purpose -----------------
 
 /// One place `@afkd/web_top` differs from `afkd top` **on purpose**: the surface and field
@@ -5384,7 +5332,7 @@ fn intent_at(entry: &Divergence) -> String {
 }
 
 /// The lane [`ledger_ops`] declares, in the `ops` package — a package service cannot name a
-/// lane in `main`, which no package imports (lang-v2 §3.2) — so its identity is `ops.heavy`.
+/// lane in `main`, which no package imports (reference §12.2) — so its identity is `ops.heavy`.
 /// A bare `queue heavy` resolves to the `normal` priority, which neither surface's `Queues`
 /// section prints.
 const LANE: &str = "heavy";

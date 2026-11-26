@@ -6,8 +6,10 @@
 //! value is of its declared type. What is left here is the part a manifest cannot say — a
 //! list that names nothing, a `min_age` that is not a plain duration — in the built-in
 //! trigger's own sentences. The cadence and the attempt bound (`every`, `max_attempts`) are
-//! afkd's and are not read here, and the hooks never arrive here at all: afkd runs them, and
-//! each action they call is one `call` ([`crate::lifecycle`]).
+//! afkd's own, declared by afkd for every claiming kind, and are not read here; the slots
+//! never arrive here at all: afkd runs them, and each read or write they call is one `call`
+//! ([`crate::reads`], [`crate::writes`]). The credential settings are also the `trello.Account` every
+//! slot is passed ([`BoardConfig::account`]).
 //!
 //! The lowering (afkd's `pluginworker::settings_json`): a value is a string (a duration
 //! its largest whole unit, a range `lo..hi`), and a `list[…]` is always an array — of the
@@ -25,7 +27,7 @@ use crate::client::TRELLO_BASE;
 /// collide with it, since Trello's are at least three characters long.
 pub(crate) const ME: &str = "me";
 
-/// Who an `add_member` / `remove_member` action, a `require_member` intake gate or a
+/// Who an `add_member` / `remove_member` action, an `only_members` intake gate entry or a
 /// `discuss_with` entry names: [`ME`], or a board member's username.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MemberRef {
@@ -58,8 +60,7 @@ pub(crate) struct BoardConfig {
     pub(crate) board_address: String,
     /// Board identity derived from the address (segment after the board marker).
     pub(crate) board_id: String,
-    /// API base the client is pointed at; defaults to the public Trello REST base. A
-    /// testability seam, not a user-facing knob.
+    /// API base the client is pointed at; defaults to the public Trello REST base.
     pub(crate) base_url: String,
     /// API key used to reach the board.
     pub(crate) api_key: String,
@@ -67,15 +68,16 @@ pub(crate) struct BoardConfig {
     pub(crate) token: String,
     /// The named lists new tasks are drawn from, in the order written; never empty, since
     /// the setting is required.
-    pub(crate) pick_from: Vec<String>,
-    /// The intake gate: when set, only cards this member is already on are claimed.
-    pub(crate) require_member: Option<MemberRef>,
-    /// The label intake gate: when set, only cards carrying a label of this exact name
-    /// are eligible to claim.
-    pub(crate) require_label: Option<String>,
+    pub(crate) claim_from: Vec<String>,
+    /// The member intake gate: when set, only cards at least one of these members is
+    /// already on are claimed. Never empty when set.
+    pub(crate) only_members: Option<Vec<MemberRef>>,
+    /// The label intake gate: when set, only cards carrying every one of these labels
+    /// (by exact name) are eligible to claim. Never empty when set.
+    pub(crate) only_labels: Option<Vec<String>>,
     /// The negative label intake gate: a card carrying any of these labels is never
-    /// claimed, and deny wins over `require_label`.
-    pub(crate) without_label: Vec<String>,
+    /// claimed, and skip wins over `only_labels`.
+    pub(crate) skip_labels: Vec<String>,
     /// The comment-driven grooming gate: when set, a card is claimed only if its tail —
     /// the comments after afkd's own last comment — carries a comment from an allowed
     /// author.
@@ -83,6 +85,18 @@ pub(crate) struct BoardConfig {
     /// The age intake gate, measured from the card's creation. [`Duration::ZERO`] (the
     /// default) filters nothing.
     pub(crate) min_age: Duration,
+}
+
+impl BoardConfig {
+    /// The `trello.Account` every slot is passed, as the JSON afkd hands a slot's `account`
+    /// param: the credentials and API base the service's settings name.
+    pub(crate) fn account(&self) -> Value {
+        serde_json::json!({
+            "api_key": self.api_key,
+            "token": self.token,
+            "base_url": self.base_url,
+        })
+    }
 }
 
 /// Redact the credential fields so a `{:?}` of a [`BoardConfig`] can never spill
@@ -97,10 +111,10 @@ impl std::fmt::Debug for BoardConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &redact(&self.api_key))
             .field("token", &redact(&self.token))
-            .field("pick_from", &self.pick_from)
-            .field("require_member", &self.require_member)
-            .field("require_label", &self.require_label)
-            .field("without_label", &self.without_label)
+            .field("claim_from", &self.claim_from)
+            .field("only_members", &self.only_members)
+            .field("only_labels", &self.only_labels)
+            .field("skip_labels", &self.skip_labels)
             .field("discuss_with", &self.discuss_with)
             .field("min_age", &self.min_age)
             .finish()
@@ -146,26 +160,24 @@ pub(crate) type Declared = (
 /// the manifest, never this: it is what `manifest.rs`'s test holds `afkd-plugin.toml` to,
 /// so the two cannot drift apart.
 ///
-/// The last two are afkd's own claim keys, declared exactly as afkd declares them for
-/// every claiming kind; afkd's declaration is the one that applies.
+/// `every` and `max_attempts` are not here: afkd declares them itself for every claiming
+/// kind, so a service writes them beside these.
 #[cfg(test)]
 pub(crate) const SETTINGS: &[Declared] = &[
-    ("board", "str", &[("required", "true")]),
-    ("base_url", "str", &[]),
     ("api_key", "str", &[("required", "true")]),
     ("token", "str", &[("required", "true")]),
-    ("pick_from", "list[str]", &[("required", "true")]),
-    ("require_member", "str", &[]),
-    ("require_label", "str", &[]),
-    ("without_label", "list[str]", &[]),
-    ("discuss_with", "list[str]", &[]),
-    ("min_age", "duration", &[]),
-    ("max_attempts", "int", &[("default", "1")]),
     (
-        "every",
-        "duration",
-        &[("jitter", "true"), ("default", "\"30s\"")],
+        "base_url",
+        "str",
+        &[("default", "\"https://api.trello.com/1\"")],
     ),
+    ("board", "str", &[("required", "true")]),
+    ("claim_from", "list[str]", &[("required", "true")]),
+    ("only_labels", "list[str]", &[]),
+    ("only_members", "list[str]", &[]),
+    ("skip_labels", "list[str]", &[]),
+    ("min_age", "duration", &[]),
+    ("discuss_with", "list[str]", &[]),
 ];
 
 /// Read the lowered `settings` into a [`BoardConfig`], or report the first setting it
@@ -182,23 +194,32 @@ pub(crate) fn board_config(settings: &Value) -> Result<BoardConfig, SettingsErro
         token: opt_scalar(settings, "token").unwrap_or_default(),
         // afkd refuses a service without it before any `hello`; this refuses a `hello`
         // that arrives without it anyway, so no armed service has a list-less scan.
-        pick_from: nonempty_list(
+        claim_from: nonempty_list(
             settings,
-            "pick_from",
-            "`pick_from` expects one or more list names",
+            "claim_from",
+            "`claim_from` expects one or more list names",
         )?
         .ok_or_else(|| {
             SettingsError::new(
-                "pick_from",
-                "`pick_from` is required: name the list or lists new cards are claimed from",
+                "claim_from",
+                "`claim_from` is required: name the list or lists new cards are claimed from",
             )
         })?,
-        require_member: required_scalar(settings, "require_member")?.map(|who| member_ref(&who)),
-        require_label: required_scalar(settings, "require_label")?,
-        without_label: nonempty_list(
+        only_members: nonempty_list(
             settings,
-            "without_label",
-            "`without_label` expects one or more label names",
+            "only_members",
+            "`only_members` expects one or more members",
+        )?
+        .map(|who| who.iter().map(|s| member_ref(s)).collect()),
+        only_labels: nonempty_list(
+            settings,
+            "only_labels",
+            "`only_labels` expects one or more label names",
+        )?,
+        skip_labels: nonempty_list(
+            settings,
+            "skip_labels",
+            "`skip_labels` expects one or more label names",
         )?
         .unwrap_or_default(),
         discuss_with: nonempty_list(
@@ -255,21 +276,6 @@ fn opt_scalar(settings: &Map<String, Value>, key: &str) -> Option<String> {
         Some(Value::String(s)) => Some(s.clone()),
         _ => None,
     }
-}
-
-/// An optional gate that, once written, must carry one value: `None` when absent, and a
-/// fault in the built-in's sentence when it is a flag, a block or a list — reading it as
-/// absent would silently claim what the operator asked to filter.
-fn required_scalar(
-    settings: &Map<String, Value>,
-    key: &str,
-) -> Result<Option<String>, SettingsError> {
-    if !settings.contains_key(key) {
-        return Ok(None);
-    }
-    opt_scalar(settings, key)
-        .map(Some)
-        .ok_or_else(|| SettingsError::new(key, format!("setting `{key}` expects a single value")))
 }
 
 /// A repeatable list gate: every value its entries carry, flattened in order (the
@@ -351,7 +357,7 @@ mod tests {
             "board": "https://trello.com/b/BID/x",
             "api_key": "k",
             "token": "t",
-            "pick_from": "Up for Grabs",
+            "claim_from": "Up for Grabs",
         });
         for (k, v) in extra.as_object().unwrap() {
             settings[k] = v.clone();
@@ -381,42 +387,65 @@ mod tests {
 
     #[test]
     fn reads_scalars_and_derives_board_id() {
-        // afkd's own two keys ride along and are not read here.
-        let cfg = cfg(json!({
-            "pick_from": "Up for Grabs",
-            "max_attempts": "2",
-            "every": "30s",
-        }));
+        let cfg = cfg(json!({}));
         assert_eq!(cfg.board_address, "https://trello.com/b/BID/x");
         assert_eq!(cfg.board_id, "BID");
         assert_eq!(cfg.api_key, "k");
         assert_eq!(cfg.token, "t");
-        assert_eq!(cfg.pick_from, ["Up for Grabs"]);
+        assert_eq!(cfg.claim_from, ["Up for Grabs"]);
     }
 
     #[test]
     fn defaults_apply_when_settings_absent() {
         let cfg = cfg(json!({}));
         assert_eq!(cfg.base_url, TRELLO_BASE);
-        assert_eq!(cfg.pick_from, ["Up for Grabs"]);
-        assert_eq!(cfg.require_member, None);
-        assert_eq!(cfg.require_label, None);
-        assert!(cfg.without_label.is_empty());
+        assert_eq!(cfg.claim_from, ["Up for Grabs"]);
+        assert_eq!(cfg.only_members, None);
+        assert_eq!(cfg.only_labels, None);
+        assert!(cfg.skip_labels.is_empty());
         assert_eq!(cfg.discuss_with, None);
         assert_eq!(cfg.min_age, Duration::ZERO);
     }
 
-    /// A block without `pick_from` names no list to claim from, so it is refused naming
+    /// A block without `claim_from` names no list to claim from, so it is refused naming
     /// the setting rather than armed to sweep parked cards and never claim a new one.
     #[test]
-    fn a_block_without_pick_from_is_refused_naming_it() {
+    fn a_block_without_claim_from_is_refused_naming_it() {
         let mut settings = block(json!({}));
-        settings.as_object_mut().unwrap().remove("pick_from");
+        settings.as_object_mut().unwrap().remove("claim_from");
         let e = board_config(&settings).unwrap_err();
-        assert_eq!(e.key, "pick_from");
+        assert_eq!(e.key, "claim_from");
         assert_eq!(
             e.problem,
-            "`pick_from` is required: name the list or lists new cards are claimed from"
+            "`claim_from` is required: name the list or lists new cards are claimed from"
+        );
+    }
+
+    /// The old name is no stand-in: a block that writes `pick_from` where `claim_from`
+    /// belongs has no `claim_from`, and is refused naming it.
+    #[test]
+    fn a_block_writing_pick_from_in_place_of_claim_from_is_refused_naming_claim_from() {
+        let mut settings = block(json!({"pick_from": "Up for Grabs"}));
+        settings.as_object_mut().unwrap().remove("claim_from");
+        let e = board_config(&settings).unwrap_err();
+        assert_eq!(e.key, "claim_from");
+        assert_eq!(
+            e.problem,
+            "`claim_from` is required: name the list or lists new cards are claimed from"
+        );
+    }
+
+    /// The account is the three credential settings, with `base_url` defaulting to the
+    /// public API.
+    #[test]
+    fn account_carries_the_key_token_and_base_url() {
+        assert_eq!(
+            cfg(json!({})).account(),
+            json!({"api_key": "k", "token": "t", "base_url": TRELLO_BASE})
+        );
+        assert_eq!(
+            cfg(json!({"base_url": "http://127.0.0.1:9"})).account(),
+            json!({"api_key": "k", "token": "t", "base_url": "http://127.0.0.1:9"})
         );
     }
 
@@ -451,104 +480,113 @@ mod tests {
             "board": {"@value": "https://trello.com/b/1Rkelydw/afkd"},
             "api_key": "k",
             "token": "t",
-            "pick_from": {"@value": "Up for Grabs"},
+            "claim_from": {"@value": "Up for Grabs"},
         }))
         .expect("valid");
         assert_eq!(cfg.board_id, "1Rkelydw");
-        assert_eq!(cfg.pick_from, ["Up for Grabs"]);
+        assert_eq!(cfg.claim_from, ["Up for Grabs"]);
     }
 
     #[test]
-    fn require_member_parses_me_and_a_username() {
+    fn only_members_parses_me_a_username_and_several() {
         assert_eq!(
-            cfg(json!({"require_member": "me"})).require_member,
-            Some(MemberRef::SelfMember)
+            cfg(json!({"only_members": "me"})).only_members,
+            Some(vec![MemberRef::SelfMember])
         );
         assert_eq!(
-            cfg(json!({"require_member": "marisa"})).require_member,
-            Some(MemberRef::Username("marisa".into()))
+            cfg(json!({"only_members": "marisa"})).only_members,
+            Some(vec![MemberRef::Username("marisa".into())])
+        );
+        assert_eq!(
+            cfg(json!({"only_members": ["me", ["marisa", "alice"]]})).only_members,
+            Some(vec![
+                MemberRef::SelfMember,
+                MemberRef::Username("marisa".into()),
+                MemberRef::Username("alice".into()),
+            ])
         );
         // `me` is the one reserved spelling: proto 1's `self` is a username now, and so is
         // a differently-cased `Me`.
         for username in ["self", "Me"] {
             assert_eq!(
-                cfg(json!({"require_member": username})).require_member,
-                Some(MemberRef::Username(username.into()))
+                cfg(json!({"only_members": username})).only_members,
+                Some(vec![MemberRef::Username(username.into())])
             );
         }
     }
 
-    /// A valueless gate names nothing. It must fault on its own key rather than read as
-    /// absent (which would silently claim any card — the opposite of the operator's
-    /// ask); a list names more than one and faults the same way.
-    #[test]
-    fn a_single_valued_gate_without_one_value_faults() {
-        for key in ["require_member", "require_label"] {
-            for value in [json!(true), json!({}), json!(["a", "b"])] {
-                let e = err(json!({ key: value }));
-                assert_eq!(e.key, key);
-                assert_eq!(e.problem, format!("setting `{key}` expects a single value"));
-            }
-        }
-    }
-
-    #[test]
-    fn require_label_parses_a_name() {
-        assert_eq!(
-            cfg(json!({"require_label": "Redo ✅"})).require_label,
-            Some("Redo ✅".to_string())
-        );
-    }
-
-    /// The negative gate accepts one label or many, across repeated entries, flattened in
+    /// The label gates accept one label or many, across repeated entries, flattened in
     /// written order — the built-in's `SettingsTree::list`.
     #[test]
-    fn without_label_parses_one_or_many() {
+    fn only_labels_and_skip_labels_parse_one_or_many() {
         assert_eq!(
-            cfg(json!({"without_label": ["Hold"]})).without_label,
-            ["Hold"]
+            cfg(json!({"only_labels": "Redo ✅"})).only_labels,
+            Some(vec!["Redo ✅".to_string()])
         );
         assert_eq!(
-            cfg(json!({"without_label": [["Hold", "WIP"], "Blockerat / Väntar"]})).without_label,
+            cfg(json!({"only_labels": [["ready", "reviewed"], "Klar"]})).only_labels,
+            Some(vec![
+                "ready".to_string(),
+                "reviewed".to_string(),
+                "Klar".to_string()
+            ])
+        );
+        assert_eq!(cfg(json!({"skip_labels": ["Hold"]})).skip_labels, ["Hold"]);
+        assert_eq!(
+            cfg(json!({"skip_labels": [["Hold", "WIP"], "Blockerat / Väntar"]})).skip_labels,
             ["Hold", "WIP", "Blockerat / Väntar"]
         );
     }
 
-    /// `pick_from` is a list setting, so a lone name is a list of one: it reads the same
+    /// `claim_from` is a list setting, so a lone name is a list of one: it reads the same
     /// bare, as afkd's one repeatable entry, or beside a block, and several names keep the
     /// order they were written in.
     #[test]
-    fn pick_from_reads_one_name_or_several_in_the_shapes_afkd_lowers() {
+    fn claim_from_reads_one_name_or_several_in_the_shapes_afkd_lowers() {
         for value in [
             json!("To Do"),
             json!(["To Do"]),
             json!([["To Do"]]),
             json!({"@value": "To Do"}),
         ] {
-            assert_eq!(cfg(json!({ "pick_from": value })).pick_from, ["To Do"]);
+            assert_eq!(cfg(json!({ "claim_from": value })).claim_from, ["To Do"]);
         }
         assert_eq!(
-            cfg(json!({"pick_from": [["Bakgrundsvideor", "Hjälpvideor 🎬"]]})).pick_from,
+            cfg(json!({"claim_from": [["Bakgrundsvideor", "Hjälpvideor 🎬"]]})).claim_from,
             ["Bakgrundsvideor", "Hjälpvideor 🎬"]
         );
         assert_eq!(
-            cfg(json!({"pick_from": ["Ideas 💡", ["Up for Grabs", "To Do"]]})).pick_from,
+            cfg(json!({"claim_from": ["Ideas 💡", ["Up for Grabs", "To Do"]]})).claim_from,
             ["Ideas 💡", "Up for Grabs", "To Do"]
         );
-        // A `pick_from` written with no value names no list to draw from.
+        // A `claim_from` written with no value names no list to draw from.
         for value in [json!(true), json!([true]), json!([{}])] {
-            let e = err(json!({ "pick_from": value }));
-            assert_eq!(e.key, "pick_from");
-            assert_eq!(e.problem, "`pick_from` expects one or more list names");
+            let e = err(json!({ "claim_from": value }));
+            assert_eq!(e.key, "claim_from");
+            assert_eq!(e.problem, "`claim_from` expects one or more list names");
         }
     }
 
+    /// A valueless gate names nothing. It must fault on its own key rather than read as
+    /// absent, which would silently claim any card — the opposite of the operator's ask.
     #[test]
-    fn without_label_valueless_faults() {
-        for value in [json!([true]), json!([{}]), json!([true, {}])] {
-            let e = err(json!({ "without_label": value }));
-            assert_eq!(e.key, "without_label");
-            assert_eq!(e.problem, "`without_label` expects one or more label names");
+    fn a_valueless_gate_faults_on_its_own_key() {
+        for (key, problem) in [
+            ("only_members", "`only_members` expects one or more members"),
+            (
+                "only_labels",
+                "`only_labels` expects one or more label names",
+            ),
+            (
+                "skip_labels",
+                "`skip_labels` expects one or more label names",
+            ),
+        ] {
+            for value in [json!(true), json!([true]), json!([{}]), json!([true, {}])] {
+                let e = err(json!({ key: value }));
+                assert_eq!(e.key, key);
+                assert_eq!(e.problem, problem);
+            }
         }
     }
 
@@ -655,7 +693,7 @@ mod tests {
             "board": "https://trello.com/b/BID/x",
             "api_key": "SECRET-KEY-abc123",
             "token": "SECRET-TOKEN-def456",
-            "pick_from": "Up for Grabs",
+            "claim_from": "Up for Grabs",
         }))
         .expect("valid");
         let shown = format!("{cfg:?}");

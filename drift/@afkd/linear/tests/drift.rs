@@ -87,7 +87,8 @@ fn built_binary() -> &'static Path {
 }
 
 /// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
-/// the skill, exactly what the release archive holds — and return the staged root.
+/// the skill and the two licence texts, exactly what the release archive holds — and return
+/// the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("linear")
@@ -99,6 +100,8 @@ fn stage(dst: &Path) -> PathBuf {
     let staged = dst.join("afkd-linear");
     for present in [
         "afkd-plugin.toml",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
         "afkd-linear",
         "skills/linear/SKILL.md",
         "skills/linear/lib/linear_api.py",
@@ -207,6 +210,28 @@ struct Seeded {
     epic: String,
     child: String,
     blocker: String,
+    /// Chen's user id, the author of the question.
+    chen: String,
+    /// The files the issue links, once [`link_files`] put them there.
+    linked: Option<Linked>,
+}
+
+/// The two files a seeded issue links: a PNG its description embeds and a PDF Chen's comment
+/// links, each held by the fake at an asset url.
+struct Linked {
+    png_url: String,
+    pdf_url: String,
+    /// The description as Linear holds it, the PNG's url in it.
+    description: String,
+}
+
+/// The name Chen's PDF is linked under: spaces and wide CJK.
+const PDF: &str = "Q3 report 計画.pdf";
+
+/// The PDF's bytes: a header, a NUL, a CR LF and bytes no UTF-8 holds, so a copy that read it
+/// as text would change it.
+fn pdf() -> Vec<u8> {
+    b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\r\n\0\xff\xfe--afkd--\r\n1 0 obj\n".to_vec()
 }
 
 /// The team the service picks from: the states it reads, and one issue in Todo — a
@@ -230,14 +255,39 @@ fn seed() -> Seeded {
     for label in ["afkd/ready", "Väntar på svar"] {
         fake.label(&issue, label);
     }
-    fake.comment(&issue, Author::User(chen), ASK, 1800);
+    fake.comment(&issue, Author::User(chen.clone()), ASK, 1800);
     Seeded {
         fake,
         issue,
         epic,
         child,
         blocker,
+        chen,
+        linked: None,
     }
+}
+
+/// [`seed`]'s team with the files linked: [`SHOT`], a PNG, embedded in the issue's description,
+/// and [`PDF`] linked from a comment of Chen's, each hosted by the fake. A leg that counts the
+/// thread or the files the issue links runs on [`seed`] alone.
+fn link_files(mut seeded: Seeded) -> Seeded {
+    let fake = &seeded.fake;
+    let png_url = fake.seed_file(SHOT, "image/png", &png());
+    let pdf_url = fake.seed_file(PDF, "application/pdf", &pdf());
+    let description = format!("{BODY}\n\n![{SHOT}]({png_url})");
+    fake.describe(&seeded.issue, &description);
+    fake.comment(
+        &seeded.issue,
+        Author::User(seeded.chen.clone()),
+        &format!("The numbers are in [{PDF}](<{pdf_url}>)."),
+        900,
+    );
+    seeded.linked = Some(Linked {
+        png_url,
+        pdf_url,
+        description,
+    });
+    seeded
 }
 
 /// The service that drives the seeded issue, `home` its work dir, its credential and any gate
@@ -308,7 +358,7 @@ widgets :: service(linear) {{
     }}
     $ printenv LINEAR_AUTHORIZATION > {AUTH}
     $ printenv LINEAR_API_URL > {API_URL}
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
     match linear.issues(workspace, id=[ issue.uuid ]) {{
       .ok(found) => {{
         for fresh in found {{
@@ -444,7 +494,8 @@ fn read(path: &Path) -> String {
 /// workspace), and the daemon then drains clean.
 /// Returns the seeded team, for the leg's own checks.
 fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
-    let seeded = seed();
+    let seeded = link_files(seed());
+    let linked = seeded.linked.as_ref().expect("the files are linked");
     let (fake, issue) = (&seeded.fake, seeded.issue.as_str());
     write_config(home, &service(home, fake.base_url(), keys, claim));
     let (code, report) = validate(home);
@@ -463,13 +514,14 @@ fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
                 dir.file_name()
                     .is_some_and(|name| name.to_string_lossy().ends_with(&run_suffix))
             })
-            .map(|dir| dir.join("task.md"))
+            .map(|dir| dir.join("task/README.md"))
             .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, fake, issue, &daemon, "the issue's run starts", || {
         brief().is_some()
     });
-    let task = read(&brief().expect("waited for"));
+    let readme = brief().expect("waited for");
+    let task = read(&readme);
     let asked = format!("**陳大文:** {ASK}");
     let parent = format!(
         "Sub-issue of {}: Epic: 重试 that works",
@@ -488,7 +540,35 @@ fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
         &sub,
         &asked,
     ] {
-        assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
+        assert!(
+            task.contains(part),
+            "task/README.md carries {part:?}:\n{task}"
+        );
+    }
+    // The files the issue links are in `task/` byte for byte, and the README links each by its
+    // relative path in place of the Linear url.
+    let task_dir = readme.parent().expect("the README is in task/");
+    for (name, bytes) in [(SHOT, png()), (PDF, pdf())] {
+        let file = task_dir.join(name);
+        wait_for(
+            home,
+            fake,
+            issue,
+            &daemon,
+            &format!("task/{name} lands"),
+            || file.is_file(),
+        );
+        assert_eq!(
+            std::fs::read(&file).expect("a file of the task folder"),
+            bytes,
+            "task/{name} byte for byte"
+        );
+    }
+    for link in [format!("![{SHOT}](<{SHOT}>)"), format!("[{PDF}](<{PDF}>)")] {
+        assert!(task.contains(&link), "the README links {link}:\n{task}");
+    }
+    for url in [&linked.png_url, &linked.pdf_url] {
+        assert!(!task.contains(url), "the README holds no {url}:\n{task}");
     }
 
     std::fs::write(home.join("release"), "").expect("release the run");
@@ -507,8 +587,8 @@ fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
     );
     assert_eq!(
         read(&home.join(DESCRIPTION)),
-        BODY,
-        "the run read it through the workspace"
+        linked.description,
+        "the run read Linear's own text through the workspace"
     );
     assert_eq!(
         read(&home.join(API_URL)),
@@ -527,7 +607,7 @@ fn drive_one_issue(home: &Path, keys: &str, claim: &str) -> Seeded {
         format!(
             "uuid {issue}\nworkspace acme team ENG\ntitle {TITLE}\nurl {}\n\
              state Todo unstarted\npriority none\nparent {}\nlabel afkd/ready\n\
-             label Väntar på svar\nsub {}\nblocked_by {}\ncomments 2\n",
+             label Väntar på svar\nsub {}\nblocked_by {}\ncomments 3\n",
             fake.url(issue),
             fake.identifier(&seeded.epic),
             fake.identifier(&seeded.child),
@@ -558,7 +638,12 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     let staged = stage(stage_dir.path());
-    let mut shipped = vec!["afkd-linear".to_string(), "afkd-plugin.toml".to_string()];
+    let mut shipped = vec![
+        "afkd-linear".to_string(),
+        "afkd-plugin.toml".to_string(),
+        "LICENSE-MIT".to_string(),
+        "LICENSE-APACHE".to_string(),
+    ];
     shipped.extend(
         tree_of(&plugin_root().join("skills"))
             .into_iter()
@@ -570,7 +655,7 @@ fn install_leg_places_the_plugin_and_runs_one_issue_through_it() {
     assert_eq!(
         tree_of(&staged),
         shipped,
-        "the release holds the manifest, the binary and the skill, and nothing else"
+        "the release holds the manifest, the binary, the skill and the licence texts, and nothing else"
     );
     install(home.path(), &staged);
     let placed = plugins_root(home.path()).join(NAME);
@@ -731,7 +816,7 @@ discuss :: service(linear) {{
   work_dir      "/srv/acme/widgets"
 
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {{
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
 "#
@@ -791,7 +876,7 @@ widgets :: service(linear) {{
       }}
       .err(e) => fail("linear.files: #{{e.message}}")
     }}
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
   on_done proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue, outcome: afkd.Outcome) {{
     match linear.create_comment(workspace, issue, "## 完了 ✅\n\nlanded #{{issue.title}} in #{{outcome.duration}}.") {{

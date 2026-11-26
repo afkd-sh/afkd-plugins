@@ -14,7 +14,7 @@
 //! there is no park and no clarification gate.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
+//! bound, the mid-run watch's cursor, and the framing of `task/README.md` — so what is here is
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side. There is no
 //! org-wide polling: a GitHub trigger addresses a single `repo`, and a malformed `repo`
 //! degrades to a target that claims nothing.
@@ -30,12 +30,13 @@ use crate::common::{
     ENV_REPO,
 };
 use crate::feedback::{self, FeedbackItem};
+use crate::file::{brief_with_files, linked_texts, FetchedFile};
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{Vocabulary, PR_VOCABULARY};
 use crate::outbox::{lost_line, Item, Outbox, Write};
 use crate::settings::GithubConfig;
 use crate::wire::{Fields, PrFields, WireFile, WireUnit};
-use crate::{NUMBER_FILE, PR_DIR, TASK_FILE};
+use crate::{NUMBER_FILE, PR_DIR, TASK_DIR, TASK_FILE};
 
 /// One PR taken on as a unit of work.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +53,11 @@ pub(crate) struct Unit {
     pub(crate) url: String,
     /// The PR's head branch, threaded into the run's env.
     pub(crate) head_branch: String,
+    /// The PR's description, which — with the thread — the files the PR links are read
+    /// from ([`ClaimedUnit::linked_texts`]). The brief carries only the new feedback.
+    pub(crate) body: String,
+    /// The thread the claim's re-read saw, our own marker among it.
+    pub(crate) comments: Vec<IssueComment>,
     /// The human-feedback delta delivered in this run's brief (oldest-first), each item
     /// carrying its author so the brief reads as a thread with speakers.
     pub(crate) feedback: Vec<FeedbackItem>,
@@ -78,6 +84,10 @@ impl ClaimedUnit for Unit {
         unit_key(&self.repo, self.number)
     }
 
+    fn key(&self) -> String {
+        Unit::key(self)
+    }
+
     fn claimed_as(&self) -> &str {
         &self.claimed_as
     }
@@ -90,6 +100,10 @@ impl ClaimedUnit for Unit {
             title: self.title.clone(),
             me: self.claimed_as.clone(),
         }
+    }
+
+    fn linked_texts(&self) -> Vec<&str> {
+        linked_texts(&self.body, &self.comments)
     }
 }
 
@@ -175,7 +189,10 @@ impl Units for PrUnits {
                 return Ok(None);
             }
             match claim_issue(&*self.client, repo, pr.number, me, clock, diag)? {
-                Claimed::Won(claim_id) => {
+                Claimed::Won {
+                    marker: claim_id,
+                    thread,
+                } => {
                     // The claim is the marker; the label is the status it shows. It is
                     // not this kind's re-pick gate (the watermark is), so a refused write
                     // is diagnosed and the claim kept.
@@ -189,6 +206,8 @@ impl Units for PrUnits {
                         title: pr.title,
                         url: pr.url,
                         head_branch: pr.head_branch,
+                        body: pr.body,
+                        comments: thread,
                         feedback: feedback::delta(&comments, &reviews, me),
                         before_comments: comments.iter().map(|c| c.id).collect(),
                         claimed_as: me.to_string(),
@@ -205,8 +224,12 @@ impl Units for PrUnits {
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim-time comment ids as
     /// `seen`, the claim identity as `self` and the PR's handle fields. The PR number and
     /// head branch ride the env so a prompted `git fetch`/checkout reconstructs the
-    /// branch. The brief is unframed — afkd frames `task.md` itself.
-    fn wire_unit(&self, unit: &Unit) -> WireUnit {
+    /// branch. The brief is unframed — afkd frames `task/README.md` itself — with each link
+    /// to a file in `fetched` written as its name, and the files linked only from text the
+    /// brief does not carry (the description, the older thread) listed at its end
+    /// ([`brief_with_files`]); then each of those files, which afkd copies in from where
+    /// [`fetch_files`](crate::file::fetch_files) wrote it.
+    fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
         env.insert(ENV_PR_NUMBER.to_string(), unit.number.to_string());
@@ -224,16 +247,21 @@ impl Units for PrUnits {
             seen: unit.before_comments.iter().map(u64::to_string).collect(),
             me: unit.claimed_as.clone(),
             env,
-            files: vec![
-                WireFile {
-                    path: TASK_FILE.to_string(),
-                    text: feedback::pr_brief(unit.number, &unit.feedback),
-                },
-                WireFile {
-                    path: format!("{PR_DIR}/{NUMBER_FILE}"),
-                    text: unit.number.to_string(),
-                },
-            ],
+            files: [
+                WireFile::text(
+                    TASK_FILE,
+                    brief_with_files(&feedback::pr_brief(unit.number, &unit.feedback), fetched),
+                ),
+                WireFile::text(format!("{PR_DIR}/{NUMBER_FILE}"), unit.number.to_string()),
+            ]
+            .into_iter()
+            .chain(fetched.iter().map(|file| {
+                WireFile::from_path(
+                    format!("{TASK_DIR}/{}", file.name),
+                    file.path.to_string_lossy(),
+                )
+            }))
+            .collect(),
         }
     }
 
@@ -304,15 +332,17 @@ mod tests {
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief,
     //! the env, the end of a round and the hooks' actions. The drive around it (attempt
     //! counting, the claim journal, the run-name mint, the cadence, the framing of
-    //! `task.md`) is afkd's, on the far side of the wire; the wire itself is
+    //! `task/README.md`) is afkd's, on the far side of the wire; the wire itself is
     //! `tests/wire.rs`.
 
     use super::*;
     use crate::claim::{claim_renewal_text, claim_text, is_claim, split_claim_key, CLAIM_MARKER};
     use crate::client::{Action, MockClient};
-    use crate::common::{CaptureDiag, FakeClock, CALL_BUDGET, CLAIM_RESERVE};
+    use crate::common::{CaptureDiag, FakeClock, TempDir, CALL_BUDGET, CLAIM_RESERVE};
     use crate::feedback::review_thread;
+    use crate::file::fetch_files;
     use crate::lifecycle::LifecycleAction;
+    use crate::wire::FileSource;
     use std::time::Duration;
 
     fn cfg(repo: &str) -> GithubConfig {
@@ -389,9 +419,19 @@ mod tests {
             title: "PR 7".into(),
             url: "https://github.com/acme/widgets/pull/7".into(),
             head_branch: "feature/x".into(),
+            body: String::new(),
+            comments: Vec::new(),
             feedback,
             before_comments: Vec::new(),
             claimed_as: "me".into(),
+        }
+    }
+
+    /// The text of a wire file that carries it inline.
+    fn text_of(file: &WireFile) -> &str {
+        match &file.source {
+            FileSource::Text(text) => text,
+            FileSource::From(from) => panic!("{} is copied from {from}", file.path),
         }
     }
 
@@ -413,20 +453,101 @@ mod tests {
 
     /// The brief this kind hands over is the **shared** renderer's text (parity, not a
     /// second hand-written string): `wire_unit` is driven for real over the adversarial
-    /// `review_thread` fixture, and what lands in `task.md` must equal
+    /// `review_thread` fixture, and what lands in `task/README.md` must equal
     /// `feedback::pr_brief` over the same thread, which is where that text is pinned.
     #[test]
     fn the_brief_in_the_wire_unit_is_the_shared_renderers_text() {
         let h = Harness::new(cfg("acme/widgets"));
-        let wire = h.units.wire_unit(&unit(1, review_thread()));
+        let wire = h.units.wire_unit(&unit(1, review_thread()), &[]);
         assert_eq!(wire.files[0].path, TASK_FILE);
-        assert_eq!(wire.files[0].text, feedback::pr_brief(7, &review_thread()));
+        assert_eq!(
+            text_of(&wire.files[0]),
+            feedback::pr_brief(7, &review_thread())
+        );
         // Not vacuous: the thread really did reach the brief, attributed by speaker.
         assert!(
-            wire.files[0].text.contains("**bob-döner:**"),
+            text_of(&wire.files[0]).contains("**bob-döner:**"),
             "{}",
-            wire.files[0].text
+            text_of(&wire.files[0])
         );
+    }
+
+    /// A PR whose new feedback links a file, and whose description and older thread link
+    /// others: all three are downloaded from what the claim read; the brief points the one
+    /// its feedback links at its relative name, lists the two it does not carry — the
+    /// description's image and the PDF an earlier reply linked — by theirs, and no GitHub
+    /// url is left in it. Every file rides as a `from` entry beside the brief and the number.
+    #[test]
+    fn a_prs_feedback_description_and_thread_files_are_fetched_and_linked_by_name() {
+        let h = Harness::new(cfg("acme/widgets"));
+        let (shot, trace, spec) = (
+            "https://github.com/user-attachments/assets/0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5",
+            "https://github.com/user-attachments/files/9001/trace.zip",
+            "https://github.com/user-attachments/files/9002/spec.pdf",
+        );
+        let (png, zip, pdf) = (
+            b"\x89PNG\r\n\x1a\n\0\xff".as_slice(),
+            b"PK\x03\x04\0\0\xff\xfe".as_slice(),
+            b"%PDF-1.7\n\0\xe2\xe3\r\n%%EOF".as_slice(),
+        );
+        h.client.add_pull(7, "me", "feature/x");
+        h.client
+            .set_pull_body(7, &format!("Adds retries.\n\n![Image]({shot})"));
+        h.client
+            .add_comment_body(7, 1, "me", &format!("Done, see [spec.pdf]({spec})."), 100);
+        h.client.add_comment_body(
+            7,
+            2,
+            "álvaro",
+            &format!("The trace: [trace.zip]({trace})"),
+            200,
+        );
+        h.client.add_file(shot, png, Some("image/png"), None);
+        h.client.add_file(trace, zip, Some("application/zip"), None);
+        h.client.add_file(spec, pdf, Some("application/pdf"), None);
+
+        let unit = h.poll().expect("claimed");
+        let (body, done, traced) = (
+            format!("Adds retries.\n\n![Image]({shot})"),
+            format!("Done, see [spec.pdf]({spec})."),
+            format!("The trace: [trace.zip]({trace})"),
+        );
+        assert_eq!(unit.body, body);
+        assert_eq!(
+            unit.linked_texts(),
+            [body.as_str(), done.as_str(), traced.as_str()],
+            "the description, then the thread oldest first, our marker left out"
+        );
+        let state = TempDir::new("pr-files");
+        let dir = state.path().join("task-files").join("k");
+        let fetched = fetch_files(&*h.client, "pr", &unit.linked_texts(), &dir, &h.diag);
+        let wire = h.units.wire_unit(&unit, &fetched);
+
+        assert_eq!(
+            text_of(&wire.files[0]),
+            "Address review feedback on PR #7.\n\n## New feedback\n\n\
+             **álvaro:** The trace: [trace.zip](<trace.zip>)\n\n\
+             ## Files linked elsewhere on the item\n\n\
+             These are linked from the item's description or its comments, which this brief \
+             does not carry, and are downloaded beside it:\n\n\
+             - [Image.png](<Image.png>)\n\
+             - [spec.pdf](<spec.pdf>)\n"
+        );
+        assert!(!text_of(&wire.files[0]).contains("github.com"));
+        let path = |name: &str| dir.join(name).to_str().unwrap().to_string();
+        assert_eq!(
+            wire.files[1..],
+            [
+                WireFile::text("task/pr/number", "7"),
+                WireFile::from_path("task/Image.png", path("Image.png")),
+                WireFile::from_path("task/spec.pdf", path("spec.pdf")),
+                WireFile::from_path("task/trace.zip", path("trace.zip")),
+            ]
+        );
+        for (name, bytes) in [("Image.png", png), ("spec.pdf", pdf), ("trace.zip", zip)] {
+            assert_eq!(std::fs::read(dir.join(name)).unwrap(), bytes, "{name}");
+        }
+        assert!(h.diag.lines().is_empty(), "{:?}", h.diag.lines());
     }
 
     // --- Eligibility + claim ---
@@ -489,8 +610,7 @@ mod tests {
                 body: "(review 3)".into()
             }]
         );
-        assert!(h.units.wire_unit(&unit).files[0]
-            .text
+        assert!(text_of(&h.units.wire_unit(&unit, &[]).files[0])
             .ends_with("**björn-öst:** (review 3)\n"));
     }
 
@@ -639,7 +759,7 @@ mod tests {
                 );
             }
             let unit = h.poll()?;
-            Some(h.units.wire_unit(&unit).files[0].text.clone())
+            Some(text_of(&h.units.wire_unit(&unit, &[]).files[0]).to_string())
         }
 
         let clean = brief_of(false).expect("the human replies make the PR eligible");
@@ -791,7 +911,7 @@ mod tests {
     /// The whole wire unit: the number as `id`, the claim-journal key, the PR's handle
     /// fields, the stable thread, the claim-time comments as `seen`, the claim identity
     /// as `self`, the PR number and head branch merged over the credentials, and the
-    /// brief beside the bare number under `pr/number`.
+    /// brief beside the bare number under `task/pr/number`.
     #[test]
     fn the_wire_unit_carries_pr_number_branch_thread_and_layout() {
         let h = Harness::new(cfg("acme/widgets"));
@@ -814,7 +934,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>()
         };
         assert_eq!(
-            h.units.wire_unit(&unit),
+            h.units.wire_unit(&unit, &[]),
             WireUnit {
                 id: "7".into(),
                 key: "acme/widgets#7#1000001".into(),
@@ -835,16 +955,12 @@ mod tests {
                     ("GITHUB_TOKEN", "PAT"),
                 ]),
                 files: vec![
-                    WireFile {
-                        path: "task.md".into(),
-                        text: "Address review feedback on PR #7.\n\n## New feedback\n\n\
-                               **alice:** please rename the flag\n"
-                            .into(),
-                    },
-                    WireFile {
-                        path: "pr/number".into(),
-                        text: "7".into(),
-                    },
+                    WireFile::text(
+                        "task/README.md",
+                        "Address review feedback on PR #7.\n\n## New feedback\n\n\
+                         **alice:** please rename the flag\n"
+                    ),
+                    WireFile::text("task/pr/number", "7"),
                 ],
             }
         );

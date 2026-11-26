@@ -11,7 +11,7 @@
 //! against [`MockClient`](crate::client::MockClient) and a fake clock.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
+//! bound, the mid-run watch's cursor, and the framing of `task/README.md` — so what is here is
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side.
 //!
 //! The optional `discuss_with` key turns intake into a **conversation**: a candidate must
@@ -21,7 +21,7 @@
 //! **candidate scan** reads no comments at all.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -30,16 +30,19 @@ use crate::client::{GiteaClient, GiteaError, Issue, IssueComment, Repo};
 use crate::common::{
     claim_issue, claim_key_for, claim_label_fault, comment_watermark, creds_env, delete_marker,
     do_action, ensure_issue_labels, lock, new_reply_comments, release_claim, release_stale,
-    renew_marker, unit_key, ClaimFault, Claimed, Clock, Diag, ScanBudget, Target, AWAITING_LABEL,
-    CLAIMED_LABEL, ENV_ISSUE_NUMBER, ENV_REPO,
+    renew_marker, unit_key, write_whole, ClaimFault, Claimed, Clock, Diag, ScanBudget, Target,
+    AWAITING_LABEL, CLAIMED_LABEL, ENV_ISSUE_NUMBER, ENV_REPO,
 };
 use crate::feedback::{render_feedback_section, FeedbackItem};
+use crate::file::{
+    escape_link_text, files_linked_by, is_image, links_to, relink, task_file_name, AttachmentBase,
+};
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{LifecycleAction, Vocabulary, ISSUE_VOCABULARY};
-use crate::outbox::{lost_line, Item, Outbox, Write};
+use crate::outbox::{lost_line, named, Item, Outbox, Write};
 use crate::settings::{DiscussWith, GiteaConfig};
 use crate::wire::{Facts, Fields, IssueFields, UnitOutcome, WireFile, WireUnit};
-use crate::{ISSUE_DIR, NUMBER_FILE, PARK_FILE, TASK_FILE};
+use crate::{ISSUE_DIR, NUMBER_FILE, PARK_FILE, TASK_DIR, TASK_FILE};
 
 /// One issue taken on as a unit of work.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,9 +84,24 @@ impl Unit {
     }
 }
 
+/// A file the issue links, downloaded to be handed over in the task folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FetchedFile {
+    /// Its name in the task folder.
+    pub(crate) name: String,
+    /// The url it was linked at, as the text wrote it.
+    pub(crate) url: String,
+    /// Where it was written.
+    pub(crate) path: PathBuf,
+}
+
 impl ClaimedUnit for Unit {
     fn thread(&self) -> String {
         Unit::thread(self)
+    }
+
+    fn key(&self) -> String {
+        Unit::key(self)
     }
 
     fn claimed_as(&self) -> &str {
@@ -144,6 +162,8 @@ pub(crate) struct IssueUnits {
     call_deadline: Mutex<Option<Instant>>,
     /// The writes the forge could not take, which the plugin's worker retries.
     outbox: Arc<Outbox>,
+    /// Which links are this instance's attachments, from the configured `base_url`.
+    attachments: AttachmentBase,
 }
 
 impl IssueUnits {
@@ -158,6 +178,7 @@ impl IssueUnits {
             creds: creds_env(cfg),
             call_deadline: Mutex::new(None),
             outbox: Arc::default(),
+            attachments: AttachmentBase::new(&cfg.base_url),
         }
     }
 
@@ -417,8 +438,11 @@ impl IssueUnits {
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim-time comment ids as
     /// `seen`, the claim identity as `self` and the issue's handle fields. The brief is
-    /// unframed — afkd frames `task.md` itself (ADR-0081).
-    pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
+    /// unframed — afkd frames `task/README.md` itself (ADR-0081) — with each link to a file in
+    /// `fetched` written as its name, and the files linked only from a comment outside the
+    /// brief listed at its end ([`brief_with_files`]); then each of those files, which afkd
+    /// copies in from where [`fetch_files`](Self::fetch_files) wrote it.
+    pub(crate) fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_REPO.to_string(), unit.repo.full_name());
         env.insert(ENV_ISSUE_NUMBER.to_string(), unit.number.to_string());
@@ -435,18 +459,132 @@ impl IssueUnits {
             seen: unit.before_comments.iter().map(u64::to_string).collect(),
             me: unit.claimed_as.clone(),
             env,
-            files: vec![
-                WireFile {
-                    path: TASK_FILE.to_string(),
-                    text: brief_text(&unit.title, &unit.body, &unit.feedback),
-                },
-                WireFile {
-                    path: format!("{ISSUE_DIR}/{NUMBER_FILE}"),
-                    text: unit.number.to_string(),
-                },
-            ],
+            files: [
+                WireFile::text(
+                    TASK_FILE,
+                    brief_with_files(
+                        &brief_text(&unit.title, &unit.body, &unit.feedback),
+                        fetched,
+                    ),
+                ),
+                WireFile::text(
+                    format!("{ISSUE_DIR}/{NUMBER_FILE}"),
+                    unit.number.to_string(),
+                ),
+            ]
+            .into_iter()
+            .chain(fetched.iter().map(|file| {
+                WireFile::from_path(
+                    format!("{TASK_DIR}/{}", file.name),
+                    file.path.to_string_lossy(),
+                )
+            }))
+            .collect(),
         }
     }
+
+    /// Download every attachment the issue's body and comments link into a fresh `dir`, each
+    /// under the call's deadline, and return what landed: the name, the url and the path of
+    /// each. The comments are listed here, oldest first, the claim markers left out; a list
+    /// that fails is said and leaves the body's links alone. A file that cannot be
+    /// downloaded or written is said, with the issue, its url and why, and left out: the
+    /// brief keeps its Gitea url, which the skill's `fetch_attachment.py` fetches. A failure
+    /// never fails the claim.
+    pub(crate) fn fetch_files(&self, unit: &Unit, dir: &Path, diag: &dyn Diag) -> Vec<FetchedFile> {
+        let issue = named(&unit.item());
+        let comments = self
+            .client
+            .list_issue_comments(&unit.repo, unit.number)
+            .unwrap_or_else(|e| {
+                diag.err(&format!(
+                    "{issue}: its comments are not read, so only the files its body links are \
+                     downloaded — {e}"
+                ));
+                Vec::new()
+            });
+        let links = files_linked_by(&unit.body, &comments, &|url| {
+            self.attachments.attachment_uuid(url).is_some()
+        });
+        // Whatever a crashed child left under this key is not this claim's.
+        let _ = std::fs::remove_dir_all(dir);
+        if links.is_empty() {
+            return Vec::new();
+        }
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            diag.err(&format!(
+                "{issue}: no file it links is downloaded, {} cannot be made — {e}",
+                dir.display()
+            ));
+            return Vec::new();
+        }
+        let mut fetched: Vec<FetchedFile> = Vec::new();
+        for (text, url) in links {
+            let names: Vec<String> = fetched.iter().map(|file| file.name.clone()).collect();
+            let name = task_file_name(&text, &url, &names);
+            let path = dir.join(&name);
+            let written = self
+                .attachments
+                .attachment_uuid(&url)
+                .ok_or_else(|| "it names no attachment".to_string())
+                .and_then(|uuid| {
+                    self.client
+                        .download_attachment(&uuid)
+                        .map_err(|e| e.to_string())
+                })
+                .and_then(|bytes| {
+                    write_whole(&path, &bytes, 0o600)
+                        .map_err(|e| format!("{} cannot be written — {e}", path.display()))
+                });
+            match written {
+                Ok(()) => fetched.push(FetchedFile { name, url, path }),
+                Err(e) => diag.err(&format!(
+                    "{issue}: the file at {url} is not downloaded, and stays a Gitea link in \
+                     the brief for the skill's fetch_attachment.py — {e}"
+                )),
+            }
+        }
+        fetched
+    }
+}
+
+/// The brief `brief` with each link to a file in `fetched` written as its name
+/// ([`relink`]), and, when `fetched` holds a file the brief does not link — one only a
+/// comment outside the brief links — a closing `Files` section that links each of those by
+/// its relative name, an image embedded.
+fn brief_with_files(brief: &str, fetched: &[FetchedFile]) -> String {
+    let name_of = |url: &str| {
+        fetched
+            .iter()
+            .find(|file| file.url == url)
+            .map(|file| file.name.clone())
+    };
+    let mut out = relink(brief, &name_of);
+    let carried: Vec<String> = links_to(brief, &|url| name_of(url).is_some())
+        .into_iter()
+        .map(|(_, url, _)| url)
+        .collect();
+    let elsewhere: Vec<&FetchedFile> = fetched
+        .iter()
+        .filter(|file| !carried.contains(&file.url))
+        .collect();
+    if elsewhere.is_empty() {
+        return out;
+    }
+    let kept = out.trim_end_matches('\n').len();
+    out.drain(kept..);
+    out.push_str(
+        "\n\n## Files\n\nThese are linked from the issue's comments, which this brief does not \
+         carry, and are downloaded beside it:\n\n",
+    );
+    for file in elsewhere {
+        let bang = if is_image(&file.name) { "!" } else { "" };
+        out.push_str(&format!(
+            "- {bang}[{}](<{}>)\n",
+            escape_link_text(&file.name),
+            file.name
+        ));
+    }
+    out
 }
 
 /// The `issue` kind behind the plugin's seam: the inherent methods above, as they are.
@@ -477,8 +615,12 @@ impl Units for IssueUnits {
         IssueUnits::try_claim_next(self, me, diag, clock)
     }
 
-    fn wire_unit(&self, unit: &Unit) -> WireUnit {
-        IssueUnits::wire_unit(self, unit)
+    fn fetch_files(&self, unit: &Unit, dir: &Path, diag: &dyn Diag) -> Vec<FetchedFile> {
+        IssueUnits::fetch_files(self, unit, dir, diag)
+    }
+
+    fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
+        IssueUnits::wire_unit(self, unit, fetched)
     }
 
     fn release(&self, unit: &Unit, diag: &dyn Diag) {
@@ -556,7 +698,7 @@ fn backstop_text(outcome: UnitOutcome, facts: &Facts) -> String {
     }
 }
 
-/// The brief written to `task.md`: the title, or the title, a blank line, then the body —
+/// The brief written to `task/README.md`: the title, or the title, a blank line, then the body —
 /// then, for a re-claimed (unparked) issue, the human replies that unparked it, each
 /// attributed.
 fn brief_text(title: &str, body: &str, feedback: &[FeedbackItem]) -> String {
@@ -576,13 +718,14 @@ mod tests {
     //! What is proven here is the **vendor half** — eligibility, the claim, the
     //! `discuss_with` tail gate, the clarification gate's park/backstop, the brief and
     //! the env. The drive around it (attempt counting, the claim journal, the run-name
-    //! mint, the cadence, the framing of `task.md`) is afkd's, on the far side of the
+    //! mint, the cadence, the framing of `task/README.md`) is afkd's, on the far side of the
     //! wire; the wire itself is `tests/wire.rs`.
 
     use super::*;
-    use crate::claim::CLAIM_SETTLE;
+    use crate::claim::{claim_text, CLAIM_SETTLE};
     use crate::client::{Action, MockClient};
     use crate::common::{CaptureDiag, FakeClock, TempDir, CALL_BUDGET, CLAIM_RESERVE};
+    use crate::wire::FileSource;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -656,11 +799,19 @@ mod tests {
         }
     }
 
-    /// The `task.md` text a `poll` would hand over for `unit`.
+    /// The `task/README.md` text a `poll` would hand over for `unit`.
     fn task_md(h: &Harness, unit: &Unit) -> String {
-        let wire = h.units.wire_unit(unit);
+        let wire = h.units.wire_unit(unit, &[]);
         assert_eq!(wire.files[0].path, TASK_FILE);
-        wire.files[0].text.clone()
+        text_of(&wire.files[0]).to_string()
+    }
+
+    /// The text of a wire file that carries it inline.
+    fn text_of(file: &WireFile) -> &str {
+        match &file.source {
+            FileSource::Text(text) => text,
+            FileSource::From(from) => panic!("{} is copied from {from}", file.path),
+        }
     }
 
     /// The facts of a run that faulted with `reason`.
@@ -1488,7 +1639,7 @@ mod tests {
 
     /// AC3's round-trip end-to-end: a parked issue, two humans answering with real
     /// prose (multi-line, non-ASCII, a code block), re-claimed and re-briefed. The
-    /// regenerated `task.md` carries the standing title/body *and* a `## New
+    /// regenerated `task/README.md` carries the standing title/body *and* a `## New
     /// comments` section naming each replier — the answer to the parked question,
     /// not a re-derivation of it.
     #[test]
@@ -2134,7 +2285,7 @@ mod tests {
         );
         let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
         assert_eq!(
-            serde_json::to_value(h.units.wire_unit(&unit).fields).unwrap(),
+            serde_json::to_value(h.units.wire_unit(&unit, &[]).fields).unwrap(),
             serde_json::json!({
                 "title": "修复 the retry storm 🚨",
                 "url": "https://gitea.example.com/acme/widgets/issues/4",
@@ -2143,7 +2294,7 @@ mod tests {
             })
         );
         assert_eq!(
-            serde_json::to_value(h.units.wire_unit(&self::unit(9)).fields).unwrap(),
+            serde_json::to_value(h.units.wire_unit(&self::unit(9), &[]).fields).unwrap(),
             serde_json::json!({"title": "T", "url": "", "number": 9, "labels": []})
         );
     }
@@ -2154,7 +2305,7 @@ mod tests {
         let mut unit = unit(4);
         unit.claim_id = 1_000_001;
         unit.before_comments = vec![41, 42];
-        let wire = h.units.wire_unit(&unit);
+        let wire = h.units.wire_unit(&unit, &[]);
 
         // The claim-journal key the built-in wrote, and the session thread it resumes
         // under — both unchanged across the switch.
@@ -2176,19 +2327,299 @@ mod tests {
                 ("GITEA_TOKEN".to_string(), "PAT".to_string()),
             ])
         );
-        // `scratch_layout`, the brief unframed: afkd frames `task.md` itself.
+        // `scratch_layout`, the brief unframed: afkd frames `task/README.md` itself.
         assert_eq!(
             wire.files,
             [
-                WireFile {
-                    path: "task.md".into(),
-                    text: "T\n\nB".into(),
-                },
-                WireFile {
-                    path: "issue/number".into(),
-                    text: "4".into(),
-                },
+                WireFile::text("task/README.md", "T\n\nB"),
+                WireFile::text("task/issue/number", "4"),
             ]
+        );
+    }
+
+    // --- The files an issue links ---
+
+    const U1: &str = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+    const U2: &str = "11111111-2222-3333-4444-555555555555";
+    const U3: &str = "99999999-8888-7777-6666-555555555555";
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\xff\xfe--end";
+    const PDF: &[u8] = b"%PDF-1.7\n\0\xe2\xe3\r\n%%EOF";
+
+    /// An issue whose body embeds a PNG and whose comment links a PDF: both are downloaded
+    /// byte for byte, the brief points the image at its relative name, lists the PDF — which
+    /// only a comment links, and the brief carries no comment — by its relative name too, and
+    /// no Gitea url is left in it; every file rides as a `from` entry beside the brief.
+    #[test]
+    fn the_brief_points_at_the_files_and_lists_the_one_only_a_comment_links() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        let body = format!("Crash on start:\n\n![shot.png](/attachments/{U1})");
+        h.client.add_issue(7, "Crash 💥", &body, &["afkd/ready"]);
+        h.client.add_comment_body(
+            7,
+            1,
+            "alice",
+            &format!("The spec: [report.pdf](/acme/widgets/attachments/{U2})"),
+            100,
+        );
+        h.client.seed_attachment(U1, PNG);
+        h.client.seed_attachment(U2, PDF);
+
+        let unit = h.poll().expect("no fatal claim verdict").expect("claimed");
+        let state = TempDir::new();
+        let dir = state.path().join("task-files").join("k");
+        let fetched = h.units.fetch_files(&unit, &dir, &h.diag);
+        let wire = h.units.wire_unit(&unit, &fetched);
+
+        assert_eq!(
+            text_of(&wire.files[0]),
+            "Crash 💥\n\nCrash on start:\n\n![shot.png](<shot.png>)\n\n\
+             ## Files\n\n\
+             These are linked from the issue's comments, which this brief does not carry, \
+             and are downloaded beside it:\n\n\
+             - [report.pdf](<report.pdf>)\n"
+        );
+        assert!(!text_of(&wire.files[0]).contains("attachments/"));
+        assert_eq!(
+            wire.files[1..],
+            [
+                WireFile::text("task/issue/number", "7"),
+                WireFile::from_path("task/shot.png", dir.join("shot.png").to_str().unwrap()),
+                WireFile::from_path("task/report.pdf", dir.join("report.pdf").to_str().unwrap()),
+            ]
+        );
+        assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), PNG);
+        assert_eq!(std::fs::read(dir.join("report.pdf")).unwrap(), PDF);
+        assert!(h.diag.lines().is_empty(), "{:?}", h.diag.lines());
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("shot.png"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// An image only a comment links is listed embedded: the section's `!` shows it where
+    /// a file is linked.
+    #[test]
+    fn an_image_only_a_comment_links_is_listed_embedded() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        h.client.add_issue(7, "T", "", &["afkd/ready"]);
+        h.client.add_comment_body(
+            7,
+            1,
+            "alice",
+            &format!("![log.PNG](/attachments/{U1})"),
+            100,
+        );
+        h.client.seed_attachment(U1, PNG);
+        let unit = h.poll().unwrap().expect("claimed");
+        let state = TempDir::new();
+        let dir = state.path().join("d");
+        let fetched = h.units.fetch_files(&unit, &dir, &h.diag);
+        assert_eq!(
+            text_of(&h.units.wire_unit(&unit, &fetched).files[0]),
+            "T\n\n## Files\n\n\
+             These are linked from the issue's comments, which this brief does not carry, \
+             and are downloaded beside it:\n\n\
+             - ![log.PNG](<log.PNG>)\n"
+        );
+    }
+
+    /// A file that cannot be downloaded never fails the claim: the file that could be is in
+    /// the folder and linked by name, the one that could not keeps its Gitea link, and the
+    /// log says which and why.
+    #[test]
+    fn a_file_that_fails_keeps_its_gitea_link_and_is_diagnosed() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        let body = format!("![shot.png](/attachments/{U1}) and [gone.pdf](/attachments/{U3})");
+        h.client.add_issue(7, "Crash 💥", &body, &["afkd/ready"]);
+        h.client.seed_attachment(U1, PNG);
+
+        let unit = h.poll().unwrap().expect("claimed");
+        let state = TempDir::new();
+        let dir = state.path().join("d");
+        let fetched = h.units.fetch_files(&unit, &dir, &h.diag);
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(
+            text_of(&h.units.wire_unit(&unit, &fetched).files[0]),
+            format!("Crash 💥\n\n![shot.png](<shot.png>) and [gone.pdf](/attachments/{U3})")
+        );
+        assert_eq!(
+            h.diag.lines(),
+            [format!(
+                "issue \"Crash 💥\" (acme/widgets#7): the file at /attachments/{U3} is not \
+                 downloaded, and stays a Gitea link in the brief for the skill's \
+                 fetch_attachment.py — gitea download attachment: forge returned status 404"
+            )]
+        );
+        assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), PNG);
+        assert!(!dir.join("gone.pdf").exists());
+    }
+
+    /// A claim marker's links, a link at another host and one into another path are read as
+    /// no file: nothing is downloaded, nothing is said, and no folder is made.
+    #[test]
+    fn claim_markers_and_foreign_links_are_ignored() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        let body = format!(
+            "![a](https://evil.example/attachments/{U1}) [b](https://gitea.example.com/files/{U1}) \
+             [c](http://gitea.example.com/attachments/{U1})"
+        );
+        h.client.add_issue(7, "T", &body, &["afkd/ready"]);
+        h.client.add_comment_body(
+            7,
+            1,
+            "rival",
+            &format!("{}\n[d](/attachments/{U1})", claim_text("rival")),
+            100,
+        );
+        h.client.seed_attachment(U1, PNG);
+
+        let unit = h.poll().unwrap().expect("claimed");
+        let state = TempDir::new();
+        let dir = state.path().join("d");
+        let fetched = h.units.fetch_files(&unit, &dir, &h.diag);
+        assert!(fetched.is_empty());
+        assert!(!dir.exists());
+        assert!(h.diag.lines().is_empty(), "{:?}", h.diag.lines());
+        assert_eq!(
+            text_of(&h.units.wire_unit(&unit, &fetched).files[0]),
+            format!("T\n\n{body}")
+        );
+    }
+
+    /// Two links that would take one name land as `shot.png` and `shot-2.png`, each link
+    /// pointing at its own file, and a link named `README.md` is never the brief.
+    #[test]
+    fn clashing_names_are_numbered() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        let body = format!(
+            "![shot.png](/attachments/{U1}) ![shot.png](/attachments/{U2}) \
+             [README.md](/attachments/{U3})"
+        );
+        h.client.add_issue(7, "T", &body, &["afkd/ready"]);
+        h.client.seed_attachment(U1, b"one");
+        h.client.seed_attachment(U2, b"two");
+        h.client.seed_attachment(U3, b"three");
+        let unit = h.poll().unwrap().expect("claimed");
+        let state = TempDir::new();
+        let dir = state.path().join("d");
+        let fetched = h.units.fetch_files(&unit, &dir, &h.diag);
+        assert_eq!(
+            fetched.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["shot.png", "shot-2.png", "README-2.md"]
+        );
+        assert_eq!(
+            text_of(&h.units.wire_unit(&unit, &fetched).files[0]),
+            "T\n\n![shot.png](<shot.png>) ![shot.png](<shot-2.png>) [README.md](<README-2.md>)"
+        );
+        assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), b"one");
+        assert_eq!(std::fs::read(dir.join("shot-2.png")).unwrap(), b"two");
+        assert_eq!(std::fs::read(dir.join("README-2.md")).unwrap(), b"three");
+    }
+
+    /// An issue that links nothing makes no folder, and a folder an earlier claim of the
+    /// key left is cleared.
+    #[test]
+    fn no_links_means_no_folder() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        h.client.add_issue(7, "T", "plain body", &["afkd/ready"]);
+        let unit = h.poll().unwrap().expect("claimed");
+        let state = TempDir::new();
+        let dir = state.path().join("task-files").join("k");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stale.png"), b"x").unwrap();
+        assert!(h.units.fetch_files(&unit, &dir, &h.diag).is_empty());
+        assert!(!dir.exists());
+        assert!(h.diag.lines().is_empty());
+        assert_eq!(
+            h.units.wire_unit(&unit, &[]).files,
+            [
+                WireFile::text("task/README.md", "T\n\nplain body"),
+                WireFile::text("task/issue/number", "7"),
+            ]
+        );
+    }
+
+    /// Comments that cannot be listed are said, and the body's own links are still
+    /// downloaded.
+    #[test]
+    fn a_failed_comment_read_leaves_the_bodys_files() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        h.client.add_issue(
+            7,
+            "T",
+            &format!("![shot.png](/attachments/{U1})"),
+            &["afkd/ready"],
+        );
+        h.client.seed_attachment(U1, PNG);
+        let unit = h.poll().unwrap().expect("claimed");
+        h.client.fail("list comments");
+        let state = TempDir::new();
+        let dir = state.path().join("d");
+        let fetched = h.units.fetch_files(&unit, &dir, &h.diag);
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), PNG);
+        assert_eq!(
+            h.diag.lines(),
+            [
+                "issue \"T\" (acme/widgets#7): its comments are not read, so only the files \
+                 its body links are downloaded — gitea list comments: no response (mock failure)"
+            ]
+        );
+    }
+
+    /// A folder that cannot be made is said and nothing is downloaded: the links stay.
+    #[test]
+    fn a_folder_that_cannot_be_made_downloads_nothing() {
+        let h = Harness::new(cfg("acme/widgets"), "me");
+        h.client.add_issue(
+            7,
+            "T",
+            &format!("![shot.png](/attachments/{U1})"),
+            &["afkd/ready"],
+        );
+        h.client.seed_attachment(U1, PNG);
+        let unit = h.poll().unwrap().expect("claimed");
+        let state = TempDir::new();
+        std::fs::write(state.path().join("file"), b"").unwrap();
+        let dir = state.path().join("file").join("d");
+        assert!(h.units.fetch_files(&unit, &dir, &h.diag).is_empty());
+        let lines = h.diag.lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("issue \"T\" (acme/widgets#7): no file it links is downloaded, "),
+            "{lines:?}"
+        );
+    }
+
+    /// An instance under a sub-path: its `/gitea/attachments/<uuid>` links, relative and
+    /// absolute, are its files; a link without the prefix is not.
+    #[test]
+    fn a_sub_path_instance_matches_its_own_links() {
+        let h = Harness::new(
+            GiteaConfig {
+                base_url: "https://gitea.example.com/gitea/".into(),
+                ..cfg("acme/widgets")
+            },
+            "me",
+        );
+        let body = format!(
+            "![a.png](/gitea/attachments/{U1}) [b.png](https://gitea.example.com/gitea/attachments/{U2}) \
+             [c.png](/attachments/{U3})"
+        );
+        h.client.add_issue(7, "T", &body, &["afkd/ready"]);
+        h.client.seed_attachment(U1, b"a");
+        h.client.seed_attachment(U2, b"b");
+        h.client.seed_attachment(U3, b"c");
+        let unit = h.poll().unwrap().expect("claimed");
+        let state = TempDir::new();
+        let dir = state.path().join("d");
+        let fetched = h.units.fetch_files(&unit, &dir, &h.diag);
+        assert_eq!(
+            fetched.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["a.png", "b.png"],
+            "the link without the prefix is no link into this instance"
         );
     }
 

@@ -13,7 +13,8 @@
 // the recorder attached mid-fire. See `fixtures/README.md` for the daemon and the config.
 // So the overlap the seam tests is a real overlap — both inputs came out of one run.
 // `fixtures/runs-blockwait/` is a third copy, of a session whose one kept run waits on a lane
-// and makes one HTTP request, and `fixtures/blockwait-trace.txt` is `afkd trace`'s render of it.
+// and makes one HTTP request, and `fixtures/blockwait-trace.txt` is the rail tree `afkd trace`
+// printed for it at 0.2.489, kept as the run view's pinned expectation.
 //
 // The python legs skip loudly without `python3`, the repo's own idiom.
 
@@ -613,7 +614,7 @@ test("the relay and the page name the same node kinds", { skip: SKIP_PYTHON }, (
   assert.ok(kinds.includes(unknown), `the relay degrades an unknown kind to one it names (${unknown})`);
 });
 
-/** The width `afkd trace` renders a run tree at, `tracefile::TRACE_RENDER_WIDTH`. */
+/** The width `afkd trace` 0.2.489 rendered a run tree at, `tracefile::TRACE_RENDER_WIDTH`. */
 const TRACE_WIDTH = 100;
 
 /**
@@ -644,8 +645,8 @@ test("a recorded block's wait replays off disk as afkd trace draws it", { skip: 
   // request an `http` node. Served off disk to a tab that opened after the run, each must keep
   // its own kind, so its row draws its own glyph at the column the terminal does, and the
   // request's row its body's size in the OUT cell. `fixtures/blockwait-trace.txt` is `afkd trace`'s stdout for
-  // this very `trace.jsonl`, and the drift gate re-renders it with the afkd on `PATH`, so the
-  // terminal side of the comparison is the TUI's own tree, not a hand-written one.
+  // this very `trace.jsonl`, recorded from afkd 0.2.489. afkd no longer prints or offline-renders
+  // that tree, so nothing checks the text against afkd: it is the run view's pinned expectation.
   const runs = readdirSync(join(HERE, "fixtures", "runs-blockwait", BLOCKER));
   assert.equal(runs.length, 1, `the corpus holds one recorded run (${runs})`);
   const recorded = readFileSync(join(HERE, "fixtures", "runs-blockwait", BLOCKER, runs[0], "trace.jsonl"), "utf8")

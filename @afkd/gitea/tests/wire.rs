@@ -231,8 +231,8 @@ fn a_won_race_hands_over_the_built_ins_unit() {
                 "GITEA_TOKEN": TOKEN,
             },
             "files": [
-                {"path": "task.md", "text": format!("{TITLE}\n\n{BODY}")},
-                {"path": "issue/number", "text": "7"},
+                {"path": "task/README.md", "text": format!("{TITLE}\n\n{BODY}")},
+                {"path": "task/issue/number", "text": "7"},
             ],
         })
     );
@@ -382,6 +382,140 @@ fn an_exclusive_claim_label_ends_the_process_with_the_sentence() {
         markers(&fake, 7).is_empty(),
         "the refusal preceded the claim"
     );
+}
+
+// --- the files an issue links ---
+
+/// A PNG's signature and a NUL, a CR LF, bytes that are no UTF-8 and a `--` run: nothing a
+/// text transport would hand back whole.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\xff\xfe--afkd--\r\n\x00end";
+
+/// A PDF's header, a binary comment line and a NUL.
+const PDF: &[u8] = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\r\n\0trailer\n%%EOF";
+
+/// A claimed issue on `fake` whose body embeds a PNG and whose comment links a PDF — each as
+/// Gitea writes it: the body's link relative, the comment's absolute, as an asset's
+/// `browser_download_url` is — hands both over as `from` files holding the bytes exactly, in
+/// the folder the plugin keeps under its `state_dir`, with the README linking each by
+/// relative path; the folder is gone once the unit is finished. `base_url` is what the
+/// service's block says.
+fn files_leg(fake: FakeGitea, base_url: &str) {
+    fake.define_label(REPO, "afkd/working", false);
+    let png = fake.asset(REPO, 7, "shot.png", PNG);
+    let pdf = fake.asset(REPO, 7, "report.pdf", PDF);
+    fake.issue(
+        REPO,
+        7,
+        TITLE,
+        &format!("Crash on start:\n\n![shot.png]({})", fake.link(&png)),
+        &["afkd/ready"],
+        &[],
+    );
+    fake.comment(
+        REPO,
+        7,
+        "alice",
+        &format!("The report: [report.pdf]({})", fake.absolute_link(&pdf)),
+        60,
+    );
+    let state = TempDir::new("files");
+    let mut settings = settings(&fake);
+    settings["base_url"] = json!(base_url);
+    let mut plugin = Plugin::armed_in(settings, state.path());
+
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true, "{}", plugin.stderr());
+    let unit = &reply["unit"];
+    let files = unit["files"].as_array().expect("files");
+    assert_eq!(files.len(), 4, "{files:?}");
+    assert_eq!(
+        files[0],
+        json!({"path": "task/README.md", "text": format!(
+            "{TITLE}\n\nCrash on start:\n\n![shot.png](<shot.png>)\n\n## Files\n\n\
+             These are linked from the issue's comments, which this brief does not carry, \
+             and are downloaded beside it:\n\n- [report.pdf](<report.pdf>)\n"
+        )})
+    );
+    assert_eq!(files[1], json!({"path": "task/issue/number", "text": "7"}));
+    let mut copied = Vec::new();
+    for (file, (path, bytes)) in files[2..]
+        .iter()
+        .zip([("task/shot.png", PNG), ("task/report.pdf", PDF)])
+    {
+        assert_eq!(file["path"], path);
+        assert!(file.get("text").is_none(), "{file}");
+        let from = std::path::PathBuf::from(file["from"].as_str().expect("a from path"));
+        assert!(
+            from.is_absolute() && from.starts_with(state.path()),
+            "{from:?}"
+        );
+        assert_eq!(std::fs::read(&from).expect("the file is there"), bytes);
+        copied.push(from);
+    }
+    // The fake answers a request without the token `401`, so each download that landed
+    // above carried it.
+    let downloads: Vec<String> = fake
+        .seen()
+        .into_iter()
+        .filter(|r| r.path.contains("/attachments/"))
+        .map(|r| format!("{} {}", r.method, r.path))
+        .collect();
+    assert_eq!(downloads.len(), 2, "{downloads:?}");
+    assert!(
+        downloads.iter().all(|d| d.starts_with("GET ")),
+        "{downloads:?}"
+    );
+
+    assert_eq!(
+        finish(&mut plugin, unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    for from in &copied {
+        assert!(!from.exists(), "{from:?} is deleted at the finish");
+    }
+    assert_eq!(plugin.finish(), "", "nothing diagnosed");
+}
+
+#[test]
+fn a_claimed_issue_hands_over_the_files_it_links() {
+    let fake = FakeGitea::start(ME);
+    let base_url = fake.base_url().to_string();
+    files_leg(fake, &base_url);
+}
+
+/// The same under an instance served at `/gitea`: its relative link carries the sub-path, its
+/// absolute one too, and `base_url` is written with a trailing slash.
+#[test]
+fn a_sub_path_instance_hands_over_the_files_it_links() {
+    let fake = FakeGitea::start_under(ME, "/gitea");
+    let base_url = format!("{}/", fake.base_url());
+    files_leg(fake, &base_url);
+}
+
+/// Without a `state_dir` — an older afkd — nothing is downloaded: the links stay Gitea's,
+/// and the issue is handed over whole.
+#[test]
+fn without_a_state_dir_the_links_stay_gitea_urls() {
+    let fake = forge();
+    let png = fake.asset(REPO, 7, "shot.png", PNG);
+    let body = format!("![shot.png]({})", fake.link(&png));
+    fake.issue(REPO, 8, "Another", &body, &["afkd/ready"], &[]);
+    fake.close(REPO, 7);
+    let mut plugin = Plugin::armed(settings(&fake));
+    let reply = plugin.poll();
+    assert_eq!(reply["fire"], true);
+    assert_eq!(
+        reply["unit"]["files"],
+        json!([
+            {"path": "task/README.md", "text": format!("Another\n\n{body}")},
+            {"path": "task/issue/number", "text": "8"},
+        ])
+    );
+    assert!(fake
+        .seen()
+        .iter()
+        .all(|r| !r.path.contains("/attachments/")));
+    plugin.finish();
 }
 
 // --- renew, comments, classify ---
@@ -962,7 +1096,7 @@ fn a_pr_hello_arms_and_lists_release_renew_comments() {
 /// The won race over a PR with new human feedback hands over exactly the unit the
 /// built-in would have run: its journal key and session thread, every field the
 /// manifest's `Pull_Request` declares, the claim-time comment ids, its identity, the five
-/// env names, and the review brief beside `pr/number`. The
+/// env names, and the review brief beside `task/pr/number`. The
 /// forge then carries the claim's status — only `afkd/claimed` is created, since a PR
 /// never parks — and a second poll does not claim the same PR again.
 #[test]
@@ -996,12 +1130,12 @@ fn a_won_pr_race_hands_over_the_built_ins_unit() {
                 "GITEA_TOKEN": TOKEN,
             },
             "files": [
-                {"path": "task.md", "text": format!(
+                {"path": "task/README.md", "text": format!(
                     "Address review feedback on PR #7.\n\n## New feedback\n\n**陳大文:** {}\n\n\
                      **carol:** (review {review})\n",
                     ASK.trim_end()
                 )},
-                {"path": "pr/number", "text": "7"},
+                {"path": "task/pr/number", "text": "7"},
             ],
         })
     );

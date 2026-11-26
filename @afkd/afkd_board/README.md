@@ -1,15 +1,16 @@
 # `@afkd/afkd_board`
 
-A **provider** plugin that reads a board on [app.afkd.sh](https://app.afkd.sh): one card by
-its number, the cards any filters keep, a card's comments and its checklist, and the board's
-lists and labels.
-Each read reaches the board through the [`afkd_board.Board`](#afkd_boardboard) it is passed, by
-one of the board's API keys, so a config reads two boards side by side with two of them. It
-declares no trigger kind: every call a config makes is a child afkd starts for that one call.
+A **provider** plugin that reads and writes a board on [app.afkd.sh](https://app.afkd.sh): one
+card by its number, the cards any filters keep, a card's comments and its checklist, and the
+board's lists and labels, and [every write](#writing-to-a-board) of its cards, checklists,
+comments and lists, each write of a card made under the run it is made in. Each call reaches the
+board through the [`afkd_board.Board`](#afkd_boardboard) it is passed, by one of the board's API
+keys, so a config works two boards side by side with two of them. It declares no trigger kind:
+every call a config makes is a child afkd starts for that one call.
 
 It reads the board's HTTP API, which the site's README documents (*A board's API*). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -21,10 +22,12 @@ $ afkd install @afkd/afkd_board
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest and the `afkd-afkd_board` binary, nothing else. Nothing is compiled on your
-host, and no Rust toolchain is needed there. Installing it needs **afkd 0.2.679 or newer**,
-the first whose manifests type a handle's field as a `time` and a parameter as optional;
-`afkd update @afkd/afkd_board` moves an installed copy onto the next release.
+is: the manifest, the `afkd-afkd_board` binary and the `LICENSE-MIT` and `LICENSE-APACHE`
+texts, nothing else. Nothing is compiled on your host, and no Rust toolchain is needed
+there. Installing it needs **afkd 0.2.714 or newer**, the first whose manifests take an
+`afkd.Run?` on an action's parameter, as every write's `run` is; every older floor (a handle's
+field typed as a `time`, a parameter typed as optional) comes with it. `afkd update
+@afkd/afkd_board` moves an installed copy onto the next release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:
@@ -35,9 +38,9 @@ $ tools/pack-release afkd_board /tmp/afkd-release @afkd/afkd_board/target/releas
 $ afkd install /tmp/afkd-release/afkd-afkd_board
 ```
 
-The configs below are written in the afk language of **afkd 0.2.694 or newer**, the first
-that reads `env.get(…) ?? fail(…)` in a constant at load; an older afkd still runs the plugin,
-but refuses the examples when they load.
+The configs below are written in the afk language of **afkd 0.2.714 or newer**, which reads
+`env.get(…) ?? fail(…)` in a constant at load (0.2.694 was the first) and passes `run=run` to an
+action; an older afkd refuses the examples when they load.
 
 ## Reading a board through an `afkd_board.Board`
 
@@ -191,6 +194,129 @@ Every refusal is an `.err` whose message names the read, `<read>: <what is wrong
 - A board it cannot reach names the host, and never the key:
   ``cards: cannot reach the board at app.afkd.sh: …``.
 - A reply over afkd's 8 MiB for one call: ``cards: the reply comes to … bytes, over afkd's 8 MiB for one call; ask for fewer with limit``.
+
+## Writing to a board
+
+A write takes the `afkd_board.Board` first, like a read, and gives a `result`: `.ok` of what it
+wrote, or `.err` with the reason it was refused. Every write of a card, of its checklist and of a
+comment takes `~run`, a named `afkd.Run?`: pass `run=run`, the run the slot was passed, and the
+card's page on the board shows the change under that run, with the run's state and, if it fails,
+its problem. A write left without a run, or given `nil`, sends none, and the board shows the
+change under the key's name. A write of a list takes no run.
+
+```conf
+import "afkd"
+import "std:env"
+import "svc:interval"
+import "@afkd/afkd_board"
+
+TRAIN :: afkd_board.Board{ key: env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset") }
+
+triage :: service(interval) {
+  every    1h
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {
+    made := match afkd_board.create_card(
+      TRAIN,
+      "Todo",
+      "Retry storm in the client",
+      description="Seen on the nightly run.",
+      labels=[ "bug" ],
+      checklist=[ afkd_board.Item{ text: "Reproduce it", done: false } ],
+      at=.top,
+      run=run,
+    ) {
+      .ok(card) => card
+      .err(e) => fail("afkd_board.create_card: #{e.message}")
+    }
+    match afkd_board.move_card(TRAIN, made, "In progress", run=run) {
+      .ok(moved) => {
+        $ echo "#{moved.id} is in #{moved.list}"
+      }
+      .err(e) => fail("afkd_board.move_card: #{e.message}")
+    }
+    match afkd_board.create_comment(TRAIN, made, "Picked up by #{run.id}", run=run) {
+      .ok(comment) => {
+        $ echo "commented #{comment.id} on #{comment.card}"
+      }
+      .err(e) => fail("afkd_board.create_comment: #{e.message}")
+    }
+  }
+}
+```
+
+### The writes
+
+| Call | Gives |
+|------|-------|
+| `afkd_board.create_card(b, list, title, ~description, ~labels, ~checklist, ~at, ~after, ~run)` | `Card` with the next number, in `list` at `at` or after `after`, at the bottom with neither; a label the board lacks is made in the next free colour, and each item of `checklist`, an [`afkd_board.Item`](#the-values), starts not done whatever its `done` says |
+| `afkd_board.update_card(b, card, ~title, ~description, ~run)` | `Card` |
+| `afkd_board.move_card(b, card, list, ~at, ~after, ~run)` | `Card`, in `list` at `at` (`.top`, `.bottom`) or right after `after`, a `Card`; with neither it goes at the bottom |
+| `afkd_board.add_label(b, card, label, ~run)`, `afkd_board.remove_label(b, card, label, ~run)` | `Card`; a label the board lacks is made with the next free colour; removing one the card lacks, or the board does, is `.ok` |
+| `afkd_board.add_item(b, card, text, ~run)`, `afkd_board.check_item(b, card, index, done = true, ~run)`, `afkd_board.remove_item(b, card, index, ~run)` | `Card`; `index` counts from 0 |
+| `afkd_board.mark_done(b, card, done = true, ~run)` | `Card`; marking a blocked card done is an `.err` naming the cards that are not done |
+| `afkd_board.add_blocked_by(b, card, other, ~run)`, `afkd_board.remove_blocked_by(b, card, other, ~run)` | `Card`, `done` as the board left it; a block that makes a chain back is an `.err` naming the chain |
+| `afkd_board.create_comment(b, card, body, ~run)` | `Comment` |
+| `afkd_board.archive_card(b, card, ~run)`, `afkd_board.unarchive_card(b, card, ~run)`, `afkd_board.delete_card(b, card, ~run)` | `Card`; `delete_card` gives the card as it was, read before it was deleted |
+| `afkd_board.create_list(b, name, ~at, ~after)`, `afkd_board.update_list(b, list, ~name, ~at, ~after)`, `afkd_board.delete_list(b, list)` | `List`, `List`, nothing; `list` and `after` are list names; deleting a list with cards that are not archived is an `.err` naming the count |
+
+A write that gives a `Card` or a `Comment` gives it as the board holds it once the write is done,
+a handle like a read's, so the same card written and read is `==` itself.
+
+- **The board's API takes no run to delete a card** (`DELETE /api/board/cards/<number>` takes no
+  body), so a `run` given to `delete_card` does not reach the API.
+- **`at` and `after`.** `at` is `.top` or `.bottom`; `after` is a `Card` of the list it goes in, or,
+  for a list, the name of the list it goes after. Both together is an `.err` before any request:
+  ``create_card: at and after cannot both be given``.
+- **List names are matched exactly**, so `todo` is not `Todo`. A list the board lacks is an
+  `.err` before anything is written, naming the lists it has:
+  ``move_card: The board has no list `Doing`; it has `Todo`, `In progress` and `Done`.``.
+- **A card of another board** than the `afkd_board.Board` reaches, passed as `card`, `other` or
+  `after`, is an `.err` naming both boards, as it is for [`comments`](#refusals).
+- **A `run` that is no `afkd.Run`** is an `.err`: ``update_card: parameter run must be an afkd.Run``.
+  The plugin sends exactly the run's `machine`, `service`, `instance` and `id`, the `instance` as
+  the string afkd gives it.
+- **What the board refuses** comes back with its own sentence: a blocked card marked done,
+  ``mark_done: Card #3 is blocked by #1 and #2, which are not done.``; a block that makes a chain
+  back, ``add_blocked_by: Card #1 cannot be blocked by #3, since #3 is blocked by #2, which is
+  blocked by #1.``; a list that holds cards, ``delete_list: The list `Todo` holds 3 cards that are
+  not archived; move or archive them first.``; an item past the end of the checklist.
+- **`remove_label` of a label the board lacks** is `.ok`: the board answers `400` for it, but the
+  card lacks it all the same, so the plugin reads the card and gives it as it is, writing nothing.
+
+Lists are written by name, and a list write takes no run:
+
+```conf
+import "afkd"
+import "std:env"
+import "svc:interval"
+import "@afkd/afkd_board"
+
+TRAIN :: afkd_board.Board{ key: env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset") }
+
+tidy :: service(interval) {
+  every    1d
+  work_dir "/srv/acme/widgets"
+
+  on_run proc(run: afkd.Run) {
+    match afkd_board.create_list(TRAIN, "Review") {
+      .ok(list) => {
+        $ echo "made #{list.name} (#{list.id})"
+      }
+      .err(e) => fail("afkd_board.create_list: #{e.message}")
+    }
+    match afkd_board.update_list(TRAIN, "Review", name="Reviewed", after="Todo") {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.update_list: #{e.message}")
+    }
+    match afkd_board.delete_list(TRAIN, "Reviewed") {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.delete_list: #{e.message}")
+    }
+  }
+}
+```
 
 ## Two boards side by side
 

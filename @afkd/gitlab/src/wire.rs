@@ -21,13 +21,16 @@ pub(crate) const MAX_REPLY: usize = 64 * 1024 - 1;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "call", rename_all = "snake_case")]
 pub(crate) enum Request {
-    /// Sent once, when the service arms: the protocol, the kind, the settings block. The
-    /// service's name, its roster and its owner ride along too; this kind reads none of
-    /// them, so they are left undecoded.
+    /// Sent once, when the service arms: the protocol, the kind, the settings block, and
+    /// `state_dir`, the plugin's own directory, which outlives the child (an older afkd
+    /// leaves it out). The service's name, its roster and its owner ride along too; this
+    /// kind reads none of them, so they are left undecoded.
     Hello {
         proto: u32,
         kind: String,
         settings: serde_json::Value,
+        #[serde(default)]
+        state_dir: Option<String>,
     },
     /// Sent once a beat.
     Poll,
@@ -117,11 +120,42 @@ pub(crate) struct MrFields {
     pub(crate) branch: String,
 }
 
-/// One file of the attempt's scratch layout, as data: afkd writes it.
+/// One file of the attempt's task folder, as data: afkd writes it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct WireFile {
+    /// Where it lands, under `task/`.
     pub(crate) path: String,
-    pub(crate) text: String,
+    #[serde(flatten)]
+    pub(crate) source: FileSource,
+}
+
+/// Where afkd gets a file's bytes: the text the reply carries, or a file on this machine it
+/// copies in byte for byte on each attempt.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FileSource {
+    /// Inline text.
+    Text(String),
+    /// The absolute path of a file to copy.
+    From(String),
+}
+
+impl WireFile {
+    /// A file at `path` holding `text`.
+    pub(crate) fn text(path: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            source: FileSource::Text(text.into()),
+        }
+    }
+
+    /// A file at `path` that afkd copies from the absolute path `from`.
+    pub(crate) fn from_path(path: impl Into<String>, from: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            source: FileSource::From(from.into()),
+        }
+    }
 }
 
 /// One comment in a `comments` reply.
@@ -144,8 +178,9 @@ pub(crate) fn comments_line(comments: &[WireComment]) -> String {
     serde_json::json!({ "comments": comments }).to_string()
 }
 
-/// Fit a `poll` reply under [`MAX_REPLY`] by cutting the unit's `task.md` text, if it has
-/// to be cut at all, and return the line.
+/// Fit a `poll` reply under [`MAX_REPLY`] by cutting the unit's `task/README.md` text, if it has
+/// to be cut at all, and return the line. A file afkd copies in (`from`) is a path and is
+/// never cut.
 ///
 /// The cut keeps the longest prefix — at a char boundary — that still fits beside a
 /// trailer saying the brief was cut and where the whole issue is. `None` when not even
@@ -156,15 +191,17 @@ pub(crate) fn fit_poll(unit: &WireUnit) -> Option<String> {
         return Some(line);
     }
     let brief = unit.files.iter().position(|f| f.path == crate::TASK_FILE)?;
-    let text = &unit.files[brief].text;
+    let FileSource::Text(text) = &unit.files[brief].source else {
+        return None;
+    };
     let with_prefix = |n: usize| {
         let mut cut = unit.clone();
-        cut.files[brief].text = format!(
+        cut.files[brief].source = FileSource::Text(format!(
             "{}\n\n[afkd-gitlab: this brief was cut at {n} of {} bytes to fit afkd's 64 KiB \
              plugin line — read the whole issue with the gitlab skill]",
             &text[..n],
             text.len()
-        );
+        ));
         fire_line(&cut)
     };
     // The serialized length only grows with the prefix, so the longest prefix that fits
@@ -234,14 +271,8 @@ mod tests {
             me: "björn-öst[bot]".into(),
             env: BTreeMap::from([("GITLAB_ISSUE_NUMBER".to_string(), "7".to_string())]),
             files: vec![
-                WireFile {
-                    path: crate::TASK_FILE.into(),
-                    text: text.into(),
-                },
-                WireFile {
-                    path: "issue/number".into(),
-                    text: "7".into(),
-                },
+                WireFile::text(crate::TASK_FILE, text),
+                WireFile::text("task/issue/number", "7"),
             ],
         }
     }
@@ -292,12 +323,61 @@ mod tests {
             proto,
             kind,
             settings,
+            state_dir,
         } = hello
         else {
             panic!("{hello:?}");
         };
         assert_eq!((proto, kind.as_str()), (2, "issue"));
         assert_eq!(settings["project"], "acme/sub.group/widgets");
+        assert_eq!(state_dir, None);
+    }
+
+    /// A `hello` carries the plugin's own directory as `state_dir`, and one without it (an
+    /// older afkd) decodes to none.
+    #[test]
+    fn a_hello_decodes_with_and_without_a_state_dir() {
+        let with: Request = serde_json::from_str(
+            r#"{"call":"hello","proto":2,"kind":"mr","settings":{},
+                "state_dir":"/home/you/.local/state/afkd/plugin-state/@afkd/gitlab 監視"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            with,
+            Request::Hello { state_dir: Some(dir), .. }
+                if dir == "/home/you/.local/state/afkd/plugin-state/@afkd/gitlab 監視"
+        ));
+        let without: Request =
+            serde_json::from_str(r#"{"call":"hello","proto":2,"kind":"mr","settings":{}}"#)
+                .unwrap();
+        assert!(matches!(
+            without,
+            Request::Hello {
+                state_dir: None,
+                ..
+            }
+        ));
+    }
+
+    /// A file serializes as its path and exactly one source: `text` for inline text, `from`
+    /// for a file afkd copies in.
+    #[test]
+    fn a_file_serializes_with_one_source() {
+        assert_eq!(
+            serde_json::to_value(WireFile::text("task/README.md", "# 修复")).unwrap(),
+            serde_json::json!({"path": "task/README.md", "text": "# 修复"})
+        );
+        assert_eq!(
+            serde_json::to_value(WireFile::from_path(
+                "task/screen_shot.png",
+                "/state/task-files/k/screen_shot.png"
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "path": "task/screen_shot.png",
+                "from": "/state/task-files/k/screen_shot.png"
+            })
+        );
     }
 
     /// A `call` decodes with its arguments as afkd bound them, the item's handle among
@@ -366,6 +446,31 @@ mod tests {
         // Everything but the brief is untouched.
         assert_eq!(reply["unit"]["key"], "acme/sub.group/widgets#7#1000001");
         assert_eq!(reply["unit"]["files"][1]["text"], "7");
+    }
+
+    /// A cut brief leaves the files afkd copies in whole: their `from` entries ride the
+    /// line, and their paths count against what the brief may keep.
+    #[test]
+    fn a_cut_brief_leaves_the_from_entries_whole() {
+        let mut u = unit(&"看起来不对 🚨 — ".repeat(8_000));
+        u.files.push(WireFile::from_path(
+            "task/screen shot 修复.png",
+            "/state/task-files/acme%2Fwidgets%237/screen shot 修复.png",
+        ));
+        let line = fit_poll(&u).expect("the cut fits");
+        assert!(line.len() <= MAX_REPLY && line.len() > MAX_REPLY - 8);
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(reply["unit"]["files"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("this brief was cut"));
+        assert_eq!(
+            reply["unit"]["files"][2],
+            serde_json::json!({
+                "path": "task/screen shot 修复.png",
+                "from": "/state/task-files/acme%2Fwidgets%237/screen shot 修复.png"
+            })
+        );
     }
 
     #[test]

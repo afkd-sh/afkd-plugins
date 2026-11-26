@@ -5,31 +5,41 @@
 //! replies and nothing else; every diagnostic and every success line goes to stderr, which
 //! afkd streams into the service log under `[@afkd/trello:err]`.
 //!
-//! The `card` kind ([`card`]) — `service(trello)` in a config — is the vendor half of
+//! The `intake` kind ([`card`]) — `service(trello)` in a config — is the vendor half of
 //! afkd's built-in Trello trigger, ported. It keeps the built-in's claim, watermark, attempt
 //! and park comments, its claim-journal keys, session threads, run env and brief, so a
 //! claim either one left on a live card is recognised, renewed and released by the other,
-//! and a card parked by one is resumed by the other. The hooks are afkd's: each action one
-//! calls arrives as a `call` ([`lifecycle`]).
+//! and a card parked by one is resumed by the other. The hooks are afkd's, and what a slot
+//! does to a card it does through a `trello.Account` call, never through the kind.
+//!
+//! Beside the kind are the **reads** ([`reads`]): a board's cards, one card, a card's
+//! comments, checklists and attachments, and a board's lists, labels and members, each called
+//! with a `trello.Account` ([`account`]) and answered in handles ([`handles`]) keyed
+//! `trello:<Trello's id>`, which a `service(trello)`'s claimed card is too. And the
+//! **writes** ([`writes`]): cards, comments, labels, members, checklists, check items and
+//! attachments made, changed and deleted through the same account, each answered with what it
+//! made or changed. A call is a read, a write, or refused.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod account;
 mod attachment;
 mod board;
 mod card;
 mod claim;
 mod client;
 mod common;
+mod handles;
 mod http;
-mod lifecycle;
 #[cfg(test)]
 mod manifest;
-mod outbox;
 mod plugin;
+mod reads;
 mod rfc3339;
 mod settings;
 mod wire;
+mod writes;
 
 use std::io::{BufRead, Write};
 
@@ -37,7 +47,7 @@ use crate::common::{StderrDiag, SystemClock};
 use crate::plugin::{Answer, Plugin};
 
 /// The brief at the scratch directory's root, which afkd writes framed.
-pub(crate) const TASK_FILE: &str = "task.md";
+pub(crate) const TASK_FILE: &str = "task/README.md";
 
 /// The park marker the trello skill's ask action writes into the attempt's scratch
 /// directory, which `classify` reads.
@@ -76,6 +86,4 @@ fn main() {
             }
         }
     }
-    // afkd closed the pipe: the process ends, and its outbox with it.
-    plugin.close();
 }

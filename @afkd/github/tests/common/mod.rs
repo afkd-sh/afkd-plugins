@@ -7,6 +7,7 @@
 pub mod fake;
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,34 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// afkd's line cap, newline included.
 pub const MAX_LINE: usize = 64 * 1024;
+
+/// A scratch directory, the plugin's own for a test, removed on drop.
+pub struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    /// A fresh, empty directory under the system temp dir, unique to this process and call.
+    pub fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "afkd-github-wire-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).expect("create a scratch dir");
+        Self(dir)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// One running plugin.
 pub struct Plugin {
@@ -99,13 +128,39 @@ impl Plugin {
         plugin
     }
 
+    /// Spawn and greet with `settings` for the `issue` kind and `state_dir` as the plugin's
+    /// own directory, asserting it arms.
+    pub fn armed_in(settings: Value, state_dir: &Path) -> Self {
+        Self::armed_as_in("issue", settings, state_dir)
+    }
+
+    /// Spawn and greet with `settings` for `kind` and `state_dir` as the plugin's own
+    /// directory, asserting it arms.
+    pub fn armed_as_in(kind: &str, settings: Value, state_dir: &Path) -> Self {
+        let mut plugin = Self::spawn();
+        let reply = plugin.hello_in(kind, settings, Some(state_dir));
+        assert_eq!(reply["ok"], true, "hello refused: {}", plugin.stderr());
+        plugin
+    }
+
     /// Greet as today's afkd does: the kind and its settings, and the service's name,
     /// roster and owner beside them.
     pub fn hello(&mut self, kind: &str, settings: Value) -> Value {
+        self.hello_in(kind, settings, None)
+    }
+
+    /// Greet as [`hello`](Self::hello) does, with the plugin's own directory beside them
+    /// when there is one.
+    pub fn hello_in(&mut self, kind: &str, settings: Value, state_dir: Option<&Path>) -> Value {
         self.kind = kind.to_string();
-        self.call(json!({"call": "hello", "proto": 2, "kind": kind,
-                         "service": "監視::triage", "roster": ["監視::triage", "監視::nightly"],
-                         "owner": "陳大文", "settings": settings}))
+        let mut hello = json!({"call": "hello", "proto": 2, "kind": kind,
+                               "service": "監視::triage",
+                               "roster": ["監視::triage", "監視::nightly"],
+                               "owner": "陳大文", "settings": settings});
+        if let Some(dir) = state_dir {
+            hello["state_dir"] = json!(dir.to_str().expect("a UTF-8 state dir"));
+        }
+        self.call(hello)
     }
 
     /// The kind the last `hello` armed.

@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(unit["key"], "telegram:-1001234567890/4711");
         assert_eq!(unit["fields"]["text"], "deploy 🚀");
         assert_eq!(unit["thread"], "telegram:-1001234567890");
-        assert_eq!(unit["files"][0]["path"], "task.md");
+        assert_eq!(unit["files"][0]["path"], "task/README.md");
         assert!(unit.get("handle").is_none(), "{unit}");
     }
 

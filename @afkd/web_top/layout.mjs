@@ -310,7 +310,7 @@ function selectRow(cells) {
 
 // --- the palette's roles -----------------------------------------------------------
 
-/// Every foreground role a cell may name: `palette.rs`'s 24-bit arm, `Hue` and `Night` alike,
+/// Every foreground role a cell may name: `palette.rs`'s night arm, `Hue` and `Tone` alike,
 /// kebab-cased. The stylesheet spells each one and nothing else, so the palette scan is an
 /// equality rather than a containment: a role that stops being emitted is as much a drift as a
 /// hex that appears from nowhere.
@@ -1089,7 +1089,7 @@ const ACTIVITY_FRESH_WINDOW = 5 * 60 * 1000;
 /// must be for its countdown to keep full weight.
 const NEXT_SOON_WINDOW = 10 * 60 * 1000;
 
-/// `layout::Mark::text` — the one-cell text glyph the 24-bit board draws for each mark
+/// `layout::Mark::glyph` — the one-cell text glyph the 24-bit board draws for each mark
 /// [`cardMark`] names: a hollow diamond parked, a filled one while it executes, a small square
 /// while it is stopped. Trouble is the alarm hue [`MARK_ROLE`] paints, never a glyph of its own.
 export const MARK_TEXT = {
@@ -1302,7 +1302,7 @@ function groupRollup(members, path) {
 /// The visible row sequence — `DashboardModel::build_rows`. Unless `grouped` is set (`v`; the
 /// board boots **flat**, the ADR-0066 amendment) every surviving card is its own top-level
 /// row, flush to column 0 and spelling its whole qualified name, in config order. The
-/// **grouped** arm emits one header per package — packages are flat (lang-v2 §20.3), so a
+/// **grouped** arm emits one header per package — packages are flat (reference §12.1), so a
 /// group is one level — its members beneath it in config order, and a bare service in `main`
 /// as a root peer row, headers and bare services in first-appearance config order. Either way
 /// every visible service appears exactly once.
@@ -1465,15 +1465,22 @@ function identityText(row) {
 // does **not** ride the list's grid: a lane is not a service, so its five columns are laid
 // from column 0 on their own ladder, with the same `COLUMN_SPACING` gutter between them.
 
-/// `layout::QUEUE_LANE_GLYPH_NIGHT` and its one space (`queue_prefix_w`) — the *lead, one
+/// `layout::QUEUE_LANE_GLYPH` and its one space (`queue_prefix_w`) — the *lead, one
 /// space, name* shape every identity cell above it spends.
 export const QUEUE_LANE_GLYPH = "≡";
 const QUEUE_LANE_PREFIX_W = textWidth(QUEUE_LANE_GLYPH) + 1;
-/// `layout::QUEUE_SLOT_HELD` / `_FREE` / `_WAITING` — a held slot, a free one, and a
-/// lane-mate standing outside the door, deliberately a round dot a size class below the bars.
-const QUEUE_SLOT_HELD = "▮";
-const QUEUE_SLOT_FREE = "▯";
-const QUEUE_SLOT_WAITING = "∙";
+/// `layout::QUEUE_CELL_HELD` — a held cell in a lane's bar: one run holding the lane, drawn as
+/// the mark of an executing service, so a lane reads as that many services running. The lane
+/// hues it as its own and not as a row mark.
+export const QUEUE_CELL_HELD = MARK_TEXT.executing;
+/// `layout::QUEUE_CELL_FREE` — a free cell in a lane's bar, one cell like a held one so a bar
+/// never reflows. A hollow rectangle (U+25AF) and none of the marks' glyphs, so free capacity
+/// never reads as a service.
+export const QUEUE_CELL_FREE = "▯";
+/// `layout::QUEUE_PIP_WAITING` — a waiting run's pip behind the bar, drawn as the mark of a
+/// parked service, so a lane reads as that many services waiting. The door, not the glyph,
+/// keeps a pip from reading as one more bar cell.
+export const QUEUE_PIP_WAITING = MARK_TEXT.parked;
 /// `layout::QUEUE_FENCE` / `_LEAD` — the door between a lane's bar and the fires standing
 /// outside it; a bar-less field *opens* on it and spends one cell less.
 const QUEUE_FENCE = " ╎ ";
@@ -1558,8 +1565,8 @@ function queueLaneCells(cols, lane) {
   const [cells, barHidden] = queueBarCells(lane.capacity, lane.held, barBudget);
   const filled = Math.min(lane.held, cells);
   const field = [];
-  if (filled > 0) field.push(cell(QUEUE_SLOT_HELD.repeat(filled), BADGE_STYLE.Busy));
-  if (cells - filled > 0) field.push(cell(QUEUE_SLOT_FREE.repeat(cells - filled), { fg: "free" }));
+  if (filled > 0) field.push(cell(QUEUE_CELL_HELD.repeat(filled), BADGE_STYLE.Busy));
+  if (cells - filled > 0) field.push(cell(QUEUE_CELL_FREE.repeat(cells - filled), { fg: "free" }));
   let barW = cells;
   if (barHidden !== null) {
     // `layout::UsageRanges` closes the bar's mark into the free run.
@@ -1578,7 +1585,7 @@ function queueLaneCells(cols, lane) {
   const [dots, pipHidden] = queueRun(lane.waiting, pipBudget);
   if (dots > 0 || pipHidden !== null) {
     field.push(cell(door, { fg: "faint" }));
-    let pips = QUEUE_SLOT_WAITING.repeat(dots);
+    let pips = QUEUE_PIP_WAITING.repeat(dots);
     if (pipHidden !== null) pips += queueOverflowMark(pipHidden);
     field.push(cell(pips, BADGE_STYLE.Queued));
   }
@@ -1692,9 +1699,11 @@ function keysOf(quitting) {
   };
 }
 
-/// A non-key legend row aligned in the key column — a `?` overlay sigil.
-function note(glyph, label) {
-  return { kind: "note", glyph, label };
+/// A non-key legend row aligned in the key column — a `?` overlay sigil. `mark` is the row
+/// mark the glyph explains (`Hint::mark_note`), whose hue [`noteGlyphStyle`] gives it; `null`
+/// for a glyph no row mark draws (the 🪦 and 🕸️ reconcile markers).
+function note(glyph, label, mark = null) {
+  return { kind: "note", glyph, label, mark };
 }
 /// Free prose, **glued** to its neighbour: it carries its own connector spacing inside the
 /// string and is never split from the hint beside it.
@@ -1856,23 +1865,38 @@ function footerRows(hints, cols, rows) {
   return wrapHints(hints, cols).slice(0, cap);
 }
 
-/// One footer row's cells: the key glyph whitened **structurally** (it is the `keys` field,
-/// never a bracket-scanned run), its label in the calm muted tone, and a gated cell's `dim`
-/// bit carried onto both.
-function hintRowCells(row) {
+/// The base a footer row paints its gaps, note labels and prose in — the calm muted tone the
+/// terminal's footers take as their `dim` base.
+const FOOTER_BASE = { fg: "muted" };
+
+/// `shell::note_glyph_style` — the style of a note's glyph over `base`: a note that explains a
+/// row mark wears that mark's role ([`MARK_ROLE`], `shell::mark_style` at 24-bit), so the
+/// legend and the list read one hue; any other note keeps `base`.
+function noteGlyphStyle(mark, base) {
+  return mark == null ? base : { ...base, fg: MARK_ROLE[mark] };
+}
+
+/// `shell::hint_line` — one footer row's cells. A live key lights **whole**, key and label in
+/// the `bright` tone; a key the selection cannot take recedes whole, in the `free` tone with no
+/// `dim`, so the tone alone is the recede and a half-lit cell is unrepresentable. Those are the
+/// row's only two style axes: `base` styles the gaps, a note's label and prose, and a note's
+/// glyph wears [`noteGlyphStyle`]. The key glyph is the structural `keys` field, never a
+/// bracket-scanned run.
+function hintRowCells(row, base) {
   const out = [];
   row.forEach((hint, i) => {
-    if (i > 0 && gap(row[i - 1], hint) === 2) out.push(blank(COLUMN_GAP));
+    if (i > 0 && gap(row[i - 1], hint) === 2) out.push(blank(COLUMN_GAP, base));
     if (hint.kind === "key") {
-      out.push(cell(hint.keys, { fg: "bright", dim: !hint.live }));
-      out.push(blank(1));
-      out.push(cell(hint.label, { fg: "muted", dim: !hint.live }));
+      const style = { fg: hint.live ? "bright" : "free" };
+      out.push(cell(hint.keys, style));
+      out.push(cell(" ", style));
+      out.push(cell(hint.label, style));
     } else if (hint.kind === "note") {
-      out.push(cell(hint.glyph, { fg: "alarm" }));
-      out.push(blank(1));
-      out.push(cell(hint.label, { fg: "muted" }));
+      out.push(cell(hint.glyph, noteGlyphStyle(hint.mark, base)));
+      out.push(blank(1, base));
+      out.push(cell(hint.label, base));
     } else if (hint.kind === "bare") {
-      out.push(cell(hint.text, { fg: "muted" }));
+      out.push(cell(hint.text, base));
     }
   });
   return out;
@@ -1905,20 +1929,30 @@ function fitBadges(keys, cols) {
 
 /// `shell::badge_line` at 24-bit — one row of key badges, [`BADGE_GAP`] apart: each key on the
 /// rule band between its blank ends, a space, then its label in the muted tone. A live key is
-/// bold text; one the selection cannot take is faint and not bold, so its badge keeps its
-/// shape and only its weight says "not now". No cell is dimmed: the faint hue is the gate.
+/// bold text. A badge the selection cannot take recedes **whole**: its ends are blank cells off
+/// the band, its key and label in the `free` tone, so it keeps every width and only its tone
+/// says "not now". No cell is dimmed: the free tone is the gate. A hint that is not a key
+/// paints as prose in the footer's muted base.
 function badgeRowCells(row) {
   const band = { bg: "rule" };
   const out = [];
   row.forEach((hint, i) => {
     if (i > 0) out.push(blank(BADGE_GAP));
     if (hint.kind !== "key") {
-      out.push(...hintRowCells([hint]));
+      out.push(...hintRowCells([hint], FOOTER_BASE));
       return;
     }
-    const key = hint.live ? { fg: "text", bold: true, ...band } : { fg: "faint", ...band };
+    if (!hint.live) {
+      const receded = { fg: "free" };
+      out.push(blank(textWidth(CHIP_SQUARE_CAP)));
+      out.push(cell(hint.keys, receded));
+      out.push(blank(textWidth(CHIP_SQUARE_CAP)));
+      out.push(blank(1));
+      out.push(cell(hint.label, receded));
+      return;
+    }
     out.push(cell(CHIP_SQUARE_CAP, band));
-    out.push(cell(hint.keys, key));
+    out.push(cell(hint.keys, { fg: "text", bold: true, ...band }));
     out.push(cell(CHIP_SQUARE_CAP, band));
     out.push(blank(1));
     out.push(cell(hint.label, { fg: "muted" }));
@@ -1933,8 +1967,8 @@ function badgeRowCells(row) {
 /// affordance outranks the badges: it names the key that undoes a lens, and `?` is not lost
 /// behind it.
 function listFooterLines(footer, cols, rows) {
-  if (footer.kind === "prose") return footerRows(footer.hints, cols, rows).map(hintRowCells);
-  const lines = footer.affordance === null ? [] : [hintRowCells([bare(footer.affordance)])];
+  if (footer.kind === "prose") return footerRows(footer.hints, cols, rows).map((row) => hintRowCells(row, FOOTER_BASE));
+  const lines = footer.affordance === null ? [] : [hintRowCells([bare(footer.affordance)], FOOTER_BASE)];
   lines.push(badgeRowCells(fitBadges(footer.keys, cols)));
   return lines.slice(0, footerCap(rows));
 }
@@ -2157,30 +2191,32 @@ function renderPopup(frame, popup, cols, rows) {
   const left = Math.max(0, Math.floor((cols - width) / 2));
   const top = Math.max(0, Math.floor((rows - height) / 2));
   const inner = width - 2;
-  // The title rides the top border as ` Title `, bright, the weight `render_popup` gives it.
+  // `render_popup` styles the frame by nothing: the borders and the ` Title ` that rides the
+  // top one are in the ground, the title bold.
+  const ground = { fg: "text" };
   const titleText = clipWidth(` ${popup.title} `, Math.max(0, inner));
   const titleRow = [
-    cell(POPUP_BORDER.tl, { fg: "faint" }),
-    cell(titleText, { fg: "bright" }),
-    cell(POPUP_BORDER.h.repeat(Math.max(0, inner - textWidth(titleText))), { fg: "faint" }),
-    cell(POPUP_BORDER.tr, { fg: "faint" }),
+    cell(POPUP_BORDER.tl, ground),
+    cell(titleText, { ...ground, bold: true }),
+    cell(POPUP_BORDER.h.repeat(Math.max(0, inner - textWidth(titleText))), ground),
+    cell(POPUP_BORDER.tr, ground),
   ];
   const bottomRow = [
-    cell(POPUP_BORDER.bl, { fg: "faint" }),
-    cell(POPUP_BORDER.h.repeat(Math.max(0, inner)), { fg: "faint" }),
-    cell(POPUP_BORDER.br, { fg: "faint" }),
+    cell(POPUP_BORDER.bl, ground),
+    cell(POPUP_BORDER.h.repeat(Math.max(0, inner)), ground),
+    cell(POPUP_BORDER.br, ground),
   ];
   /// One framed body row: border, gutter, the line clipped to the content width, gutter, border.
   const bodyRow = (line) => {
     const budget = Math.max(0, inner - 2 * POPUP_PAD_X);
     const kept = sliceCells(line, 0, budget);
     return [
-      cell(POPUP_BORDER.v, { fg: "faint" }),
+      cell(POPUP_BORDER.v, ground),
       blank(POPUP_PAD_X),
       ...kept,
       blank(budget - rowWidth(kept)),
       blank(POPUP_PAD_X),
-      cell(POPUP_BORDER.v, { fg: "faint" }),
+      cell(POPUP_BORDER.v, ground),
     ];
   };
   // A box the viewport clamps keeps both borders and its gutter rows and clips the body
@@ -2207,9 +2243,9 @@ function renderPopup(frame, popup, cols, rows) {
   });
 }
 
-/// A popup body line of plain prose, in the calm muted tone the dialogs paint.
+/// A popup body line of plain prose, in the ground the confirm bodies paint.
 function dialogLine(text) {
-  return text === "" ? [] : [cell(text, { fg: "muted" })];
+  return text === "" ? [] : [cell(text, { fg: "text" })];
 }
 
 /// `shell::dialog_item_line` — one listed item, indented inside the gutter. The name is plain
@@ -2220,14 +2256,15 @@ function dialogItem(text) {
 
 /// `shell::confirm_hints` rendered as one line — `y <verb>  n cancel`, both glyphs from the
 /// `confirm` scope so the modal cannot advertise a key the dispatch would ignore, and
-/// unbracketed like every other hint on the page.
+/// unbracketed like every other hint on the page. The ground is its base, so the gap is plain
+/// and both live keys light whole (`y force  n cancel`).
 function confirmHints(keys, acceptLabel) {
   const out = [];
   const accept = keys.hint("confirm.accept", acceptLabel);
   const cancel = keys.hint("confirm.cancel", "cancel");
   if (accept !== null) out.push(accept);
   if (cancel !== null) out.push(cancel);
-  return hintRowCells(wrapHints(out, Number.MAX_SAFE_INTEGER)[0]);
+  return hintRowCells(wrapHints(out, Number.MAX_SAFE_INTEGER)[0], { fg: "text" });
 }
 
 /// The title word and the hint's verb for each confirmable verb — the Sentence-case one for
@@ -2292,13 +2329,16 @@ function confirmModal(board, confirm, quitting) {
 // the run view's shown pane — laid by `shell::help_overlay_lines` into one column of key cells
 // padded to the widest, and framed by the shared popup as `Help`.
 
-/// The list's four sigil rows: glyphs an operator sees on a row, not keys, so they sit in the
-/// key column unwhitened below a blank separator.
-const HELP_SIGILS = [
-  ["🪦", "Orphan (removed from config)"],
-  ["🕸️", "Stale (new config; restart to adopt)"],
-  ["🔷", "Executing now (init/run/cleanup)"],
-  ["🔸", "Failed runs or crashed (clears on restart)"],
+/// The list's four sigil rows — `help::help_lines`' `Hint::note` and `Hint::mark_note` rows:
+/// glyphs an operator sees on a row, not keys, so they sit in the key column unwhitened below a
+/// blank separator. The last two are the row marks themselves and carry their mark, so
+/// [`noteGlyphStyle`] hues them as the list does; the first two are reconcile markers no mark
+/// draws.
+export const HELP_SIGILS = [
+  ["🪦", "Orphan (removed from config)", null],
+  ["🕸️", "Stale (restarts on its new config after this run)", null],
+  [MARK_TEXT.executing, "Executing now (on_start/on_run/on_stop)", "executing"],
+  [MARK_TEXT.troubled, "Failed runs or crashed (clears on restart)", "troubled"],
 ];
 
 /// `help::help_lines`. `base` is `"list"`, `"info"`, `"tree"` or `"log"`; `grouped` names the
@@ -2337,7 +2377,7 @@ function helpLines(base, grouped, keys) {
     push(keys.hint("global.quit", "Quit"));
     push(keys.hint("global.help", "Close help"));
     out.push(bare(""));
-    for (const [glyph, label] of HELP_SIGILS) out.push(note(glyph, label));
+    for (const [glyph, label, mark] of HELP_SIGILS) out.push(note(glyph, label, mark));
     return out;
   }
   if (base === "info") {
@@ -2371,15 +2411,18 @@ function helpLines(base, grouped, keys) {
 }
 
 /// `shell::help_overlay_lines` — one line per hint: the key (or a note's glyph) padded to the
-/// widest of the column, two spaces, then its label. Keys whiten; glyphs and labels do not.
+/// widest of the column, two spaces, then its label. Keys whiten; a mark note's glyph takes its
+/// mark's hue ([`noteGlyphStyle`]); every other note and every label stay in the ground.
 function helpOverlayLines(hints) {
   const fieldOf = (h) => (h.kind === "key" ? h.keys : h.kind === "note" ? h.glyph : h.kind === "bare" ? h.text : "");
   const width = hints.reduce((w, h) => Math.max(w, textWidth(fieldOf(h))), 0);
+  const base = { fg: "text" };
   return hints.map((h) => {
-    if (h.kind === "bare") return h.text === "" ? [] : [cell(h.text)];
+    if (h.kind === "bare") return h.text === "" ? [] : [cell(h.text, base)];
     const field = fieldOf(h);
     const pad = " ".repeat(Math.max(0, width - textWidth(field)));
-    return [cell(field, h.kind === "key" ? { fg: "bright" } : {}), cell(`${pad}  ${h.label}`)];
+    const style = h.kind === "key" ? { fg: "bright" } : noteGlyphStyle(h.mark, base);
+    return [cell(field, style), cell(`${pad}  ${h.label}`, base)];
   });
 }
 
@@ -2431,12 +2474,14 @@ const SANDBOX_SCOPED = "scoped";
 const SANDBOX_HOST = "host";
 /// The ADR-0028 reconcile verdicts, on one `Config` row. The orphan sentence is
 /// `infoview.rs`'s verbatim; the stale one is written to the same `tag - actionable sentence`
-/// shape from the same vocabulary the 🕸️ legend note uses ("restart to adopt"), because
-/// `infoview.rs` carries no stale row at all and `docs/tui-style.md` §7 says this row is where
-/// both words live. The two are mutually exclusive on the wire, and `reconcileMarker` above
+/// shape from the vocabulary the 🕸️ legend note uses ("restarts on its new config after this
+/// run"), because `infoview.rs` carries no stale row at all and `docs/tui-style.md` §7 says
+/// this row is where both words live. Per §2 that sentence says *when* the service takes up
+/// its new config, never a key: the service does it by itself after the run and the operator
+/// presses nothing. The two are mutually exclusive on the wire, and `reconcileMarker` above
 /// already encodes orphan winning the tie, so this reads the verdict the same way round.
 const CONFIG_ORPHAN = "orphan - removed from config; restart to stop, or re-add it";
-const CONFIG_STALE = "stale - new config staged; restart to adopt it";
+const CONFIG_STALE = "stale - restarts on its new config after this run";
 
 /// `infoview::group_label` (ADR-0066) — an un-namespaced service is a top-level row, not a
 /// bucket header, so an empty group reads as the word rather than as a blank.
@@ -2818,7 +2863,7 @@ function infoFrame(plan, options) {
   const screen = [fitRow([cell(`${plan.view.title} `)], cols), fitRow([], cols)];
   for (const line of plan.band) screen.push(fitRow(line, cols));
   for (let i = 0; i < plan.height; i += 1) screen.push(fitRow(plan.body[offset + i] ?? [], cols));
-  for (const row of plan.footer) screen.push(fitRow(hintRowCells(row), cols));
+  for (const row of plan.footer) screen.push(fitRow(hintRowCells(row, FOOTER_BASE), cols));
   return screen.slice(0, rows);
 }
 
@@ -2910,6 +2955,7 @@ export const KIND_GLYPH = {
   worktree: "🌿",
   queue: "🚦",
   queue_wait: "⏳",
+  unqueue: "⏏︎",
   guard: "⊘︎",
   parallel: "∥︎",
   repeat: "🌀",
@@ -2917,6 +2963,7 @@ export const KIND_GLYPH = {
   fs: "✎︎",
   lifecycle: "⚑︎",
   http: "🌐",
+  call: "🔌",
 };
 /// The glyph for a kind the wire may grow past this table — the `cmd` gear rather than a `?`,
 /// since an unknown step is still a step and the rail must keep its column either way.
@@ -3731,7 +3778,7 @@ function runFrame(plan) {
     // the scrollbar gutter the thumb rides.
     screen.push([...fitRow(cells, paneW), scrollbarCell(bar, i)]);
   }
-  for (const row of plan.footer) screen.push(fitRow(hintRowCells(row), cols));
+  for (const row of plan.footer) screen.push(fitRow(hintRowCells(row, FOOTER_BASE), cols));
   return screen.slice(0, plan.rows);
 }
 

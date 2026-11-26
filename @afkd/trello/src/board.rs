@@ -1,20 +1,21 @@
-//! The mockable card-board seam the `card` kind drives, plus an in-memory mock board
+//! The mockable card-board seam the `intake` kind drives, plus an in-memory mock board
 //! (`MockBoard`, test-only) for offline tests.
 //!
 //! The kind does network I/O, but its *logic* — the comment-based claim lock, the
-//! gates, the park, the lifecycle actions — is unit-tested with no network by talking
-//! only to this trait. The real implementation lives beside it in [`crate::client`];
-//! this module owns the trait, the plain value types it exchanges, the typed
-//! [`BoardError`], and the mock. Ported verbatim from afkd's `crates/trello/src/board.rs`.
+//! gates, the park — is unit-tested with no network by talking only to this trait. The
+//! real implementation lives beside it in [`crate::client`]; this module owns the trait,
+//! the plain value types it exchanges, the typed [`BoardError`], and the mock. Ported
+//! verbatim from afkd's `crates/trello/src/board.rs`.
 //!
 //! The trait carries only what the kind needs, **by meaning** — resolve a named list,
-//! read/post/delete comments, move/archive/complete a card — so the Trello REST mapping
-//! stays confined to the real adapter.
+//! read/post/delete comments, move a card, badge it with a label — so the Trello REST
+//! mapping stays confined to the real adapter. What a slot does to a card is a
+//! `trello.Account` call ([`crate::writes`]), which does not go through here.
 
 use std::time::{Instant, SystemTime};
 
-use crate::attachment::Attachment;
-use crate::lifecycle::ListPosition;
+use crate::client::ListPosition;
+use crate::handles::CardFields;
 use crate::settings::MemberRef;
 
 /// A card on the board: the unit of work the kind turns into a run.
@@ -38,10 +39,10 @@ pub(crate) struct Card {
     /// agent sees each item and its checkItem id.
     pub(crate) checklists: Vec<Checklist>,
     /// The ids of the members on the card, in board order. Read by the
-    /// `require_member` intake gate and by nothing else.
+    /// `only_members` intake gate and by nothing else.
     pub(crate) members: Vec<String>,
-    /// The card's label names, in board order. Read by the `require_label` intake
-    /// gate, and handed to afkd as the handle's `labels`.
+    /// The card's label names, in board order. Read by the `only_labels` and
+    /// `skip_labels` intake gates, and handed to afkd as the handle's `labels`.
     pub(crate) labels: Vec<String>,
     /// When the card was created, when the board said so for free: decoded from the
     /// card's own id, the same way [`Comment::posted_at`] is. `None` when the id
@@ -124,6 +125,15 @@ pub(crate) enum BoardError {
         /// The HTTP status code returned.
         status: u16,
     },
+    /// The board answered a write with a non-success HTTP status and said why in the body.
+    Answered {
+        /// The stage of work the call belonged to.
+        stage: &'static str,
+        /// The HTTP status code returned.
+        status: u16,
+        /// Trello's own words for the refusal.
+        message: String,
+    },
     /// The request never produced a response (connection/transport failure).
     Transport {
         /// The stage of work the call belonged to.
@@ -167,6 +177,14 @@ impl std::fmt::Display for BoardError {
             BoardError::Status { stage, status } => {
                 write!(f, "trello {stage}: board returned status {status}")
             }
+            BoardError::Answered {
+                stage,
+                status,
+                message,
+            } => write!(
+                f,
+                "trello {stage}: board returned status {status}: {message}"
+            ),
             BoardError::Transport { stage, reason } => {
                 write!(f, "trello {stage}: no response ({reason})")
             }
@@ -190,6 +208,7 @@ impl BoardError {
     pub(crate) fn stage(&self) -> &'static str {
         match self {
             BoardError::Status { stage, .. }
+            | BoardError::Answered { stage, .. }
             | BoardError::Transport { stage, .. }
             | BoardError::Decode { stage, .. }
             | BoardError::ListNotFound { stage, .. }
@@ -224,6 +243,11 @@ pub(crate) trait BoardClient {
     /// not an error, so it is distinguished from a genuine board fault.
     fn read_card(&self, card_id: &str) -> Result<Option<Card>, BoardError>;
 
+    /// Every field of the `trello.Card` handle for card `card_id`, as the board has the card
+    /// now: its list's name, its board's short link and its members' usernames resolved in
+    /// the one read. A card the board no longer has is an error, like any read that fails.
+    fn card_handle(&self, card_id: &str) -> Result<CardFields, BoardError>;
+
     /// Read the comments on card `card_id`.
     fn card_comments(&self, card_id: &str) -> Result<Vec<Comment>, BoardError>;
 
@@ -252,12 +276,6 @@ pub(crate) trait BoardClient {
         position: ListPosition,
     ) -> Result<(), BoardError>;
 
-    /// Archive (close) card `card_id`.
-    fn archive_card(&self, card_id: &str) -> Result<(), BoardError>;
-
-    /// Mark card `card_id` complete (set its done state).
-    fn complete_card(&self, card_id: &str) -> Result<(), BoardError>;
-
     /// Attach the label named `label_name` to card `card_id`, resolving the name
     /// against board `board_id` (creating the label there if it does not yet
     /// exist). Idempotent: attaching an already-attached label is a no-op.
@@ -276,48 +294,14 @@ pub(crate) trait BoardClient {
         label_name: &str,
     ) -> Result<(), BoardError>;
 
-    /// Add `member` to card `card_id`, resolving a
-    /// [`Username`](MemberRef::Username) against board `board_id` and
-    /// [`SelfMember`](MemberRef::SelfMember) to the member the client's
-    /// credentials authenticate as. Additive and idempotent: a card holds many
-    /// members, and re-adding one already on the card is a no-op. A member who is
-    /// not on the board is a [`BoardError::MemberNotFound`].
-    fn add_member(
-        &self,
-        board_id: &str,
-        card_id: &str,
-        member: &MemberRef,
-    ) -> Result<(), BoardError>;
-
-    /// Remove `member` from card `card_id`, resolving the operand the same way
-    /// [`add_member`](BoardClient::add_member) does. The mirror of `add_member`
-    /// and idempotent the same way: detaching a member who is not on the card is
-    /// a no-op. A member who is not on the board is a
-    /// [`BoardError::MemberNotFound`].
-    fn remove_member(
-        &self,
-        board_id: &str,
-        card_id: &str,
-        member: &MemberRef,
-    ) -> Result<(), BoardError>;
-
     /// Resolve `member` to a member id: [`SelfMember`](MemberRef::SelfMember) to
     /// the member the client's credentials authenticate as,
     /// [`Username`](MemberRef::Username) against `board_id`'s membership. An
     /// unknown username is a [`BoardError::MemberNotFound`].
     ///
-    /// A read, safe to call once per poll — which is what the `require_member`
-    /// intake gate does.
+    /// A read, safe to call once per poll — which is what the `only_members`
+    /// intake gate does, once for each member it names.
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError>;
-
-    /// Upload `bytes` to card `card_id` as an attachment named `name`.
-    fn attach_file(&self, card_id: &str, name: &str, bytes: &[u8]) -> Result<(), BoardError>;
-
-    /// The attachments on card `card_id`, files and links alike, in the board's order.
-    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError>;
-
-    /// The bytes of the attachment at `url`, an [`Attachment::url`] as the listing gave it.
-    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError>;
 
     /// Hand over the current call's deadline, which every request until the next hand-over
     /// must finish by — set before a call, cleared with `None` after it. A board that
@@ -339,6 +323,9 @@ impl<T: BoardClient + ?Sized> BoardClient for std::sync::Arc<T> {
     }
     fn read_card(&self, card_id: &str) -> Result<Option<Card>, BoardError> {
         (**self).read_card(card_id)
+    }
+    fn card_handle(&self, card_id: &str) -> Result<CardFields, BoardError> {
+        (**self).card_handle(card_id)
     }
     fn card_comments(&self, card_id: &str) -> Result<Vec<Comment>, BoardError> {
         (**self).card_comments(card_id)
@@ -363,12 +350,6 @@ impl<T: BoardClient + ?Sized> BoardClient for std::sync::Arc<T> {
     ) -> Result<(), BoardError> {
         (**self).move_card(card_id, list_id, position)
     }
-    fn archive_card(&self, card_id: &str) -> Result<(), BoardError> {
-        (**self).archive_card(card_id)
-    }
-    fn complete_card(&self, card_id: &str) -> Result<(), BoardError> {
-        (**self).complete_card(card_id)
-    }
     fn add_label(&self, board_id: &str, card_id: &str, label_name: &str) -> Result<(), BoardError> {
         (**self).add_label(board_id, card_id, label_name)
     }
@@ -380,33 +361,8 @@ impl<T: BoardClient + ?Sized> BoardClient for std::sync::Arc<T> {
     ) -> Result<(), BoardError> {
         (**self).remove_label(board_id, card_id, label_name)
     }
-    fn add_member(
-        &self,
-        board_id: &str,
-        card_id: &str,
-        member: &MemberRef,
-    ) -> Result<(), BoardError> {
-        (**self).add_member(board_id, card_id, member)
-    }
-    fn remove_member(
-        &self,
-        board_id: &str,
-        card_id: &str,
-        member: &MemberRef,
-    ) -> Result<(), BoardError> {
-        (**self).remove_member(board_id, card_id, member)
-    }
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError> {
         (**self).resolve_member(board_id, member)
-    }
-    fn attach_file(&self, card_id: &str, name: &str, bytes: &[u8]) -> Result<(), BoardError> {
-        (**self).attach_file(card_id, name, bytes)
-    }
-    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
-        (**self).card_attachments(card_id)
-    }
-    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
-        (**self).download_attachment(url)
     }
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         (**self).set_call_deadline(deadline)
@@ -422,6 +378,7 @@ pub(crate) use mock::{Action, MockBoard};
 mod mock {
     use super::*;
     use crate::common::lock;
+    use crate::handles::millis;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
@@ -458,7 +415,6 @@ mod mock {
         /// — the board nesting them free with the poll. Off by default, so every
         /// existing test stays on the per-card-read route.
         nest_comments: bool,
-        complete: bool,
         archived: bool,
         /// Whether `read_card` answers `Ok(None)` for this card while
         /// `board_cards` still lists it — the card archived *between* the scan's
@@ -471,14 +427,8 @@ mod mock {
         /// What `card_created_at` answers — the board's own record of the creation,
         /// the fallback route the `min_age` gate pays for.
         created_action: SystemTime,
-        /// The card's attachments, in the order they were put on it.
-        attachments: Vec<MockAttachment>,
-    }
-
-    /// One attachment on a mock card: its listing, and the bytes its url serves.
-    struct MockAttachment {
-        listed: Attachment,
-        bytes: Vec<u8>,
+        /// The card's number on the board, in the order the cards were added.
+        number: i64,
     }
 
     /// Hand-written (not derived) so both creation times default to the epoch:
@@ -495,12 +445,11 @@ mod mock {
                 labels: Vec::new(),
                 comments: Vec::new(),
                 nest_comments: false,
-                complete: false,
                 archived: false,
                 vanish_on_read: false,
                 created_at: Some(UNIX_EPOCH),
                 created_action: UNIX_EPOCH,
-                attachments: Vec::new(),
+                number: 0,
             }
         }
     }
@@ -508,6 +457,9 @@ mod mock {
     /// The member id [`MemberRef::SelfMember`] resolves to on a mock board, so the
     /// common case needs no seeding. Matches the author of a posted comment.
     pub(crate) const SELF_ID: &str = "mock-self";
+
+    /// The short link a mock card reports for its board.
+    pub(crate) const MOCK_BOARD: &str = "mockboard";
 
     /// What a recorded board mutation was.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -521,10 +473,6 @@ mod mock {
             /// Where in the list it landed.
             position: ListPosition,
         },
-        /// A card was archived.
-        Archive(String),
-        /// A card was marked complete.
-        Complete(String),
         /// A comment was deleted from a card.
         DeleteComment {
             /// The card the comment was on.
@@ -554,29 +502,6 @@ mod mock {
             card: String,
             /// The label name.
             label: String,
-        },
-        /// A member was added to a card.
-        AddMember {
-            /// The card the member was added to.
-            card: String,
-            /// Who was added, as configured.
-            member: MemberRef,
-        },
-        /// A member was removed from a card.
-        RemoveMember {
-            /// The card the member was removed from.
-            card: String,
-            /// Who was removed, as configured.
-            member: MemberRef,
-        },
-        /// A file was uploaded to a card.
-        Attach {
-            /// The card it was put on.
-            card: String,
-            /// The attachment's name.
-            name: String,
-            /// How many bytes it held.
-            len: usize,
         },
     }
 
@@ -649,11 +574,14 @@ mod mock {
                 .expect("list exists")
                 .cards
                 .push(id.to_string());
-            lock(&self.cards).insert(
+            let mut cards = lock(&self.cards);
+            let number = i64::try_from(cards.len()).unwrap_or(0) + 1;
+            cards.insert(
                 id.to_string(),
                 CardState {
                     title: title.to_string(),
                     description: description.to_string(),
+                    number,
                     ..CardState::default()
                 },
             );
@@ -681,7 +609,7 @@ mod mock {
         }
 
         /// Seed a member id onto a card, as the board reports it in `idMembers` —
-        /// what the `require_member` intake gate filters on.
+        /// what the `only_members` intake gate filters on.
         pub(crate) fn seed_card_member(&self, card: &str, member_id: &str) {
             lock(&self.cards)
                 .get_mut(card)
@@ -691,7 +619,8 @@ mod mock {
         }
 
         /// Seed a label name onto a card, as the board reports it in the card's
-        /// `labels` array — what the `require_label` intake gate filters on.
+        /// `labels` array — what the `only_labels` and `skip_labels` intake gates filter
+        /// on.
         pub(crate) fn seed_card_label(&self, card: &str, label_name: &str) {
             lock(&self.cards)
                 .get_mut(card)
@@ -845,74 +774,28 @@ mod mock {
             }
         }
 
-        /// Put an uploaded file named `name` holding `bytes` on a card, dated `secs`
-        /// seconds after the epoch; returns its id.
-        pub(crate) fn seed_attachment(
-            &self,
-            card: &str,
-            name: &str,
-            bytes: &[u8],
-            secs: u64,
-        ) -> String {
-            self.push_attachment(
-                card,
-                name,
-                bytes.to_vec(),
-                Some(bytes.len() as u64),
-                true,
-                secs,
-            )
+        /// Put a card at the top of list `list`, wherever it was, as a slot's
+        /// `trello.update_card(account, card, list=…)` leaves it. Recorded nowhere and
+        /// counted as no request: the slot's calls are `writes.rs`'s, not the kind's.
+        pub(crate) fn seed_card_in(&self, card: &str, list: &str) {
+            let mut lists = lock(&self.lists);
+            for l in lists.iter_mut() {
+                l.cards.retain(|c| c != card);
+            }
+            lists
+                .iter_mut()
+                .find(|l| l.id == list)
+                .expect("list exists")
+                .cards
+                .insert(0, card.to_string());
         }
 
-        /// Put an uploaded file on a card whose listing says it holds `size` bytes, with
-        /// none behind it: a file too large to seed.
-        pub(crate) fn seed_attachment_sized(&self, card: &str, name: &str, size: u64, secs: u64) {
-            self.push_attachment(card, name, Vec::new(), Some(size), true, secs);
-        }
-
-        /// Put a link named `name` on a card: an attachment that is no file.
-        pub(crate) fn seed_link_attachment(&self, card: &str, name: &str, secs: u64) {
-            self.push_attachment(card, name, Vec::new(), None, false, secs);
-        }
-
-        fn push_attachment(
-            &self,
-            card: &str,
-            name: &str,
-            bytes: Vec<u8>,
-            size: Option<u64>,
-            is_upload: bool,
-            secs: u64,
-        ) -> String {
-            let mut cards = lock(&self.cards);
-            let state = cards.get_mut(card).expect("card exists");
-            let id = format!("att{}", state.attachments.len() + 1);
-            state.attachments.push(MockAttachment {
-                listed: Attachment {
-                    url: format!("https://trello.com/1/cards/{card}/attachments/{id}/download/f"),
-                    id: id.clone(),
-                    name: name.to_string(),
-                    date: Some(UNIX_EPOCH + Duration::from_secs(secs)),
-                    is_upload,
-                    bytes: size,
-                },
-                bytes,
-            });
-            id
-        }
-
-        /// A card's uploaded files, as `(name, bytes)` in the order they were put on it.
-        pub(crate) fn attachments_on(&self, card: &str) -> Vec<(String, Vec<u8>)> {
+        /// Archive a card, as a person does on the board: nothing lists or reads it after.
+        pub(crate) fn seed_archived(&self, card: &str) {
             lock(&self.cards)
-                .get(card)
-                .map(|c| {
-                    c.attachments
-                        .iter()
-                        .filter(|a| a.listed.is_upload)
-                        .map(|a| (a.listed.name.clone(), a.bytes.clone()))
-                        .collect()
-                })
-                .unwrap_or_default()
+                .get_mut(card)
+                .expect("card exists")
+                .archived = true;
         }
 
         /// Make every call belonging to `stage` fail with a transport error until
@@ -1106,6 +989,48 @@ mod mock {
             }))
         }
 
+        fn card_handle(&self, card_id: &str) -> Result<CardFields, BoardError> {
+            self.guard("read card fields")?;
+            let lists = lock(&self.lists);
+            let cards = lock(&self.cards);
+            let members = lock(&self.members);
+            let Some(c) = cards.get(card_id) else {
+                return Err(BoardError::Status {
+                    stage: "read card fields",
+                    status: 404,
+                });
+            };
+            let list = lists
+                .iter()
+                .find(|l| l.cards.iter().any(|id| id == card_id))
+                .map(|l| l.name.clone())
+                .unwrap_or_default();
+            // The board reports a member by username; one nobody seeded by id reads as the
+            // id, as the real parser's own fallback does for a name.
+            let username = |id: &String| {
+                members
+                    .iter()
+                    .find(|(_, member)| *member == id)
+                    .map_or_else(|| id.clone(), |(username, _)| username.clone())
+            };
+            let created = c.created_at.map_or(0, millis);
+            Ok(CardFields {
+                number: c.number,
+                name: c.title.clone(),
+                url: card_url(card_id),
+                description: c.description.clone(),
+                board: MOCK_BOARD.to_string(),
+                list,
+                labels: c.labels.clone(),
+                members: c.members.iter().map(username).collect(),
+                due: None,
+                due_complete: false,
+                archived: c.archived,
+                created_at: created,
+                last_activity_at: created,
+            })
+        }
+
         fn card_comments(&self, card_id: &str) -> Result<Vec<Comment>, BoardError> {
             self.guard("read comments")?;
             Ok(lock(&self.cards)
@@ -1231,24 +1156,6 @@ mod mock {
             Ok(())
         }
 
-        fn archive_card(&self, card_id: &str) -> Result<(), BoardError> {
-            self.guard("archive card")?;
-            if let Some(card) = lock(&self.cards).get_mut(card_id) {
-                card.archived = true;
-            }
-            lock(&self.actions).push(Action::Archive(card_id.to_string()));
-            Ok(())
-        }
-
-        fn complete_card(&self, card_id: &str) -> Result<(), BoardError> {
-            self.guard("complete card")?;
-            if let Some(card) = lock(&self.cards).get_mut(card_id) {
-                card.complete = true;
-            }
-            lock(&self.actions).push(Action::Complete(card_id.to_string()));
-            Ok(())
-        }
-
         fn add_label(
             &self,
             _board_id: &str,
@@ -1280,7 +1187,7 @@ mod mock {
         ) -> Result<(), BoardError> {
             self.guard("remove label")?;
             // Unlike `add_label` (record-only), detach the label too, so a
-            // `require_label` + `remove_label` round-trip observes the change
+            // `only_labels` + `remove_label` round-trip observes the change
             // through `list_cards`.
             if let Some(card) = lock(&self.cards).get_mut(card_id) {
                 card.labels.retain(|l| l != label_name);
@@ -1288,34 +1195,6 @@ mod mock {
             lock(&self.actions).push(Action::RemoveLabel {
                 card: card_id.to_string(),
                 label: label_name.to_string(),
-            });
-            Ok(())
-        }
-
-        fn add_member(
-            &self,
-            _board_id: &str,
-            card_id: &str,
-            member: &MemberRef,
-        ) -> Result<(), BoardError> {
-            self.guard("add member")?;
-            lock(&self.actions).push(Action::AddMember {
-                card: card_id.to_string(),
-                member: member.clone(),
-            });
-            Ok(())
-        }
-
-        fn remove_member(
-            &self,
-            _board_id: &str,
-            card_id: &str,
-            member: &MemberRef,
-        ) -> Result<(), BoardError> {
-            self.guard("remove member")?;
-            lock(&self.actions).push(Action::RemoveMember {
-                card: card_id.to_string(),
-                member: member.clone(),
             });
             Ok(())
         }
@@ -1337,46 +1216,6 @@ mod mock {
                         name: username.clone(),
                     }),
             }
-        }
-
-        fn attach_file(&self, card_id: &str, name: &str, bytes: &[u8]) -> Result<(), BoardError> {
-            self.guard("post attachment")?;
-            let secs = self.next_post.fetch_add(1, Ordering::SeqCst);
-            self.push_attachment(
-                card_id,
-                name,
-                bytes.to_vec(),
-                Some(bytes.len() as u64),
-                true,
-                secs,
-            );
-            lock(&self.actions).push(Action::Attach {
-                card: card_id.to_string(),
-                name: name.to_string(),
-                len: bytes.len(),
-            });
-            Ok(())
-        }
-
-        fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
-            self.guard("list attachments")?;
-            Ok(lock(&self.cards)
-                .get(card_id)
-                .map(|c| c.attachments.iter().map(|a| a.listed.clone()).collect())
-                .unwrap_or_default())
-        }
-
-        fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
-            self.guard("download attachment")?;
-            lock(&self.cards)
-                .values()
-                .flat_map(|c| &c.attachments)
-                .find(|a| a.listed.url == url)
-                .map(|a| a.bytes.clone())
-                .ok_or(BoardError::Status {
-                    stage: "download attachment",
-                    status: 404,
-                })
         }
 
         fn set_call_deadline(&self, deadline: Option<Instant>) {
@@ -1410,7 +1249,7 @@ mod mock {
                 .collect::<Vec<_>>(),
             vec!["c1", "c2"]
         );
-        board.archive_card("c1").unwrap();
+        board.seed_archived("c1");
         assert_eq!(
             board
                 .list_cards("src")
@@ -1450,7 +1289,7 @@ mod mock {
         assert!(cards[0].checklists.is_empty());
         assert_eq!(cards[0].comments, None);
 
-        board.archive_card("c2").unwrap();
+        board.seed_archived("c2");
         assert_eq!(
             board
                 .board_cards("BID")
@@ -1488,7 +1327,7 @@ mod mock {
             "the per-card route always carries the thread"
         );
 
-        board.archive_card("c2").unwrap();
+        board.seed_archived("c2");
         board.vanish_on_read("c3");
         assert_eq!(board.read_card("c2").unwrap(), None, "archived");
         assert_eq!(
@@ -1690,12 +1529,29 @@ mod mock {
     }
 
     #[test]
-    fn complete_card_marks_complete_and_records_the_action() {
+    fn seed_card_in_puts_a_card_at_the_top_of_a_list_and_records_nothing() {
         let board = MockBoard::new();
         board.add_list("src");
+        board.add_list("dst");
+        board.add_card("dst", "c0", "zero", "");
         board.add_card("src", "c1", "one", "");
-        board.complete_card("c1").unwrap();
-        assert_eq!(board.actions(), vec![Action::Complete("c1".into())]);
+        board.seed_card_in("c1", "dst");
+        assert_eq!(
+            board
+                .list_cards("dst")
+                .unwrap()
+                .iter()
+                .map(|c| c.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["c1", "c0"],
+        );
+        assert!(board.list_cards("src").unwrap().is_empty());
+        assert!(board.actions().is_empty(), "no action recorded");
+        assert_eq!(
+            board.calls(),
+            ["list cards", "list cards"],
+            "and no request counted but the two reads above"
+        );
     }
 
     #[test]
@@ -1717,7 +1573,7 @@ mod mock {
     fn remove_label_records_and_detaches() {
         // Unlike `add_label` (record-only), the mock actually detaches the label,
         // so a seeded label is gone from `list_cards` afterward — the round-trip a
-        // `require_label` + `remove_label` config observes.
+        // `only_labels` + `remove_label` config observes.
         let board = MockBoard::new();
         board.add_list("src");
         board.add_card("src", "c1", "one", "");
@@ -1754,58 +1610,6 @@ mod mock {
         assert!(board.list_cards("src").unwrap()[0].labels.is_empty());
     }
 
-    #[test]
-    fn add_member_records_the_action() {
-        let board = MockBoard::new();
-        board.add_list("src");
-        board.add_card("src", "c1", "one", "");
-        board
-            .add_member("BID", "c1", &MemberRef::SelfMember)
-            .unwrap();
-        board
-            .add_member("BID", "c1", &MemberRef::Username("marisa".into()))
-            .unwrap();
-        assert_eq!(
-            board.actions(),
-            vec![
-                Action::AddMember {
-                    card: "c1".into(),
-                    member: MemberRef::SelfMember,
-                },
-                Action::AddMember {
-                    card: "c1".into(),
-                    member: MemberRef::Username("marisa".into()),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn remove_member_records_the_action() {
-        let board = MockBoard::new();
-        board.add_list("src");
-        board.add_card("src", "c1", "one", "");
-        board
-            .remove_member("BID", "c1", &MemberRef::SelfMember)
-            .unwrap();
-        board
-            .remove_member("BID", "c1", &MemberRef::Username("marisa".into()))
-            .unwrap();
-        assert_eq!(
-            board.actions(),
-            vec![
-                Action::RemoveMember {
-                    card: "c1".into(),
-                    member: MemberRef::SelfMember,
-                },
-                Action::RemoveMember {
-                    card: "c1".into(),
-                    member: MemberRef::Username("marisa".into()),
-                },
-            ]
-        );
-    }
-
     /// The fixture contract ~120 sibling tests lean on: `fail(stage)` fails **that**
     /// stage — every one of them, each error tagged with its own name — and nothing
     /// else, and `clear_failure()` puts the board back. Walking the whole stage table
@@ -1820,12 +1624,8 @@ mod mock {
             "post comment",
             "delete comment",
             "move card",
-            "archive card",
-            "complete card",
             "add label",
             "remove label",
-            "add member",
-            "remove member",
             "resolve member",
         ] {
             let board = MockBoard::new();
@@ -1849,12 +1649,8 @@ mod mock {
                     board.delete_comment("c1", &c.id).err()
                 }
                 "move card" => board.move_card("c1", "src", ListPosition::Top).err(),
-                "archive card" => board.archive_card("c1").err(),
-                "complete card" => board.complete_card("c1").err(),
                 "add label" => board.add_label("b", "c1", "x").err(),
                 "remove label" => board.remove_label("b", "c1", "x").err(),
-                "add member" => board.add_member("b", "c1", &MemberRef::SelfMember).err(),
-                "remove member" => board.remove_member("b", "c1", &MemberRef::SelfMember).err(),
                 "resolve member" => board.resolve_member("b", &MemberRef::SelfMember).err(),
                 _ => unreachable!(),
             };
@@ -1866,10 +1662,13 @@ mod mock {
             assert_eq!(err.stage(), stage, "the error is tagged with its own stage");
 
             // Scoped: a *different* board call still succeeds while the injection is armed.
-            if stage == "complete card" {
-                assert!(board.archive_card("c1").is_ok(), "`{stage}` leaked");
+            if stage == "move card" {
+                assert!(board.add_label("b", "c1", "y").is_ok(), "`{stage}` leaked");
             } else {
-                assert!(board.complete_card("c1").is_ok(), "`{stage}` leaked");
+                assert!(
+                    board.move_card("c1", "src", ListPosition::Top).is_ok(),
+                    "`{stage}` leaked"
+                );
             }
 
             board.clear_failure();
@@ -1895,6 +1694,15 @@ mod board_error_tests {
             }
             .stage(),
             "list cards"
+        );
+        assert_eq!(
+            BoardError::Answered {
+                stage: "delete comment",
+                status: 401,
+                message: "unauthorized permission requested".into()
+            }
+            .stage(),
+            "delete comment"
         );
         assert_eq!(
             BoardError::Transport {
@@ -1949,6 +1757,14 @@ mod board_error_tests {
                     status: 503,
                 },
                 "trello list cards: board returned status 503",
+            ),
+            (
+                BoardError::Answered {
+                    stage: "update comment",
+                    status: 401,
+                    message: "unauthorized permission requested".into(),
+                },
+                "trello update comment: board returned status 401: unauthorized permission requested",
             ),
             (
                 BoardError::Transport {
@@ -2009,67 +1825,25 @@ mod board_error_tests {
             SELF_ID
         );
 
-        // Mutating paths delegate (post/delete/move/archive/complete).
+        // Mutating paths delegate (post/delete/move/label).
         let posted = board.post_comment("c1", "hi").unwrap();
         board.delete_comment("c1", &posted.id).unwrap();
         board.move_card("c1", "src", ListPosition::Top).unwrap();
-        board.complete_card("c1").unwrap();
-        board.archive_card("c1").unwrap();
         board.add_label("b", "c1", "Problem").unwrap();
         board.remove_label("b", "c1", "Problem").unwrap();
         let deadline = Instant::now();
         board.set_call_deadline(Some(deadline));
         board.set_call_deadline(None);
-        board
-            .add_member("b", "c1", &MemberRef::Username("marisa".into()))
-            .unwrap();
-        board
-            .remove_member("b", "c1", &MemberRef::Username("marisa".into()))
-            .unwrap();
-        board.attach_file("c1", "work.patch", b"\0diff").unwrap();
-        board.seed_link_attachment("c1", "work.patch", 0);
-        let listed = board.card_attachments("c1").unwrap();
-        assert_eq!(
-            listed.iter().map(|a| a.is_upload).collect::<Vec<_>>(),
-            [true, false]
-        );
-        assert_eq!(
-            board.download_attachment(&listed[0].url).unwrap(),
-            b"\0diff"
-        );
-        assert_eq!(
-            board.attachments_on("c1"),
-            [("work.patch".to_string(), b"\0diff".to_vec())],
-            "a link is no file"
-        );
 
         // The Arc handle and the inner board are the same state.
         assert_eq!(board.resolve_count(), 1);
         assert_eq!(board.created_at_calls(), 1);
         assert_eq!(board.call_deadlines(), [Some(deadline), None]);
-        assert!(board
-            .actions()
-            .iter()
-            .any(|a| matches!(a, Action::Archive(c) if c == "c1")));
-        assert!(board
-            .actions()
-            .iter()
-            .any(|a| matches!(a, Action::Complete(c) if c == "c1")));
         assert!(board.actions().iter().any(
             |a| matches!(a, Action::AddLabel { card, label } if card == "c1" && label == "Problem")
         ));
         assert!(board.actions().iter().any(
             |a| matches!(a, Action::RemoveLabel { card, label } if card == "c1" && label == "Problem")
         ));
-        assert!(board.actions().iter().any(|a| matches!(
-            a,
-            Action::AddMember { card, member }
-                if card == "c1" && *member == MemberRef::Username("marisa".into())
-        )));
-        assert!(board.actions().iter().any(|a| matches!(
-            a,
-            Action::RemoveMember { card, member }
-                if card == "c1" && *member == MemberRef::Username("marisa".into())
-        )));
     }
 }

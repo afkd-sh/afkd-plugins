@@ -11,6 +11,9 @@
 //!   reach, its `on_fail` checking every action's result, and holds the issue to its failed
 //!   state once Gitea is back: the slot's labels and comment on it, the bot unassigned, its
 //!   claim released.
+//! - The **files** leg claims an issue whose body embeds an image and whose comment links a
+//!   PDF, and holds its run to finding both in `task/` byte for byte, with `README.md`
+//!   linking each by relative path and the plugin's copies deleted once it is finished.
 //! - The **both kinds** leg `afkd validate`s one file with a service of each kind, whose
 //!   slots call every action the plugin provides on the item each is passed and name the
 //!   bot by the config's own constant `BOT`, and refuses the same file spelling the label
@@ -71,7 +74,8 @@ fn built_binary() -> &'static Path {
 }
 
 /// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
-/// the skill, exactly what the release archive holds — and return the staged root.
+/// the skill and the two licence texts, exactly what the release archive holds — and return
+/// the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("gitea")
@@ -81,7 +85,13 @@ fn stage(dst: &Path) -> PathBuf {
         .expect("run tools/pack-release");
     assert!(status.success(), "tools/pack-release gitea");
     let staged = dst.join("afkd-gitea");
-    for present in ["afkd-plugin.toml", "afkd-gitea", "skills/gitea/SKILL.md"] {
+    for present in [
+        "afkd-plugin.toml",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "afkd-gitea",
+        "skills/gitea/SKILL.md",
+    ] {
         assert!(staged.join(present).exists(), "the release holds {present}");
     }
     for absent in [
@@ -196,7 +206,8 @@ widgets :: service(gitea) {{
     for label in issue.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ echo file $(cat $AFKD_SCRATCH_DIR/task/issue/number) >> {FIELDS}
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
 "#,
@@ -339,7 +350,7 @@ fn drive_one_issue(home: &Path) {
                 dir.file_name()
                     .is_some_and(|name| name.to_string_lossy().ends_with(&run_suffix))
             })
-            .map(|dir| dir.join("task.md"))
+            .map(|dir| dir.join("task/README.md"))
             .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, &fake, &daemon, "the issue's run starts", || {
@@ -347,7 +358,10 @@ fn drive_one_issue(home: &Path) {
     });
     let task = read(&brief().expect("waited for"));
     for part in [TITLE, "> \"backoff\" — nobody", "```\nretry: 0\n```"] {
-        assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
+        assert!(
+            task.contains(part),
+            "task/README.md carries {part:?}:\n{task}"
+        );
     }
 
     std::fs::write(home.join("release"), "").expect("release the run");
@@ -372,7 +386,7 @@ fn drive_one_issue(home: &Path) {
     assert_eq!(
         read(&home.join(FIELDS)),
         format!(
-            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd/ready\nlabel 優先/high\n",
+            "title {TITLE}\nurl {}\nnumber {ISSUE}\nlabel afkd/ready\nlabel 優先/high\nfile {ISSUE}\n",
             fake.url(REPO, ISSUE)
         )
     );
@@ -420,6 +434,7 @@ reviews :: service(gitea.pr) {{
     $ echo url #{{pr.url}} >> {FIELDS}
     $ echo number #{{pr.number}} >> {FIELDS}
     $ echo branch #{{pr.branch}} >> {FIELDS}
+    $ echo file $(cat $AFKD_SCRATCH_DIR/task/pr/number) >> {FIELDS}
   }}
 }}
 "#,
@@ -484,7 +499,7 @@ fn drive_one_pr(home: &Path) {
     assert_eq!(
         read(&fields),
         format!(
-            "title {PR_TITLE}\nurl {}\nnumber {PR}\nbranch {HEAD}\n",
+            "title {PR_TITLE}\nurl {}\nnumber {PR}\nbranch {HEAD}\nfile {PR}\n",
             fake.url(REPO, PR)
         ),
         "{}",
@@ -656,6 +671,142 @@ fn fail_one_issue_through_an_outage(home: &Path) {
     );
 }
 
+/// What the files leg's run writes its findings to, under the service's work dir: a line for
+/// each file it compared with the seeded bytes and for each link it looked for in the README.
+const CHECKS: &str = "checks.txt";
+
+/// Where the files leg's run lists what `task/` holds, under the service's work dir.
+const LISTING: &str = "listing.txt";
+
+/// The image the files leg seeds: a PNG's signature, a NUL, a CR LF, bytes that are no UTF-8
+/// and a `--` run — nothing a text transport would hand back whole.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\xff\xfe--afkd--\r\n\x00end";
+
+/// The PDF the files leg seeds: its header, a binary comment line and a NUL.
+const PDF: &[u8] = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\r\n\0trailer\n%%EOF";
+
+/// The service that drives the files leg's issue, `home` its work dir and `expected` the
+/// folder holding the seeded bytes: its `on_run` compares each file in
+/// `$AFKD_SCRATCH_DIR/task/` with them, looks for the relative links in the README, and
+/// lists the folder, each into the work dir. A finding is written and never fails the run, so
+/// the leg reads every one and names what differs.
+fn files_service(home: &Path, expected: &Path, base_url: &str) -> String {
+    format!(
+        r#"import "afkd"
+import "@afkd/gitea"
+
+widgets :: service(gitea) {{
+  base_url     "{base_url}"
+  repo         "{REPO}"
+  token        "{TOKEN}"
+  source_label "afkd/ready"
+  every        1s
+  max_attempts 1
+
+  on_claim proc(issue: gitea.Issue) {{ gitea.assign_me(issue) }}
+  on_done proc(run: afkd.Run, issue: gitea.Issue, outcome: afkd.Outcome) {{
+    gitea.remove_label(issue, "afkd/claimed")
+    gitea.close(issue)
+  }}
+
+  work_dir "{home}"
+  on_run proc(run: afkd.Run, issue: gitea.Issue) {{
+    $ for f in shot.png report.pdf; do if cmp -s "$AFKD_SCRATCH_DIR/task/$f" "{expected}/$f"; then echo "$f identical" >> {CHECKS}; else echo "$f differs" >> {CHECKS}; fi; done
+    $ if grep -qF '![shot.png](<shot.png>)' "$AFKD_SCRATCH_DIR/task/README.md"; then echo readme-image >> {CHECKS}; else echo readme-image-missing >> {CHECKS}; fi
+    $ if grep -qF '[report.pdf](<report.pdf>)' "$AFKD_SCRATCH_DIR/task/README.md"; then echo readme-pdf >> {CHECKS}; else echo readme-pdf-missing >> {CHECKS}; fi
+    $ ls -A "$AFKD_SCRATCH_DIR/task" | LC_ALL=C sort >> {LISTING}
+  }}
+}}
+"#,
+        home = home.display(),
+        expected = expected.display()
+    )
+}
+
+/// Everything held in any `task-files` folder under `root`, the plugin's own state directory
+/// among it: the paths of the entries inside. A folder that vanishes mid-walk is read as empty,
+/// since the daemon is still moving things under `root`.
+fn held_in_task_files(root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, inside: bool, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if inside {
+                out.push(path.clone());
+            }
+            if path.is_dir() {
+                let named = path.file_name().is_some_and(|name| name == "task-files");
+                walk(&path, inside || named, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, false, &mut out);
+    out
+}
+
+/// Drive one issue linking an image and a PDF through the plugin, installed in `home`, on a
+/// real daemon: the image embedded in its body, the PDF linked from a comment, each as Gitea
+/// writes it. The run finds both in `task/`, byte for byte what was seeded, and `README.md`
+/// linking each by relative path — the image where the body embeds it, the PDF in the `Files`
+/// section, which only a comment links — with no Gitea url left in it; once the issue is
+/// finished the plugin's folder of the unit's files is gone, and the daemon drains clean.
+fn drive_one_issue_with_files(home: &Path) {
+    let fake = FakeGitea::start(ME);
+    let png = fake.asset(REPO, ISSUE, "shot.png", PNG);
+    let pdf = fake.asset(REPO, ISSUE, "report.pdf", PDF);
+    let body = format!("{BODY}\n![shot.png]({})\n", fake.link(&png));
+    fake.issue(REPO, ISSUE, TITLE, &body, LABELS, &[]);
+    fake.comment(
+        REPO,
+        ISSUE,
+        "alice",
+        &format!("The report: [report.pdf]({})", fake.absolute_link(&pdf)),
+        60,
+    );
+    let expected = home.join("expected");
+    std::fs::create_dir_all(&expected).expect("mk the expected dir");
+    std::fs::write(expected.join("shot.png"), PNG).expect("write the seeded image");
+    std::fs::write(expected.join("report.pdf"), PDF).expect("write the seeded pdf");
+    write_config(home, &files_service(home, &expected, fake.base_url()));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    wait_for(
+        home,
+        &fake,
+        &daemon,
+        "the issue is run and finished",
+        || fake.issue_state(REPO, ISSUE).state == "closed" && !marked(&fake, ISSUE),
+    );
+    assert_eq!(
+        read(&home.join(CHECKS)),
+        "shot.png identical\nreport.pdf identical\nreadme-image\nreadme-pdf\n",
+        "{}",
+        dump(home, &fake, &daemon)
+    );
+    let listing = read(&home.join(LISTING));
+    let held: Vec<&str> = listing.lines().collect();
+    for name in ["README.md", "report.pdf", "shot.png"] {
+        assert!(held.contains(&name), "task/ holds {name}: {held:?}");
+    }
+    assert!(
+        held.iter().all(|name| !name.starts_with('.')),
+        "no temp file is left in task/: {held:?}"
+    );
+    let left = held_in_task_files(&state_dir(home));
+    assert!(left.is_empty(), "the plugin's folder is deleted: {left:?}");
+
+    daemon.signal(libc::SIGINT);
+    let out = daemon.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // --- the legs ----------------------------------------------------------------------
 
 #[test]
@@ -678,6 +829,14 @@ fn install_leg_places_the_plugin_and_runs_one_issue_and_one_pr_through_it() {
     assert!(mode & 0o111 != 0, "{} is executable", exec.display());
     drive_one_issue(home.path());
     drive_one_pr(home.path());
+}
+
+#[test]
+fn files_leg_a_claimed_issue_runs_with_the_image_and_pdf_it_links_in_task() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    drive_one_issue_with_files(home.path());
 }
 
 #[test]
@@ -724,7 +883,7 @@ issues :: service(gitea) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitea.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 
@@ -750,7 +909,7 @@ reviews :: service(gitea.pr) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, pr: gitea.Pull_Request) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 "##;

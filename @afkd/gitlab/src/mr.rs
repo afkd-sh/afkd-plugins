@@ -13,7 +13,7 @@
 //! clarification gate.
 //!
 //! afkd keeps the spine — the cadence, the queue lane, the claim journal, the attempt
-//! bound, the mid-run watch's cursor, and the framing of `task.md` — so what is here is
+//! bound, the mid-run watch's cursor, and the framing of `task/README.md` — so what is here is
 //! exactly what the built-in's `ForgeUnits` impl does on the vendor side. The poll's scan
 //! budget is checked where the issue kind checks it: after a candidate passes eligibility,
 //! before its claim attempt.
@@ -33,12 +33,13 @@ use crate::common::{
     unit_key, Claimed, Clock, Diag, ScanBudget, CLAIMED_LABEL, ENV_MR_BRANCH, ENV_MR_NUMBER,
     ENV_PROJECT,
 };
+use crate::file::{brief_with_files, linked_texts, FetchedFile};
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{Vocabulary, MR_VOCABULARY};
 use crate::outbox::{lost_line, Item, Outbox, Write};
 use crate::settings::GitlabConfig;
 use crate::wire::{Fields, MrFields, WireFile, WireUnit};
-use crate::{MR_DIR, NUMBER_FILE, TASK_FILE};
+use crate::{MR_DIR, NUMBER_FILE, TASK_DIR, TASK_FILE};
 
 /// One MR taken on as a unit of work.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +53,9 @@ pub(crate) struct Unit {
     pub(crate) title: String,
     /// The MR's page on GitLab, the handle's `url`.
     pub(crate) url: String,
+    /// The MR's description, where the files it links are read from, with [`notes`](Self::notes)
+    /// ([`ClaimedUnit::linked_texts`]). The brief carries none of it.
+    pub(crate) description: String,
     /// The MR's source branch, threaded into the run's env so a prompted `git fetch` /
     /// checkout reconstructs it.
     pub(crate) source_branch: String,
@@ -61,6 +65,10 @@ pub(crate) struct Unit {
     /// The ids of every note on the MR at claim time — the `seen` afkd's watch starts from,
     /// so the thread the brief was built from is never re-delivered as new.
     pub(crate) before_notes: Vec<u64>,
+    /// The thread the claim's re-read saw, our own marker among it: with the description,
+    /// where the files the MR links are read from. The brief carries only the feedback of
+    /// it.
+    pub(crate) notes: Vec<Note>,
     /// The user this MR was claimed as: the unit's `self` (its username), and the identity
     /// the hooks' actions assign and unassign (its id).
     pub(crate) claimed_as: User,
@@ -86,6 +94,10 @@ impl ClaimedUnit for Unit {
         Unit::thread(self)
     }
 
+    fn key(&self) -> String {
+        Unit::key(self)
+    }
+
     fn claimed_as(&self) -> &str {
         &self.claimed_as.username
     }
@@ -99,6 +111,10 @@ impl ClaimedUnit for Unit {
             title: self.title.clone(),
             me: self.claimed_as.clone(),
         }
+    }
+
+    fn linked_texts(&self) -> Vec<&str> {
+        linked_texts(&self.description, &self.notes)
     }
 }
 
@@ -168,7 +184,10 @@ impl MrUnits {
                 clock,
                 diag,
             )? {
-                Claimed::Won(claim_id) => {
+                Claimed::Won {
+                    marker: claim_id,
+                    notes: thread,
+                } => {
                     // The claim is the marker; the label is the status it shows.
                     if let Err(e) = self.client.add_label(
                         &self.project,
@@ -184,9 +203,11 @@ impl MrUnits {
                         claim_id,
                         title: mr.title,
                         url: mr.url,
+                        description: mr.description,
                         source_branch: mr.source_branch,
                         feedback: mr_feedback_delta(&notes, &me.username),
                         before_notes: notes.iter().map(|n| n.id).collect(),
+                        notes: thread,
                         claimed_as: me.clone(),
                     }));
                 }
@@ -200,8 +221,12 @@ impl MrUnits {
     /// The unit as it crosses the wire: the built-in's `unit_key` / `unit_thread` /
     /// `unit_env` ∪ `creds_env` / `scratch_layout`, with the claim identity's username as
     /// `self`, the claim-time note ids as `seen` and the MR's handle fields. The brief is
-    /// unframed — afkd frames `task.md` itself.
-    pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
+    /// unframed — afkd frames `task/README.md` itself — with each link to a file in
+    /// `fetched` written as its name, and the files linked only from the description or
+    /// from notes that are no feedback, which the brief does not carry, listed at its end
+    /// ([`brief_with_files`]); then each of those files, which afkd copies in from where
+    /// [`fetch_files`](crate::file::fetch_files) wrote it.
+    pub(crate) fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
         let mut env = self.creds.clone();
         env.insert(ENV_PROJECT.to_string(), unit.project.raw().to_string());
         env.insert(ENV_MR_NUMBER.to_string(), unit.iid.to_string());
@@ -219,16 +244,21 @@ impl MrUnits {
             seen: unit.before_notes.iter().map(u64::to_string).collect(),
             me: unit.claimed_as.username.clone(),
             env,
-            files: vec![
-                WireFile {
-                    path: TASK_FILE.to_string(),
-                    text: brief_text(unit.iid, &unit.feedback),
-                },
-                WireFile {
-                    path: format!("{MR_DIR}/{NUMBER_FILE}"),
-                    text: unit.iid.to_string(),
-                },
-            ],
+            files: [
+                WireFile::text(
+                    TASK_FILE,
+                    brief_with_files(&brief_text(unit.iid, &unit.feedback), fetched),
+                ),
+                WireFile::text(format!("{MR_DIR}/{NUMBER_FILE}"), unit.iid.to_string()),
+            ]
+            .into_iter()
+            .chain(fetched.iter().map(|file| {
+                WireFile::from_path(
+                    format!("{TASK_DIR}/{}", file.name),
+                    file.path.to_string_lossy(),
+                )
+            }))
+            .collect(),
         }
     }
 }
@@ -262,8 +292,8 @@ impl Units for MrUnits {
         MrUnits::try_claim_next(self, me, diag, clock)
     }
 
-    fn wire_unit(&self, unit: &Unit) -> WireUnit {
-        MrUnits::wire_unit(self, unit)
+    fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
+        MrUnits::wire_unit(self, unit, fetched)
     }
 
     fn release(&self, unit: &Unit, diag: &dyn Diag) {
@@ -391,7 +421,7 @@ pub(crate) fn mr_has_new_feedback(notes: &[Note], me: &str) -> bool {
     !mr_feedback_delta(notes, me).is_empty()
 }
 
-/// The brief written to `task.md`: a header naming the MR, then the feedback delta
+/// The brief written to `task/README.md`: a header naming the MR, then the feedback delta
 /// (oldest-first, each line attributed to its author). Empty feedback still writes the
 /// header.
 fn brief_text(iid: u64, feedback: &[FeedbackItem]) -> String {
@@ -424,14 +454,16 @@ mod tests {
     //! What is proven here is the **vendor half** — eligibility, the claim, the brief, the
     //! env, the end of a round and the hooks' actions. The drive around it (attempt
     //! counting, the claim journal, the run-name mint, the cadence, the framing of
-    //! `task.md`) is afkd's, on the far side of the wire; the wire itself is
+    //! `task/README.md`) is afkd's, on the far side of the wire; the wire itself is
     //! `tests/wire.rs`.
 
     use super::*;
     use crate::claim::{claim_renewal_text, claim_text, split_claim_key, CLAIM_MARKER};
     use crate::client::{Action, MockClient};
-    use crate::common::{CaptureDiag, FakeClock, CALL_BUDGET, CLAIM_RESERVE};
+    use crate::common::{CaptureDiag, FakeClock, TempDir, CALL_BUDGET, CLAIM_RESERVE};
+    use crate::file::fetch_files;
     use crate::lifecycle::LifecycleAction;
+    use crate::wire::FileSource;
     use std::time::{Duration, UNIX_EPOCH};
 
     fn cfg() -> GitlabConfig {
@@ -503,6 +535,14 @@ mod tests {
         User {
             id: 1,
             username: "me".into(),
+        }
+    }
+
+    /// The text of a wire file that carries it inline.
+    fn text_of(file: &WireFile) -> &str {
+        match &file.source {
+            FileSource::Text(text) => text,
+            FileSource::From(from) => panic!("{} is copied from {from}", file.path),
         }
     }
 
@@ -753,7 +793,7 @@ mod tests {
 
     /// The brief a two-human thread produces: each line is attributed by name, over a
     /// multi-line body with trailing whitespace and non-ASCII text — the shapes a real
-    /// review thread carries. Unframed: afkd frames `task.md` itself.
+    /// review thread carries. Unframed: afkd frames `task/README.md` itself.
     #[test]
     fn the_brief_attributes_each_note_to_its_author() {
         let h = Harness::new(cfg());
@@ -763,6 +803,7 @@ mod tests {
             claim_id: 1,
             title: "MR !7".into(),
             url: "https://gitlab.example.com/group/widgets/-/merge_requests/7".into(),
+            description: String::new(),
             source_branch: "feature/x".into(),
             feedback: vec![
                 FeedbackItem {
@@ -776,11 +817,12 @@ mod tests {
                 },
             ],
             before_notes: Vec::new(),
+            notes: Vec::new(),
             claimed_as: me(),
         };
 
         assert_eq!(
-            h.units.wire_unit(&unit).files[0].text,
+            text_of(&h.units.wire_unit(&unit, &[]).files[0]),
             "Address review feedback on MR !7.\n\n## New feedback\n\
              \n**alice:** this breaks the retry path when the token expires\n\n    let x = 1;\n\
              \n**bob-döner:** disagree — the retry path already handles that, see !412\n"
@@ -792,7 +834,7 @@ mod tests {
             ..unit
         };
         assert_eq!(
-            h.units.wire_unit(&bare).files[0].text,
+            text_of(&h.units.wire_unit(&bare, &[]).files[0]),
             "Address review feedback on MR !7."
         );
     }
@@ -825,7 +867,7 @@ mod tests {
             200,
         );
         let unit = h.poll().expect("claimed");
-        let wire = h.units.wire_unit(&unit);
+        let wire = h.units.wire_unit(&unit, &[]);
 
         assert_eq!(wire.id, "7");
         assert_eq!(
@@ -867,18 +909,83 @@ mod tests {
         assert_eq!(
             wire.files,
             [
-                WireFile {
-                    path: "task.md".into(),
-                    text: "Address review feedback on MR !7.\n\n## New feedback\n\n\
-                           **陳大文:** 看起来不对 🚨\n\nthe cap is still 0\n"
-                        .into(),
-                },
-                WireFile {
-                    path: "mr/number".into(),
-                    text: "7".into(),
-                },
+                WireFile::text(
+                    "task/README.md",
+                    "Address review feedback on MR !7.\n\n## New feedback\n\n\
+                     **陳大文:** 看起来不对 🚨\n\nthe cap is still 0\n"
+                ),
+                WireFile::text("task/mr/number", "7"),
             ]
         );
+    }
+
+    /// An MR whose description pastes an image as GitLab writes it, and whose feedback note
+    /// links a log: the claim re-read the thread once and each upload is downloaded from
+    /// it and the description. The brief carries the feedback, so the log is linked in
+    /// place by its relative name; the image, which only the description links, is listed
+    /// in the closing section; no `/uploads/` url is left; and both ride as `from` entries
+    /// beside the brief, byte for byte.
+    #[test]
+    fn the_brief_links_the_feedbacks_file_and_lists_the_descriptions() {
+        let h = Harness::new(cfg());
+        let (s1, s2) = ("ab".repeat(16), "cd".repeat(16));
+        let png = b"\x89PNG\r\n\x1a\n\0\xff\xfe--end";
+        let log = b"boom\r\n\0\xff";
+        h.client.add_mr(7, 1, "me", "feature/x");
+        h.client.set_mr_description(
+            7,
+            &format!("Fixes the crash:\n\n![screen_shot](/uploads/{s1}/screen_shot.png)"),
+        );
+        h.client.add_note_body(
+            ItemKind::MergeRequest,
+            7,
+            1,
+            99,
+            "alice",
+            &format!("It still fails, [run.log](/uploads/{s2}/run.log)"),
+            100,
+        );
+        h.client.add_upload(&s1, "screen_shot.png", png);
+        h.client.add_upload(&s2, "run.log", log);
+
+        let unit = h.poll().expect("claimed");
+        assert_eq!(unit.linked_texts().len(), 2, "the description and the note");
+        let state = TempDir::new("mr-files");
+        let dir = state.path().join("task-files").join("k");
+        let fetched = fetch_files(
+            &*h.client,
+            &unit.project,
+            "merge request",
+            &unit.linked_texts(),
+            &dir,
+            &h.diag,
+        );
+        let wire = h.units.wire_unit(&unit, &fetched);
+
+        assert_eq!(
+            text_of(&wire.files[0]),
+            "Address review feedback on MR !7.\n\n## New feedback\n\n\
+             **alice:** It still fails, [run.log](<run.log>)\n\n\
+             ## Files linked elsewhere on the item\n\n\
+             These are linked from the item's description or its notes, which this brief \
+             does not carry, and are downloaded beside it:\n\n\
+             - [screen_shot.png](<screen_shot.png>)\n"
+        );
+        assert!(!text_of(&wire.files[0]).contains("/uploads/"));
+        assert_eq!(
+            wire.files[1..],
+            [
+                WireFile::text("task/mr/number", "7"),
+                WireFile::from_path(
+                    "task/screen_shot.png",
+                    dir.join("screen_shot.png").to_str().unwrap()
+                ),
+                WireFile::from_path("task/run.log", dir.join("run.log").to_str().unwrap()),
+            ]
+        );
+        assert_eq!(std::fs::read(dir.join("screen_shot.png")).unwrap(), png);
+        assert_eq!(std::fs::read(dir.join("run.log")).unwrap(), log);
+        assert!(h.diag.lines().is_empty(), "{:?}", h.diag.lines());
     }
 
     // --- Eligibility + the claim ---
@@ -1319,9 +1426,11 @@ mod tests {
             claim_id: 9,
             title: "MR !7".into(),
             url: "https://gitlab.example.com/group/widgets/-/merge_requests/7".into(),
+            description: String::new(),
             source_branch: "feature/x".into(),
             feedback: Vec::new(),
             before_notes: Vec::new(),
+            notes: Vec::new(),
             claimed_as: me(),
         };
 

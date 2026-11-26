@@ -4,20 +4,28 @@
 //! against the afkd it will meet ([`bin_path`]).
 //!
 //! - The **install** leg installs the tree the release tarball holds and runs one card
-//!   through it on a real daemon, its slots' actions crossing as `call`s on the card each
-//!   is passed and its slots reading every field the card's handle declares.
+//!   through it end to end on a real daemon: a `service(trello)` against the fake claims the
+//!   card from its `claim_from` list; its `on_claim` reads the board with `trello.cards` and
+//!   faults the run unless the card it was passed is `==` the card read; its `on_run` reads
+//!   the card's comments with `trello.comments(account, card)`, writes one with
+//!   `trello.create_comment(account, card, …)` and reads every field the card's handle
+//!   declares; its `on_done` moves the card with `trello.update_card(account, card, list=…)`.
+//!   The comment landed, the card moved and the claim was released.
 //! - The **two lists** leg claims, on a real daemon, a card from the second of the two
-//!   lists its `pick_from` names, past a held card in the first.
+//!   lists its `claim_from` names, past a held card in the first.
 //! - The **outage** leg fails a card through both its attempts while Trello is out of
-//!   reach, and holds the card to its failed state once Trello is back: both attempt notes
-//!   on it, in Backlog with the Problem label, its claim released.
-//! - The **attachments** leg fetches, in `on_claim`, the newest of two plans an earlier
-//!   attempt left on the card, and finds no patch; its `on_run` then attaches one, and
-//!   the card holds it byte for byte.
-//! - The **complete example** leg `afkd validate`s the selfdev pipeline of the afk language
-//!   spec's §24 against the installed plugin and, given an afkd checkout in `AFKD_SRC`, holds
-//!   its copies to §24 there; the **handle** leg holds `afkd validate` to refusing an action
-//!   called without its card.
+//!   reach: `on_fail`'s writes come back `.err`, the notes the plugin could not post are said
+//!   lost and never queued, the finish is held, and once Trello is back afkd's `release`
+//!   frees the claim and the card is left in its list.
+//! - The **attachments** leg downloads, in `on_claim`, the newest of two plans an earlier
+//!   attempt left on the card with `trello.attachments` and `trello.download_attachment`, and
+//!   finds no patch; its `on_run` then uploads one with `trello.create_attachment`, and the
+//!   card holds it byte for byte.
+//! - The **handle** leg holds `afkd validate` to refusing a call made without its card.
+//! - The **required setting** leg holds `afkd validate` to refusing a service that names no
+//!   `claim_from`.
+//! - The **kind** leg holds `afkd validate` to taking a service written `service(trello)` and
+//!   to refusing, as unknown, each setting the kind was renamed from.
 //! - The **cadence** leg holds `afkd validate` to refusing a service that writes the claim
 //!   key afkd renamed to `every`, pointing it at `every`, and to taking the same service
 //!   with `every`.
@@ -73,7 +81,8 @@ fn built_binary() -> &'static Path {
 }
 
 /// Stage the release `tools/pack-release` packs under `dst` — the manifest, the binary and
-/// the skill, exactly what the release archive holds — and return the staged root.
+/// the skill and the two licence texts, exactly what the release archive holds — and return
+/// the staged root.
 fn stage(dst: &Path) -> PathBuf {
     let status = Command::new(plugin_root().join("../../tools/pack-release"))
         .arg("trello")
@@ -83,7 +92,13 @@ fn stage(dst: &Path) -> PathBuf {
         .expect("run tools/pack-release");
     assert!(status.success(), "tools/pack-release trello");
     let staged = dst.join("afkd-trello");
-    for present in ["afkd-plugin.toml", "afkd-trello", "skills/trello/SKILL.md"] {
+    for present in [
+        "afkd-plugin.toml",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "afkd-trello",
+        "skills/trello/SKILL.md",
+    ] {
         assert!(staged.join(present).exists(), "the release holds {present}");
     }
     for absent in [
@@ -140,7 +155,7 @@ fn install(home: &Path, root: &Path) {
 
 // --- the scenario ------------------------------------------------------------------
 
-/// The card the service claims, its short link in Trello's own shape, titled and described
+/// The card the service claims, its short link in Trello's own shape, named and described
 /// in the shapes that break a naive transport: wide glyphs, an emoji, quotes, and a
 /// multi-line body with a quoted line, a fence and a wide attribution.
 const SHORT_LINK: &str = "Qb7eLy2w";
@@ -154,6 +169,10 @@ const LABELS: &[&str] = &["afkd/ready", "", "Väntar på svar"];
 
 /// The file, under the service's work dir, its `on_run` writes the card's handle fields to.
 const FIELDS: &str = "fields.txt";
+
+/// The file its `on_run` writes the card's description to, whole: a field of many lines, with
+/// quotes and a fence in it.
+const DESCRIPTION: &str = "description.txt";
 
 /// A human's question on the card before afkd ever looked, which the brief must carry.
 const ASK: &str = "看起来不对 🚨 — it resets on every 401:\n\n```\nGET /1/members/me 401\n```";
@@ -170,6 +189,8 @@ fn seed() -> (FakeTrello, String) {
     for list in ["Up for Grabs", "In Progress", "Review"] {
         fake.list(list);
     }
+    // A label a slot may put on a card: no write makes one the board lacks.
+    fake.board_label(BOARD, "Problem", Some("red"));
     let chen = fake.member("chen", "陳大文");
     let card = fake.card("Up for Grabs", SHORT_LINK, TITLE, BODY);
     for label in LABELS {
@@ -180,18 +201,58 @@ fn seed() -> (FakeTrello, String) {
 }
 
 /// The service that drives the seeded card, `home` its work dir: a v2 file importing the
-/// plugin, whose slots call its actions on the card they are passed — `add_member` with its
-/// `member` left to its default — and whose `on_done` comment afkd interpolates from the outcome and the
-/// card's title. The run holds until the test creates `release` — bounded, so a test that
-/// never does cannot wedge it — which is what lets the test see the claim and the run
-/// mid-flight; then it writes every field of the card's handle to [`FIELDS`], a line each.
+/// plugin, whose slots reach Trello through the `trello.Account` they are passed — `on_claim`
+/// puts the token's own member on the card (`add_member` with its `member` left to its default)
+/// and moves it, `on_done` moves it to Review. The run holds until the test creates `release`
+/// — bounded, so a test that never does cannot wedge it — which is what lets the test see the
+/// claim and the run mid-flight; then it reads the card's comments with `trello.comments` and
+/// writes one saying how many it read with `trello.create_comment`, writes every field of the
+/// card's handle to [`FIELDS`], a line each, and the description to [`DESCRIPTION`]. Its
+/// `on_claim` first reads the board's cards of the list with `trello.cards` and faults the run
+/// unless the card it was passed is `==` the one card read ([`claim_check`]) — the claimed card
+/// and the card read are one handle to a real afkd.
 fn service(home: &Path, base_url: &str) -> String {
-    service_drawing(home, base_url, r#"pick_from    "Up for Grabs""#)
+    service_with(
+        home,
+        base_url,
+        r#"claim_from   "Up for Grabs""#,
+        &claim_check(),
+    )
 }
 
-/// [`service`], drawing its cards as `intake` says: the `pick_from` line, and any gate
-/// written under it.
+/// The statements an `on_claim` runs first to hold the claimed card to the card `trello.cards`
+/// reads: the board's cards of `Up for Grabs`, read through the `account` the slot was passed
+/// — which reaches the fake only if the plugin built it from the service's settings — are
+/// the one card, and it is `==` the card the slot was passed. Written before any move, so the
+/// card is read where the claim found it.
+fn claim_check() -> String {
+    format!(
+        r#"    match trello.cards(account, "https://trello.com/b/{BOARD}/afkd-drift", list=[ "Up for Grabs" ]) {{
+      .ok(cards) => {{
+        if len(cards) != 1 {{
+          fail("trello.cards read #{{len(cards)}} cards of Up for Grabs, not the one claimed")
+        }}
+        for found in cards {{
+          if found != card {{
+            fail("the card trello.cards read is not the card claimed: #{{found.id}} and #{{card.id}}")
+          }}
+        }}
+      }}
+      .err(e) => fail("trello.cards: #{{e.message}}")
+    }}
+"#
+    )
+}
+
+/// [`service`] without the claim check, drawing its cards as `intake` says: the `claim_from`
+/// line, and any gate written under it.
 fn service_drawing(home: &Path, base_url: &str, intake: &str) -> String {
+    service_with(home, base_url, intake, "")
+}
+
+/// A service drawing its cards as `intake` says, its `on_claim` running `check` before it
+/// adds the token's member and moves the card.
+fn service_with(home: &Path, base_url: &str, intake: &str, check: &str) -> String {
     format!(
         r#"import "afkd"
 import "@afkd/trello"
@@ -205,24 +266,59 @@ widgets :: service(trello) {{
   every        1s
   max_attempts 1
 
-  on_claim proc(card: trello.Card) {{
-    trello.add_member(card)
-    trello.move_to(card, "In Progress", at=.top)
+  on_claim proc(account: trello.Account, card: trello.Card) {{
+{check}    match trello.add_member(account, card) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.add_member: #{{e.message}}")
+    }}
+    match trello.update_card(account, card, list="In Progress", at=.top) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.update_card: #{{e.message}}")
+    }}
   }}
-  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
-    trello.move_to(card, "Review", at=.top)
-    trello.comment(card, "done in #{{outcome.duration}}: #{{card.title}}")
+  on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {{
+    match trello.update_card(account, card, list="Review", at=.top) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.update_card: #{{e.message}}")
+    }}
   }}
 
   work_dir "{home}"
-  on_run proc(run: afkd.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
-    $ echo title #{{card.title}} >> {FIELDS}
+    match trello.comments(account, card) {{
+      .ok(thread) => {{
+        match trello.create_comment(account, card, "saw #{{len(thread)}} comments on #{{card.name}}") {{
+          .ok(_) => {{ }}
+          .err(e) => fail("trello.create_comment: #{{e.message}}")
+        }}
+      }}
+      .err(e) => fail("trello.comments: #{{e.message}}")
+    }}
+    $ echo number #{{card.number}} >> {FIELDS}
+    $ echo name #{{card.name}} >> {FIELDS}
     $ echo url #{{card.url}} >> {FIELDS}
+    $ echo board #{{card.board}} >> {FIELDS}
+    $ echo list #{{card.list}} >> {FIELDS}
+    $ printf %s #{{card.description}} > {DESCRIPTION}
     for label in card.labels {{
       $ echo label #{{label}} >> {FIELDS}
     }}
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    for member in card.members {{
+      $ echo member #{{member}} >> {FIELDS}
+    }}
+    if card.due != nil {{
+      $ echo due set >> {FIELDS}
+    }}
+    if card.due_complete {{
+      $ echo due_complete yes >> {FIELDS}
+    }}
+    if card.archived {{
+      $ echo archived yes >> {FIELDS}
+    }}
+    $ echo created_at #{{card.created_at}} >> {FIELDS}
+    $ echo last_activity_at #{{card.last_activity_at}} >> {FIELDS}
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }}
 }}
 "#,
@@ -238,12 +334,14 @@ fn write_config(home: &Path, config: &str) {
 }
 
 /// The credentials a config reads from the daemon's environment
-/// (`env.get("TRELLO_API_KEY")`), as the README's lead example and §24 do, and §24's
-/// `GH_TOKEN`.
+/// (`env.get("TRELLO_API_KEY")`), as the README's lead example does, and a second
+/// account's.
 const CONFIG_ENV: &[(&str, &str)] = &[
     ("TRELLO_API_KEY", KEY),
     ("TRELLO_TOKEN", TOKEN),
-    ("GH_TOKEN", "gh-token-drift"),
+    // The second account the README's two-account example reads.
+    ("GLOBEX_TRELLO_API_KEY", "globex-key-drift"),
+    ("GLOBEX_TRELLO_TOKEN", "globex-token-drift"),
 ];
 
 /// `afkd validate` over `home`'s config, with [`CONFIG_ENV`] set: the exit code and the
@@ -352,11 +450,16 @@ fn read(path: &Path) -> String {
 /// Drive one card through the plugin, installed in `home`, on a real daemon: it is
 /// **claimed** (the claim comment, and `on_claim`'s calls added the token's own member and
 /// moved it), **run** (its run dir is named for the card, its task carries the card and its
-/// thread whole, and `on_run` read every field of its handle as the plugin sent it) and
-/// **finished** (the claim released, and `on_done`'s calls moved it and commented with its
-/// title), and the daemon then drains clean.
+/// thread whole, and `on_run` read every field of its handle as the plugin sent it, read the
+/// thread with `trello.comments` and wrote a comment saying how long it was) and **finished**
+/// (the claim released, and `on_done`'s call moved the card to Review), and the daemon then
+/// drains clean.
 fn drive_one_card(home: &Path) {
     let (fake, card) = seed();
+    // A member already on the card, and a due date marked complete, so the fields the run
+    // reads are not all empty.
+    fake.card_member(&card, &fake.member("chen", "陳大文"));
+    fake.due(&card, 3 * 86_400, true);
     write_config(home, &service(home, fake.base_url()));
     let (code, report) = validate(home);
     assert_eq!(code, Some(0), "the service validates:\n{report}");
@@ -364,7 +467,9 @@ fn drive_one_card(home: &Path) {
     let daemon = spawn_headless_streaming(home, &[]);
 
     wait_for(home, &fake, &card, &daemon, "the card is claimed", || {
-        claimed(&fake, &card) && fake.list_of(&card) == "In Progress" && fake.members(&card) == [ME]
+        claimed(&fake, &card)
+            && fake.list_of(&card) == "In Progress"
+            && fake.members(&card) == ["chen", ME]
     });
     // The run dir is made before the spine lays the unit's files into it, so the wait is
     // for a written brief, not the bare dir.
@@ -376,7 +481,7 @@ fn drive_one_card(home: &Path) {
                 dir.file_name()
                     .is_some_and(|name| name.to_string_lossy().ends_with(&run_suffix))
             })
-            .map(|dir| dir.join("task.md"))
+            .map(|dir| dir.join("task/README.md"))
             .filter(|task| task.metadata().is_ok_and(|meta| meta.len() > 0))
     };
     wait_for(home, &fake, &card, &daemon, "the card's run starts", || {
@@ -391,30 +496,69 @@ fn drive_one_card(home: &Path) {
         "— reported by 陳大文",
         &asked,
     ] {
-        assert!(task.contains(part), "task.md carries {part:?}:\n{task}");
+        assert!(
+            task.contains(part),
+            "task/README.md carries {part:?}:\n{task}"
+        );
     }
 
     std::fs::write(home.join("release"), "").expect("release the run");
     wait_for(home, &fake, &card, &daemon, "the card is finished", || {
         fake.list_of(&card) == "Review" && !claimed(&fake, &card)
     });
+    // `on_run` read the thread — Chen's question and afkd's own claim — and said so on the card,
+    // as the token's member; the claim is released and the card moved.
     let me = fake.me();
     assert!(
-        fake.comments(&card).iter().any(|c| c.author == me
-            && c.text.starts_with("done in ")
-            && c.text.ends_with(&format!(": {TITLE}"))
-            && !c.text.contains("#{")),
-        "on_done's comment landed with its run fact and the title filled in:\n{}",
+        fake.comments(&card)
+            .iter()
+            .any(|c| c.author == me && c.text == format!("saw 2 comments on {TITLE}")),
+        "on_run's comment landed with the count it read and the card's name filled in:\n{}",
         dump(home, &fake, &card, &daemon)
     );
-    // Every field verbatim — the `$` lines shell-quote what they interpolate — and the
-    // labels by name, the colour-only one left out.
+    assert!(
+        !claimed(&fake, &card),
+        "the claim is released:\n{}",
+        dump(home, &fake, &card, &daemon)
+    );
+    // The `on_claim` read the board with `trello.cards` and held the card it was passed to
+    // be the one card read: had they not been `==`, it faulted and the card was never moved.
+    // Every field the card's handle declares verbatim — the `$` lines shell-quote what they
+    // interpolate — the card as the claim found it (still in `Up for Grabs`, and with the
+    // member that was on it then), its labels by name with the colour-only one left out,
+    // and each time a line with a value, which only a real afkd knows how to spell.
+    let fields = read(&home.join(FIELDS));
+    let (times, rest): (Vec<&str>, Vec<&str>) = fields
+        .lines()
+        .partition(|line| line.starts_with("created_at ") || line.starts_with("last_activity_at "));
     assert_eq!(
-        read(&home.join(FIELDS)),
-        format!(
-            "title {TITLE}\nurl {}\nlabel afkd/ready\nlabel Väntar på svar\n",
-            fake.url(&card)
-        )
+        rest,
+        [
+            "number 1".to_string(),
+            format!("name {TITLE}"),
+            format!("url {}", fake.url(&card)),
+            format!("board {BOARD}"),
+            "list Up for Grabs".to_string(),
+            "label afkd/ready".to_string(),
+            "label Väntar på svar".to_string(),
+            "member chen".to_string(),
+            "due set".to_string(),
+            "due_complete yes".to_string(),
+        ],
+        "fields.txt:\n{fields}"
+    );
+    assert_eq!(times.len(), 2, "both times: {fields}");
+    for (time, name) in times.iter().zip(["created_at", "last_activity_at"]) {
+        assert!(
+            time.strip_prefix(name)
+                .is_some_and(|value| value.trim().len() > 1),
+            "{name} is a line with a value: {time:?}"
+        );
+    }
+    assert_eq!(
+        read(&home.join(DESCRIPTION)),
+        BODY,
+        "the description, whole, as the card holds it"
     );
 
     daemon.signal(libc::SIGINT);
@@ -427,13 +571,13 @@ fn drive_one_card(home: &Path) {
     );
 }
 
-/// The two lists [`claim_from_the_second_list`] draws from, in the order its `pick_from`
+/// The two lists [`claim_from_the_second_list`] draws from, in the order its `claim_from`
 /// names them.
 const FIRST_LIST: &str = "Bakgrundsvideor";
 const SECOND_LIST: &str = "Hjälpvideor 🎬";
 
-/// A service whose `pick_from` names two lists, on a real daemon: the first list's only
-/// card carries the label `without_label` holds back, so the card in the second list is
+/// A service whose `claim_from` names two lists, on a real daemon: the first list's only
+/// card carries the label `skip_labels` holds back, so the card in the second list is
 /// the one **claimed**, `on_claim` moves it on, and once its run is released it is
 /// **finished** into Review; the held card is never claimed, and the daemon drains clean.
 fn claim_from_the_second_list(home: &Path) {
@@ -455,7 +599,7 @@ fn claim_from_the_second_list(home: &Path) {
             home,
             fake.base_url(),
             &format!(
-                "pick_from     \"{FIRST_LIST}\", \"{SECOND_LIST}\"\n  without_label \"afkd/hold\""
+                "claim_from   \"{FIRST_LIST}\", \"{SECOND_LIST}\"\n  skip_labels  \"afkd/hold\""
             ),
         ),
     );
@@ -494,9 +638,17 @@ fn claim_from_the_second_list(home: &Path) {
 /// Why both attempts of the failing service fail: the outage's own sentence.
 const OUTAGE_FAULT: &str = "git fetch: could not resolve host — the network went away 🚨";
 
+/// The file under the work dir where `on_fail` notes each write that came back `.err`.
+const REFUSED: &str = "on_fail_refused";
+
+/// What `on_fail` faults with when one of its writes lands while Trello is out of reach.
+const LANDED_IN_OUTAGE: &str = "an on_fail write landed during the outage";
+
 /// The selfdev service's failure path, cut down: two attempts, and the live config's
-/// `on_fail` — to the bottom of Backlog, with the Problem label. Each attempt holds until
-/// the test creates `release`, then fails.
+/// `on_fail` — to the bottom of Backlog, with the Problem label — except that it matches each
+/// write: one that lands faults the slot, since Trello is out of reach when it runs, and one
+/// that comes back `.err` is the answer expected, noted in a line of `REFUSED`. Each attempt holds until the test creates
+/// `release`, then fails.
 fn failing_service(home: &Path, base_url: &str) -> String {
     format!(
         r#"import "afkd"
@@ -507,20 +659,33 @@ widgets :: service(trello) {{
   base_url     "{base_url}"
   api_key      "{KEY}"
   token        "{TOKEN}"
-  pick_from    "Up for Grabs"
+  claim_from   "Up for Grabs"
   every        1s
   max_attempts 2
 
-  on_claim proc(card: trello.Card) {{
-    trello.move_to(card, "In Progress", at=.top)
+  on_claim proc(account: trello.Account, card: trello.Card) {{
+    match trello.update_card(account, card, list="In Progress", at=.top) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.update_card: #{{e.message}}")
+    }}
   }}
-  on_fail proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
-    trello.move_to(card, "Backlog", at=.bottom)
-    trello.add_label(card, "Problem")
+  on_fail proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {{
+    match trello.update_card(account, card, list="Backlog", at=.bottom) {{
+      .ok(_) => fail("{LANDED_IN_OUTAGE}")
+      .err(_) => {{
+        $ echo update_card >> {home}/{REFUSED}
+      }}
+    }}
+    match trello.add_label(account, card, "Problem") {{
+      .ok(_) => fail("{LANDED_IN_OUTAGE}")
+      .err(_) => {{
+        $ echo add_label >> {home}/{REFUSED}
+      }}
+    }}
   }}
 
   work_dir "{home}"
-  on_run proc(run: afkd.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
     fail("{OUTAGE_FAULT}")
   }}
@@ -531,11 +696,12 @@ widgets :: service(trello) {{
 }
 
 /// The 2026-10-01 incident, replayed on a real daemon: Trello goes out of reach once the
-/// card is claimed and stays out through both failed attempts, the finish and every action
-/// `on_fail` calls, and past the first retry. The plugin queues each write it cannot
-/// deliver, and once Trello is back
-/// the card ends in its failed state — both attempt notes and the watermark on it, in
-/// Backlog with the Problem label, its claim released — with nothing given up.
+/// card is claimed and stays out through both failed attempts, the finish and every write
+/// `on_fail` makes. The plugin retries nothing: the attempt notes and the watermark it could
+/// not post are said lost, naming the card, and `on_fail`'s writes come back `.err` — a write
+/// that landed would fault the slot. The finish is held with the claim on the card; once
+/// Trello is back afkd's `release` of its key frees the claim, and the card is left in the
+/// list `on_claim` put it in, with no note, no watermark, no Problem label and nothing queued.
 fn fail_one_card_through_an_outage(home: &Path) {
     let (fake, card) = seed();
     fake.list("Backlog");
@@ -548,83 +714,80 @@ fn fail_one_card_through_an_outage(home: &Path) {
         claimed(&fake, &card) && fake.list_of(&card) == "In Progress"
     });
 
-    let outage_start = Instant::now();
     fake.outage();
     std::fs::write(home.join("release"), "").expect("release the run");
-    // `on_fail`'s last action, queued behind everything before it: the attempt notes, the
-    // watermark and the move. Seeing it means the slot ran to its end during the outage.
-    let queued_last = "adding the label \"Problem\" is queued behind them";
+    // Both attempts failed and the finish could not release the claim: the plugin said it
+    // would hold it for afkd's later `release`. The watermark and both notes went the same way.
     wait_for(
         home,
         &fake,
         &card,
         &daemon,
-        "on_fail runs through the outage",
-        || daemon.stderr_so_far().contains(queued_last),
-    );
-    // And the outage outlasts the first retry, 5 s after the first failure.
-    wait_for(
-        home,
-        &fake,
-        &card,
-        &daemon,
-        "a retry fails in the outage",
+        "the finish is held through the outage",
         || {
             daemon
                 .stderr_so_far()
-                .contains("is tried again in 10s (try 3)")
+                .contains("afkd holds the claim and releases it on a later beat")
         },
     );
-    fake.restore();
-    let outage_for = outage_start.elapsed();
-    assert!(!fake.dropped().is_empty(), "the outage dropped requests");
-
-    // The head write (attempt note 1, queued as the outage began) is next tried at most
-    // the outage's length plus the first gap after it failed — the gap doubles from 5 s
-    // and its tries fall at +5, +15, +35 s… — and one pass then lands the card's whole
-    // backlog.
-    let me = fake.me();
-    let notes = || -> Vec<String> {
-        fake.comments(&card)
-            .into_iter()
-            .filter(|c| c.author == me && c.text.starts_with("[afkd-attempt]"))
-            .map(|c| c.text)
-            .collect()
-    };
-    let ran = || {
-        fake.comments(&card)
-            .iter()
-            .filter(|c| c.author == me && c.text.starts_with("[afkd-ran]"))
-            .count()
-    };
-    wait_for_within(
-        outage_for + Duration::from_secs(5) + BUDGET,
+    // `on_fail` runs after the finish reply: Trello stays out until both of its writes have
+    // come back `.err`, or one could land once it is restored.
+    let refused = home.join(REFUSED);
+    wait_for(
         home,
         &fake,
         &card,
         &daemon,
-        "the card reaches its failed state",
-        || {
-            fake.list_of(&card) == "Backlog"
-                && fake.labels(&card).contains(&"Problem".to_string())
-                && notes().len() == 2
-                && ran() == 1
-                && !claimed(&fake, &card)
-        },
+        "both of on_fail's writes are refused",
+        || std::fs::read_to_string(&refused).is_ok_and(|seen| seen.lines().count() >= 2),
     );
-    let notes = notes();
+    assert!(!fake.dropped().is_empty(), "the outage dropped requests");
     assert!(
-        notes[0].starts_with("[afkd-attempt] 1/2: ") && notes[0].contains(OUTAGE_FAULT),
-        "{notes:?}"
+        claimed(&fake, &card),
+        "the claim is held, as it could not be released"
+    );
+    fake.restore();
+
+    // Trello is back: afkd's `release` of the held key deletes the claim, and nothing the
+    // outage swallowed is replayed.
+    wait_for(
+        home,
+        &fake,
+        &card,
+        &daemon,
+        "the held finish is released once Trello is back",
+        || !claimed(&fake, &card),
+    );
+    assert_eq!(
+        fake.list_of(&card),
+        "In Progress",
+        "the card is left in the list on_claim put it in:\n{}",
+        dump(home, &fake, &card, &daemon)
     );
     assert!(
-        notes[1].starts_with("[afkd-attempt] 2/2: ") && notes[1].contains(OUTAGE_FAULT),
-        "{notes:?}"
+        !fake.labels(&card).iter().any(|l| l == "Problem"),
+        "no Problem label: on_fail's writes were refused"
+    );
+    let me = fake.me();
+    let ours: Vec<String> = fake
+        .comments(&card)
+        .into_iter()
+        .filter(|c| c.author == me)
+        .map(|c| c.text)
+        .collect();
+    assert!(
+        ours.iter()
+            .all(|text| !text.starts_with("[afkd-attempt]") && !text.starts_with("[afkd-ran]")),
+        "the notes the outage swallowed were never retried: {ours:?}"
     );
     let stderr = daemon.stderr_so_far();
     assert!(
-        !stderr.contains("gave up") && !stderr.contains("giving up"),
-        "nothing was given up:\n{stderr}"
+        stderr.contains("the comment \"[afkd-attempt] 1/2: ") && stderr.contains("is lost"),
+        "the lost attempt note is said, naming the card and the comment:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(LANDED_IN_OUTAGE) && !stderr.contains("queued"),
+        "no write landed in the outage and nothing was queued:\n{stderr}"
     );
 
     daemon.signal(libc::SIGINT);
@@ -669,7 +832,7 @@ fn two_lists_leg_claims_a_card_from_the_second_list() {
 }
 
 #[test]
-fn outage_leg_a_failed_card_still_reaches_backlog_with_its_attempt_notes() {
+fn outage_leg_a_failed_card_is_held_then_released_with_nothing_retried_or_queued() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
@@ -678,10 +841,12 @@ fn outage_leg_a_failed_card_still_reaches_backlog_with_its_attempt_notes() {
 
 // --- files on the card ---------------------------------------------------------------
 
-/// The service the attachments leg drives, `home` its work dir: `on_claim` fetches what an
-/// earlier attempt left on the card — its plan and its patch — into `home`, failing on any
-/// error, and `on_run`, once the test creates `release`, attaches the patch it finds in
-/// `home`, failing if the plugin refuses it.
+/// The service the attachments leg drives, `home` its work dir: `on_claim` lists the card's
+/// attachments with `trello.attachments` and downloads each plan and patch an earlier attempt
+/// left on it into `home` with `trello.download_attachment` — oldest first, so the newest of a
+/// name is the file that stays — failing on any error, and `on_run`, once the test creates
+/// `release`, uploads the patch it finds in `home` with `trello.create_attachment`, failing if
+/// the plugin refuses it.
 fn attaching_service(home: &Path, base_url: &str) -> String {
     format!(
         r#"import "afkd"
@@ -692,31 +857,48 @@ widgets :: service(trello) {{
   base_url     "{base_url}"
   api_key      "{KEY}"
   token        "{TOKEN}"
-  pick_from    "Up for Grabs"
+  claim_from   "Up for Grabs"
   every        1s
   max_attempts 1
 
-  on_claim proc(card: trello.Card) {{
-    match trello.fetch_attachment(card, "plan.md", "{home}/earlier-plan.md") {{
-      .ok(_) => {{ }}
-      .err(e) => fail("trello.fetch_attachment: #{{e.message}}")
+  on_claim proc(account: trello.Account, card: trello.Card) {{
+    match trello.attachments(account, card) {{
+      .ok(held) => {{
+        for att in held {{
+          if att.name == "plan.md" {{
+            match trello.download_attachment(account, att, "{home}/earlier-plan.md") {{
+              .ok(_) => {{ }}
+              .err(e) => fail("trello.download_attachment: #{{e.message}}")
+            }}
+          }}
+          if att.name == "work.patch" {{
+            match trello.download_attachment(account, att, "{home}/earlier.patch") {{
+              .ok(_) => {{ }}
+              .err(e) => fail("trello.download_attachment: #{{e.message}}")
+            }}
+          }}
+        }}
+      }}
+      .err(e) => fail("trello.attachments: #{{e.message}}")
     }}
-    match trello.fetch_attachment(card, "work.patch", "{home}/earlier.patch") {{
+    match trello.update_card(account, card, list="In Progress", at=.top) {{
       .ok(_) => {{ }}
-      .err(e) => fail("trello.fetch_attachment: #{{e.message}}")
+      .err(e) => fail("trello.update_card: #{{e.message}}")
     }}
-    trello.move_to(card, "In Progress", at=.top)
   }}
-  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{
-    trello.move_to(card, "Review", at=.top)
+  on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {{
+    match trello.update_card(account, card, list="Review", at=.top) {{
+      .ok(_) => {{ }}
+      .err(e) => fail("trello.update_card: #{{e.message}}")
+    }}
   }}
 
   work_dir "{home}"
-  on_run proc(run: afkd.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {{
     $ i=0; until [ -f release ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
-    match trello.attach(card, "{home}/work.patch", "work.patch") {{
+    match trello.create_attachment(account, card, "{home}/work.patch", name="work.patch") {{
       .ok(_) => {{ }}
-      .err(e) => fail("trello.attach: #{{e.message}}")
+      .err(e) => fail("trello.create_attachment: #{{e.message}}")
     }}
   }}
 }}
@@ -743,10 +925,11 @@ fn synthetic_patch() -> Vec<u8> {
     patch
 }
 
-/// A card an earlier attempt left two plans on, on a real daemon: `on_claim` writes the
-/// newer plan to the work dir and, with no patch on the card, writes none; once released,
-/// `on_run` attaches the patch it is handed, and the card ends holding it byte for byte
-/// beside the two plans, finished into Review, and the daemon drains clean.
+/// A card an earlier attempt left two plans on, on a real daemon: `on_claim` downloads both
+/// plans to one path in the work dir — the newer last, so it is the one left — and, with no
+/// patch on the card, downloads none; once released, `on_run` uploads the patch it is handed,
+/// and the card ends holding it byte for byte beside the two plans, finished into Review, and
+/// the daemon drains clean.
 fn fetch_on_claim_and_attach_on_run(home: &Path) {
     let (fake, card) = seed();
     let newer = "## 計画 — attempt 2\n\n1. Läs kortet 🚧\n2. Bygg.\n";
@@ -765,7 +948,7 @@ fn fetch_on_claim_and_attach_on_run(home: &Path) {
             .ok()
             .as_deref(),
         Some(newer),
-        "on_claim fetched the newer plan:\n{}",
+        "on_claim downloaded the newer plan:\n{}",
         dump(home, &fake, &card, &daemon)
     );
     assert!(
@@ -799,390 +982,18 @@ fn fetch_on_claim_and_attach_on_run(home: &Path) {
 }
 
 #[test]
-fn attachments_leg_on_claim_fetches_the_newest_and_on_run_attaches() {
+fn attachments_leg_on_claim_downloads_the_newest_and_on_run_uploads() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
     fetch_on_claim_and_attach_on_run(home.path());
 }
 
-// --- the afk language spec's complete example --------------------------------------
+// --- the handle ----------------------------------------------------------------------
 
-/// §24's entry file.
-const SECTION_24_DAEMON: &str = r#"// daemon.afk
-import "selfdev"
-"#;
-
-/// §24's shared queues.
-const SECTION_24_QUEUES: &str = r#"// shared/queues.afk
-develop :: queue { capacity 1 }
-discuss :: queue { capacity 2 }
-"#;
-
-/// §24's `selfdev/selfdev.afk`, copied from `docs/lang-v2.md` at afkd master, up to the
-/// `develop` service's end. The `discuss` half after it is left out: it writes
-/// `discuss_with anyone`, a bare word, where the kind's `discuss_with` is a
-/// `list[str]` and is written `[ "anyone" ]`. [`the_section_24_copies_are_the_specs`] holds
-/// this copy and the two above to the spec.
-const SECTION_24_SELFDEV: &str = r##"// selfdev/selfdev.afk - Trello-driven pipeline: afkd develops itself.
-// Phases prep -> plan -> implement -> commit, each gated by a critic `.ok` with retries;
-// on exhaustion the card returns to Backlog. Markers live in the run's scratch dir.
-
-import "afkd"
-import "std:env"
-import "std:fs"
-import "std:git"
-import "ai:claude"
-import "shared"
-import "@afkd/trello"
-
-HOME       :: env.get("HOME") ?? "/root"
-PROMPTS    :: "docs/agents"
-REPO       :: "/home/user/Projects/afkd"
-PLUGINS    :: "/home/user/Projects/afkd-plugins"
-PNPM_STORE :: "/home/user/Projects/.pnpm-store"
-
-TRELLO_BOARD   :: "https://trello.com/b/BOARDID/afkd"
-TRELLO_API_KEY :: env.get("TRELLO_API_KEY") ?? fail("TRELLO_API_KEY is unset")
-TRELLO_TOKEN   :: env.get("TRELLO_TOKEN") ?? fail("TRELLO_TOKEN is unset")
-
-// gh's keyring is unreachable inside the sandbox, so the token travels by env.
-GH_TOKEN :: env.get("GH_TOKEN") ?? fail("GH_TOKEN is unset")
-
-// Git commands the review-only agents may never run.
-GIT_WRITES :: [
-  "Bash(git checkout *)",
-  "Bash(git clean *)",
-  "Bash(git commit *)",
-  "Bash(git push *)",
-  "Bash(git reset *)",
-]
-
-// Plans, implements, commits. Unattended, so bypass_permissions.
-builder :: agent(claude) {
-  timeout         4h
-  model           "opus"
-  effort          high
-  permission_mode bypass_permissions
-  skills          "@afkd/trello/trello"
-  allow           "Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write"
-}
-
-// Gates each phase, review-only. Commits stay denied even under bypass_permissions.
-critic :: agent(claude) {
-  timeout         1h
-  model           "opus"
-  effort          high
-  permission_mode bypass_permissions
-  skills          "@afkd/trello/trello"
-  allow           "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write"
-  deny            GIT_WRITES
-}
-
-// Confines the pipeline to the repo plus its Rust/claude toolchain.
-// The run's scratch dir is bound automatically.
-repo_jail :: sandbox {
-  network "api.anthropic.com:443"
-  read_write REPO,
-             PLUGINS,
-             "#{HOME}/.config/afkd/",
-             "#{HOME}/.cargo/",
-             "#{HOME}/.cache/pnpm/",
-             "#{HOME}/.claude/",
-             "#{HOME}/.claude.json",
-             "#{PNPM_STORE}/"
-
-  // NOTE: granting ~/.ssh exposes private keys to the agent.
-  read_only "/etc/ca-certificates/",
-            "/etc/group",
-            "/etc/hosts",
-            "/etc/nsswitch.conf",
-            "/etc/passwd",
-            "/etc/resolv.conf",
-            "/etc/ssl/",
-            "/usr/",
-            "#{HOME}/.gitconfig",
-            "#{HOME}/.local/bin/",
-            "#{HOME}/.local/share/claude/",
-            "#{HOME}/.local/share/nvm/",
-            "#{HOME}/.rustup/",
-            "#{HOME}/.ssh/"
-
-  // The toolchain is found on PATH, and claude's login under HOME.
-  env "HOME", "LANG", "PATH"
-}
-
-// Fresh marker state each run, and a tree that starts where master is.
-prep :: proc() {
-  match git.fetch("origin", "master") {
-    .ok(_) => { }
-    .err(fetched) => fail("git fetch: #{fetched.message}")
-  }
-  $ git reset --hard
-  $ git checkout -B master origin/master
-  $ rm -f $AFKD_SCRATCH_DIR/plan.md $AFKD_SCRATCH_DIR/*.ok \
-      $AFKD_SCRATCH_DIR/*.blocked $AFKD_SCRATCH_DIR/*-feedback.md
-}
-
-// How a gated phase ended.
-Verdict :: enum { blocked, approved, rejected }
-
-// A prompt file's text; a missing or unreadable one fails the run.
-prompt :: proc(name: str) -> str {
-  match fs.read_file("#{PROMPTS}/#{name}") {
-    .ok(text) => text
-    .err(err) => fail("cannot read #{err.path}: #{err.message}")
-  }
-}
-
-// Builds, then critiques, up to three times.
-gate :: proc(run: afkd.Run, phase: str, ~build: str, ~critique: str) -> Verdict {
-  for _ in 0..<3 {
-    match builder(prompt(build)) {
-      .ok(_) => { }
-      .err(e) => fail("builder: #{e.message}")
-    }
-    if fs.is_file("#{run.scratch_dir}/#{phase}.blocked") { return .blocked }
-
-    match critic(prompt(critique)) {
-      .ok(_) => { }
-      .err(e) => fail("critic: #{e.message}")
-    }
-    if fs.is_file("#{run.scratch_dir}/#{phase}.ok") { return .approved }
-  }
-  .rejected
-}
-
-plan :: proc(run: afkd.Run) {
-  verdict := gate(run, "plan", build="20-plan-build.md", critique="21-plan-critique.md")
-  if verdict == .blocked {
-    fail("card unimplementable as written - see card comment")
-  } else if verdict == .rejected {
-    fail("plan not approved within retries")
-  }
-}
-
-implement :: proc(run: afkd.Run) {
-  verdict := gate(run, "impl", build="30-implement-build.md", critique="31-implement-critique.md")
-  if verdict == .blocked {
-    fail("implementation blocked - see card comment")
-  } else if verdict == .rejected {
-    fail("implementation not approved within retries")
-  }
-}
-
-// Commits the approved work, then checks the fact rather than the agent's word.
-commit :: proc(run: afkd.Run) {
-  match builder(prompt("40-commit.md")) {
-    .ok(_) => { }
-    .err(e) => fail("builder: #{e.message}")
-  }
-  if fs.is_file("#{run.scratch_dir}/commit.blocked") {
-    fail("commit blocked: approval stale, real change needed - see card comment")
-  }
-
-  match git.fetch("origin", "master") {
-    .ok(_) => { }
-    .err(fetched) => fail("git fetch: #{fetched.message}")
-  }
-  match git.is_merged("HEAD", into="origin/master") {
-    .ok(merged) => {
-      if !merged { fail("the commit never reached origin/master - the push did not land") }
-    }
-    .err(err) => fail("cannot tell whether HEAD reached origin/master: #{err.message}")
-  }
-}
-
-task :: proc(run: afkd.Run) {
-  prep()
-  plan(run)
-  implement(run)
-  commit(run)
-}
-
-develop :: service(trello) {
-  board        TRELLO_BOARD
-  api_key      TRELLO_API_KEY
-  token        TRELLO_TOKEN
-  pick_from    "Up for Grabs"
-  min_age      1m
-  max_attempts 2
-  every        1m~3m
-
-  on_claim proc(card) {
-    match trello.add_member(card) {
-      .ok(_) => { }
-      .err(added) => fail("trello.add_member: #{added.message}")
-    }
-    match trello.move_to(card, "In Progress", at=.top) {
-      .ok(_) => { }
-      .err(moved) => fail("trello.move_to: #{moved.message}")
-    }
-  }
-  on_done proc(run, card, outcome) {
-    match trello.move_to(card, "Review", at=.top) {
-      .ok(_) => { }
-      .err(moved) => fail("trello.move_to: #{moved.message}")
-    }
-    match trello.comment(card, "afkd landed this card in #{outcome.duration}.") {
-      .ok(_) => { }
-      .err(commented) => fail("trello.comment: #{commented.message}")
-    }
-  }
-  on_park proc(run, card, outcome) {
-    match trello.comment(card, "parked after #{outcome.duration}: waiting for a reply.") {
-      .ok(_) => { }
-      .err(commented) => fail("trello.comment: #{commented.message}")
-    }
-  }
-  on_fail proc(run, card, outcome) {
-    match trello.move_to(card, "Backlog", at=.bottom) {
-      .ok(_) => { }
-      .err(moved) => fail("trello.move_to: #{moved.message}")
-    }
-    match trello.add_label(card, "Problem") {
-      .ok(_) => { }
-      .err(labelled) => fail("trello.add_label: #{labelled.message}")
-    }
-  }
-
-  work_dir    REPO
-  sandbox     repo_jail
-  queue       shared.develop
-  description "Builds a card promoted to Up for Grabs through prep, critic-gated planning and implementation, then commit and push"
-
-  env {
-    GH_TOKEN:              GH_TOKEN,
-    PNPM_CONFIG_STORE_DIR: PNPM_STORE,
-  }
-
-  on_run proc(run, card) { task(run) }
-}
-"##;
-
-/// The selfdev pipeline of the afk language spec's §24, `develop` service and all, validates
-/// against the installed plugin: every setting it writes is one the manifest declares, of
-/// its type, and every action its slots call is one the plugin provides, on the card its
-/// slot is passed.
-#[test]
-fn the_lang_v2_complete_example_develop_service_validates() {
-    let home = TempDir::new().expect("tempdir");
-    let stage_dir = TempDir::new().expect("tempdir");
-    install(home.path(), &stage(stage_dir.path()));
-    let config = config_dir(home.path());
-    for (file, text) in [
-        ("daemon.afk", SECTION_24_DAEMON),
-        ("shared/queues.afk", SECTION_24_QUEUES),
-        ("selfdev/selfdev.afk", SECTION_24_SELFDEV),
-    ] {
-        let path = config.join(file);
-        std::fs::create_dir_all(path.parent().expect("has parent")).expect("mk the package");
-        std::fs::write(&path, text).expect("write the file");
-    }
-    let (code, report) = validate(home.path());
-    assert_eq!(code, Some(0), "§24 validates:\n{report}");
-    assert!(
-        report.contains("selfdev/selfdev.afk") && !report.contains("warning:"),
-        "every file checked, cleanly:\n{report}"
-    );
-}
-
-/// `text` with its end trimmed to one newline, as a copy of §24 holds a file.
-fn ended(text: &str) -> String {
-    format!("{}\n", text.trim_end())
-}
-
-/// The bodies of the fences in `spec`'s §24, from its heading to the next section's, each
-/// [`ended`].
-fn section_24_fences(spec: &str) -> Vec<String> {
-    const HEADING: &str = "\n## 24. Complete example\n";
-    let start = spec
-        .find(HEADING)
-        .unwrap_or_else(|| panic!("lang-v2.md has no `{}` heading", HEADING.trim()));
-    let section = &spec[start + HEADING.len()..];
-    let section = section.find("\n## ").map_or(section, |end| &section[..end]);
-    let mut fences = Vec::new();
-    let mut open: Option<Vec<&str>> = None;
-    for line in section.lines() {
-        match open.as_mut() {
-            None if line == "```" => open = Some(Vec::new()),
-            None => {}
-            Some(_) if line == "```" => fences.push(ended(&open.take().expect("open").join("\n"))),
-            Some(body) => body.push(line),
-        }
-    }
-    assert!(open.is_none(), "every fence in §24 closes");
-    fences
-}
-
-/// The first line, 1-based, where `copy` and `spec` differ, with what each holds there
-/// (`<none>` past its end), or `None` when they are the same text.
-fn first_difference<'a>(copy: &'a str, spec: &'a str) -> Option<(usize, &'a str, &'a str)> {
-    let copy: Vec<&str> = copy.split('\n').collect();
-    let spec: Vec<&str> = spec.split('\n').collect();
-    (0..copy.len().max(spec.len())).find_map(|at| {
-        let (held, said) = (copy.get(at).copied(), spec.get(at).copied());
-        (held != said).then(|| (at + 1, held.unwrap_or("<none>"), said.unwrap_or("<none>")))
-    })
-}
-
-/// The copies of §24 above are the spec's own text in the afkd checkout `AFKD_SRC` names: the
-/// entry file and the shared queues whole, and `selfdev/selfdev.afk` up to its
-/// `DISCUSS_PROMPT`, where the `discuss` half the copy leaves out begins. So the complete
-/// example leg validates what §24 says, and a §24 that moves on fails here until it is copied
-/// afresh.
-#[test]
-fn the_section_24_copies_are_the_specs() {
-    let Some(afkd) = afkd_src() else {
-        eprintln!("SKIP: AFKD_SRC names no afkd checkout, and §24 is afkd's");
-        return;
-    };
-    let path = afkd.join("docs/lang-v2.md");
-    let lang_v2 = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    let fences = section_24_fences(&lang_v2);
-    let fence = |first_line: &str| -> &str {
-        let found: Vec<&String> = fences
-            .iter()
-            .filter(|body| body.starts_with(first_line))
-            .collect();
-        assert_eq!(
-            found.len(),
-            1,
-            "§24 in {} has one fence opening on `{first_line}`",
-            path.display()
-        );
-        found[0]
-    };
-    let (develop, _) = fence("// selfdev/selfdev.afk")
-        .split_once("\nDISCUSS_PROMPT ::")
-        .unwrap_or_else(|| panic!("§24's selfdev.afk has no `DISCUSS_PROMPT ::` to end the copy"));
-    for (name, copy, spec) in [
-        (
-            "SECTION_24_DAEMON",
-            SECTION_24_DAEMON,
-            fence("// daemon.afk"),
-        ),
-        (
-            "SECTION_24_QUEUES",
-            SECTION_24_QUEUES,
-            fence("// shared/queues.afk"),
-        ),
-        ("SECTION_24_SELFDEV", SECTION_24_SELFDEV, &ended(develop)),
-    ] {
-        if let Some((line, held, said)) = first_difference(copy, spec) {
-            panic!(
-                "{name} is not §24's text in {}; it first differs at its line {line}:\n  \
-                 copy: {held}\n  spec: {said}\ncopy §24 afresh",
-                path.display()
-            );
-        }
-    }
-}
-
-/// An action acts on the card it is passed, so one called without it — the pre-handle
-/// spelling, `trello.move_to("Review")` — is a load error naming the handle type, not a
-/// call on an implied card.
+/// A call acts on the card it is passed, so one made without it — `trello.add_label(account,
+/// "Problem")`, the new label write with its card left out — is a load error naming the
+/// handle type, not a call on an implied card.
 #[test]
 fn a_call_with_the_wrong_handle_is_a_load_error() {
     let home = TempDir::new().expect("tempdir");
@@ -1194,22 +1005,25 @@ fn a_call_with_the_wrong_handle_is_a_load_error() {
 import "@afkd/trello"
 
 widgets :: service(trello) {{
-  board     "https://trello.com/b/BOARDID/afkd"
-  api_key   "REPLACE_ME"
-  token     "REPLACE_ME"
-  pick_from "Up for Grabs"
+  board      "https://trello.com/b/BOARDID/afkd"
+  api_key    "REPLACE_ME"
+  token      "REPLACE_ME"
+  claim_from "Up for Grabs"
 
-  on_done proc(run: afkd.Run, card: trello.Card, outcome: afkd.Outcome) {{ {call} }}
+  on_done proc(run: afkd.Run, account: trello.Account, card: trello.Card, outcome: afkd.Outcome) {{ {call} }}
 
   work_dir "/srv/acme/widgets"
-  on_run proc(run: afkd.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {{
     $ true
   }}
 }}
 "#
         )
     };
-    write_config(home.path(), &config(r#"trello.move_to("Review")"#));
+    write_config(
+        home.path(),
+        &config(r#"match trello.add_label(account, "Problem") { .ok(_) => { }; .err(_) => { } }"#),
+    );
     let (code, report) = validate(home.path());
     assert_eq!(
         code,
@@ -1221,16 +1035,21 @@ widgets :: service(trello) {{
         "the refusal names the handle type:\n{report}"
     );
     // The same file with the card passed is valid: the handle is all that was wrong.
-    write_config(home.path(), &config(r#"trello.move_to(card, "Review")"#));
+    write_config(
+        home.path(),
+        &config(
+            r#"match trello.add_label(account, card, "Problem") { .ok(_) => { }; .err(_) => { } }"#,
+        ),
+    );
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "the call with its card validates:\n{report}");
 }
 
-/// `pick_from` is required: a service that names no list to claim from is refused at
+/// `claim_from` is required: a service that names no list to claim from is refused at
 /// validate, naming the setting and the service, as a missing `api_key` is. The same
 /// service naming one validates.
 #[test]
-fn a_service_without_pick_from_fails_validate_naming_the_setting() {
+fn a_service_without_claim_from_fails_validate_naming_the_setting() {
     let home = TempDir::new().expect("tempdir");
     let stage_dir = TempDir::new().expect("tempdir");
     install(home.path(), &stage(stage_dir.path()));
@@ -1239,22 +1058,58 @@ fn a_service_without_pick_from_fails_validate_naming_the_setting() {
         &service_drawing(
             home.path(),
             "http://127.0.0.1:9",
-            "without_label \"afkd/hold\"",
+            "skip_labels \"afkd/hold\"",
         ),
     );
     let (code, report) = validate(home.path());
     assert_eq!(
         code,
         Some(1),
-        "a service without pick_from is refused:\n{report}"
+        "a service without claim_from is refused:\n{report}"
     );
     assert!(
-        report.contains(r#"missing required setting "pick_from" for service(trello)"#),
+        report.contains(r#"missing required setting "claim_from" for service(trello)"#),
         "the refusal names the setting and the service:\n{report}"
     );
     write_config(home.path(), &service(home.path(), "http://127.0.0.1:9"));
     let (code, report) = validate(home.path());
     assert_eq!(code, Some(0), "the service naming one validates:\n{report}");
+}
+
+/// The kind is `intake`, the main one, so a service is written `service(trello)` and validates;
+/// and each setting the kind was renamed from is refused as unknown beside `claim_from`, like
+/// any name the manifest does not declare.
+#[test]
+fn the_kind_is_service_trello_and_the_renamed_settings_are_unknown() {
+    let home = TempDir::new().expect("tempdir");
+    let stage_dir = TempDir::new().expect("tempdir");
+    install(home.path(), &stage(stage_dir.path()));
+    let service = service(home.path(), "http://127.0.0.1:9");
+    write_config(home.path(), &service);
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "service(trello) validates:\n{report}");
+
+    for old in [
+        "pick_from",
+        "require_member",
+        "require_label",
+        "without_label",
+    ] {
+        write_config(
+            home.path(),
+            &service_drawing(
+                home.path(),
+                "http://127.0.0.1:9",
+                &format!("claim_from \"Up for Grabs\"\n  {old} \"afkd/hold\""),
+            ),
+        );
+        let (code, report) = validate(home.path());
+        assert_eq!(code, Some(1), "{old} is refused:\n{report}");
+        assert!(
+            report.contains(&format!(r#"unknown setting "{old}" for service(trello)"#)),
+            "the refusal names {old} as unknown:\n{report}"
+        );
+    }
 }
 
 /// The claim key afkd renamed to `every`, spelled in halves so a `git grep` for it holds
@@ -1269,16 +1124,16 @@ fn cadence_service(key: &str) -> String {
 import "@afkd/trello"
 
 widgets :: service(trello) {{
-  board     "https://trello.com/b/BOARDID/afkd"
-  api_key   "REPLACE_ME"
-  token     "REPLACE_ME"
-  pick_from "Up for Grabs"
+  board      "https://trello.com/b/BOARDID/afkd"
+  api_key    "REPLACE_ME"
+  token      "REPLACE_ME"
+  claim_from "Up for Grabs"
 
   {key} 1m~3m
 
   work_dir "/srv/acme/widgets"
 
-  on_run proc(run: afkd.Run, card: trello.Card) {{
+  on_run proc(run: afkd.Run, account: trello.Account, card: trello.Card) {{
     $ true
   }}
 }}

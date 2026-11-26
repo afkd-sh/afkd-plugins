@@ -14,12 +14,17 @@
 //! global timeout is clipped to what is left of [`CALL_BUDGET`], and once it is gone no
 //! request is sent at all.
 //!
+//! Beside the endpoints, one GET of an absolute url for a file's bytes
+//! ([`HttpClient::get_bytes`]), which sends the credential only when the caller asks and
+//! never lets a redirect carry it on.
+//!
 //! The spine never trims a configured base and never names an endpoint: the caller hands
 //! it a finished API root and appends its own `.query(…)` pairs to the request
 //! [`HttpClient::request`] hands back. The failure vocabulary is the caller's, through
 //! [`HttpError`]. And a transport failure's reason is built URL-free
 //! ([`transport_reason`]), so no request line ever reaches a diagnostic.
 
+use std::io::Read;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -134,6 +139,16 @@ impl ForgeRequest {
             ForgeRequest::WithBody(r) => r.send(body),
         }
     }
+}
+
+/// What a GET of a file came back with: its status, the two headers that name its type and
+/// its file name, and its body as bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BytesReply {
+    pub(crate) status: u16,
+    pub(crate) content_type: Option<String>,
+    pub(crate) content_disposition: Option<String>,
+    pub(crate) body: Vec<u8>,
 }
 
 /// The failure vocabulary a caller's error type supplies so the spine can report a fault
@@ -265,6 +280,60 @@ impl<E: HttpError> HttpClient<E> {
     /// GET `path` with the credential, returning the body text.
     pub(crate) fn get(&self, stage: &'static str, path: &str) -> Result<String, E> {
         self.send(stage, self.request("GET", path))
+    }
+
+    /// GET the absolute `url`, stamping the credential only when `with_credential` says so,
+    /// and read the reply's bytes whatever its status, up to `cap`: a body past it is an
+    /// undecodable reply, read no further. A redirect is followed (ureq's own limit) and
+    /// never carries the credential on, whether it was sent or not, so no hop after the
+    /// first learns it.
+    pub(crate) fn get_bytes(
+        &self,
+        stage: &'static str,
+        url: &str,
+        with_credential: bool,
+        cap: u64,
+    ) -> Result<BytesReply, E> {
+        let mut req = self
+            .agent()
+            .get(url)
+            .config()
+            .http_status_as_error(false)
+            .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
+            .build();
+        if with_credential {
+            req = req.header(&self.auth.0, &self.auth.1);
+        }
+        if let Some(global) = self.request_budget(stage)? {
+            req = req.config().timeout_global(Some(global)).build();
+        }
+        let mut resp = req
+            .call()
+            .map_err(|e| E::transport(stage, transport_reason(&e)))?;
+        let mut body = Vec::new();
+        resp.body_mut()
+            .as_reader()
+            .take(cap + 1)
+            .read_to_end(&mut body)
+            .map_err(|e| E::decode(stage, &e.to_string()))?;
+        if body.len() as u64 > cap {
+            return Err(E::decode(
+                stage,
+                &format!("over the {cap} bytes a file may hold"),
+            ));
+        }
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        Ok(BytesReply {
+            status: resp.status().as_u16(),
+            content_type: header("content-type"),
+            content_disposition: header("content-disposition"),
+            body,
+        })
     }
 
     /// Execute a built request, mapping ureq's outcome onto an `E` and reading the body.

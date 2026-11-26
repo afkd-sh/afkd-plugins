@@ -86,7 +86,7 @@ fn world() -> FakeBoard {
     let run = Run {
         machine: "hexagon".to_string(),
         service: "afkd::develop".to_string(),
-        instance: 1,
+        instance: "1".to_string(),
         id: "261118-112008".to_string(),
     };
     fake.comment(1, "Claimed 🚀", "nightly", true, Some(run), 700);
@@ -641,10 +641,13 @@ fn the_wire_serves_one_call_of_protocol_2() {
     );
 
     let fake = world();
-    let (reply, _) = once("create_card", json!({"b": board(&fake)}));
+    let (reply, _) = once("block_card", json!({"b": board(&fake)}));
     assert_eq!(
         refused(&reply),
-        "no action `create_card`; @afkd/afkd_board has card, cards, comments, checklist, lists and labels"
+        "no action `block_card`; @afkd/afkd_board has card, cards, comments, checklist, lists, \
+         labels, create_card, update_card, move_card, add_label, remove_label, add_item, \
+         check_item, remove_item, mark_done, add_blocked_by, remove_blocked_by, create_comment, \
+         archive_card, unarchive_card, delete_card, create_list, update_list and delete_list"
     );
     let mut plugin = Plugin::spawn();
     let line = plugin.call_raw(json!({"call": "call", "proto": 1, "action": "lists",

@@ -1,11 +1,14 @@
 //! An `afkd_board.Board`, the struct a config builds and passes every read: one of a board's API
-//! keys and the address the board is served at. Beside it, the keys of the handles a read
-//! hands back, `afkd_board:<board uuid>/<object uuid>`, which afkd's `==` compares, and the check
-//! that a handle a read is passed is of the board it reaches.
+//! keys and the address the board is served at. Beside it, the keys of the handles a read or a
+//! write hands back, `afkd_board:<board uuid>/<object uuid>`, which afkd's `==` compares, the
+//! check that a handle a call is passed is of the board it reaches, and the two arguments every
+//! write reads the same way: a `Card` handle and the `afkd.Run` it is made in.
 
 use std::fmt;
 
-use serde_json::Value;
+use serde_json::{json, Map, Value};
+
+use crate::reads::required;
 
 /// What an `afkd_board.Board` holds. Its `Debug` leaves the key out, so nothing that prints one
 /// prints the credential.
@@ -68,6 +71,54 @@ pub(crate) fn other_board(action: &str, number: &str, theirs: &str, ours: &str) 
     )
 }
 
+/// The number and the board's uuid of the `afkd_board.Card` handle `action` was passed as `param`,
+/// as afkd sends a handle, `{"id": "<number>", "key": "afkd_board:<board>/<card>"}`; or the
+/// sentence refusing an argument that is missing, is no object, or is no card's handle.
+pub(crate) fn card_arg(
+    action: &str,
+    args: &Map<String, Value>,
+    param: &str,
+) -> Result<(i64, String), String> {
+    let card = required(action, args, param, Value::as_object, "an afkd_board.Card")?;
+    let (id, key) = (
+        card.get("id").and_then(Value::as_str).unwrap_or(""),
+        card.get("key").and_then(Value::as_str).unwrap_or(""),
+    );
+    let (Some((board, _)), Ok(number)) = (parse_key(key), id.parse::<i64>()) else {
+        return Err(format!(
+            "{action}: {param} is no afkd_board.Card: its id is `{id}` and its key `{key}`"
+        ));
+    };
+    Ok((number, board.to_string()))
+}
+
+/// The run `action` was passed as its argument `run`, as afkd sends an `afkd.Run?`, rebuilt as
+/// exactly the `{"machine", "service", "instance", "id"}` the board's API takes, any other field
+/// a newer afkd sends dropped, the `instance` the string afkd sends and passed on unchanged;
+/// `None` for a run that is left out or `nil`. Anything else, an integer `instance` included, is
+/// refused.
+pub(crate) fn run_arg(action: &str, args: &Map<String, Value>) -> Result<Option<Value>, String> {
+    let run = match args.get("run") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(run) => run,
+    };
+    let text = |name: &str| run.get(name).and_then(Value::as_str);
+    let (Some(machine), Some(service), Some(instance), Some(id)) = (
+        text("machine"),
+        text("service"),
+        text("instance"),
+        text("id"),
+    ) else {
+        return Err(format!("{action}: parameter run must be an afkd.Run"));
+    };
+    Ok(Some(json!({
+        "machine": machine,
+        "service": service,
+        "instance": instance,
+        "id": id,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -110,6 +161,85 @@ mod tests {
                 "card: parameter b must be an afkd_board.Board, with its key and its base_url"
                     .to_string()
             )
+        );
+    }
+
+    fn args(value: Value) -> Map<String, Value> {
+        let Value::Object(map) = value else {
+            panic!("{value}")
+        };
+        map
+    }
+
+    /// A run is rebuilt as its four fields alone, so a field a newer afkd sends is dropped, and
+    /// the instance stays the string afkd sent.
+    #[test]
+    fn a_run_keeps_its_four_fields_and_drops_the_rest() {
+        let run = json!({"machine": "nexus", "service": "develop/review.0", "instance": "blue-2",
+                         "id": "261116-163511-card-17-2", "scratch_dir": "/tmp/x", "cost": 1.5});
+        assert_eq!(
+            run_arg("create_card", &args(json!({ "run": run }))),
+            Ok(Some(
+                json!({"machine": "nexus", "service": "develop/review.0",
+                           "instance": "blue-2", "id": "261116-163511-card-17-2"})
+            ))
+        );
+    }
+
+    /// A run left out or `nil` is none, and anything else that is no run is refused naming the
+    /// parameter.
+    #[test]
+    fn a_missing_run_is_none_and_a_malformed_one_is_refused() {
+        assert_eq!(run_arg("add_item", &args(json!({}))), Ok(None));
+        assert_eq!(run_arg("add_item", &args(json!({"run": null}))), Ok(None));
+        for run in [
+            json!("261116-163511"),
+            json!([1]),
+            json!({}),
+            json!({"machine": "m", "service": "s", "instance": "0"}),
+            json!({"machine": "m", "service": "s", "instance": 0, "id": "i"}),
+            json!({"machine": 1, "service": "s", "instance": "0", "id": "i"}),
+        ] {
+            assert_eq!(
+                run_arg("add_item", &args(json!({ "run": run }))),
+                Err("add_item: parameter run must be an afkd.Run".to_string()),
+                "{run}"
+            );
+        }
+    }
+
+    /// A card handle gives its number and its board's uuid, and the sentence refusing one
+    /// names the parameter it was passed as.
+    #[test]
+    fn a_card_handle_gives_its_number_and_board() {
+        let card = json!({"id": "17", "key": "afkd_board:b-1/c-17"});
+        assert_eq!(
+            card_arg("move_card", &args(json!({ "card": card })), "card"),
+            Ok((17, "b-1".to_string()))
+        );
+        assert_eq!(
+            card_arg("add_blocked_by", &args(json!({ "other": card })), "other"),
+            Ok((17, "b-1".to_string()))
+        );
+        for bad in [
+            json!({"id": "ENG-17", "key": "afkd_board:b-1/c-17"}),
+            json!({"id": "17", "key": "linear:b-1/c-17"}),
+            json!({"id": "17"}),
+        ] {
+            let e = card_arg("add_blocked_by", &args(json!({ "other": bad })), "other");
+            assert!(
+                e.as_ref()
+                    .is_err_and(|e| e.starts_with("add_blocked_by: other is no afkd_board.Card: ")),
+                "{e:?}"
+            );
+        }
+        assert_eq!(
+            card_arg("move_card", &args(json!({})), "card"),
+            Err("move_card: parameter card is required".to_string())
+        );
+        assert_eq!(
+            card_arg("move_card", &args(json!({"card": 17})), "card"),
+            Err("move_card: parameter card must be an afkd_board.Card".to_string())
         );
     }
 

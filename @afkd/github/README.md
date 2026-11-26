@@ -7,7 +7,8 @@ actions that reflect progress back through each issue's assignees, labels and st
 request each time a human leaves a comment or review newer than the bot's last word, for an
 automated review loop. The plugin also ships the `github` skill an agent uses to answer the
 issue or pull request: read and post comments, fetch the images pasted into it, and open a
-pull request for the branch it committed.
+pull request for the branch it committed. The images and files an issue or pull request
+links arrive with the claim, already in the run's `task/` folder.
 
 It is afkd's two built-in GitHub triggers, moved out of afkd: the same keys, the same claim
 markers on the issue or pull request, the same claim-journal keys and session threads, the
@@ -16,7 +17,7 @@ request is recognised, renewed and released by the plugin, and the other way rou
 switching from one to the other strands nothing. The few places the plugin behaves
 differently are listed [at the end](#where-it-differs-from-the-built-in). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -28,10 +29,12 @@ $ afkd install @afkd/github
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest, the `afkd-github` binary and its `skills/`, nothing else. Nothing is
-compiled on your host, and no Rust toolchain is needed there. Installing by name needs
-**afkd 0.2.414 or newer**, the first that fills in the platform; with it, `afkd update
-@afkd/github` also moves a copy an older afkd built from source onto the finished release.
+is: the manifest, the `afkd-github` binary, its `skills/` and the `LICENSE-MIT` and
+`LICENSE-APACHE` texts, nothing else. Nothing is compiled on your host, and no Rust
+toolchain is needed there. Installing by name needs **afkd 0.2.714 or newer**, the first
+whose unit brief is the folder `task/`, where this plugin's `task/README.md` is framed;
+with it, `afkd update @afkd/github` also moves a copy an older afkd built from source onto
+the finished release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:
@@ -44,7 +47,7 @@ $ afkd install /tmp/afkd-release/afkd-github
 
 Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
 sends with a claim: this is a manifest v2 plugin, which a
-[config in the afk language](https://afkd.sh/docs/lang-v2/) imports; afkd passes its slots the
+[config in the afk language](https://afkd.sh/docs/reference/) imports; afkd passes its slots the
 claimed issue as a `github.Issue`, or the pull request as a `github.Pull_Request`, and sends
 each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and run it too,
 but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
@@ -65,7 +68,7 @@ GITHUB_TOKEN :: env.get("GITHUB_TOKEN") ?? fail("GITHUB_TOKEN is unset")
 BOT :: "autocoder[bot]"
 
 task :: proc() {
-  $ cat $AFKD_SCRATCH_DIR/task.md
+  $ cat $AFKD_SCRATCH_DIR/task/README.md
 }
 
 develop :: service(github) {
@@ -131,9 +134,9 @@ fixer :: agent(claude) {
 Nothing hands it to an agent on its own; a `skills` list has to name it. It reads the
 `GITHUB_TOKEN`, `GITHUB_HOST`, `GITHUB_REPO` and `GITHUB_ISSUE_NUMBER` every
 `service(github)` run carries, and falls back to the bare issue number under
-`issue/number` in the run's scratch directory. A `service(github.pr)` run carries
+`task/issue/number` in the run's scratch directory. A `service(github.pr)` run carries
 `GITHUB_PR_NUMBER` and `GITHUB_PR_BRANCH` (the PR's head branch) in place of the issue
-number, and the bare number under `pr/number`; the skill reads and posts on the pull
+number, and the bare number under `task/pr/number`; the skill reads and posts on the pull
 request's conversation the same way.
 
 ## `service(github)` (issues)
@@ -206,7 +209,7 @@ widgets :: service(github) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: github.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -230,12 +233,12 @@ widgets :: service(github) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: github.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-Every delivered message is **also appended to the run's `task.md`**, so the next agent of a
+Every delivered message is **also appended to the run's `task/README.md`**, so the next agent of a
 multi-agent run reads the correction in the task itself, and a retry keeps it. Comments are
 delivered once each, oldest-first; afkd's own comments and `[afkd-claim]` markers are never
 delivered back. The issue claim reads no comments, so the first read takes the thread as it
@@ -243,6 +246,28 @@ stands as the baseline and delivers only what comes after. Cost: one comments re
 25-35 s **per running issue**, plus one at the end of each run, and nothing at all while no
 run is in flight. All of this is afkd's own mid-run watch; the plugin only reads the thread
 for it.
+
+**Files on the issue.** What a person pastes or attaches to an issue is a link GitHub
+hosts: an image as `<img … src="https://github.com/user-attachments/assets/…">` or as
+`![…](…)`, any other file as `[name](https://github.com/user-attachments/files/…)`, and the
+older `/<owner>/<repo>/files/…` and `/assets/…` paths and `user-images.githubusercontent.com`
+images. The files the issue's body and comments link arrive with the claim, in the run's
+`task/` folder: the plugin downloads each one when it wins the claim, byte for byte, and
+`task/README.md` links each by its relative path, `<img alt="Image" src="Image.png">` or
+`![shot.png](<shot.png>)`, instead of the GitHub url. An image whose name has no extension
+(GitHub's alt text is just "Image") takes one from the response. The bare issue number is
+`task/issue/number`, beside the downloads, so a link named `issue` (or `pr`) is downloaded
+as `issue-2` (`pr-2`), never over that folder. The brief carries the
+issue's body but no comment, so a file only a comment links is listed in a closing section
+of the README, by its relative path too. The downloads live in the plugin's own state
+directory until the unit finishes or is released, and are deleted then; with no state
+directory nothing is downloaded and every link stays GitHub's. The token goes only to the
+forge's own web host (`https://github.com`, or the host as configured), never to another
+host and never on a redirect, so a link in an issue cannot pull it elsewhere. A file that
+cannot be downloaded — a private repository's attachment that wants a browser session and
+refuses a token, a file over 10 MiB, one deleted since — never fails the claim: its README
+link keeps the GitHub url, the service log says why, and the agent can fetch it with the
+skill's `fetch_attachment.py`.
 
 ## `service(github.pr)` (pull-request review)
 
@@ -286,7 +311,7 @@ watermark, not the label, decides whether a PR is claimed again, so the label st
 PR between rounds and nothing needs to remove it. There is no park and no clarification
 gate: a round either finishes (`on_done`) or fails (`on_fail`).
 
-**The brief.** A run's `task.md` names the PR and carries the new feedback, oldest first,
+**The brief.** A run's `task/README.md` names the PR and carries the new feedback, oldest first,
 each item attributed to its author; a review stands as its id:
 
 ```markdown
@@ -301,6 +326,16 @@ Address review feedback on PR #7.
 
 The comment watch works as for `service(github)`: afkd asks the plugin for the PR's comments
 while a round runs. The comments the brief was built from are never delivered again.
+
+**Files on the pull request.** The files the PR's description and its conversation link are
+downloaded when the claim is won, exactly as for [an issue](#servicegithub-issues): into the
+run's `task/` folder, byte for byte, and deleted when the unit finishes or is released; the
+token goes only to the forge's own web host; a file that cannot be downloaded is not fatal,
+and keeps its GitHub link and a line in the service log. The bare PR number is
+`task/pr/number`, beside the downloads, which a link named `pr` or `issue` never takes. The
+brief carries only the new
+feedback, so `task/README.md` links, by relative path, the files that feedback links, and
+lists in a closing section the files only the description or an older comment links.
 
 ```conf
 import "afkd"
@@ -324,14 +359,14 @@ reviews :: service(github.pr) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, pr: github.Pull_Request) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
 ## Slots, handles and actions
 
-Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
+Both kinds' slots are code ([reference §10.3](https://afkd.sh/docs/reference/#103-slots)), each passed
 the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
 run its outcome — by position, and a slot writes every one of them, in order, each with its
 type:
@@ -442,7 +477,7 @@ few things. Each is deliberate, and none changes what a config means.
   that keeps losing races stops after seven and leaves the rest of the issues or pull
   requests for the next poll. And every call the plugin answers comes back within 45
   seconds: a forge too slow to answer in that time is treated as if it were down.
-- **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
+- **afkd frames the brief as a plugin's.** A run's `task/README.md` opens `# Work item from plugin
   unit acme/widgets#7`, a review round's too, where the built-in's named the vendor and the
   kind in place of `plugin unit` — and a comment delivered mid-run calls the issue or pull
   request "this work item" rather than "this issue" or "this pull request".

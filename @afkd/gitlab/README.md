@@ -7,7 +7,8 @@ actions that reflect progress back through each issue's assignees, labels and st
 request each time a human leaves a note newer than the bot's last word, for an automated
 review loop. The plugin also ships the `gitlab` skill an agent uses to answer the issue or
 merge request: read and post notes, fetch and post attachments, list the project's issues,
-and open a merge request.
+and open a merge request. The files an issue or merge request links as uploads arrive with
+the claim, already in the run's `task/` folder.
 
 It is afkd's two built-in GitLab triggers, moved out of afkd: the same keys, the same claim
 markers on the issue or merge request, the same claim-journal keys and session threads, the
@@ -16,7 +17,7 @@ request is recognised, renewed and released by the plugin, and the other way rou
 switching from one to the other strands nothing. The few places the plugin behaves
 differently are listed [at the end](#where-it-differs-from-the-built-in). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -28,10 +29,12 @@ $ afkd install @afkd/gitlab
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest, the `afkd-gitlab` binary and its `skills/`, nothing else. Nothing is
-compiled on your host, and no Rust toolchain is needed there. Installing by name needs
-**afkd 0.2.414 or newer**, the first that fills in the platform; with it, `afkd update
-@afkd/gitlab` also moves a copy an older afkd built from source onto the finished release.
+is: the manifest, the `afkd-gitlab` binary, its `skills/` and the `LICENSE-MIT` and
+`LICENSE-APACHE` texts, nothing else. Nothing is compiled on your host, and no Rust
+toolchain is needed there. Installing by name needs **afkd 0.2.714 or newer**, the first
+whose unit brief is the folder `task/`, where this plugin's `task/README.md` is framed;
+with it, `afkd update @afkd/gitlab` also moves a copy an older afkd built from source onto
+the finished release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:
@@ -44,7 +47,7 @@ $ afkd install /tmp/afkd-release/afkd-gitlab
 
 Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
 sends with a claim: this is a manifest v2 plugin, which a
-[config in the afk language](https://afkd.sh/docs/lang-v2/) imports; afkd passes its slots the
+[config in the afk language](https://afkd.sh/docs/reference/) imports; afkd passes its slots the
 claimed issue as a `gitlab.Issue`, or the merge request as a `gitlab.Merge_Request`, and
 sends each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and run
 it too, but there a slot reading any field beyond `id` and `key` fails; an older afkd
@@ -65,7 +68,7 @@ GITLAB_TOKEN :: env.get("GITLAB_TOKEN") ?? fail("GITLAB_TOKEN is unset")
 BOT :: "autocoder"
 
 task :: proc() {
-  $ cat $AFKD_SCRATCH_DIR/task.md
+  $ cat $AFKD_SCRATCH_DIR/task/README.md
 }
 
 develop :: service(gitlab) {
@@ -134,7 +137,7 @@ Nothing hands it to an agent on its own; a `skills` list has to name it. It read
 `GITLAB_TOKEN`, `GITLAB_BASE_URL`, `GITLAB_PROJECT` and `GITLAB_ISSUE_NUMBER` every
 `service(gitlab)` run carries — `GITLAB_MR_NUMBER` and `GITLAB_MR_BRANCH` in place of the
 issue number on a `service(gitlab.mr)` run — and falls back to the bare number under
-`issue/number` or `mr/number` in the run's scratch directory.
+`task/issue/number` or `task/mr/number` in the run's scratch directory.
 
 ## `service(gitlab)` (issues)
 
@@ -203,7 +206,7 @@ widgets :: service(gitlab) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitlab.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -228,12 +231,12 @@ widgets :: service(gitlab) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitlab.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-Every delivered message is **also appended to the run's `task.md`**, so the next agent of a
+Every delivered message is **also appended to the run's `task/README.md`**, so the next agent of a
 multi-agent run reads the correction in the task itself, and a retry keeps it. Notes are
 delivered once each, oldest-first; afkd's own notes and `[afkd-claim]` markers are never
 delivered back. The issue claim reads no notes, so the first read takes the thread as it
@@ -241,6 +244,34 @@ stands as the baseline and delivers only what comes after. Cost: one notes read 
 25-35 s **per running issue**, plus one at the end of each run, and nothing at all while no
 run is in flight. All of this is afkd's own mid-run watch; the plugin only reads the thread
 for it.
+
+**Files on the issue.** What a person pastes or attaches to an issue is an upload GitLab
+hosts: an image as `![screen_shot](/uploads/<secret>/screen_shot.png)`, any other file as
+`[spec.pdf](/uploads/<secret>/spec.pdf)`, the secret 32 hexadecimal digits, and the link
+either relative to the project, as GitLab writes it, or absolute on the instance
+(`https://gitlab.example.com/group/widgets/uploads/<secret>/spec.pdf`, or
+`…/-/project/<id>/uploads/…`). The files the issue's description and notes link arrive
+with the claim, in the run's `task/` folder: the plugin downloads each one when it wins the
+claim, byte for byte, and `task/README.md` links each by its relative path,
+`![screen_shot](<screen_shot.png>)` or `[spec.pdf](<spec.pdf>)`, instead of the
+`/uploads/` path. A file is named from its link's text; when that text has no extension —
+GitLab's alt text for a pasted image is its bare name — the name takes the extension of the
+upload's own filename, so the image above lands as `screen_shot.png`. The bare issue
+number is `task/issue/number`, beside the downloads, so a link named `issue` (or `mr`, or
+`README.md`) is downloaded as `issue-2` (`mr-2`, `README-2.md`), never over that folder or
+the brief. The brief carries the issue's description but no note, so a file only a note
+links is listed in a closing section of the README, by its relative path too. The
+downloads live in the plugin's own state directory until the unit finishes or is released,
+and are deleted then; with no state directory nothing is downloaded and every link stays
+GitLab's. Each upload is fetched through the API,
+`GET /api/v4/projects/:id/uploads/:secret/:filename`, which needs **GitLab 17.4 or newer**
+and the **Guest** role or more on the project. The token goes only to the API, and never
+on a redirect — a file GitLab hands to object storage is fetched from there with no
+credential — and a link naming another host is never requested, so a link in an issue
+cannot pull the token elsewhere. A file that cannot be downloaded — an instance older than
+17.4, an upload deleted since, a file over 10 MiB — never fails the claim: its README link
+keeps the GitLab path, the service log says why, and the agent can fetch it with the
+skill's `fetch_attachment.py`.
 
 ## `service(gitlab.mr)` (merge-request review)
 
@@ -282,7 +313,7 @@ is claimed again, so the label stays on the MR between rounds and nothing needs 
 it. There is no park and no clarification gate: a round either finishes (`on_done`) or
 fails (`on_fail`).
 
-**The brief.** A run's `task.md` names the MR and carries the new feedback, oldest first,
+**The brief.** A run's `task/README.md` names the MR and carries the new feedback, oldest first,
 each note attributed to its author:
 
 ```markdown
@@ -297,6 +328,16 @@ Address review feedback on MR !7.
 
 The comment watch works as for `service(gitlab)`: afkd asks the plugin for the MR's notes
 while a round runs. The notes the brief was built from are never delivered again.
+
+**Files on the merge request.** The files the MR's description and its notes link are
+downloaded when the claim is won, exactly as for [an issue](#servicegitlab-issues): into
+the run's `task/` folder, byte for byte, and deleted when the unit finishes or is released;
+the token goes only to the API and never on a redirect; a file that cannot be downloaded is
+not fatal, and keeps its GitLab path and a line in the service log. The bare MR number is
+`task/mr/number`, beside the downloads, which a link named `mr` or `issue` never takes. The
+brief carries only the new feedback, so `task/README.md` links, by relative path, the files
+that feedback links, and lists in a closing section the files only the description or an
+older note links.
 
 ```conf
 import "afkd"
@@ -320,14 +361,14 @@ reviews :: service(gitlab.mr) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, mr: gitlab.Merge_Request) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
 ## Slots, handles and actions
 
-Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
+Both kinds' slots are code ([reference §10.3](https://afkd.sh/docs/reference/#103-slots)), each passed
 the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
 run its outcome — by position, and a slot writes every one of them, in order, each with its
 type:
@@ -437,7 +478,7 @@ few things. Each is deliberate, and none changes what a config means.
   that keeps losing races stops after seven and leaves the rest of the issues or merge
   requests for the next poll. And every call the plugin answers comes back within 45
   seconds: a forge too slow to answer in that time is treated as if it were down.
-- **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
+- **afkd frames the brief as a plugin's.** A run's `task/README.md` opens `# Work item from plugin
   unit group/widgets#7`, a review round's too, where the built-in's named the vendor and
   the kind in place of `plugin unit` — and a note delivered mid-run calls the issue or
   merge request "this work item" rather than "this issue" or "this merge request".

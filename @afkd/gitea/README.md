@@ -16,7 +16,7 @@ recognised, renewed and released by the plugin, and the other way round, so swit
 one to the other strands nothing. The few places the plugin behaves differently are listed
 [at the end](#where-it-differs-from-the-built-in). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -28,10 +28,12 @@ $ afkd install @afkd/gitea
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest, the `afkd-gitea` binary and its `skills/`, nothing else. Nothing is
-compiled on your host, and no Rust toolchain is needed there. Installing by name needs
-**afkd 0.2.414 or newer**, the first that fills in the platform; with it, `afkd update
-@afkd/gitea` also moves a copy an older afkd built from source onto the finished release.
+is: the manifest, the `afkd-gitea` binary, its `skills/` and the `LICENSE-MIT` and
+`LICENSE-APACHE` texts, nothing else. Nothing is compiled on your host, and no Rust
+toolchain is needed there. Installing by name needs **afkd 0.2.714 or newer**, the first
+whose unit brief is the folder `task/`, where this plugin's `task/README.md` is framed;
+with it, `afkd update @afkd/gitea` also moves a copy an older afkd built from source onto
+the finished release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:
@@ -44,7 +46,7 @@ $ afkd install /tmp/afkd-release/afkd-gitea
 
 Run it on **afkd 0.2.241 or newer**, the first that hands a slot the fields this plugin
 sends with a claim: this is a manifest v2 plugin, which a
-[config in the afk language](https://afkd.sh/docs/lang-v2/) imports; afkd passes its slots the
+[config in the afk language](https://afkd.sh/docs/reference/) imports; afkd passes its slots the
 claimed issue as a `gitea.Issue`, or the pull request as a `gitea.Pull_Request`, and sends
 each action a slot calls on one as a `call`. afkd 0.2.197 to 0.2.240 install and run it too,
 but there a slot reading any field beyond `id` and `key` fails; an older afkd refuses the
@@ -65,7 +67,7 @@ GITEA_TOKEN :: env.get("GITEA_TOKEN") ?? fail("GITEA_TOKEN is unset")
 BOT :: "autocoder"
 
 task :: proc() {
-  $ cat $AFKD_SCRATCH_DIR/task.md
+  $ cat $AFKD_SCRATCH_DIR/task/README.md
 }
 
 develop :: service(gitea) {
@@ -136,8 +138,8 @@ Nothing hands it to an agent on its own; a `skills` list has to name it. It read
 `GITEA_TOKEN`, `GITEA_BASE_URL`, `GITEA_REPO` and `GITEA_ISSUE_NUMBER` every
 `service(gitea)` run carries. A `service(gitea.pr)` run carries `GITEA_PR_NUMBER` and
 `GITEA_PR_BRANCH` (the PR's head branch, to fetch and check out) in place of
-`GITEA_ISSUE_NUMBER`, and the bare PR number under `pr/number` in its scratch directory, so
-the same skill reads and answers the PR.
+`GITEA_ISSUE_NUMBER`, and the bare PR number under `task/pr/number` in its scratch directory,
+so the same skill reads and answers the PR.
 
 ## `service(gitea)` (issues)
 
@@ -203,7 +205,7 @@ widgets :: service(gitea) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitea.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -300,7 +302,7 @@ groom :: service(gitea) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitea.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -325,12 +327,12 @@ widgets :: service(gitea) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, issue: gitea.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-Every delivered message is **also appended to the run's `task.md`**, so the next agent of a
+Every delivered message is **also appended to the run's `task/README.md`**, so the next agent of a
 multi-agent run reads the correction in the task itself, and a retry keeps it. The agent
 picks a delivered message up at its next tool boundary. Comments are delivered once each,
 oldest-first, attributed exactly as a brief's `## New comments` section is; afkd's own
@@ -339,6 +341,23 @@ last tick is picked up by the **run-end sweep** afkd makes before the post-run s
 earns the issue another round of the same fire. Cost: one comment read every 25-35 s **per
 running issue**, plus one at the end of each run, and nothing at all while no run is in
 flight. All of this is afkd's own mid-run watch; the plugin only reads the thread for it.
+
+**Files on the issue.** A Gitea attachment is a link in an issue's markdown: an image
+embedded `![shot.png](/attachments/<uuid>)`, any other file linked `[report.pdf](/attachments/<uuid>)`.
+The files an issue's body and comments link arrive with the claim, in the run's `task/`
+folder: the plugin downloads each attachment of this instance when it wins the claim — a
+relative link, or an absolute one at the `base_url`'s own origin (such as the
+`browser_download_url`), with or without the owner and repository before `attachments`, and
+under the sub-path of an instance served at one, `https://host/gitea/` — and `task/README.md`
+links each by its relative path, `![shot.png](<shot.png>)`, instead of the Gitea url. A file
+only a comment links, which the brief does not carry, is listed in a closing `## Files`
+section. Each file is fetched from `<base_url>/attachments/<uuid>` with the token, up to
+10 MiB, and handed to afkd byte for byte. A file that cannot be downloaded never fails the
+claim: its README link keeps the Gitea url, the service log says why, and the agent can fetch
+it with the skill's `fetch_attachment.py`. The downloads live in the plugin's own state
+directory until the unit finishes or is released, and are deleted then; an afkd that sends no
+state directory gets no downloads, and every link stays Gitea's. The pull-request kind
+downloads nothing.
 
 ## `service(gitea.pr)` (pull-request review)
 
@@ -380,7 +399,7 @@ whether a PR is claimed again, so the label stays on the PR between rounds and n
 needs to remove it. There is no park and no clarification gate: a round either finishes
 (`on_done`) or fails (`on_fail`).
 
-**The brief.** A run's `task.md` names the PR and carries the new feedback, oldest first,
+**The brief.** A run's `task/README.md` names the PR and carries the new feedback, oldest first,
 each item attributed to its author; a review appears as its id, for the agent to read with
 the skill:
 
@@ -412,14 +431,14 @@ reviews :: service(gitea.pr) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, pr: gitea.Pull_Request) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
 ## Slots, handles and actions
 
-Both kinds' slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each passed
+Both kinds' slots are code ([reference §10.3](https://afkd.sh/docs/reference/#103-slots)), each passed
 the run (all but `on_claim`, which runs before one exists), the claimed item, and after the
 run its outcome — by position, and a slot writes every one of them, in order, each with its
 type:
@@ -527,7 +546,7 @@ few things. Each is deliberate, and none changes what a config means.
   poll, so an org-wide scan against a slow forge stops after 20 and leaves the rest of the
   repositories for the next poll. And every call the plugin answers comes back within 45
   seconds: a forge too slow to answer in that time is treated as if it were down.
-- **afkd frames the brief as a plugin's.** A run's `task.md` opens `# Work item from plugin
+- **afkd frames the brief as a plugin's.** A run's `task/README.md` opens `# Work item from plugin
   unit acme/widgets#7`, a review round's too, where the built-in's named the vendor and the
   kind in place of `plugin unit` — and a comment delivered mid-run calls the issue or PR
   "this work item" rather than "this issue" or "this pull request".

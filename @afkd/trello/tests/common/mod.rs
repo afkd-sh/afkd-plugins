@@ -24,6 +24,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 /// afkd's line cap, newline included.
 pub const MAX_LINE: usize = 64 * 1024;
 
+/// afkd's cap on the reply to a `call`, newline included.
+pub const MAX_CALL_LINE: usize = 8 * 1024 * 1024;
+
 /// The service the ordinary legs arm as.
 pub const DEVELOP: &str = "afkd::develop";
 
@@ -100,8 +103,20 @@ impl Plugin {
 
     /// Spawn and greet with `settings` as `service`, asserting it arms.
     pub fn armed_as(service: &str, settings: Value) -> Self {
+        Self::armed_with(service, OWNER, None, settings)
+    }
+
+    /// Spawn and greet with `settings` as `service` and the claim owner `owner`, naming the
+    /// plugin's own directory `state_dir` when there is one — which a restarted process
+    /// shares with the one before it — asserting it arms.
+    pub fn armed_with(
+        service: &str,
+        owner: &str,
+        state_dir: Option<&Path>,
+        settings: Value,
+    ) -> Self {
         let mut plugin = Self::spawn();
-        let reply = plugin.hello_as(service, settings);
+        let reply = plugin.hello_with(service, owner, state_dir, settings);
         assert_eq!(reply["ok"], true, "hello refused: {}", plugin.stderr());
         plugin
     }
@@ -115,29 +130,57 @@ impl Plugin {
     /// the daemon's roster (both services this board runs) and the claim owner beside
     /// them.
     pub fn hello_as(&mut self, service: &str, settings: Value) -> Value {
-        self.call(json!({"call": "hello", "proto": 2, "kind": "card",
-                         "service": service, "roster": [DEVELOP, DISCUSS],
-                         "owner": OWNER, "settings": settings}))
+        self.hello_with(service, OWNER, None, settings)
     }
 
-    /// Call one action on the card of `unit`, as afkd sends each action a slot calls: its
-    /// arguments bound by parameter name, the card's handle — the unit's `id` and `key`,
-    /// as `poll` handed it over — first.
-    pub fn act(&mut self, action: &str, args: Value, unit: &Value) -> Value {
-        let mut bound = json!({"card": {"id": unit["id"], "key": unit["key"]}});
-        bound
-            .as_object_mut()
-            .unwrap()
-            .extend(args.as_object().expect("an args object").clone());
-        self.call(json!({"call": "call", "action": action, "args": bound}))
+    /// The same, as the claim owner `owner`, naming the plugin's directory `state_dir`.
+    pub fn hello_with(
+        &mut self,
+        service: &str,
+        owner: &str,
+        state_dir: Option<&Path>,
+        settings: Value,
+    ) -> Value {
+        let mut hello = json!({"call": "hello", "proto": 2, "kind": "intake",
+                               "service": service, "roster": [DEVELOP, DISCUSS],
+                               "owner": owner, "settings": settings});
+        if let Some(dir) = state_dir {
+            hello["state_dir"] = json!(dir);
+        }
+        self.call(hello)
+    }
+
+    /// Call one read as afkd does for a call no `service(trello)` is behind: the one request
+    /// a child afkd started for it gets, with no `hello` before it, naming the protocol. Its
+    /// arguments are bound by parameter name, the account first.
+    pub fn read(&mut self, action: &str, args: Value) -> Value {
+        self.call_capped(
+            json!({"call": "call", "proto": 2, "action": action, "args": args}),
+            MAX_CALL_LINE,
+        )
+    }
+
+    /// Call one read on an armed child, from a slot of the `service(trello)` it serves: the
+    /// call carries no `proto`, since the child has been greeted.
+    pub fn read_armed(&mut self, action: &str, args: Value) -> Value {
+        self.call_capped(
+            json!({"call": "call", "action": action, "args": args}),
+            MAX_CALL_LINE,
+        )
     }
 
     /// Write one request and read its reply line: under afkd's cap, newline-terminated,
     /// one JSON object.
     pub fn call(&mut self, request: Value) -> Value {
+        self.call_capped(request, MAX_LINE)
+    }
+
+    /// Write one request and read its reply line, held to `cap` bytes, newline included:
+    /// afkd's 64 KiB for every request but a `call`, whose reply it takes up to 8 MiB.
+    pub fn call_capped(&mut self, request: Value, cap: usize) -> Value {
         let line = self.call_raw(request);
         assert!(
-            line.len() <= MAX_LINE,
+            line.len() <= cap,
             "a reply line over afkd's cap: {}",
             line.len()
         );
@@ -269,68 +312,4 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
-}
-
-/// A real `git diff --binary`, as a run's `work.patch` is made: a new 80 000-byte binary
-/// file, NULs and all, which git writes as a `GIT binary patch` literal, and a changed text
-/// file holding Latin-1 bytes (`å ä ö` as `0xE5 0xE4 0xF6`) and CRLF line ends, which git
-/// copies into its hunk raw. Over 100 kB and not valid UTF-8 — both held here, so a test
-/// built on it cannot pass vacuously.
-///
-/// `git diff --no-index` needs no repository and no identity; the user's and the host's
-/// git config are kept out of it.
-pub fn binary_patch(dir: &Path) -> Vec<u8> {
-    let (old, new) = (dir.join("a"), dir.join("b"));
-    for side in [&old, &new] {
-        std::fs::create_dir_all(side).expect("create a diff side");
-    }
-    // xorshift, so the blob is the same every run and does not compress.
-    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
-    let blob: Vec<u8> = (0..80_000)
-        .map(|_| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            (x >> 24) as u8
-        })
-        .collect();
-    std::fs::write(new.join("blob.bin"), &blob).expect("write the blob");
-    std::fs::write(
-        old.join("notes.txt"),
-        b"r\xe4ksm\xf6rg\xe5s\r\nrad tv\xe5\r\n",
-    )
-    .expect("write the old text");
-    std::fs::write(
-        new.join("notes.txt"),
-        b"r\xe4ksm\xf6rg\xe5s\r\nrad tv\xe5 \xe4ndrad\r\nrad tre\r\n",
-    )
-    .expect("write the new text");
-    let out = Command::new("git")
-        .args(["diff", "--no-index", "--binary", "a", "b"])
-        .current_dir(dir)
-        .env("HOME", dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .expect("run git (the wire suite needs it)");
-    // `--no-index` exits 1 when the sides differ, which they do.
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "git diff: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let patch = out.stdout;
-    assert!(patch.len() > 100_000, "the patch is {} bytes", patch.len());
-    assert!(
-        std::str::from_utf8(&patch).is_err(),
-        "the patch is not UTF-8"
-    );
-    let text = String::from_utf8_lossy(&patch);
-    assert!(
-        text.contains("GIT binary patch\nliteral 80000\n"),
-        "{}",
-        &text[..300]
-    );
-    patch
 }

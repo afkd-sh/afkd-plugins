@@ -10,6 +10,11 @@
 //! armed kind's names ([`Units::VOCABULARY`]). A finished unit is kept a while for that
 //! ([`FINISHED_MAX`]), since its post-run slot's calls arrive after `finish`.
 //!
+//! **The files an item links are downloaded once its claim is won**, into a folder of the
+//! plugin's own directory (`hello`'s `state_dir`, which outlives the child) that afkd copies
+//! them from on each attempt; the folder is deleted when the unit is finished or released,
+//! and with no `state_dir` nothing is downloaded and every link stays GitHub's.
+//!
 //! Four things the wire forces that the built-in never had to do:
 //!
 //! - **Every reply fits one line.** afkd caps a line at 64 KiB. A `poll` whose brief would
@@ -31,6 +36,7 @@
 //!   once GitHub is back, for up to an hour.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -38,11 +44,12 @@ use serde_json::{json, Map, Value};
 
 use crate::claim::is_claim;
 use crate::client::{Github, GithubClient};
-use crate::common::{Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
+use crate::common::{file_safe, Clock, Diag, StderrDiag, SystemClock, CALL_BUDGET};
+use crate::file::fetch_files;
 use crate::issue::IssueUnits;
 use crate::kind::{ClaimedUnit, Units};
 use crate::lifecycle::{from_call, Call};
-use crate::outbox::{Outbox, Write};
+use crate::outbox::{named, Outbox, Write};
 use crate::pr::PrUnits;
 use crate::rfc3339::format_utc;
 use crate::settings::{issue_config, pr_review_config, GithubConfig};
@@ -116,6 +123,8 @@ struct Armed<K: Units> {
     /// The token's login, resolved at `hello` — or, failing that, on the first call that
     /// needs it — and kept.
     me: Option<String>,
+    /// The plugin's own directory, when afkd sent one: where a unit's files are kept.
+    state_dir: Option<PathBuf>,
     /// The units handed over and not yet finished or released, by key.
     live: BTreeMap<String, LiveUnit<K::Unit>>,
     /// The units most recently finished, by key and oldest first, for the post-run hook's
@@ -181,8 +190,10 @@ impl Plugin {
                 proto,
                 kind,
                 settings,
+                state_dir,
             } => {
-                let arming = arm(&self.connect, proto, &kind, &settings)
+                let state_dir = state_dir.map(PathBuf::from);
+                let arming = arm(&self.connect, proto, &kind, &settings, state_dir)
                     .map_err(|problem| diag.err(&problem))
                     .ok();
                 *armed = arming.map(|(service, cfg)| {
@@ -246,7 +257,8 @@ fn on_armed(
 }
 
 /// Arm the kind `hello` names over its settings, or say why not; the settings it armed
-/// with come back too, for the outbox's worker. afkd has already held the block to the
+/// with come back too, for the outbox's worker. The service keeps `state_dir`, the plugin's
+/// own directory, for the files its units link. afkd has already held the block to the
 /// manifest, so what can be wrong here is the protocol, the kind, or a rule the manifest
 /// cannot express.
 fn arm(
@@ -254,6 +266,7 @@ fn arm(
     proto: u32,
     kind: &str,
     settings: &serde_json::Value,
+    state_dir: Option<PathBuf>,
 ) -> Result<(Box<dyn Service>, GithubConfig), String> {
     if proto != PROTO {
         return Err(format!(
@@ -265,12 +278,13 @@ fn arm(
         ISSUE_KIND => {
             let cfg = issue_config(settings).map_err(fault)?;
             let service: Box<dyn Service> =
-                Box::new(Armed::new(IssueUnits::new(connect(&cfg), &cfg)));
+                Box::new(Armed::new(IssueUnits::new(connect(&cfg), &cfg), state_dir));
             (service, cfg)
         }
         PR_KIND => {
             let cfg = pr_review_config(settings).map_err(fault)?;
-            let service: Box<dyn Service> = Box::new(Armed::new(PrUnits::new(connect(&cfg), &cfg)));
+            let service: Box<dyn Service> =
+                Box::new(Armed::new(PrUnits::new(connect(&cfg), &cfg), state_dir));
             (service, cfg)
         }
         _ => return Err(format!("kind `{kind}` is not provided by @afkd/github")),
@@ -289,13 +303,43 @@ fn idle() -> Answer {
     Answer::Reply(json!({"fire": false}).to_string())
 }
 
+/// Where the files the unit under `key` links are downloaded: `<state_dir>/task-files/`
+/// and the key written as one file name ([`file_safe`]). Afkd copies them in from there on
+/// each attempt, so they stay until the unit is finished or released, and a child restarted
+/// in between finds the folder by the key alone.
+pub(crate) fn task_files_dir(state_dir: &Path, key: &str) -> PathBuf {
+    state_dir.join("task-files").join(file_safe(key))
+}
+
 impl<K: Units> Armed<K> {
-    fn new(units: K) -> Self {
+    fn new(units: K, state_dir: Option<PathBuf>) -> Self {
         Self {
             units,
             me: None,
+            state_dir,
             live: BTreeMap::new(),
             finished: VecDeque::new(),
+        }
+    }
+
+    /// Where the files of the unit under `key` are downloaded, when the plugin has a
+    /// directory of its own.
+    fn task_files_dir(&self, key: &str) -> Option<PathBuf> {
+        self.state_dir
+            .as_deref()
+            .map(|state_dir| task_files_dir(state_dir, key))
+    }
+
+    /// Delete the folder of the files the unit under `key` was handed over with, if there is
+    /// one. One that cannot be deleted is said and left.
+    fn remove_task_files(&self, key: &str, diag: &dyn Diag) {
+        let Some(dir) = self.task_files_dir(key) else {
+            return;
+        };
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => diag.err(&format_args!("cannot delete {}: {e}", dir.display())),
         }
     }
 
@@ -348,7 +392,19 @@ impl<K: Units> Service for Armed<K> {
                 return idle();
             }
         };
-        let wire = self.units.wire_unit(&unit);
+        // The files are downloaded once the claim is won, under the plugin's own directory,
+        // which outlives this child; with none, every link stays GitHub's.
+        let fetched = match self.task_files_dir(&unit.key()) {
+            Some(dir) => fetch_files(
+                self.units.client(),
+                &named(&unit.item()),
+                &unit.linked_texts(),
+                &dir,
+                diag,
+            ),
+            None => Vec::new(),
+        };
+        let wire = self.units.wire_unit(&unit, &fetched);
         let whole = fire_line(&wire);
         let line = if whole.len() <= MAX_REPLY {
             whole
@@ -363,6 +419,7 @@ impl<K: Units> Service for Armed<K> {
             // nothing can be handed over, so the claim is taken back before the service
             // ends.
             self.units.release(&unit, diag);
+            self.remove_task_files(&wire.key, diag);
             return Answer::Fatal(format!(
                 "{} cannot be handed to afkd: even with its brief cut away, the unit is over \
                  afkd's 64 KiB plugin line",
@@ -381,6 +438,7 @@ impl<K: Units> Service for Armed<K> {
     fn release(&mut self, key: &str, diag: &dyn Diag) -> Answer {
         self.live.remove(key);
         self.finished.retain(|(finished, _)| finished != key);
+        self.remove_task_files(key, diag);
         let released = match self.me(diag) {
             Some(me) => self.units.release_stale(key, &me, diag),
             None => Some(false),
@@ -465,6 +523,8 @@ impl<K: Units> Service for Armed<K> {
     /// release is best-effort, so nothing is held.
     fn finish(&mut self, key: &str, now: Instant, diag: &dyn Diag) -> Answer {
         let ok = Answer::Reply(json!({"ok": true}).to_string());
+        // The run is over, and afkd copies no more of its files in.
+        self.remove_task_files(key, diag);
         let Some(live) = self.live.remove(key) else {
             diag.err(&format_args!(
                 "finish for {key}, which this plugin holds no claim on"
@@ -525,7 +585,7 @@ mod tests {
     use super::*;
     use crate::claim::{claim_key, claim_text};
     use crate::client::{Action, MockClient, Repo};
-    use crate::common::{CaptureDiag, FakeClock};
+    use crate::common::{CaptureDiag, FakeClock, TempDir};
     use crate::lifecycle::{Vocabulary, ISSUE_VOCABULARY, PR_VOCABULARY};
     use crate::outbox::RETRY_FIRST;
     use std::time::Duration;
@@ -1132,6 +1192,234 @@ mod tests {
         assert_eq!(
             f.diag.lines(),
             ["the brief for acme/widgets#7 was cut to fit afkd's 64 KiB plugin line"]
+        );
+    }
+
+    const SHOT: &str =
+        "https://github.com/user-attachments/assets/0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\xff--png--";
+
+    /// An armed fixture whose issue #7 pastes the image at [`SHOT`] (holding [`PNG`]) in its
+    /// body, in the plugin directory `state_dir` when there is one.
+    fn armed_with_image(state_dir: Option<&Path>) -> Fixture {
+        let mut f = Fixture::new();
+        f.mock.add_file(SHOT, PNG, Some("image/png"), None);
+        f.mock.add_issue(
+            7,
+            "Crash 💥",
+            &format!("Body <img alt=\"Image\" src=\"{SHOT}\">"),
+            &["afkd/ready"],
+        );
+        let mut request = hello(ISSUE_KIND, settings());
+        if let Some(dir) = state_dir {
+            request["state_dir"] = json!(dir.to_str().unwrap());
+        }
+        assert_eq!(f.call(request)["ok"], true, "{:?}", f.diag.lines());
+        f
+    }
+
+    /// A won issue's linked files are downloaded under the plugin's directory, in a folder
+    /// named by the unit's key, and handed over as `from` entries beside the README whose
+    /// links name them; the folder is there until the unit is finished or released, and gone
+    /// after.
+    #[test]
+    fn a_units_files_are_kept_until_it_finishes_or_is_released() {
+        for end in ["finish", "release"] {
+            let state = TempDir::new("task-files");
+            let mut f = armed_with_image(Some(state.path()));
+            let unit = f.poll()["unit"].clone();
+            let key = unit["key"].clone();
+            let dir = task_files_dir(state.path(), key.as_str().unwrap());
+            assert_eq!(
+                dir,
+                state
+                    .path()
+                    .join("task-files")
+                    .join(file_safe(key.as_str().unwrap()))
+            );
+            assert_eq!(std::fs::read(dir.join("Image.png")).unwrap(), PNG, "{end}");
+            assert_eq!(
+                unit["files"],
+                json!([
+                    {"path": "task/README.md",
+                     "text": "Crash 💥\n\nBody <img alt=\"Image\" src=\"Image.png\">"},
+                    {"path": "task/issue/number", "text": "7"},
+                    {"path": "task/Image.png", "from": dir.join("Image.png").to_str().unwrap()},
+                ]),
+                "{end}"
+            );
+            assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+            if end == "finish" {
+                f.finish(&key, "clean");
+            } else {
+                f.call(json!({"call": "release", "key": key}));
+            }
+            assert!(!dir.exists(), "{end}: the folder is deleted");
+        }
+    }
+
+    /// A restarted child, which holds no unit, finds a leftover folder by its key alone: the
+    /// `release` afkd sends for the key deletes it, and so does a `finish`.
+    #[test]
+    fn a_restarted_child_deletes_a_leftover_folder_by_its_key() {
+        let state = TempDir::new("task-files-left");
+        let mut f = armed_with_image(Some(state.path()));
+        let key = "acme/widgets#7#1000001";
+        let dir = task_files_dir(state.path(), key);
+        for end in ["release", "finish"] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("Image.png"), b"x").unwrap();
+            if end == "release" {
+                f.call(json!({"call": "release", "key": key}));
+            } else {
+                f.finish(&json!(key), "clean");
+            }
+            assert!(!dir.exists(), "{end}");
+        }
+    }
+
+    /// A plugin with no directory of its own downloads nothing: the unit's brief keeps the
+    /// GitHub url, there is no `from` entry, and GitHub is not asked for the file.
+    #[test]
+    fn with_no_state_dir_no_file_is_downloaded() {
+        let mut f = armed_with_image(None);
+        let unit = f.poll()["unit"].clone();
+        assert_eq!(
+            unit["files"],
+            json!([
+                {"path": "task/README.md",
+                 "text": format!("Crash 💥\n\nBody <img alt=\"Image\" src=\"{SHOT}\">")},
+                {"path": "task/issue/number", "text": "7"},
+            ])
+        );
+        assert!(f.mock.downloads().is_empty(), "{:?}", f.mock.downloads());
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+    }
+
+    /// A file that cannot be downloaded never fails the claim: the unit is handed over, the
+    /// file that could be is in `task/` and linked by name, the one that could not keeps its
+    /// GitHub link, and the log says which and why.
+    #[test]
+    fn a_file_that_fails_keeps_its_github_link_and_is_logged() {
+        let state = TempDir::new("task-files-fail");
+        let mut f = Fixture::new();
+        let gone = "https://github.com/user-attachments/files/9/gone.pdf";
+        f.mock.add_file(SHOT, PNG, Some("image/png"), None);
+        f.mock.add_issue(
+            7,
+            "Crash 💥",
+            &format!("<img alt=\"Image\" src=\"{SHOT}\"> and [gone.pdf]({gone})"),
+            &["afkd/ready"],
+        );
+        let mut request = hello(ISSUE_KIND, settings());
+        request["state_dir"] = json!(state.path().to_str().unwrap());
+        assert_eq!(f.call(request)["ok"], true);
+
+        let reply = f.poll();
+        assert_eq!(reply["fire"], true, "{:?}", f.diag.lines());
+        let files = &reply["unit"]["files"];
+        assert_eq!(
+            files[0]["text"],
+            format!("Crash 💥\n\n<img alt=\"Image\" src=\"Image.png\"> and [gone.pdf]({gone})")
+        );
+        assert_eq!(
+            files.as_array().unwrap().len(),
+            3,
+            "the brief, the number, the image"
+        );
+        assert_eq!(files[2]["path"], "task/Image.png");
+        assert_eq!(
+            f.diag.lines(),
+            [format!(
+                "issue \"Crash 💥\" (acme/widgets#7): the file at {gone} is not downloaded, and \
+                 stays a GitHub link in the brief for the skill's fetch_attachment.py — github \
+                 fetch file: forge returned status 404"
+            )]
+        );
+    }
+
+    /// A won PR's files are downloaded the same way: the description's image, and the file
+    /// the new feedback links, each in `task/` by the name its brief links it under.
+    #[test]
+    fn a_won_prs_files_land_under_the_state_dir_too() {
+        let state = TempDir::new("task-files-pr");
+        let mut f = Fixture::new();
+        f.mock.add_pull(7, ME, "feature/x");
+        f.mock.set_pull_body(7, &format!("![Image]({SHOT})"));
+        f.mock.add_comment_body(
+            7,
+            1,
+            "alice",
+            "see [log](https://github.com/user-attachments/files/5/run.log)",
+            100,
+        );
+        f.mock.add_file(SHOT, PNG, Some("image/png"), None);
+        f.mock.add_file(
+            "https://github.com/user-attachments/files/5/run.log",
+            b"line 1\r\n\0line 2",
+            Some("text/plain"),
+            None,
+        );
+        let mut request = hello(PR_KIND, pr_settings());
+        request["state_dir"] = json!(state.path().to_str().unwrap());
+        f.vocabulary = PR_VOCABULARY;
+        assert_eq!(f.call(request)["ok"], true);
+
+        let unit = f.poll()["unit"].clone();
+        let dir = task_files_dir(state.path(), unit["key"].as_str().unwrap());
+        assert_eq!(std::fs::read(dir.join("Image.png")).unwrap(), PNG);
+        assert_eq!(
+            std::fs::read(dir.join("log.txt")).unwrap(),
+            b"line 1\r\n\0line 2"
+        );
+        let paths: Vec<&str> = unit["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "task/README.md",
+                "task/pr/number",
+                "task/Image.png",
+                "task/log.txt"
+            ]
+        );
+        assert!(f.diag.lines().is_empty(), "{:?}", f.diag.lines());
+    }
+
+    /// A won issue that cannot be handed over at all — its fields besides the brief overflow
+    /// afkd's line — has its claim taken back and its downloaded folder deleted before the
+    /// service ends.
+    #[test]
+    fn a_unit_that_cannot_be_handed_over_leaves_no_folder() {
+        let state = TempDir::new("task-files-fatal");
+        let mut f = Fixture::new();
+        f.mock.add_file(SHOT, PNG, Some("image/png"), None);
+        f.mock.add_issue(
+            3,
+            &"修复 the retry storm 🚨 ".repeat(5_000),
+            &format!("<img alt=\"Image\" src=\"{SHOT}\">"),
+            &["afkd/ready"],
+        );
+        let mut request = hello(ISSUE_KIND, settings());
+        request["state_dir"] = json!(state.path().to_str().unwrap());
+        assert_eq!(f.call(request)["ok"], true);
+        let Answer::Fatal(reason) = f.plugin.answer(Request::Poll) else {
+            panic!("the unit fits");
+        };
+        assert!(reason.contains("cannot be handed to afkd"), "{reason}");
+        let left = std::fs::read_dir(state.path().join("task-files"))
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(left, 0, "no folder is left");
+        assert_eq!(markers_on(&f.mock, 3), 0, "the claim is taken back");
+        assert_eq!(
+            f.mock.downloads(),
+            [SHOT],
+            "the file was fetched, then dropped"
         );
     }
 

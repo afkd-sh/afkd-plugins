@@ -18,6 +18,12 @@
 //! **repo**-scoped path; a comment that does not exist is a `404`. Every request is
 //! recorded, and any route can be made to answer a status instead — or the whole fake
 //! taken out of reach, every connection closed unanswered.
+//!
+//! Beside the API it hosts the files an item links, on the same address: an image at
+//! `/user-attachments/assets/<uuid>`, which wants the token and answers `302` to a storage
+//! path that wants none, and a file at `/user-attachments/files/<id>/<name>`, served to the
+//! token alone with its type. Each request for one is recorded with the `Authorization` it
+//! carried, so a test can tell what the hop to storage was sent.
 
 #![allow(dead_code)]
 
@@ -86,6 +92,18 @@ pub struct Review {
     pub submitted: u64,
 }
 
+/// A file the web side hosts at one path.
+#[derive(Clone)]
+struct Hosted {
+    bytes: Vec<u8>,
+    content_type: String,
+    content_disposition: Option<String>,
+    /// Whether it is served without the token, as storage is.
+    open: bool,
+    /// Where it answers `302` instead of serving its bytes.
+    redirect: Option<String>,
+}
+
 #[derive(Default)]
 struct State {
     /// The token's own login.
@@ -99,6 +117,10 @@ struct State {
     /// A route name → the status it answers instead.
     faults: HashMap<String, u16>,
     seen: Vec<Seen>,
+    /// The files the web side hosts, by the path they are requested at.
+    files: HashMap<String, Hosted>,
+    /// Every request for a hosted file, in order.
+    file_seen: Vec<Seen>,
     /// Whether the fake is out of reach: every request is read, recorded in `dropped`,
     /// and its connection closed with no reply.
     down: bool,
@@ -269,6 +291,15 @@ impl FakeGithub {
             .title = title.to_string();
     }
 
+    /// Give a seeded issue or pull request a new body, as its author writes one.
+    pub fn describe(&self, repo: &str, number: u64, body: &str) {
+        lock(&self.state)
+            .issues
+            .get_mut(&(repo.to_string(), number))
+            .expect("a seeded issue")
+            .body = body.to_string();
+    }
+
     /// The page the fake serves as an issue's or pull request's `html_url`.
     pub fn url(&self, repo: &str, number: u64) -> String {
         let s = lock(&self.state);
@@ -383,6 +414,68 @@ impl FakeGithub {
 
     pub fn seen(&self) -> Vec<Seen> {
         lock(&self.state).seen.clone()
+    }
+
+    /// Host an image the way GitHub hosts a pasted one, `/user-attachments/assets/<uuid>`:
+    /// the attachment wants the token and answers `302` to a storage path, which wants
+    /// none. Returns the attachment's url, as a body links it.
+    pub fn asset(
+        &self,
+        uuid: &str,
+        bytes: &[u8],
+        content_type: &str,
+        content_disposition: Option<&str>,
+    ) -> String {
+        let (path, storage) = (
+            format!("/user-attachments/assets/{uuid}"),
+            format!("/storage/{uuid}"),
+        );
+        let mut s = lock(&self.state);
+        s.files.insert(
+            path.clone(),
+            Hosted {
+                bytes: Vec::new(),
+                content_type: String::new(),
+                content_disposition: None,
+                open: false,
+                redirect: Some(storage.clone()),
+            },
+        );
+        s.files.insert(
+            storage,
+            Hosted {
+                bytes: bytes.to_vec(),
+                content_type: content_type.to_string(),
+                content_disposition: content_disposition.map(str::to_string),
+                open: true,
+                redirect: None,
+            },
+        );
+        format!("{}{path}", self.host)
+    }
+
+    /// Host a file the way GitHub hosts an attached one,
+    /// `/user-attachments/files/<id>/<name>`: served straight, with its type, to the token
+    /// alone. `name` must need no percent-encoding. Returns its url.
+    pub fn attachment(&self, id: u64, name: &str, bytes: &[u8], content_type: &str) -> String {
+        let path = format!("/user-attachments/files/{id}/{name}");
+        lock(&self.state).files.insert(
+            path.clone(),
+            Hosted {
+                bytes: bytes.to_vec(),
+                content_type: content_type.to_string(),
+                content_disposition: None,
+                open: false,
+                redirect: None,
+            },
+        );
+        format!("{}{path}", self.host)
+    }
+
+    /// Every request for a hosted file — an attachment, or the storage it redirects to —
+    /// in order, each with the `Authorization` header it carried (empty when none).
+    pub fn file_requests(&self) -> Vec<Seen> {
+        lock(&self.state).file_seen.clone()
     }
 }
 
@@ -517,7 +610,7 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
         })
         .collect();
 
-    let (status, reply) = {
+    let reply = {
         let mut s = lock(state);
         let seen = Seen {
             method: method.clone(),
@@ -531,34 +624,99 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
             s.dropped.push(seen);
             return;
         }
-        s.seen.push(seen);
-        if auth != format!("Bearer {TOKEN}") {
-            (401, json!({ "message": "Bad credentials" }))
+        if is_web_path(&path) {
+            serve_file(&mut s, seen)
         } else {
-            route(&mut s, &method, &path, &query, &body)
+            s.seen.push(seen);
+            if auth != format!("Bearer {TOKEN}") {
+                Reply::json(401, &json!({ "message": "Bad credentials" }))
+            } else {
+                let (status, value) = route(&mut s, &method, &path, &query, &body);
+                Reply::json(status, &value)
+            }
         }
     };
-    let text = if status == 204 {
-        String::new()
-    } else {
-        reply.to_string()
-    };
-    let reason = match status {
+    let reason = match reply.status {
         200 => "OK",
         201 => "Created",
         204 => "No Content",
+        302 => "Found",
         401 => "Unauthorized",
         404 => "Not Found",
         _ => "Status",
     };
+    let mut head = format!("HTTP/1.1 {} {reason}\r\n", reply.status);
+    for (name, value) in &reply.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        reply.body.len()
+    ));
     let mut stream = stream;
-    let _ = write!(
-        stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n{text}",
-        text.len()
-    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&reply.body);
     let _ = stream.flush();
+}
+
+/// One reply: a status, its headers beside the length, and a body that may be bytes.
+struct Reply {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    /// A JSON reply — the REST API's — with no body for a `204`.
+    fn json(status: u16, value: &Value) -> Self {
+        let body = if status == 204 {
+            Vec::new()
+        } else {
+            value.to_string().into_bytes()
+        };
+        Self {
+            status,
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body,
+        }
+    }
+}
+
+/// Whether `path` is on the fake's web side — attachments and the storage they redirect
+/// to — rather than the REST API under `/api/v3`.
+fn is_web_path(path: &str) -> bool {
+    path.starts_with("/user-attachments/") || path.starts_with("/storage/")
+}
+
+/// Answer a request for a hosted file. An attachment wants the token, and without it is a
+/// `404`, as a private repository's is; storage is open, as a signed storage url is. Every
+/// request is recorded in [`FakeGithub::file_requests`], never in
+/// [`FakeGithub::seen`].
+fn serve_file(s: &mut State, seen: Seen) -> Reply {
+    let hosted = s.files.get(&seen.path).cloned();
+    let authorized = seen.auth == format!("Bearer {TOKEN}");
+    s.file_seen.push(seen);
+    match hosted {
+        Some(file) if file.open || authorized => match file.redirect {
+            Some(to) => Reply {
+                status: 302,
+                headers: vec![("Location".to_string(), to)],
+                body: Vec::new(),
+            },
+            None => {
+                let mut headers = vec![("Content-Type".to_string(), file.content_type)];
+                if let Some(disposition) = file.content_disposition {
+                    headers.push(("Content-Disposition".to_string(), disposition));
+                }
+                Reply {
+                    status: 200,
+                    headers,
+                    body: file.bytes,
+                }
+            }
+        },
+        _ => Reply::json(404, &json!({ "message": "Not Found" })),
+    }
 }
 
 /// Split a comma-listed labels value into its names, as GitHub does.

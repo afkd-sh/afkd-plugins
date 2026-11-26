@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use crate::client::{GithubClient, GithubError, IssueComment};
 use crate::common::{Clock, Diag};
+use crate::file::FetchedFile;
 use crate::lifecycle::Vocabulary;
 use crate::outbox::{Delivery, Item, Outbox, Write};
 use crate::wire::WireUnit;
@@ -20,11 +21,20 @@ pub(crate) trait ClaimedUnit {
     /// wire unit's `thread`.
     fn thread(&self) -> String;
 
+    /// The claim-journal key the unit is kept under — the wire unit's `key`, and what every
+    /// later call names it by.
+    fn key(&self) -> String;
+
     /// The login the unit was claimed as — the wire unit's `self`.
     fn claimed_as(&self) -> &str;
 
     /// The unit's issue or pull request, as the [`Outbox`] writes to it and names it.
     fn item(&self) -> Item;
+
+    /// The texts of the item that can link a file, as the claim found them: its body, then
+    /// its comments oldest first, the claim markers left out. What
+    /// [`fetch_files`](crate::file::fetch_files) reads.
+    fn linked_texts(&self) -> Vec<&str>;
 }
 
 /// One kind's vendor half: the calls `plugin.rs` makes per request.
@@ -56,8 +66,11 @@ pub(crate) trait Units {
         clock: &dyn Clock,
     ) -> Result<Option<Self::Unit>, GithubError>;
 
-    /// The unit as it crosses the wire in a `poll` reply.
-    fn wire_unit(&self, unit: &Self::Unit) -> WireUnit;
+    /// The unit as it crosses the wire in a `poll` reply: the brief with each link to a file
+    /// in `fetched` written as its name — and the files `fetched` holds that the brief does
+    /// not link listed at its end — then each of those files, which afkd copies in from
+    /// where [`fetch_files`](crate::file::fetch_files) wrote it.
+    fn wire_unit(&self, unit: &Self::Unit, fetched: &[FetchedFile]) -> WireUnit;
 
     /// Release this unit's claim now, as the identity it was claimed as.
     fn release(&self, unit: &Self::Unit, diag: &dyn Diag);

@@ -21,7 +21,7 @@ claim, watermark, attempt and park comments on the issue, the same brief and the
 environment, mapped onto Linear's states, labels, assignees and sub-issues. The places it
 behaves differently are listed [at the end](#where-it-differs-from-afkdtrello). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
-[the afk language](https://afkd.sh/docs/lang-v2/) for the configs that use it.
+[the afk language](https://afkd.sh/docs/reference/) for the configs that use it.
 
 It is a Rust program, released as a finished binary.
 
@@ -33,10 +33,12 @@ $ afkd install @afkd/linear
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest, the `afkd-linear` binary and its `skills/`, nothing else. Nothing is
-compiled on your host, and no Rust toolchain is needed there. Installing it needs **afkd
-0.2.693 or newer**, the first whose manifests declare a `list[str]` an action returns;
-`afkd update @afkd/linear` moves an installed copy onto the next release.
+is: the manifest, the `afkd-linear` binary, its `skills/` and the `LICENSE-MIT` and
+`LICENSE-APACHE` texts, nothing else. Nothing is compiled on your host, and no Rust
+toolchain is needed there. Installing it needs **afkd 0.2.714 or newer**, the first whose
+unit brief is the folder `task/`, where a plugin's `task/README.md` is framed and its files
+are copied in from a `from` path; `afkd update @afkd/linear` moves an installed copy onto
+the next release.
 
 From a checkout of this repository, build and pack it the way the release does, then name
 the packed directory:
@@ -59,7 +61,7 @@ import "std:env"
 import "@afkd/linear"
 
 task :: proc() {
-  $ cat $AFKD_SCRATCH_DIR/task.md
+  $ cat $AFKD_SCRATCH_DIR/task/README.md
 }
 
 develop :: service(linear) {
@@ -196,7 +198,7 @@ read as that filter is, and refused at arming as `issues` refuses it, ``trigger 
 setting `only_parent`: only_parent "the epic" is neither an identifier (ENG-123) nor a
 uuid``.
 
-The service's slots are code ([lang-v2 §12.6](https://afkd.sh/docs/lang-v2/)), each a `proc`
+The service's slots are code ([reference §10.3](https://afkd.sh/docs/reference/#103-slots)), each a `proc`
 passed the run (all but `on_claim`, which runs before one exists), the workspace, the claimed
 issue, and after the run its outcome — by position, and a slot writes every one of them, in
 order, each with its type:
@@ -243,7 +245,7 @@ triage :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -280,7 +282,9 @@ yet completed, canceled or a duplicate is passed over the same way until it is. 
 plugin puts back — its run crashed, its `on_claim` failed or its finish could not be
 delivered — goes to the bottom of the state it was claimed from, in its own team, so an issue
 that keeps crashing cannot starve the head of the queue. An issue afkd handed back because its
-service stopped before the run started keeps its place, with its claim comment deleted.
+service stopped before the run started keeps its place, with its claim comment deleted; a
+resumed issue handed back is not kept in place but goes back to the state it was claimed
+from.
 
 ```conf
 import "afkd"
@@ -305,7 +309,7 @@ implement :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -338,15 +342,22 @@ develop :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
 
-**Files on the issue.** A Linear file is a link in an issue's markdown. `update_issue`'s
-`description` and `create_comment` take `files=[…]`, absolute paths, each read when the slot
-calls and embedded after the text, and `files` and `download_file` read them back; see
-[the writes](#the-writes) and [the reads](#the-reads).
+**Files on the issue.** A Linear file is a link in an issue's markdown. The files an
+issue's description and comments link arrive with the claim, in the run's `task/` folder:
+the plugin downloads each one Linear hosts (the urls `linear.files` gives) when it wins the
+claim, and `task/README.md` links each by its relative path, `![shot.png](<shot.png>)`,
+instead of the Linear url. The handle's `description` is still Linear's own text. A file
+that cannot be downloaded never fails the claim: its README link keeps the Linear url, the
+service log says why, and the agent can fetch it with `download_file`. The downloads live in
+the plugin's own state directory until the unit finishes or is released, and are deleted
+then. `update_issue`'s `description` and `create_comment` take `files=[…]`, absolute paths,
+each read when the slot calls and embedded after the text, and `files` and `download_file`
+read them back; see [the writes](#the-writes) and [the reads](#the-reads).
 
 ```conf
 import "afkd"
@@ -385,7 +396,7 @@ develop :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -412,7 +423,7 @@ groom :: service(linear) {
 
   work_dir "/srv/acme/widgets"
   on_run proc(run: afkd.Run, workspace: linear.Workspace, issue: linear.Issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -423,7 +434,8 @@ can **ask first**. Give an agent the `@afkd/linear/linear` skill (see
 [above](#name-the-skill)); its `ask.py` posts the agent's message on the issue and writes the
 marker `park` into the run's scratch dir (`$AFKD_SCRATCH_DIR`). The plugin reads that marker
 at the end of the run and *parks* the issue instead of failing it: it adds the `Needs Info`
-label, posts an `[afkd-park]` marker naming the service, releases the claim, and **moves
+label, posts an `[afkd-park]` marker naming the service and the state the issue was claimed
+from, releases the claim, and **moves
 nothing** — the issue keeps its state, its place and its unspent attempts. `on_fail` does
 not run, and `on_park` does, for extras.
 
@@ -433,8 +445,12 @@ thread has gained a comment afkd did not write, newer than afkd's own last word,
 again right there — wherever it sits — the label and the marker come off, and the reply
 arrives under **New comments** in the fresh brief. `skip_labels` still vetoes it, and a
 blocker added while it waited still holds it back. An issue goes back only to the service
-its `[afkd-park]` marker names; one parked by a service no longer configured is taken over
-by whichever service finds it, with one line in the log.
+its `[afkd-park]` marker names. One parked by a service no longer configured is taken over,
+with one line in the log, only by a service that claims from the state the marker records, so
+a renamed develop service resumes it and a review service never does; a marker that records
+no state is resumed by its own service alone. A resume that runs nothing — afkd hands the
+issue back, or its `on_claim` fails — returns the issue to that state, not leaving it where
+it sat.
 
 A **multi-step** run must stop at the ask itself, so nothing runs past the question:
 
@@ -775,7 +791,7 @@ develop :: service(linear) {
   }
 
   on_run proc(run, workspace, issue) {
-    $ cat $AFKD_SCRATCH_DIR/task.md
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
   }
 }
 ```
@@ -915,9 +931,10 @@ Linear's reason.
 - **Every `[afkd-` comment is afkd's.** One opening `[afkd-`, a config's own note as much as
   a marker, is left out of the brief and of `files`, where trello leaves out only its claim,
   attempt, ran and park markers.
-- **The skill's scripts are the plugin's actions.** Each is named for the action it does and
-  prints the action's value as JSON, where trello's print lines of text: `update_issue.py`
-  does what trello's `set_name.py`, `set_description.py` and `move_card.py` do, and
-  `create_comment.py` what its `post_comment.py` and `post_attachment.py` do. `ask.py` keeps
-  its name. A state or a label is named by its id or its exact name in one argument, where
-  trello takes an id or `--name`.
+- **The skill's scripts are the plugin's actions, as trello's are.** Each is named for the
+  action it does and prints the action's value as JSON: `update_issue.py` is trello's
+  `update_card.py` for an issue, and `create_comment.py` does what trello's
+  `create_comment.py` and `create_attachment.py` do. `ask.py` keeps its name. Linear's scripts
+  take the issue as an argument, where trello's take the card with `--card` and the board
+  with `--board`, each defaulting to the run's. A state or a label is named by its id or its
+  exact name in one argument, as trello names a list or a label.

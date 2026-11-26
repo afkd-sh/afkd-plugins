@@ -88,7 +88,7 @@ pub(crate) fn has_new(comments: &[IssueComment], reviews: &[Review], me: &str) -
     !delta(comments, reviews, me).is_empty()
 }
 
-/// The PR-review brief written to `task.md`: a header naming the PR, then the feedback
+/// The PR-review brief written to `task/README.md`: a header naming the PR, then the feedback
 /// delta (oldest-first, each line attributed to its author). Empty feedback (claimed
 /// mid-race) still writes the header.
 pub(crate) fn pr_brief(number: u64, feedback: &[FeedbackItem]) -> String {
