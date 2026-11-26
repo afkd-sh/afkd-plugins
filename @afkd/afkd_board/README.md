@@ -1,12 +1,16 @@
 # `@afkd/afkd_board`
 
-A **provider** plugin that reads and writes a board on [app.afkd.sh](https://app.afkd.sh): one
-card by its number, the cards any filters keep, a card's comments and its checklist, and the
-board's lists and labels, and [every write](#writing-to-a-board) of its cards, checklists,
-comments and lists, each write of a card made under the run it is made in. Each call reaches the
-board through the [`afkd_board.Board`](#afkd_boardboard) it is passed, by one of the board's API
-keys, so a config works two boards side by side with two of them. It declares no trigger kind:
-every call a config makes is a child afkd starts for that one call.
+A **provider** plugin for a board on [app.afkd.sh](https://app.afkd.sh), with one trigger kind,
+[`service(afkd_board)`](#serviceafkd_board): it claims the board's cards, one per run, and passes
+the service's slots the claimed card and an [`afkd_board.Board`](#afkd_boardboard). The same board
+is read and written from any config: one card by its number, the cards any filters keep, a card's
+comments and its checklist, and the board's lists and labels, and
+[every write](#writing-to-a-board) of its cards, checklists, comments and lists, each write of a
+card made under the run it is made in. Each call reaches the board through the
+`afkd_board.Board` it is passed, by one of the board's API keys, so a config works two boards side
+by side with two of them. The plugin also ships the `afkd_board` [skill](#the-skill) an agent
+works the card through, one script per operation. Every call a config makes outside a service is
+a child afkd starts for that one call.
 
 It reads the board's HTTP API, which the site's README documents (*A board's API*). See
 [`docs/plugins.md`](https://afkd.sh/docs/plugins/) for the wire it speaks, and
@@ -22,8 +26,8 @@ $ afkd install @afkd/afkd_board
 
 afkd downloads the release built for this host's platform — `x86_64-linux` or
 `aarch64-linux`, a static binary that runs on any Linux of that CPU — and places it as it
-is: the manifest, the `afkd-afkd_board` binary and the `LICENSE-MIT` and `LICENSE-APACHE`
-texts, nothing else. Nothing is compiled on your host, and no Rust toolchain is needed
+is: the manifest, the `afkd-afkd_board` binary, its `skills/` and the `LICENSE-MIT` and
+`LICENSE-APACHE` texts, nothing else. Nothing is compiled on your host, and no Rust toolchain is needed
 there. Installing it needs **afkd 0.2.714 or newer**, the first whose manifests take an
 `afkd.Run?` on an action's parameter, as every write's `run` is; every older floor (a handle's
 field typed as a `time`, a parameter typed as optional) comes with it. `afkd update
@@ -41,6 +45,174 @@ $ afkd install /tmp/afkd-release/afkd-afkd_board
 The configs below are written in the afk language of **afkd 0.2.714 or newer**, which reads
 `env.get(…) ?? fail(…)` in a constant at load (0.2.694 was the first) and passes `run=run` to an
 action; an older afkd refuses the examples when they load.
+
+## `service(afkd_board)`
+
+A service of the plugin's one kind claims a board's cards, one per run, the way afkd claims on its
+other trackers: the `afkd/claimed` label goes on the card, and the claim goes into afkd's claim
+journal. Its slots are passed the claimed card and the `afkd_board.Board` the service's `key` and
+`base_url` build, so each reaches the board [through it](#reading-a-board-through-an-afkd_boardboard),
+as a config does anywhere else:
+
+```conf
+import "afkd"
+import "std:env"
+import "@afkd/afkd_board"
+
+develop :: service(afkd_board) {
+  key           env.get("AFKD_BOARD_KEY") ?? fail("AFKD_BOARD_KEY is unset")
+  claim_from    "Todo"
+  skip_labels   "blocked"
+  only_blocked  false
+  every         1m
+  max_attempts  2
+
+  on_claim proc(b: afkd_board.Board, card: afkd_board.Card) {
+    match afkd_board.card(b, card.number) {
+      .ok(read) => {
+        if read != card {
+          fail("the card read is not the card claimed")
+        }
+      }
+      .err(e) => fail("afkd_board.card: #{e.message}")
+    }
+  }
+
+  work_dir "/srv/acme/widgets"
+  on_run proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card) {
+    match afkd_board.move_card(b, card, "In progress", at=.top, run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.move_card: #{e.message}")
+    }
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
+  }
+
+  on_done proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card, outcome: afkd.Outcome) {
+    match afkd_board.move_card(b, card, "In review", run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.move_card: #{e.message}")
+    }
+  }
+
+  on_park proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card, outcome: afkd.Outcome) {
+    match afkd_board.create_comment(b, card, "parked: waiting for a reply", run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.create_comment: #{e.message}")
+    }
+  }
+
+  on_fail proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card, outcome: afkd.Outcome) {
+    match afkd_board.add_label(b, card, "blocked", run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.add_label: #{e.message}")
+    }
+  }
+}
+```
+
+The key comes from the daemon's environment, so it never sits in the file. A service with no
+`claim_from` is refused when the config loads.
+
+### Settings
+
+| Setting        | Type                | What it is                                                                 |
+|----------------|---------------------|----------------------------------------------------------------------------|
+| `key`          | `str`, required     | one of the board's API keys, `afk_board_…`, as [`Board`'s](#afkd_boardboard) field; an empty one is refused when the service arms |
+| `base_url`     | `str = "https://app.afkd.sh"` | a stand-in's address in tests, as `Board`'s field              |
+| `claim_from`   | `list[str]`, required | the lists to claim from, in the order written, each top to bottom; one named twice is refused |
+| `only_labels`  | `list[str]`         | it claims only a card carrying every one                                   |
+| `skip_labels`  | `list[str]`         | it never claims a card carrying any of them, and wins over `only_labels`   |
+| `only_blocked` | `bool`              | `false` claims only a card no open card blocks, `true` only a blocked one; left out, it claims either |
+
+`every` and `max_attempts` are afkd's own for every service that claims, and are written beside
+these. Lists and labels are matched by name, exactly; a `claim_from` list the board lacks makes the
+beat idle, saying which, and so does a board that cannot be reached.
+
+The slots are afkd's, each passed `b` and `card` and, after the run exists, the `run` first and the
+run's `outcome` last:
+
+| Slot | Passed |
+|------|--------|
+| `on_claim proc(b: afkd_board.Board, card: afkd_board.Card)` | once the card is claimed, before the run |
+| `on_run proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card)` | the run itself |
+| `on_done`, `on_park`, `on_fail` `proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card, outcome: afkd.Outcome)` | after a run that finished, parked or failed |
+
+The claimed card is `==` the card `afkd_board.card` reads of the same number, since `==` compares the
+handle's key, `afkd_board:<board uuid>/<card uuid>`; the unit's `id` is the card's number. The
+unit's brief, `task/README.md`, holds the card's title, description, checklist and comments, the
+claim markers left out, and is cut to fit afkd's 64 KiB plugin line.
+
+### How a card is claimed
+
+The board has no claim call, so the claim is `@afkd/linear`'s, built on what the board answers in an
+order every reader sees alike: the card's comments.
+
+1. **The walk.** Each poll claims at most one card. It walks `claim_from` in the order written, each
+   list top to bottom, and passes over a card that is archived, done, already carrying
+   `afkd/claimed`, or held back by `only_labels`, `skip_labels` or `only_blocked`.
+2. **The marker.** For each card left it posts a comment `[afkd-claim] owner=<owner>`, the afkd
+   process's claim owner, as the board's key.
+3. **The settle.** It waits 3 s, so a rival's marker has time to become visible, and then reads the
+   card's comments and the card again.
+4. **The decision.** The poll wins iff its marker is the unique minimum of `(created_at, id)` among
+   the markers a key made, no more than **90 s** before its own, and the card still lacks
+   `afkd/claimed`. Both contenders compute it from the same list, so exactly one wins. A comment a
+   person wrote that looks like a marker is no marker: only a key's comments count. The board stamps
+   a comment to the second, and a comment's id is a uuid, which carries no time, so within one
+   second the id's order decides: arbitrary, but the same everywhere. A loser moves on to the next
+   card in the same poll.
+5. **The label.** The winner puts `afkd/claimed` on the card and hands afkd the unit. The label marks
+   the claimed card for people, and for other services' `skip_labels`; a card carrying it is never
+   claimed by another instance, on this machine or another. If the label cannot be put on, the beat
+   is idle and says why.
+
+**Why 90 s is safe.** A marker cannot be deleted or edited on the board, so it cannot be renewed or
+released as a claim on other trackers is; it ages out of the decision instead. A marker older than
+the window cannot beat a newer one, and the winner of a race puts the label on within its poll's 45 s
+budget, long before any marker that raced for the card is 90 s old: every poll that reads the card
+after that sees the label and stands down, whatever the markers say. A marker is only ever read as a
+rival's by a poll that began within 90 s of it. No poll starts a new race with less than 10 s of the
+45 s left.
+
+**The claim journal and the label come off.** afkd journals the claim under the unit's key. The
+label must come off only after `on_done`, `on_park` or `on_fail` has run, and afkd's beat is `poll`,
+the pre-run slot, the attempts, `finish`, the post-run slot, the next beat, so `finish` cannot take
+it off: it writes the card down as owed a release in `owed-releases.json` under the plugin's
+directory, and the child's **next `poll` takes the label off** before it claims anything. Every
+`service(afkd_board)` in a home, and every pool copy of one, shares that directory and afkd's
+identity, so each entry names its writer (the board, afkd's claim owner and the child's own pid) and
+the file is changed only under a lock, written whole. A child takes off only its own entries for its
+own board, and the entries for its board that an earlier afkd process left. A `finish` that cannot
+write the entry answers `held`, and afkd's next beat sends `release` for the key.
+
+**After a crash** the label stays on, and the claim journal still holds the key: the next start's
+`release` of the key takes the label off, and answers `true` also for a card that no longer carries
+it. A key of another board, or of no shape, is `null`. Until then no other instance claims the
+card.
+
+**The run a change is shown under.** A unit's `env` is fixed when afkd polls, before afkd makes
+the run, so it cannot name the run: it carries `AFKD_BOARD_URL`, `AFKD_BOARD_AUTHORIZATION` and
+`AFKD_BOARD_RUN`, the JSON `{"service": "<the service>"}`. A run carries its id as the leaf of
+`$AFKD_SCRATCH_DIR` and its copy's index as `$AFKD_INSTANCE`, but its machine, the organization
+it joined or else the host's name, is in no variable. So the [skill's](#the-skill) scripts send no
+`run` yet, and say so once on stderr: the board shows an agent's changes under the key's name. A
+follow-up asks afkd to name a run's `machine`, and its `service`, which differs from the
+`service` afkd sends the plugin for a pool copy, in variables a run carries; the scripts send the
+run once they are told. A slot's own writes pass `run=run` and are shown under the run already.
+
+## The skill
+
+The plugin ships the `afkd_board` skill, under `skills/afkd_board/`: an agent in a
+`service(afkd_board)` run works its card through scripts, one for each operation of the plugin
+under the operation's name, each printing as JSON what the operation gives back: `card.py`,
+`cards.py`, `comments.py`, `checklist.py`, `lists.py`, `labels.py`, `create_card.py`,
+`update_card.py`, `move_card.py`, `add_label.py`, `remove_label.py`, `add_item.py`,
+`check_item.py`, `remove_item.py`, `mark_done.py`, `add_blocked_by.py`, `remove_blocked_by.py`,
+`create_comment.py`, `archive_card.py`, `unarchive_card.py`, `delete_card.py`, `create_list.py`,
+`update_list.py` and `delete_list.py`. They reach the board through the run's `AFKD_BOARD_URL` and
+`AFKD_BOARD_AUTHORIZATION`, run with `python3`, and are documented, argument by argument, in the
+skill's `SKILL.md`. The `afkd/claimed` label is the service's, and the skill tells the agent to
+leave it alone.
 
 ## Reading a board through an `afkd_board.Board`
 

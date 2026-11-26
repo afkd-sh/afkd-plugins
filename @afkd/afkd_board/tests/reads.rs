@@ -627,17 +627,26 @@ fn one_card_read_by_two_calls_is_one_handle() {
     no_invalid(&fake);
 }
 
-/// A kind's call ends the child with the reason, since the plugin declares no kind; a call of
-/// another protocol or another action is refused.
+/// A `hello` that names no service is refused in a reply that says why, and a kind's request
+/// before a `hello` the plugin accepted ends the child with the reason; a call of another
+/// protocol or another action is refused.
 #[test]
 fn the_wire_serves_one_call_of_protocol_2() {
     let mut plugin = Plugin::spawn();
-    plugin.send(&json!({"call": "hello", "proto": 2, "kind": "board", "settings": {}}));
+    let line =
+        plugin.call_raw(json!({"call": "hello", "proto": 2, "kind": "board", "settings": {}}));
+    assert_eq!(
+        common::reply_of(&line, common::MAX_CALL_LINE),
+        json!({"ok": false, "proto": 2})
+    );
+    plugin.send(&json!({"call": "poll"}));
     let (status, stderr) = plugin.exit_unanswered();
     assert!(!status.success(), "{status:?}");
     assert_eq!(
         stderr,
-        "afkd-afkd_board: afkd sent `hello`, and @afkd/afkd_board provides no kind\n"
+        "afkd-afkd_board: afkd did not say which service this is; @afkd/afkd_board needs an \
+         afkd whose `hello` carries `service` and `owner`\n\
+         afkd-afkd_board: afkd sent a request before a `hello` this plugin accepted\n"
     );
 
     let fake = world();

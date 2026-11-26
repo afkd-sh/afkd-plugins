@@ -1,11 +1,21 @@
-//! The gate that holds the **shipped `@afkd/afkd_board` plugin** — a manifest v2 provider with no
-//! trigger kind, shipped as a finished binary — to a real afkd: the `afkd` first on `PATH`,
-//! never a build, since a plugin is checked against the afkd it will meet ([`bin_path`]).
+//! The gate that holds the **shipped `@afkd/afkd_board` plugin** — a manifest v2 provider with one
+//! trigger kind, `service(afkd_board)`, shipped as a finished binary and a skill — to a real
+//! afkd: the `afkd` first on `PATH`, never a build, since a plugin is checked against the afkd it
+//! will meet ([`bin_path`]).
 //!
 //! - The **install by name** leg packs the release as `.github/workflows/release-afkd_board.yml`
 //!   does, serves it and an index naming it on loopback, and installs `@afkd/afkd_board` by its
 //!   name alone: afkd reads the index once, fills in the platform, fetches the archive once and
-//!   places exactly the manifest and the binary.
+//!   places exactly the manifest, the binary and the skill.
+//! - The **service validate** leg holds `afkd validate` to the brief's example
+//!   `service(afkd_board)`, and refuses the same service with no `claim_from`.
+//! - The **two instances** leg runs two daemons in two homes against one fake board holding two
+//!   Todo cards: each slot is passed the board and the card (`on_claim` holds them to
+//!   `afkd_board.card(b, card.number)`), the two daemons claim different cards, each card is
+//!   moved and commented under its run, `on_done` still finds `afkd/claimed` on its card, and
+//!   once both runs end the label is off both cards and both claim journals are empty.
+//! - The **crash** leg kills a daemon with `kill -9` mid-run, finds the label still on, restarts
+//!   the daemon, and finds `release` took it off.
 //! - The **published index** leg holds the entry the site's `public/plugins.json` ships to the
 //!   manifest's name and to this repository's fixed `afkd_board` release, in the afkd.sh checkout
 //!   `AFKD_SITE_SRC` names ([`site_src`]); it skips loudly without one.
@@ -78,14 +88,29 @@ fn built_binary() -> &'static Path {
     })
 }
 
-/// What a release holds, relative and sorted: the manifest, the binary and the two licence
-/// texts, nothing else.
-const RELEASE_TREE: &[&str] = &[
+/// What a release holds besides its skill, relative: the manifest, the binary and the two licence
+/// texts.
+const RELEASE_BASE: &[&str] = &[
     "LICENSE-APACHE",
     "LICENSE-MIT",
     "afkd-afkd_board",
     "afkd-plugin.toml",
 ];
+
+/// What a release holds, relative and sorted: [`RELEASE_BASE`] and the plugin's `skills/` with its
+/// directories, bytecode a local `python3` left behind aside, nothing else.
+fn release_tree() -> Vec<String> {
+    let mut tree: Vec<String> = RELEASE_BASE.iter().map(ToString::to_string).collect();
+    tree.push("skills".to_string());
+    tree.extend(
+        tree_of(&plugin_root().join("skills"))
+            .into_iter()
+            .filter(|path| !path.contains("__pycache__"))
+            .map(|path| format!("skills/{path}")),
+    );
+    tree.sort();
+    tree
+}
 
 /// Stage the release `tools/pack-release` packs under `dst` and return the staged root,
 /// `<dst>/afkd-afkd_board`, failing unless it holds exactly [`RELEASE_TREE`].
@@ -100,8 +125,8 @@ fn stage(dst: &Path) -> PathBuf {
     let staged = dst.join("afkd-afkd_board");
     assert_eq!(
         tree_of(&staged),
-        RELEASE_TREE,
-        "the release holds the manifest, the binary and the licence texts alone"
+        release_tree(),
+        "the release holds the manifest, the binary, the skill and the licence texts alone"
     );
     staged
 }
@@ -302,7 +327,7 @@ fn installs_by_name_through_a_loopback_index() {
     let placed = plugins_root(home.path()).join(NAME);
     assert_eq!(
         tree_of(&placed),
-        RELEASE_TREE,
+        release_tree(),
         "the install placed exactly the archive's contents"
     );
     let mode = std::fs::metadata(placed.join("afkd-afkd_board"))
@@ -994,6 +1019,462 @@ fn writes_leg_each_write_under_its_run() {
     );
     assert_eq!(
         train.invalid_requests(),
+        Vec::<String>::new(),
+        "requests the board's API refuses"
+    );
+}
+
+// --- the service -------------------------------------------------------------------
+
+/// The brief's example `service(afkd_board)`, its `claim_from` line `claim_from` — empty for a
+/// service with none — beside the settings the brief writes, and the slots passed the board and
+/// the card.
+fn example_service(claim_from: &str) -> String {
+    r###"import "afkd"
+import "std:env"
+import "@afkd/afkd_board"
+
+develop :: service(afkd_board) {
+  key           env.get("AFKD_BOARD_KEY") ?? ""
+CLAIM_FROM
+  only_blocked  false
+
+  on_run proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card) {
+    match afkd_board.move_card(b, card, "In progress", at=.top, run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.move_card: #{e.message}")
+    }
+    $ cat $AFKD_SCRATCH_DIR/task/README.md
+  }
+
+  on_done proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card, outcome: afkd.Outcome) {
+    match afkd_board.move_card(b, card, "In review", run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.move_card: #{e.message}")
+    }
+  }
+
+  on_fail proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card, outcome: afkd.Outcome) {
+    match afkd_board.add_label(b, card, "blocked", run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.add_label: #{e.message}")
+    }
+  }
+}
+"###
+    .replace("CLAIM_FROM\n", claim_from)
+}
+
+/// The brief's example validates, with every setting typed and every slot passed the board and the
+/// card; the same service with no `claim_from` is refused, naming the setting.
+#[test]
+fn service_validates_and_one_without_claim_from_is_refused() {
+    let home = installed();
+    write_config(home.path(), &example_service("  claim_from    \"Todo\"\n"));
+    let (code, report) = validate(home.path());
+    assert_eq!(code, Some(0), "the example validates:\n{report}");
+
+    write_config(home.path(), &example_service(""));
+    let (code, report) = validate(home.path());
+    assert_ne!(
+        code,
+        Some(0),
+        "a service with no claim_from is refused:\n{report}"
+    );
+    assert!(
+        report.contains("claim_from"),
+        "the refusal names the setting:\n{report}"
+    );
+
+    write_config(
+        home.path(),
+        &example_service("  claim_from    \"Todo\"\n  only_blocked_by  true\n"),
+    );
+    let (code, report) = validate(home.path());
+    assert_ne!(
+        code,
+        Some(0),
+        "a setting the kind does not declare is refused:\n{report}"
+    );
+}
+
+// --- the two instances leg ---------------------------------------------------------
+
+/// How long a leg that claims waits for a daemon: a poll every second, a three second settle, and
+/// a run that holds until the test lets it go.
+const CLAIM_BUDGET: Duration = Duration::from_secs(60);
+
+/// The service the claiming legs run, in the home `HOME`: it claims from `Todo` every second;
+/// `on_claim` holds the board and the card it is passed to `afkd_board.card(b, card.number)` and
+/// notes the card's number; `on_run` notes the run's id, moves the card to `Doing` and comments
+/// `run=<id>`, each under its run, and holds until the file `GO` exists; `on_done` reads the card
+/// again, notes its labels and faults unless `afkd/claimed` is still on it, since the label comes
+/// off only once the slot has run, and notes it ran.
+const CLAIMING_SERVICE: &str = r###"import "afkd"
+import "@afkd/afkd_board"
+
+develop :: service(afkd_board) {
+  key          "@KEY@"
+  base_url     "@URL@"
+  claim_from   "Todo"
+  every        1s
+  max_attempts 1
+
+  on_claim proc(b: afkd_board.Board, card: afkd_board.Card) {
+    match afkd_board.card(b, card.number) {
+      .ok(read) => {
+        if read != card {
+          fail("on_claim: the card read is not the card claimed")
+        }
+      }
+      .err(e) => fail("afkd_board.card: #{e.message}")
+    }
+    $ echo #{card.number} >> @HOME@/claimed.txt
+  }
+
+  work_dir "@HOME@"
+  on_run proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card) {
+    $ echo #{run.id} >> @HOME@/run-ids.txt
+    match afkd_board.move_card(b, card, "Doing", run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.move_card: #{e.message}")
+    }
+    match afkd_board.create_comment(b, card, "run=#{run.id}", run=run) {
+      .ok(_) => { }
+      .err(e) => fail("afkd_board.create_comment: #{e.message}")
+    }
+    $ i=0; until [ -f @GO@ ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done
+  }
+
+  on_done proc(run: afkd.Run, b: afkd_board.Board, card: afkd_board.Card, outcome: afkd.Outcome) {
+    match afkd_board.card(b, card.number) {
+      .ok(read) => {
+        for label in read.labels {
+          $ echo #{label} >> @HOME@/labels-#{card.number}.txt
+        }
+      }
+      .err(e) => fail("afkd_board.card: #{e.message}")
+    }
+    $ grep -qx afkd/claimed @HOME@/labels-#{card.number}.txt
+    $ echo done >> @HOME@/done.txt
+  }
+}
+"###;
+
+/// [`CLAIMING_SERVICE`] for the board at `url`, in `home`, held by the file `go`.
+fn claiming_service(home: &Path, url: &str, go: &Path) -> String {
+    CLAIMING_SERVICE
+        .replace("@KEY@", TRAIN_KEY)
+        .replace("@URL@", url)
+        .replace("@HOME@", &home.display().to_string())
+        .replace("@GO@", &go.display().to_string())
+}
+
+/// A board with `Todo`, `Doing` and `Done` and `cards` cards in `Todo`.
+fn claiming_board(cards: &[&str]) -> FakeBoard {
+    let fake = FakeBoard::start(
+        "Release train 🚂",
+        TRAIN_KEY,
+        &["Todo", "Doing", "Done"],
+        &[("afkd/claimed", "blue")],
+    );
+    for title in cards {
+        fake.card(NewCard::new("Todo", title));
+    }
+    fake
+}
+
+/// Whether the card `number` carries `afkd/claimed`.
+fn carries_label(fake: &FakeBoard, number: i64) -> bool {
+    fake.card_state(number)
+        .is_some_and(|c| c.labels.iter().any(|l| l == "afkd/claimed"))
+}
+
+/// The list the card `number` is in.
+fn list_of(fake: &FakeBoard, number: i64) -> String {
+    fake.card_state(number).map(|c| c.list).unwrap_or_default()
+}
+
+/// The lines `home`'s service wrote to `file`, none when it wrote none.
+fn lines_of(home: &Path, file: &str) -> Vec<String> {
+    std::fs::read_to_string(home.join(file))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The service `develop`'s run logs and the daemon's own log under `home`, as one text.
+fn logs_of(home: &Path) -> String {
+    let mut text = std::fs::read_to_string(daemon_log(home)).unwrap_or_default();
+    for root in [runs_root(home), live_runs_root(home)] {
+        for entry in std::fs::read_dir(root.join("develop"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            text.push_str(&format!(
+                "\n{}:\n{}",
+                entry.path().display(),
+                std::fs::read_to_string(entry.path().join("run.log")).unwrap_or_default()
+            ));
+        }
+    }
+    text
+}
+
+/// The claim journal of the afkd under `home`, as text, empty when it has none.
+fn journal_of(home: &Path) -> String {
+    std::fs::read_to_string(state_dir(home).join("claims.json")).unwrap_or_default()
+}
+
+/// Everything a failed wait needs to say: each card as the board holds it, its comments, the
+/// claims each home noted, each home's logs and each daemon's stderr so far.
+fn claim_dump(
+    homes: &[&Path],
+    fake: &FakeBoard,
+    cards: i64,
+    daemons: &[&StreamingDaemon],
+) -> String {
+    let board: Vec<String> = (1..=cards)
+        .map(|n| format!("#{n}: {:?} {:?}", fake.card_state(n), fake.comments_on(n)))
+        .collect();
+    let homes: Vec<String> = homes
+        .iter()
+        .map(|home| {
+            format!(
+                "claimed {:?}, runs {:?}, done {:?}, journal {}\n{}",
+                lines_of(home, "claimed.txt"),
+                lines_of(home, "run-ids.txt"),
+                lines_of(home, "done.txt"),
+                journal_of(home),
+                logs_of(home)
+            )
+        })
+        .collect();
+    let stderr: Vec<String> = daemons.iter().map(|d| d.stderr_so_far()).collect();
+    format!(
+        "board:\n{}\nrefused: {:?}\nhomes:\n{}\ndaemon stderr:\n{}",
+        board.join("\n"),
+        fake.invalid_requests(),
+        homes.join("\n--\n"),
+        stderr.join("\n--\n")
+    )
+}
+
+/// Two daemons, each in a home of its own, run the same `service(afkd_board)` against one fake
+/// board holding two Todo cards. Each slot is passed the board and the card (`on_claim` holds
+/// them to `afkd_board.card(b, card.number)` and faults the run if they differ); the two daemons
+/// claim two different cards, never the same one; each card is moved and commented on under the
+/// run that works it; `on_done` finds `afkd/claimed` still on its card; and once the runs end the
+/// label is off both cards and both claim journals are empty, with no `on_done failed` in either
+/// log.
+#[test]
+fn two_instances_leg_claim_different_cards_and_let_go_of_them() {
+    let (home_a, home_b) = (installed(), installed());
+    let (a, b) = (home_a.path(), home_b.path());
+    let shared = TempDir::new().expect("tempdir");
+    let go = shared.path().join("go");
+    let fake = claiming_board(&["First 🚨", "Second"]);
+    for home in [a, b] {
+        write_config(home, &claiming_service(home, fake.base_url(), &go));
+        let (code, report) = validate(home);
+        assert_eq!(code, Some(0), "the service validates:\n{report}");
+    }
+    let (daemon_a, daemon_b) = (
+        spawn_headless_streaming(a, &[]),
+        spawn_headless_streaming(b, &[]),
+    );
+    let dump = || claim_dump(&[a, b], &fake, 2, &[&daemon_a, &daemon_b]);
+
+    wait_for(
+        CLAIM_BUDGET,
+        "each daemon claims a card, moves it and comments on it",
+        || {
+            (1..=2).all(|n| carries_label(&fake, n) && list_of(&fake, n) == "Doing")
+                && (1..=2).all(|n| {
+                    !fake.comments_on(n).is_empty()
+                        && fake.comments_on(n).iter().any(|c| c.3.is_some())
+                })
+        },
+        dump,
+    );
+    let claimed = (lines_of(a, "claimed.txt"), lines_of(b, "claimed.txt"));
+    assert_eq!(claimed.0.len(), 1, "one card each: {claimed:?}\n{}", dump());
+    assert_eq!(claimed.1.len(), 1, "one card each: {claimed:?}\n{}", dump());
+    assert_ne!(claimed.0, claimed.1, "never the same card: {claimed:?}");
+    let mut numbers: Vec<String> = [claimed.0.clone(), claimed.1.clone()].concat();
+    numbers.sort();
+    assert_eq!(numbers, ["1", "2"], "together the two cards");
+
+    // Each card was moved and commented on under the run that worked it: the run its daemon
+    // noted, with the service's name, and exactly the four fields the board takes.
+    for (home, card) in [(a, &claimed.0[0]), (b, &claimed.1[0])] {
+        let runs = lines_of(home, "run-ids.txt");
+        assert_eq!(runs.len(), 1, "one run per daemon: {runs:?}\n{}", dump());
+        let under_run = |method: &str, path: String| {
+            let seen = fake.writes();
+            // The claim marker is a comment made under no run, so the write looked for is the
+            // one that names one.
+            let write = seen
+                .iter()
+                .find(|w| {
+                    w.method == method
+                        && w.path == path
+                        && w.body.as_ref().is_some_and(|b| b.get("run").is_some())
+                })
+                .unwrap_or_else(|| panic!("no {method} {path} under a run\n{}", dump()));
+            write.body.as_ref().expect("a body")["run"].clone()
+        };
+        for (method, path) in [
+            ("PATCH", format!("/api/board/cards/{card}")),
+            ("POST", format!("/api/board/cards/{card}/comments")),
+        ] {
+            let run = under_run(method, path.clone());
+            assert_eq!(
+                run["id"],
+                runs[0],
+                "{method} {path} was made under its run\n{}",
+                dump()
+            );
+            assert_eq!(run["service"], "develop", "{method} {path}");
+            assert_eq!(
+                run.as_object().map(|r| r.len()),
+                Some(4),
+                "{method} {path}: {run}"
+            );
+        }
+        let comments = fake.comments_on(card.parse().expect("a number"));
+        assert!(
+            comments.iter().any(|c| c.0 == format!("run={}", runs[0])
+                && c.3.as_ref().is_some_and(|r| r.id == runs[0])),
+            "the comment names its run: {comments:?}"
+        );
+    }
+
+    // The label stays while the runs are held: no third instance could claim either card.
+    assert!((1..=2).all(|n| carries_label(&fake, n)), "{}", dump());
+    std::fs::write(&go, "").expect("let the runs go");
+    wait_for(
+        CLAIM_BUDGET,
+        "both runs end, their on_done ran and the label is off both cards",
+        || {
+            lines_of(a, "done.txt") == ["done"]
+                && lines_of(b, "done.txt") == ["done"]
+                && (1..=2).all(|n| !carries_label(&fake, n))
+        },
+        dump,
+    );
+    for home in [a, b] {
+        assert!(
+            !logs_of(home).contains("on_done failed"),
+            "on_done failed in {}:\n{}",
+            home.display(),
+            logs_of(home)
+        );
+        assert!(
+            !journal_of(home).contains("afkd_board:"),
+            "the claim journal of {} is not empty: {}",
+            home.display(),
+            journal_of(home)
+        );
+    }
+    for n in 1..=2 {
+        assert_eq!(list_of(&fake, n), "Doing", "#{n} is where its run left it");
+    }
+
+    for daemon in [daemon_a, daemon_b] {
+        daemon.signal(libc::SIGINT);
+        let out = daemon.reap(Duration::from_secs(10));
+        assert!(
+            out.status.success(),
+            "the daemon drains clean ({:?}):\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(
+        fake.invalid_requests(),
+        Vec::<String>::new(),
+        "requests the board's API refuses"
+    );
+}
+
+/// A daemon killed with `kill -9` between its claim and its release leaves `afkd/claimed` on the
+/// card, which no other instance may claim; the next start of the daemon `release`s the journalled
+/// key and takes the label off. The card has been moved to `Doing`, which the service does not
+/// claim from, so the restarted service does not claim it again, and its one marker is the first
+/// start's.
+#[test]
+fn crash_leg_a_killed_daemon_leaves_the_label_and_the_next_start_takes_it_off() {
+    let home = installed();
+    let home = home.path();
+    let shared = TempDir::new().expect("tempdir");
+    let go = shared.path().join("go");
+    let fake = claiming_board(&["The only card"]);
+    write_config(home, &claiming_service(home, fake.base_url(), &go));
+    let (code, report) = validate(home);
+    assert_eq!(code, Some(0), "the service validates:\n{report}");
+
+    let daemon = spawn_headless_streaming(home, &[]);
+    wait_for(
+        CLAIM_BUDGET,
+        "the daemon claims the card and its run starts",
+        || {
+            carries_label(&fake, 1)
+                && list_of(&fake, 1) == "Doing"
+                && !lines_of(home, "run-ids.txt").is_empty()
+        },
+        || claim_dump(&[home], &fake, 1, &[&daemon]),
+    );
+    daemon.signal(libc::SIGKILL);
+    let killed = daemon.reap(Duration::from_secs(10));
+    assert!(!killed.status.success(), "{:?}", killed.status);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        carries_label(&fake, 1),
+        "the label is still on after the crash: {:?}",
+        fake.card_state(1)
+    );
+
+    let restarted = spawn_headless_streaming(home, &[]);
+    wait_for(
+        CLAIM_BUDGET,
+        "the next start takes the label off",
+        || !carries_label(&fake, 1),
+        || claim_dump(&[home], &fake, 1, &[&restarted]),
+    );
+    let dump = || claim_dump(&[home], &fake, 1, &[&restarted]);
+    assert_eq!(list_of(&fake, 1), "Doing", "{}", dump());
+    let markers = fake
+        .comments_on(1)
+        .iter()
+        .filter(|c| c.2 && c.0.starts_with("[afkd-claim] owner="))
+        .count();
+    assert_eq!(
+        markers,
+        1,
+        "the restarted service claimed nothing again\n{}",
+        dump()
+    );
+    assert!(
+        !journal_of(home).contains("afkd_board:"),
+        "the claim journal is empty: {}",
+        journal_of(home)
+    );
+
+    restarted.signal(libc::SIGINT);
+    let out = restarted.reap(Duration::from_secs(10));
+    assert!(
+        out.status.success(),
+        "the daemon drains clean ({:?}):\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Let the first start's run, which outlived its daemon, end.
+    std::fs::write(&go, "").expect("let the orphaned run go");
+    assert_eq!(
+        fake.invalid_requests(),
         Vec::<String>::new(),
         "requests the board's API refuses"
     );

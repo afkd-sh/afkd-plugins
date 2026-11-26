@@ -94,6 +94,24 @@ impl Plugin {
         line
     }
 
+    /// Read the reply to a request [`send`](Self::send) wrote: one JSON object under afkd's
+    /// cap.
+    pub fn recv(&mut self) -> Value {
+        let line = self.lines.recv_timeout(CALL_TIMEOUT).unwrap_or_else(|_| {
+            panic!(
+                "no reply within {CALL_TIMEOUT:?}; stderr: {}",
+                self.stderr()
+            )
+        });
+        self.answered += 1;
+        reply_of(&line, MAX_CALL_LINE)
+    }
+
+    /// The child's own pid, which its ledger entries carry.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Write one request without waiting for anything.
     pub fn send(&mut self, request: &Value) {
         let stdin = self.stdin.as_mut().expect("stdin open");
@@ -194,4 +212,70 @@ pub fn once(action: &str, args: Value) -> (Value, String) {
 /// An `afkd_board.Board` reaching `fake` with its key, every field sent as afkd sends a struct.
 pub fn board(fake: &fake::FakeBoard) -> Value {
     json!({"key": fake.key(), "base_url": fake.base_url()})
+}
+
+/// The `hello` afkd writes for a `service(afkd_board)` named `develop` of the afkd process
+/// `owner`, reaching `fake` with its key and claiming from `claim_from`, `extra` settings
+/// beside them, and the plugin's directory `state_dir`.
+pub fn hello(
+    fake: &fake::FakeBoard,
+    state_dir: &std::path::Path,
+    owner: &str,
+    claim_from: Value,
+    extra: Value,
+) -> Value {
+    let mut settings = json!({"key": fake.key(), "base_url": fake.base_url(),
+                              "claim_from": claim_from});
+    for (name, value) in extra.as_object().expect("settings are an object") {
+        settings[name] = value.clone();
+    }
+    json!({"call": "hello", "proto": 2, "kind": "board", "service": "develop",
+           "owner": owner, "state_dir": state_dir, "settings": settings})
+}
+
+/// A child armed by [`hello`], which must be accepted.
+pub fn armed(
+    fake: &fake::FakeBoard,
+    state_dir: &std::path::Path,
+    owner: &str,
+    claim_from: Value,
+    extra: Value,
+) -> Plugin {
+    let mut plugin = Plugin::spawn();
+    let line = plugin.call_raw(hello(fake, state_dir, owner, claim_from, extra));
+    let reply = reply_of(&line, MAX_CALL_LINE);
+    assert_eq!(
+        reply,
+        json!({"ok": true, "proto": 2, "calls": ["release"]}),
+        "{}",
+        plugin.stderr()
+    );
+    plugin
+}
+
+/// A scratch directory, removed on drop: the crate carries no `tempfile`.
+pub struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    pub fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "afkd_board-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).expect("create a scratch dir");
+        Self(dir)
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
