@@ -14,6 +14,7 @@ use serde_json::{json, Map, Value};
 
 use crate::client::{ItemAnswer, LabelAnswer, ListAnswer};
 use crate::reads::{decode, CardFields, CommentFields, READS};
+use crate::settings::{DEFAULT_BASE_URL, SETTINGS};
 use crate::writes::{decode as decode_write, WRITES};
 
 const MANIFEST: &str = include_str!("../afkd-plugin.toml");
@@ -109,8 +110,8 @@ fn the_manifest_names_the_plugin_and_its_finished_binary() {
     }
     assert_eq!(top["proto"], crate::wire::PROTO.to_string());
     assert!(!top.contains_key("build"), "{top:?}");
-    // Every call is a child for that one call, so no kind is declared, and a `hello` is
-    // never answered.
+    // One kind, whose child is armed by a `hello`; every other call is a child for that one
+    // call, which is sent no `hello`.
     let headers: BTreeSet<&str> = tables.iter().map(|(h, _)| h.as_str()).collect();
     assert_eq!(
         headers,
@@ -120,10 +121,118 @@ fn the_manifest_names_the_plugin_and_its_finished_binary() {
             "struct.field",
             "handle",
             "handle.field",
+            "kind",
+            "kind.setting",
+            "kind.slot",
+            "kind.slot.param",
             "action",
             "action.param"
         ])
     );
+}
+
+/// The one `[[kind]]` is the main trigger `service(afkd_board)`, claiming one card per run: it
+/// declares the settings the code reads, key for key and in order, `base_url` defaulting to the
+/// address the client is pointed at, and the five slots afkd runs, each passed the board the
+/// `key` and `base_url` settings build, then the card.
+#[test]
+fn the_kind_is_the_main_claiming_trigger_with_every_setting_typed() {
+    let tables = tables(MANIFEST);
+    let kinds = grouped(&tables, "kind", "kind.setting");
+    let [(kind, settings)] = kinds.as_slice() else {
+        panic!("one kind: {kinds:?}");
+    };
+    let table = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    };
+    let quoted = |text: &str| format!("\"{text}\"");
+    assert_eq!(
+        kind,
+        &table(&[
+            ("name", &quoted(crate::plugin::KIND)),
+            ("role", "\"trigger\""),
+            ("main", "true"),
+            ("claims", "true"),
+        ])
+    );
+    let want: Vec<BTreeMap<String, String>> = SETTINGS
+        .iter()
+        .map(|(name, ty, extra)| {
+            let mut t = table(extra);
+            t.insert("name".into(), quoted(name));
+            t.insert("type".into(), quoted(ty));
+            t
+        })
+        .collect();
+    assert_eq!(settings, &want);
+    let base_url = settings
+        .iter()
+        .find(|s| s["name"] == quoted("base_url"))
+        .expect("base_url is declared");
+    assert_eq!(base_url["default"], quoted(DEFAULT_BASE_URL));
+    let board = structs_field_names("Board");
+    assert_eq!(
+        board,
+        ["key", "base_url"],
+        "the settings that build the board the slots are passed are the struct's own fields"
+    );
+    // `on_run` first and without `when`; each slot passed the run, except `on_claim`, run
+    // before any run exists; the board; the card; and after them the outcome, in that order.
+    let param = |name: &str, ty: &str| table(&[("name", &quoted(name)), ("type", &quoted(ty))]);
+    let slot = |name: &str, when: Option<&str>| {
+        let mut t = table(&[("name", &quoted(name))]);
+        let mut params = Vec::new();
+        if when != Some("pre") {
+            params.push(param("run", "afkd.Run"));
+        }
+        params.push(param("b", "Board"));
+        params.push(param("card", "Card"));
+        if let Some(when) = when {
+            t.insert("when".into(), quoted(when));
+            if when == "post" {
+                params.push(param("outcome", "afkd.Outcome"));
+            }
+        }
+        (t, params)
+    };
+    assert_eq!(
+        grouped(&tables, "kind.slot", "kind.slot.param"),
+        [
+            slot("on_run", None),
+            slot("on_claim", Some("pre")),
+            slot("on_done", Some("post")),
+            slot("on_fail", Some("post")),
+            slot("on_park", Some("post")),
+        ]
+    );
+}
+
+/// The names of the fields the manifest's struct `name` declares, in order.
+fn structs_field_names(name: &str) -> Vec<String> {
+    names_under(&tables(MANIFEST), "struct", "struct.field")[name].clone()
+}
+
+/// A plugin's kinds, actions and handle and struct types share one namespace, and afkd's
+/// install refuses a collision: no name is declared twice across them.
+#[test]
+fn no_kind_action_or_handle_shares_a_name() {
+    let tables = tables(MANIFEST);
+    let mut names: Vec<String> = ["struct", "handle", "kind", "action"]
+        .iter()
+        .flat_map(|header| {
+            tables
+                .iter()
+                .filter(move |(h, _)| h == header)
+                .map(|(_, t)| unquoted(&t["name"]).to_string())
+        })
+        .collect();
+    let all = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), all, "{names:?}");
 }
 
 /// The actions are the reads and then the writes the code answers, in order, each returning

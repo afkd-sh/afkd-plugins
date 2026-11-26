@@ -18,8 +18,9 @@ itself, holding that plugin's own `afkd-plugin.toml` at its root.
 - [`@afkd/telegram`](@afkd/telegram) — messages to a Telegram bot as afkd
   triggers, the calls a config sends, replies, reacts, edits and fetches with, and
   the skill an agent does the same through.
-- [`@afkd/afkd_board`](@afkd/afkd_board) — the cards, comments, lists and labels of a board
-  on app.afkd.sh, read and written through an `afkd_board.Board`.
+- [`@afkd/afkd_board`](@afkd/afkd_board) — the cards of a board on app.afkd.sh as afkd
+  triggers, claimed one per run by the `afkd/claimed` label, the reads and writes a config
+  makes through an `afkd_board.Board`, and the skill an agent works the card through.
 
 Each plugin carries its own README, its own `node --test` suite and its own
 fixtures. A script a plugin is built with but does not ship lives under

@@ -346,6 +346,26 @@ pub(crate) fn spawn_headless_streaming(dir: &Path, args: &[&str]) -> StreamingDa
     }
 }
 
+/// Poll `ready` every 50 ms until it holds, failing with `what` and `dump()` when it does not
+/// within `budget`. Every wait of a leg that holds a daemon to a board goes through this, so
+/// none can hang, and a failure says what the board, the daemons and their logs held.
+pub(crate) fn wait_for(
+    budget: Duration,
+    what: &str,
+    ready: impl Fn() -> bool,
+    dump: impl Fn() -> String,
+) {
+    let deadline = Instant::now() + budget;
+    while !ready() {
+        assert!(
+            Instant::now() < deadline,
+            "{what} within {budget:?}\n{}",
+            dump()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// A loopback server that answers every request `200` with the same body, and **counts** and
 /// records each request that reaches it: the stand-in for the plugin name index on afkd.sh
 /// (ADR-0082 §11) and for the forge's release asset, so a leg can say each was asked once and

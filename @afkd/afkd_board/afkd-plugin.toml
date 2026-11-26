@@ -1,5 +1,5 @@
 name = "@afkd/afkd_board"
-version = "0.3.0"
+version = "0.4.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -176,6 +176,146 @@ name = "Comment"
   name = "url"
   doc = "The link to its card, since a comment has no address of its own"
   type = "str"
+
+# The one kind, `service(afkd_board)` in a config: a board whose cards are claimed one per run.
+# `key` and `base_url` are `Board`'s own fields, and are the `Board` every slot is passed. A card
+# is claimed by the `afkd/claimed` label, which comes off once the card's `on_done`, `on_park` or
+# `on_fail` has run, or at the next start after a crash.
+[[kind]]
+name = "board"
+doc = "A board whose cards are claimed one per run"
+role = "trigger"
+main = true
+claims = true
+
+  [[kind.setting]]
+  name = "key"
+  doc = "One of the board's API keys, made in its Board settings"
+  type = "str"
+  required = true
+
+  [[kind.setting]]
+  name = "base_url"
+  doc = "The board's address, when not the public one"
+  type = "str"
+  default = "https://app.afkd.sh"
+
+  [[kind.setting]]
+  name = "claim_from"
+  doc = "The lists to claim cards from, first one first, each from the top"
+  type = "list[str]"
+  required = true
+
+  [[kind.setting]]
+  name = "only_labels"
+  doc = "Claim only a card that carries every one of these labels"
+  type = "list[str]"
+
+  [[kind.setting]]
+  name = "skip_labels"
+  doc = "Never claim a card carrying any of these labels"
+  type = "list[str]"
+
+  # No default: left out, a card is claimed blocked or not.
+  [[kind.setting]]
+  name = "only_blocked"
+  doc = "False claims only free cards, true only blocked ones, left out either"
+  type = "bool"
+
+  # The slots afkd runs, each passed the board the `key` and `base_url` settings build and its
+  # card, the run first and the run's outcome last where there is one. `on_claim` runs before
+  # there is a run, so it has none.
+  [[kind.slot]]
+  name = "on_run"
+  doc = "Runs for a claimed card, and does the work on it"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "b"
+    type = "Board"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+  [[kind.slot]]
+  name = "on_claim"
+  doc = "Runs once a card is claimed, before the run starts"
+  when = "pre"
+
+    [[kind.slot.param]]
+    name = "b"
+    type = "Board"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+  [[kind.slot]]
+  name = "on_done"
+  doc = "Runs after the run finished the card"
+  when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "b"
+    type = "Board"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
+  name = "on_fail"
+  doc = "Runs after the run failed on the card"
+  when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "b"
+    type = "Board"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
+
+  [[kind.slot]]
+  name = "on_park"
+  doc = "Runs after the run parked the card to wait"
+  when = "post"
+
+    [[kind.slot.param]]
+    name = "run"
+    type = "afkd.Run"
+
+    [[kind.slot.param]]
+    name = "b"
+    type = "Board"
+
+    [[kind.slot.param]]
+    name = "card"
+    type = "Card"
+
+    [[kind.slot.param]]
+    name = "outcome"
+    type = "afkd.Outcome"
 
 # The card of that number, archived or not.
 [[action]]
