@@ -287,15 +287,18 @@ returns = "list[Comment]"
 # The card's checklist: its items in the card's order, none when it has none.
 [[action]]
 name = "checklist"
+doc = "Reads the card's checklist items in the card's order, none when it has none"
 returns = "list[Item]"
 
   [[action.param]]
   name = "b"
+  doc = "The board the card is on"
   type = "Board"
   required = true
 
   [[action.param]]
   name = "card"
+  doc = "The card whose checklist to read"
   type = "Card"
   required = true
 
