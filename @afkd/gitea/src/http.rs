@@ -20,6 +20,7 @@
 //! [`HttpError`]. And a transport failure's reason is built URL-free
 //! ([`transport_reason`]), so no request line ever reaches a diagnostic.
 
+use std::io::Read;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -35,6 +36,9 @@ pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a forge call waits for the response (read/write) before giving up.
 pub(crate) const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The most bytes one downloaded file may hold; a longer body is refused.
+pub(crate) const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Idle longer than this and the pooled sockets are assumed stale: the peer, a NAT or a
 /// tunnel exit may have dropped them without ever sending a FIN. Handed to ureq as its
@@ -265,6 +269,45 @@ impl<E: HttpError> HttpClient<E> {
     /// GET `path` with the credential, returning the body text.
     pub(crate) fn get(&self, stage: &'static str, path: &str) -> Result<String, E> {
         self.send(stage, self.request("GET", path))
+    }
+
+    /// GET the absolute `url` with the credential and return the body's bytes, up to `cap`:
+    /// a longer body is a decode failure, read no further. The request is clipped to the
+    /// call's deadline, and no error carries the url. A redirect never carries the
+    /// credential on to the next hop.
+    pub(crate) fn get_bytes_at(
+        &self,
+        stage: &'static str,
+        url: &str,
+        cap: u64,
+    ) -> Result<Vec<u8>, E> {
+        let req = ForgeRequest::NoBody(
+            self.agent()
+                .get(url)
+                .config()
+                .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
+                .build(),
+        )
+        .header(&self.auth.0, &self.auth.1)
+        .clip(self.request_budget(stage)?);
+        let mut resp = match req.call() {
+            Ok(resp) => resp,
+            Err(ureq::Error::StatusCode(status)) => return Err(E::status(stage, status)),
+            Err(other) => return Err(E::transport(stage, transport_reason(&other))),
+        };
+        let mut body = Vec::new();
+        resp.body_mut()
+            .as_reader()
+            .take(cap.saturating_add(1))
+            .read_to_end(&mut body)
+            .map_err(|e| E::decode(stage, &e.to_string()))?;
+        if body.len() as u64 > cap {
+            return Err(E::decode(
+                stage,
+                &format!("over the {cap} bytes a file may hold"),
+            ));
+        }
+        Ok(body)
     }
 
     /// Execute a built request, mapping ureq's outcome onto an `E` and reading the body.

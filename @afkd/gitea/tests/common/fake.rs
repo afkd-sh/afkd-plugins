@@ -104,6 +104,9 @@ pub struct Asset {
 struct State {
     /// The instance root, which an asset's download URL is under.
     base: String,
+    /// The sub-path the instance is served under (`/gitea`), or empty at the host's root: a
+    /// request outside it is a `404`, and every route is read with it stripped.
+    prefix: String,
     /// The token's own login.
     me: String,
     now: u64,
@@ -143,10 +146,21 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
 impl FakeGitea {
     /// A fake whose token belongs to `me`, listening on `127.0.0.1:0`.
     pub fn start(me: &str) -> Self {
+        Self::start_under(me, "")
+    }
+
+    /// As [`start`](Self::start), served under the sub-path `prefix` (`/gitea`, no trailing
+    /// slash) as an instance behind a reverse proxy is: the instance root, the `/api/v1` and
+    /// every asset's download all hang off it, and a request outside it is a `404`.
+    pub fn start_under(me: &str, prefix: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let base = format!("http://{}", listener.local_addr().expect("local addr"));
+        let base = format!(
+            "http://{}{prefix}",
+            listener.local_addr().expect("local addr")
+        );
         let state = Arc::new(Mutex::new(State {
             base: base.clone(),
+            prefix: prefix.to_string(),
             me: me.to_string(),
             now: EPOCH,
             next_id: 1_000,
@@ -316,6 +330,17 @@ impl FakeGitea {
         };
         s.assets.push(asset.clone());
         asset
+    }
+
+    /// The link Gitea's editor writes into a body or a comment for `asset`: from the host's
+    /// root, under the instance's sub-path when it has one.
+    pub fn link(&self, asset: &Asset) -> String {
+        format!("{}/attachments/{}", lock(&self.state).prefix, asset.uuid)
+    }
+
+    /// The same link written absolute, as an asset's `browser_download_url` is.
+    pub fn absolute_link(&self, asset: &Asset) -> String {
+        format!("{}/attachments/{}", self.base, asset.uuid)
     }
 
     /// Make every request to `route` answer `status`.
@@ -584,13 +609,26 @@ fn serve(stream: TcpStream, state: &Mutex<State>) {
             return;
         }
         s.seen.push(seen);
-        if auth != format!("token {TOKEN}") {
-            json_reply(401, &json!({ "message": "token is required" }))
-        } else if let Some(reply) = download(&s, &method, &path) {
-            reply
+        // The path as the instance reads it, with its sub-path stripped; outside it, none.
+        let routed = if s.prefix.is_empty() {
+            Some(path.clone())
         } else {
-            let (status, reply) = route(&mut s, &method, &path, &body);
-            json_reply(status, &reply)
+            path.strip_prefix(s.prefix.as_str())
+                .filter(|rest| rest.starts_with('/'))
+                .map(str::to_string)
+        };
+        match routed {
+            None => json_reply(404, &json!({ "message": "not under the instance's path" })),
+            Some(_) if auth != format!("token {TOKEN}") => {
+                json_reply(401, &json!({ "message": "token is required" }))
+            }
+            Some(path) => match download(&s, &method, &path) {
+                Some(reply) => reply,
+                None => {
+                    let (status, reply) = route(&mut s, &method, &path, &body);
+                    json_reply(status, &reply)
+                }
+            },
         }
     };
     let reason = match status {

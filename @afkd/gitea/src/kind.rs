@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use crate::client::{GiteaClient, GiteaError, IssueComment};
 use crate::common::{ClaimFault, Clock, Diag};
+use crate::issue::FetchedFile;
 use crate::lifecycle::Vocabulary;
 use crate::outbox::{Delivery, Item, Outbox, Write};
 use crate::wire::{Facts, UnitOutcome, WireUnit};
@@ -19,6 +20,10 @@ use crate::wire::{Facts, UnitOutcome, WireUnit};
 pub(crate) trait ClaimedUnit {
     /// The unit's stable coordinate, `<full-name>#<number>` — the wire unit's `thread`.
     fn thread(&self) -> String;
+
+    /// The claim-journal key the unit is kept under — the wire unit's `key`, and what every
+    /// later call names it by.
+    fn key(&self) -> String;
 
     /// The login the unit was claimed as — the wire unit's `self`.
     fn claimed_as(&self) -> &str;
@@ -55,8 +60,17 @@ pub(crate) trait Units {
         clock: &dyn Clock,
     ) -> Result<Option<Self::Unit>, ClaimFault<GiteaError>>;
 
-    /// The unit as it crosses the wire in a `poll` reply.
-    fn wire_unit(&self, unit: &Self::Unit) -> WireUnit;
+    /// Download the files the unit links into a fresh `dir`, and return what landed. A kind
+    /// that hands over no files — the default — downloads nothing.
+    fn fetch_files(&self, _unit: &Self::Unit, _dir: &Path, _diag: &dyn Diag) -> Vec<FetchedFile> {
+        Vec::new()
+    }
+
+    /// The unit as it crosses the wire in a `poll` reply: the brief with each link to a file
+    /// in `fetched` written as its name — and the files `fetched` holds that the brief does
+    /// not link listed at its end — then each of those files, which afkd copies in from
+    /// where [`fetch_files`](Self::fetch_files) wrote it.
+    fn wire_unit(&self, unit: &Self::Unit, fetched: &[FetchedFile]) -> WireUnit;
 
     /// Release this unit's claim now.
     fn release(&self, unit: &Self::Unit, diag: &dyn Diag);

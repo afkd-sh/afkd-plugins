@@ -19,7 +19,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::http::{HttpClient, HttpError, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT};
+use crate::http::{
+    HttpClient, HttpError, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, MAX_FILE_BYTES,
+};
 use crate::rfc3339::parse_rfc3339;
 
 /// A repository coordinate: the `(owner, name)` pair parsed once from the
@@ -329,6 +331,12 @@ pub(crate) trait GiteaClient {
     /// List a PR's reviews — `GET /repos/{o}/{r}/pulls/{index}/reviews`.
     fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GiteaError>;
 
+    /// Download one attachment's bytes by its uuid —
+    /// `GET <instance root>/attachments/<uuid>`, which sits beside `/api/v1`, not under
+    /// it, and answers with the file as it was uploaded. At most
+    /// [`MAX_FILE_BYTES`](crate::http::MAX_FILE_BYTES).
+    fn download_attachment(&self, uuid: &str) -> Result<Vec<u8>, GiteaError>;
+
     /// Hand over the current call's deadline, which every request until the next
     /// hand-over must finish by — set before a call, cleared with `None` after it. A
     /// client that sends no requests has nothing to bound and ignores it.
@@ -411,6 +419,9 @@ impl<T: GiteaClient> GiteaClient for std::sync::Arc<T> {
     fn list_pull_reviews(&self, repo: &Repo, index: u64) -> Result<Vec<Review>, GiteaError> {
         (**self).list_pull_reviews(repo, index)
     }
+    fn download_attachment(&self, uuid: &str) -> Result<Vec<u8>, GiteaError> {
+        (**self).download_attachment(uuid)
+    }
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         (**self).set_call_deadline(deadline)
     }
@@ -422,21 +433,27 @@ const API_V1: &str = "/api/v1";
 /// A [`GiteaClient`] backed by the Gitea `/api/v1` REST API.
 pub(crate) struct Gitea {
     http: HttpClient<GiteaError>,
+    /// The instance root, trimmed ([`trim_base`]): what `/attachments/<uuid>` hangs off.
+    root: String,
+}
+
+/// The configured `base_url` as the instance root: a trailing slash or stray whitespace
+/// would otherwise ride into every request. A trailing slash doubles the separator on the
+/// wire — `…/gitea/` requests `/gitea//api/v1/…`, a bare host `//api/v1/…` — and
+/// whitespace is worse: the padded string does not parse as a URL at all, so every call
+/// fails at the transport layer until it is trimmed. The spine never trims, so this is
+/// the one place it happens, for the API root and the attachment links alike.
+pub(crate) fn trim_base(base_url: &str) -> &str {
+    base_url.trim().trim_end_matches('/')
 }
 
 impl Gitea {
     /// A client authenticating against `base_url` (the instance root, e.g.
     /// `https://gitea.example.com`) with `token` as `Authorization: token <PAT>`.
     pub(crate) fn new(base_url: &str, token: &str) -> Self {
-        // Normalize the configured base before it becomes the API root: a trailing
-        // slash or stray whitespace would otherwise ride into every request. A
-        // trailing slash doubles the separator on the wire — `…/gitea/` requests
-        // `/gitea//api/v1/…`, a bare host `//api/v1/…` — and whitespace is worse:
-        // the padded string does not parse as a URL at all, so every call fails at
-        // the transport layer until it is trimmed. The spine never trims, so this is
-        // the one place it happens.
-        let base = base_url.trim().trim_end_matches('/');
+        let base = trim_base(base_url);
         Self {
+            root: base.to_string(),
             http: HttpClient::new(
                 format!("{base}{API_V1}"),
                 // Auth rides a header (never a URL query), so the token cannot
@@ -697,6 +714,17 @@ impl GiteaClient for Gitea {
             &format!("/repos/{}/{}/pulls/{index}/reviews", repo.owner, repo.name),
         )?;
         parse_reviews(stage, &body)
+    }
+
+    fn download_attachment(&self, uuid: &str) -> Result<Vec<u8>, GiteaError> {
+        let stage = "download attachment";
+        // GET <instance root>/attachments/{uuid} → the file's bytes. Not under /api/v1:
+        // it is the web route every upload's link points at, and it takes the same token.
+        self.http.get_bytes_at(
+            stage,
+            &format!("{}/attachments/{uuid}", self.root),
+            MAX_FILE_BYTES,
+        )
     }
 
     fn set_call_deadline(&self, deadline: Option<Instant>) {
@@ -1039,6 +1067,8 @@ mod mock {
         /// Every call deadline the client was handed, in order. Recorded only: the mock's
         /// requests stay instant.
         call_deadlines: Mutex<Vec<Option<Instant>>>,
+        /// The attachments a download answers with, by uuid; any other uuid is a 404.
+        attachments: Mutex<HashMap<String, Vec<u8>>>,
     }
 
     /// The id/timestamp base a `post_comment` mints from: far above the small ids and
@@ -1051,6 +1081,11 @@ mod mock {
             let c = Self::default();
             *lock(&c.me) = me.to_string();
             c
+        }
+
+        /// Seed an attachment: a download of `uuid` answers with `bytes`.
+        pub(crate) fn seed_attachment(&self, uuid: &str, bytes: &[u8]) {
+            lock(&self.attachments).insert(uuid.to_string(), bytes.to_vec());
         }
 
         /// Seed an org's repository list.
@@ -1625,6 +1660,17 @@ mod mock {
         fn list_pull_reviews(&self, _repo: &Repo, index: u64) -> Result<Vec<Review>, GiteaError> {
             self.guard("list reviews")?;
             Ok(lock(&self.reviews).get(&index).cloned().unwrap_or_default())
+        }
+
+        fn download_attachment(&self, uuid: &str) -> Result<Vec<u8>, GiteaError> {
+            self.guard("download attachment")?;
+            lock(&self.attachments)
+                .get(uuid)
+                .cloned()
+                .ok_or(GiteaError::Status {
+                    stage: "download attachment",
+                    status: 404,
+                })
         }
 
         fn set_call_deadline(&self, deadline: Option<Instant>) {
@@ -2310,7 +2356,13 @@ mod http_tests {
 
     impl Stub {
         fn serve(response: impl Into<String>) -> Self {
-            let response = response.into();
+            Self::serve_bytes(response.into().into_bytes())
+        }
+
+        /// As [`serve`](Self::serve), the reply being raw bytes — a file's, which need
+        /// not be text. A client that stops reading early (the size cap) is not an
+        /// error of the stub's.
+        fn serve_bytes(response: Vec<u8>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
             let port = listener.local_addr().unwrap().port();
             let (tx, rx) = mpsc::channel();
@@ -2341,7 +2393,7 @@ mod http_tests {
                 if content_length > 0 {
                     reader.read_exact(&mut body).expect("read body");
                 }
-                stream.write_all(response.as_bytes()).expect("write reply");
+                stream.write_all(&response).ok();
                 stream.flush().ok();
                 tx.send(Captured {
                     method,
@@ -2437,6 +2489,94 @@ mod http_tests {
             .current_user()
             .unwrap();
         assert_eq!(stub.captured().path(), "/api/v1/user");
+    }
+
+    /// A `200` reply to a file's GET: `body` as it is, whatever bytes it holds.
+    fn file_reply(body: &[u8]) -> Vec<u8> {
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        reply.extend_from_slice(body);
+        reply
+    }
+
+    const UUID: &str = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+
+    /// An attachment arrives byte for byte — NUL, CR LF and bytes that are no UTF-8
+    /// included — from `<root>/attachments/<uuid>`, which is outside `/api/v1`, and the
+    /// token rides its request as it rides every other.
+    #[test]
+    fn download_attachment_returns_the_bytes_exactly_with_the_token() {
+        let bytes = b"\x89PNG\r\n\x1a\n\0\xff\xfe\r\n\0 tail\xc3\x28";
+        let stub = Stub::serve_bytes(file_reply(bytes));
+        let got = stub.client("SECRET").download_attachment(UUID).unwrap();
+        assert_eq!(got, bytes);
+        let req = stub.captured();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path(), format!("/attachments/{UUID}"));
+        assert_eq!(req.header("authorization").as_deref(), Some("token SECRET"));
+    }
+
+    /// An instance under a sub-path serves its attachments under it too, and a trailing
+    /// slash on the configured base does not double the separator.
+    #[test]
+    fn download_attachment_under_a_sub_path_base() {
+        let stub = Stub::serve_bytes(file_reply(b"x"));
+        let got = Gitea::new(&format!("{}/gitea/", stub.base), "t")
+            .download_attachment(UUID)
+            .unwrap();
+        assert_eq!(got, b"x");
+        assert_eq!(stub.captured().path(), format!("/gitea/attachments/{UUID}"));
+    }
+
+    /// A status that is not a success is a status error, carrying no url.
+    #[test]
+    fn download_attachment_404_is_a_status_error() {
+        let stub = Stub::serve("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        let err = stub.client("t").download_attachment(UUID).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GiteaError::Status {
+                    stage: "download attachment",
+                    status: 404
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains("127.0.0.1"), "{err}");
+    }
+
+    /// A body over [`MAX_FILE_BYTES`] is refused, one at the cap is taken.
+    #[test]
+    fn download_attachment_refuses_a_body_over_the_cap() {
+        let over = vec![7u8; MAX_FILE_BYTES as usize + 1];
+        let stub = Stub::serve_bytes(file_reply(&over));
+        let err = stub.client("t").download_attachment(UUID).unwrap_err();
+        assert!(matches!(err, GiteaError::Decode { .. }), "{err:?}");
+        assert!(!err.to_string().contains("127.0.0.1"), "{err}");
+        stub.captured();
+
+        let at = vec![7u8; MAX_FILE_BYTES as usize];
+        let stub = Stub::serve_bytes(file_reply(&at));
+        assert_eq!(stub.client("t").download_attachment(UUID).unwrap(), at);
+        stub.captured();
+    }
+
+    /// A transport failure names no url either.
+    #[test]
+    fn download_attachment_transport_error_names_no_url() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let err = Gitea::new(&format!("http://127.0.0.1:{port}"), "t")
+            .download_attachment(UUID)
+            .unwrap_err();
+        assert!(matches!(err, GiteaError::Transport { .. }), "{err:?}");
+        assert!(!err.to_string().contains(UUID), "{err}");
     }
 
     #[test]
