@@ -4108,11 +4108,12 @@ const STOPPED_MARK: &str = "\u{25AB}";
 /// Every variation-selector glyph afkd top's source (`crates/tui/src`) or web_top's
 /// (`@afkd/web_top/*.mjs`) spells, by name — the set
 /// `every_variation_selector_glyph_measures_alike_in_afkd_top_and_web_top` checks.
-const VARIATION_GLYPHS: [&str; 14] = [
+const VARIATION_GLYPHS: [&str; 15] = [
     "\u{21BB}\u{FE0E}",
     "\u{2225}\u{FE0E}",
     "\u{2298}\u{FE0E}",
     "\u{22EF}\u{FE0E}",
+    "\u{23CF}\u{FE0E}",
     "\u{23F1}\u{FE0E}",
     "\u{25AA}\u{FE0F}",
     "\u{2605}\u{FE0F}",

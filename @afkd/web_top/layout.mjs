@@ -2955,6 +2955,7 @@ export const KIND_GLYPH = {
   worktree: "🌿",
   queue: "🚦",
   queue_wait: "⏳",
+  unqueue: "⏏︎",
   guard: "⊘︎",
   parallel: "∥︎",
   repeat: "🌀",
