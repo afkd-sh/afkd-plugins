@@ -1,5 +1,5 @@
 name = "@afkd/afkd_board"
-version = "0.2.0"
+version = "0.3.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
