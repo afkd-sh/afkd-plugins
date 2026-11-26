@@ -213,9 +213,10 @@ fn the_unit_is_the_card_handle_with_its_env_and_brief() {
                "AFKD_BOARD_AUTHORIZATION": format!("Bearer {KEY}"),
                "AFKD_BOARD_RUN": "{\"service\":\"develop\"}"})
     );
-    assert!(
-        unit.get("args").is_none(),
-        "afkd builds the board from the settings"
+    assert_eq!(
+        unit["args"],
+        json!({"b": {"key": KEY, "base_url": fake.base_url()}}),
+        "every slot is passed the board the settings make, as a call's b"
     );
     assert_eq!(unit["files"][0]["path"], "task/README.md");
     let brief = unit["files"][0]["text"].as_str().unwrap();

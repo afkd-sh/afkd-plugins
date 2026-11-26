@@ -22,7 +22,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::board::{parse_key, Board};
 use crate::claim::{
@@ -323,6 +323,7 @@ impl Service {
             id: handle.id,
             key: handle.key.clone(),
             fields: handle.fields,
+            args: self.slot_args(),
             thread: handle.key.clone(),
             seen: Vec::new(),
             me: self.id.owner.clone(),
@@ -378,6 +379,17 @@ impl Service {
                 "poll: could not take {CLAIMED_LABEL} back off #{number}: {e}"
             ));
         }
+    }
+
+    /// The arguments afkd passes every slot beside the card: `b`, the `afkd_board.Board` the
+    /// `key` and `base_url` settings make, as a `call`'s `args` carry one.
+    fn slot_args(&self) -> Map<String, Value> {
+        let mut args = Map::new();
+        args.insert(
+            "b".to_string(),
+            json!({ "key": self.cfg.key, "base_url": self.cfg.base_url }),
+        );
+        args
     }
 
     /// The env a run carries: the board's address, the `Authorization` value, and what the

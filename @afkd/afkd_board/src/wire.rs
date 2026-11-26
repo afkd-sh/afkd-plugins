@@ -75,6 +75,9 @@ pub(crate) struct WireUnit {
     pub(crate) key: String,
     /// The card handle's fields, every one the manifest's `Card` declares.
     pub(crate) fields: CardFields,
+    /// The arguments every slot is passed beside the card: `b`, the `afkd_board.Board` built from
+    /// the service's `key` and `base_url` settings, shaped as a `call`'s `args` carry it.
+    pub(crate) args: Map<String, Value>,
     pub(crate) thread: String,
     pub(crate) seen: Vec<String>,
     #[serde(rename = "self")]
@@ -278,6 +281,24 @@ mod tests {
         }
     }
 
+    fn board_args() -> Map<String, Value> {
+        let Value::Object(args) = json!({"b": {"key": "k", "base_url": "http://x"}}) else {
+            unreachable!()
+        };
+        args
+    }
+
+    /// A fired unit carries `args.b`, the board, which afkd refuses a unit without.
+    #[test]
+    fn a_fired_unit_carries_the_board_in_its_args() {
+        let line = fire_line(&unit_with("D", "brief"));
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            reply["unit"]["args"],
+            json!({"b": {"key": "k", "base_url": "http://x"}})
+        );
+    }
+
     /// A unit as the plugin hands one over, the card's description `description` beside the
     /// brief `text`.
     fn unit_with(description: &str, text: &str) -> WireUnit {
@@ -285,6 +306,7 @@ mod tests {
             id: "12".into(),
             key: "afkd_board:b-1/c-12".into(),
             fields: fields(description),
+            args: board_args(),
             thread: "afkd_board:b-1/c-12".into(),
             seen: vec![],
             me: "afkd-4242".into(),
