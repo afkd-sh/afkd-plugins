@@ -1,5 +1,5 @@
 name = "@afkd/afkd_board"
-version = "0.2.0"
+version = "0.3.0"
 proto = 2
 shape = "provider"
 source = "https://github.com/afkd-sh/afkd-plugins"
@@ -22,7 +22,7 @@ name = "Board"
   type = "str"
   default = "https://app.afkd.sh"
 
-# One item of a card's checklist.
+# One item of a card's checklist, read with `checklist`.
 [[struct]]
 name = "Item"
 
@@ -281,6 +281,24 @@ returns = "list[Comment]"
   [[action.param]]
   name = "card"
   doc = "The card whose comments to read"
+  type = "Card"
+  required = true
+
+# The card's checklist: its items in the card's order, none when it has none.
+[[action]]
+name = "checklist"
+doc = "Reads the card's checklist items in the card's order, none when it has none"
+returns = "list[Item]"
+
+  [[action.param]]
+  name = "b"
+  doc = "The board the card is on"
+  type = "Board"
+  required = true
+
+  [[action.param]]
+  name = "card"
+  doc = "The card whose checklist to read"
   type = "Card"
   required = true
 

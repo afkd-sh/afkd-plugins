@@ -68,4 +68,12 @@ fn every_read_answers_against_a_live_board() {
         assert!(key.starts_with(&format!("afkd_board:{board}/")), "{key}");
         assert_eq!(comment["fields"]["url"], first["fields"]["url"]);
     }
+
+    let (checklist, _) = once("checklist", json!({"b": b, "card": first}));
+    for item in ok(&checklist, "value").as_array().expect("a checklist") {
+        assert!(
+            item["text"].is_string() && item["done"].is_boolean(),
+            "{item}"
+        );
+    }
 }

@@ -304,6 +304,14 @@ impl FakeBoard {
         id
     }
 
+    /// Delete the card `number` and its comments: the API then answers it `404`.
+    pub fn delete(&self, number: i64) {
+        let mut s = lock(&self.store);
+        s.card(number);
+        s.cards.retain(|c| c.number != number);
+        s.comments.retain(|m| m.card != number);
+    }
+
     /// Delete the account of the person `name`: their comments then name nobody.
     pub fn delete_account(&self, name: &str) {
         let mut s = lock(&self.store);
@@ -419,7 +427,12 @@ impl Store {
 
     /// Whether `card` is blocked: one of the cards it is blocked by is not done.
     fn blocked(&self, card: &Card) -> bool {
-        card.new.blocked_by.iter().any(|n| !self.card(*n).new.done)
+        card.new.blocked_by.iter().any(|n| {
+            self.cards
+                .iter()
+                .find(|c| c.number == *n)
+                .is_some_and(|c| !c.new.done)
+        })
     }
 
     fn card_answer(&self, card: &Card) -> Value {

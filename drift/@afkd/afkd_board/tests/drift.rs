@@ -16,8 +16,9 @@
 //!   checklist and a comment, the run `nil` and left out as well.
 //! - The **reads** leg runs an interval service by hand whose run reads two boards through
 //!   children afkd starts for each call: the lists, the labels and the cards of one, the cards
-//!   of the other, one card read twice and `==` itself, its comments, and the refusal of that
-//!   card passed with the other board, naming both.
+//!   of the other, one card read twice and `==` itself, its comments, its checklist (the first
+//!   item's text by index, then each item's text and whether it is done), and the refusal of
+//!   that card passed with the other board, naming both.
 //! - The **writes** leg runs an interval service by hand whose run echoes its own `machine`,
 //!   `service`, `instance` and `id`, makes a card with `run=run` and comments on a card with no
 //!   run: the board's fake recorded the card's body `run` as exactly the echoed four fields, and
@@ -403,6 +404,17 @@ nightly :: service(interval) {
             }
             .err(e) => fail("afkd_board.comments: #{e.message}")
           }
+          match afkd_board.checklist(TRAIN, card) {
+            .ok(items) => {
+              for item in items {
+                $ echo #{item.text}
+                if item.done {
+                  $ echo done
+                }
+              }
+            }
+            .err(e) => fail("afkd_board.checklist: #{e.message}")
+          }
         }
       }
       .err(e) => fail("afkd_board.cards: #{e.message}")
@@ -542,6 +554,11 @@ const OPS_KEY: &str = "afk_board_ops-0123456789";
 /// The title of the first board's first card: wide CJK, an emoji and quotes.
 const TITLE: &str = "修复 the \"retry\" storm 🚨";
 
+/// The two items of the first board's first card's checklist, the first done: wide CJK and an
+/// emoji, then plain text.
+const FIRST_ITEM: &str = "复现 the storm 🚨";
+const SECOND_ITEM: &str = "Bound the backoff";
+
 /// The reads leg's service: an interval service whose run reads the two boards at
 /// `train` and `ops` through an `afkd_board.Board` each, writing what it read to [`READS`] under
 /// `home`, and `end` last.
@@ -613,6 +630,18 @@ nightly :: service(interval) {{
         }}
       }}
       .err(e) => fail("afkd_board.comments: #{{e.message}}")
+    }}
+    match afkd_board.checklist(TRAIN, lead) {{
+      .ok(items) => {{
+        $ echo first #{{items[0].text}} >> {READS}
+        for item in items {{
+          $ echo item #{{item.text}} >> {READS}
+          if item.done {{
+            $ echo done #{{item.text}} >> {READS}
+          }}
+        }}
+      }}
+      .err(e) => fail("afkd_board.checklist: #{{e.message}}")
     }}
     match afkd_board.comments(OPS, lead) {{
       .ok(comments) => fail("afkd_board.comments read a card of TRAIN through OPS")
@@ -700,6 +729,10 @@ fn reads_leg_two_boards_through_a_child_per_call() {
     );
     train.card(NewCard {
         labels: vec!["bug".to_string()],
+        checklist: vec![
+            (FIRST_ITEM.to_string(), true),
+            (SECOND_ITEM.to_string(), false),
+        ],
         description: "The client retries forever.\n\n```rust\nlet backoff = 0;\n```".to_string(),
         ..NewCard::new("Todo", TITLE)
     });
@@ -765,6 +798,7 @@ fn reads_leg_two_boards_through_a_child_per_call() {
              card 1 {TITLE} Todo\ncard 2 Cut the tag In progress\nops 1 Rotate the 🔑 keys\n\
              key afkd_board:{}/{}\nsame\ncomment Ed - 看起来不对 🚨 — it resets\n\
              comment key develop-0-42 Backoff capped at 30s\n\
+             first {FIRST_ITEM}\nitem {FIRST_ITEM}\ndone {FIRST_ITEM}\nitem {SECOND_ITEM}\n\
              refused comments: card is #1 of board {}, and the afkd_board.Board reaches board {}\n\
              all 1\nall 4\nall 2\nall 3\nend\n",
             train.board_id(),

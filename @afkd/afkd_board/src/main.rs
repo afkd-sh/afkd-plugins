@@ -7,7 +7,8 @@
 //! afkd streams into the service log under `[@afkd/afkd_board:err]`.
 //!
 //! The reads a config makes of a board on app.afkd.sh — one card by its number, the cards a
-//! set of filters keeps, a card's comments, and the board's lists and labels — are
+//! set of filters keeps, a card's comments and its checklist, and the board's lists and
+//! labels — are
 //! [`reads`]'s. Each reaches the board only through the `afkd_board.Board` it is passed
 //! ([`board`]), by its API key under its `base_url`, over the board's HTTP API ([`client`]).
 //!

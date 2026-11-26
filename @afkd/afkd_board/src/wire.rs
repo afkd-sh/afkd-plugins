@@ -183,8 +183,8 @@ mod tests {
         )));
         assert_eq!(
             unknown["error"],
-            "no action `block_card`; @afkd/afkd_board has card, cards, comments, lists, labels, \
-             create_card, update_card, move_card, add_label, remove_label, add_item, check_item, \
+            "no action `block_card`; @afkd/afkd_board has card, cards, comments, checklist, lists, \
+             labels, create_card, update_card, move_card, add_label, remove_label, add_item, check_item, \
              remove_item, mark_done, add_blocked_by, remove_blocked_by, create_comment, \
              archive_card, unarchive_card, delete_card, create_list, update_list and delete_list"
         );
