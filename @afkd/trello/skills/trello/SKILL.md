@@ -315,6 +315,11 @@ each list top to bottom. The filters, each a flag:
 
 ## Attachments
 
+The files the card holds — its uploads, and the Trello files its description and comments link
+— are already in `task/`, and `task/README.md` links each by its relative name. A Trello url
+still in the brief is a file that could not be downloaded when the run was claimed: fetch it
+with `download_attachment.py`, below.
+
 A screenshot a human "pasted into a comment" is stored by Trello as a **card attachment**, not
 as comment text — so `comments.py` will not show it. To see it, list the card's attachments,
 oldest first, each one's `name`, `bytes`, `mime_type` and `url`, and whether it is a file Trello

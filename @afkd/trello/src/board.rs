@@ -113,6 +113,25 @@ pub(crate) struct Comment {
     pub(crate) renewed_at: SystemTime,
 }
 
+/// An attachment of a card: a file Trello holds (an upload) or a link, as a read of the card's
+/// attachments gives it. The kind downloads the uploads, and the files its text links, into
+/// the task folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Attachment {
+    /// The attachment's stable identity on the card.
+    pub(crate) id: String,
+    /// Its name: the file name of an upload, the title of a link.
+    pub(crate) name: String,
+    /// Where it is: Trello's download url of an upload, the target of a link.
+    pub(crate) url: String,
+    /// Whether Trello holds the file, rather than the card linking to somewhere else.
+    pub(crate) is_upload: bool,
+    /// The file's size in bytes, when Trello said.
+    pub(crate) bytes: Option<u64>,
+    /// When it was attached, as the board reports it.
+    pub(crate) posted_at: SystemTime,
+}
+
 /// A failure reaching the board, tagged with the stage it struck so a swallowed
 /// poll error logs *where* it happened. Each variant renders the built-in's own
 /// message, byte for byte.
@@ -303,6 +322,19 @@ pub(crate) trait BoardClient {
     /// intake gate does, once for each member it names.
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError>;
 
+    /// The attachments of card `card_id`, oldest first.
+    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError>;
+
+    /// The bytes of the file at `url`, at most 10 MiB: an attachment's own `url`, or a link a
+    /// description or comment holds to a file Trello serves. Refused for a url the plugin
+    /// sends no credential to.
+    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError>;
+
+    /// Whether `url` is a file this board serves: a Trello download link of an attachment of
+    /// a card, at the origin the plugin sends its credential to. What tells a link to a card's
+    /// file from a link to anywhere else.
+    fn is_trello_file(&self, url: &str) -> bool;
+
     /// Hand over the current call's deadline, which every request until the next hand-over
     /// must finish by — set before a call, cleared with `None` after it. A board that
     /// sends no requests has nothing to bound and ignores it.
@@ -364,6 +396,15 @@ impl<T: BoardClient + ?Sized> BoardClient for std::sync::Arc<T> {
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError> {
         (**self).resolve_member(board_id, member)
     }
+    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
+        (**self).card_attachments(card_id)
+    }
+    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
+        (**self).download_attachment(url)
+    }
+    fn is_trello_file(&self, url: &str) -> bool {
+        (**self).is_trello_file(url)
+    }
     fn set_call_deadline(&self, deadline: Option<Instant>) {
         (**self).set_call_deadline(deadline)
     }
@@ -372,7 +413,7 @@ impl<T: BoardClient + ?Sized> BoardClient for std::sync::Arc<T> {
 #[cfg(test)]
 pub(crate) use mock::SELF_ID;
 #[cfg(test)]
-pub(crate) use mock::{Action, MockBoard};
+pub(crate) use mock::{mock_file_url, Action, MockBoard};
 
 #[cfg(test)]
 mod mock {
@@ -429,6 +470,8 @@ mod mock {
         created_action: SystemTime,
         /// The card's number on the board, in the order the cards were added.
         number: i64,
+        /// The card's attachments with the bytes of each upload, in the order seeded.
+        attachments: Vec<(Attachment, Vec<u8>)>,
     }
 
     /// Hand-written (not derived) so both creation times default to the epoch:
@@ -450,6 +493,7 @@ mod mock {
                 created_at: Some(UNIX_EPOCH),
                 created_action: UNIX_EPOCH,
                 number: 0,
+                attachments: Vec::new(),
             }
         }
     }
@@ -547,6 +591,16 @@ mod mock {
     /// The address a mock card reports, as Trello's default card fields carry one.
     pub(crate) fn card_url(id: &str) -> String {
         format!("https://trello.com/c/{id}")
+    }
+
+    /// The origin the mock board serves its files from: what its [`is_trello_file`] takes.
+    ///
+    /// [`is_trello_file`]: BoardClient::is_trello_file
+    pub(crate) const MOCK_FILES: &str = "https://mock.trello.test/";
+
+    /// The download url of the upload `id` named `name` on the mock card `card`.
+    pub(crate) fn mock_file_url(card: &str, id: &str, name: &str) -> String {
+        format!("{MOCK_FILES}1/cards/{card}/attachments/{id}/download/{name}")
     }
 
     impl MockBoard {
@@ -772,6 +826,88 @@ mod mock {
             {
                 comment.renewed_at = UNIX_EPOCH + Duration::from_secs(renewed_secs);
             }
+        }
+
+        /// Seed an upload `id` named `name` on a card, attached `secs` after the epoch, whose
+        /// bytes are `bytes`: served at [`mock_file_url`]. Returns that url, which a text
+        /// can link.
+        pub(crate) fn seed_upload(
+            &self,
+            card: &str,
+            id: &str,
+            name: &str,
+            bytes: &[u8],
+            secs: u64,
+        ) -> String {
+            let url = mock_file_url(card, id, name);
+            lock(&self.cards)
+                .get_mut(card)
+                .expect("card exists")
+                .attachments
+                .push((
+                    Attachment {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        url: url.clone(),
+                        is_upload: true,
+                        bytes: Some(bytes.len() as u64),
+                        posted_at: UNIX_EPOCH + Duration::from_secs(secs),
+                    },
+                    bytes.to_vec(),
+                ));
+            url
+        }
+
+        /// Seed an upload that claims to be `size` bytes, whatever its bytes are: the card's
+        /// attachment list is what names the size, so a test can put one over the cap
+        /// without holding the bytes.
+        pub(crate) fn seed_upload_sized(
+            &self,
+            card: &str,
+            id: &str,
+            name: &str,
+            bytes: &[u8],
+            size: u64,
+            secs: u64,
+        ) -> String {
+            let url = self.seed_upload(card, id, name, bytes, secs);
+            if let Some((attachment, _)) = lock(&self.cards)
+                .get_mut(card)
+                .expect("card exists")
+                .attachments
+                .iter_mut()
+                .find(|(a, _)| a.id == id)
+            {
+                attachment.bytes = Some(size);
+            }
+            url
+        }
+
+        /// Seed a link attachment `id` on a card, pointing at `url`, attached `secs` after
+        /// the epoch: no file Trello holds.
+        pub(crate) fn seed_link_attachment(
+            &self,
+            card: &str,
+            id: &str,
+            name: &str,
+            url: &str,
+            secs: u64,
+        ) {
+            lock(&self.cards)
+                .get_mut(card)
+                .expect("card exists")
+                .attachments
+                .push((
+                    Attachment {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        url: url.to_string(),
+                        is_upload: false,
+                        bytes: None,
+                        posted_at: UNIX_EPOCH + Duration::from_secs(secs),
+                    },
+                    Vec::new(),
+                ));
         }
 
         /// Put a card at the top of list `list`, wherever it was, as a slot's
@@ -1218,9 +1354,115 @@ mod mock {
             }
         }
 
+        fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
+            self.guard("read attachments")?;
+            let mut found: Vec<Attachment> = lock(&self.cards)
+                .get(card_id)
+                .map(|c| c.attachments.iter().map(|(a, _)| a.clone()).collect())
+                .unwrap_or_default();
+            found.sort_by(|a, b| (a.posted_at, &a.id).cmp(&(b.posted_at, &b.id)));
+            Ok(found)
+        }
+
+        fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
+            self.guard("download attachment")?;
+            if !self.is_trello_file(url) {
+                return Err(BoardError::Refused {
+                    stage: "download attachment",
+                    reason: format!("{url} is hosted where the plugin sends no credentials"),
+                });
+            }
+            lock(&self.cards)
+                .values()
+                .flat_map(|c| c.attachments.iter())
+                .find(|(a, _)| a.url == url)
+                .map(|(_, bytes)| bytes.clone())
+                .ok_or(BoardError::Status {
+                    stage: "download attachment",
+                    status: 404,
+                })
+        }
+
+        fn is_trello_file(&self, url: &str) -> bool {
+            url.starts_with(MOCK_FILES)
+        }
+
         fn set_call_deadline(&self, deadline: Option<Instant>) {
             lock(&self.call_deadlines).push(deadline);
         }
+    }
+
+    #[test]
+    fn attachments_are_read_oldest_first_with_their_upload_flag() {
+        let board = MockBoard::new();
+        board.add_list("src");
+        board.add_card("src", "c1", "one", "");
+        board.add_card("src", "c2", "two", "");
+        let late = board.seed_upload("c1", "b", "late.pdf", b"%PDF", 300);
+        board.seed_link_attachment("c1", "z", "docs", "https://example.com/docs", 200);
+        let early = board.seed_upload("c1", "a", "early.png", b"\x89PNG", 100);
+        board.seed_upload("c2", "x", "other.txt", b"x", 50);
+
+        let read = board.card_attachments("c1").unwrap();
+        assert_eq!(
+            read.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["a", "z", "b"],
+            "oldest first, an upload and a link alike"
+        );
+        assert_eq!(read[0].url, early);
+        assert_eq!(read[2].url, late);
+        assert_eq!(
+            read.iter().map(|a| a.is_upload).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        assert_eq!(read[0].bytes, Some(4));
+        assert_eq!(read[1].bytes, None);
+        assert!(board.card_attachments("none").unwrap().is_empty());
+        assert_eq!(board.calls(), ["read attachments", "read attachments"]);
+    }
+
+    #[test]
+    fn an_upload_downloads_byte_for_byte_and_nothing_else_does() {
+        let board = MockBoard::new();
+        board.add_list("src");
+        board.add_card("src", "c1", "one", "");
+        let bytes = b"\x89PNG\r\n\x1a\n\0\xff\xfe--end";
+        let url = board.seed_upload("c1", "a", "shot.png", bytes, 100);
+        board.seed_link_attachment("c1", "l", "docs", "https://example.com/docs", 200);
+
+        assert!(board.is_trello_file(&url));
+        assert!(!board.is_trello_file("https://example.com/docs"));
+        assert_eq!(board.download_attachment(&url).unwrap(), bytes);
+        assert!(matches!(
+            board.download_attachment("https://example.com/docs"),
+            Err(BoardError::Refused { .. })
+        ));
+        assert!(matches!(
+            board.download_attachment(&mock_file_url("c1", "gone", "gone.png")),
+            Err(BoardError::Status { status: 404, .. })
+        ));
+    }
+
+    #[test]
+    fn the_attachment_stages_fail_on_demand() {
+        let board = MockBoard::new();
+        board.add_list("src");
+        board.add_card("src", "c1", "one", "");
+        let url = board.seed_upload("c1", "a", "shot.png", b"x", 100);
+
+        board.fail("read attachments");
+        let err = board.card_attachments("c1").unwrap_err();
+        assert_eq!(err.stage(), "read attachments");
+        assert!(board.download_attachment(&url).is_ok(), "only that stage");
+        board.clear_failure();
+
+        board.fail_status("download attachment", 503);
+        let err = board.download_attachment(&url).unwrap_err();
+        assert_eq!(err.stage(), "download attachment");
+        assert!(matches!(err, BoardError::Status { status: 503, .. }));
+        assert!(board.card_attachments("c1").is_ok(), "only that stage");
+        board.clear_failure();
+        assert_eq!(board.download_attachment(&url).unwrap(), b"x");
     }
 
     #[test]

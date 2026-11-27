@@ -160,11 +160,42 @@ pub(crate) struct WireHandle<F> {
     pub(crate) fields: F,
 }
 
-/// One file of the attempt's scratch layout, as data: afkd writes it.
+/// One file of the attempt's task folder, as data: afkd writes it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct WireFile {
+    /// Where it lands, under `task/`.
     pub(crate) path: String,
-    pub(crate) text: String,
+    #[serde(flatten)]
+    pub(crate) source: FileSource,
+}
+
+/// Where afkd gets a file's bytes: the text the reply carries, or a file on this machine it
+/// copies in byte for byte on each attempt.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FileSource {
+    /// Inline text.
+    Text(String),
+    /// The absolute path of a file to copy.
+    From(String),
+}
+
+impl WireFile {
+    /// A file at `path` holding `text`.
+    pub(crate) fn text(path: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            source: FileSource::Text(text.into()),
+        }
+    }
+
+    /// A file at `path` that afkd copies from the absolute path `from`.
+    pub(crate) fn from_path(path: impl Into<String>, from: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            source: FileSource::From(from.into()),
+        }
+    }
 }
 
 /// One comment in a `comments` reply.
@@ -278,10 +309,13 @@ pub(crate) fn fit_poll(unit: &WireUnit) -> Option<Fitted> {
         }
     }
     let brief = unit.files.iter().position(|f| f.path == crate::TASK_FILE)?;
-    let text = unit.files[brief].text.clone();
+    let FileSource::Text(text) = &unit.files[brief].source else {
+        return None;
+    };
+    let text = text.clone();
     let with_brief = |n: usize| {
         let mut cut = unit.clone();
-        cut.files[brief].text = cut_text(&text, n, "brief");
+        cut.files[brief].source = FileSource::Text(cut_text(&text, n, "brief"));
         fire_line(&cut)
     };
     let n = longest_fitting(&text, with_brief)?;
@@ -365,10 +399,7 @@ mod tests {
                     "base_url": "https://api.trello.com/1",
                 }),
             )]),
-            files: vec![WireFile {
-                path: crate::TASK_FILE.into(),
-                text: text.into(),
-            }],
+            files: vec![WireFile::text(crate::TASK_FILE, text)],
         }
     }
 
@@ -532,6 +563,42 @@ mod tests {
             Request::Hello { state_dir: Some(dir), .. }
                 if dir == "/home/you/.local/state/afkd/plugin-state/@afkd/trello 監視"
         ));
+    }
+
+    /// A file serializes as its path and exactly one source: `text` for inline text, `from`
+    /// for a file afkd copies in.
+    #[test]
+    fn a_file_serializes_with_one_source() {
+        assert_eq!(
+            serde_json::to_value(WireFile::text("task/README.md", "# 修复")).unwrap(),
+            serde_json::json!({"path": "task/README.md", "text": "# 修复"})
+        );
+        assert_eq!(
+            serde_json::to_value(WireFile::from_path(
+                "task/shot.png",
+                "/state/task-files/k/shot.png"
+            ))
+            .unwrap(),
+            serde_json::json!({"path": "task/shot.png", "from": "/state/task-files/k/shot.png"})
+        );
+    }
+
+    /// A `from` entry beside an oversized brief is left as it is when the brief is cut.
+    #[test]
+    fn a_from_entry_is_left_alone_when_the_brief_is_cut() {
+        let mut u = unit(&"看起来不对 🚨 — ".repeat(8_000));
+        u.files.push(WireFile::from_path(
+            "task/shot.png",
+            "/state/task-files/k/shot.png",
+        ));
+        let fitted = fit_poll(&u).expect("the cut fits");
+        assert!(fitted.brief_cut);
+        let reply: serde_json::Value = serde_json::from_str(&fitted.line).unwrap();
+        assert_eq!(
+            reply["unit"]["files"][1],
+            serde_json::json!({"path": "task/shot.png", "from": "/state/task-files/k/shot.png"})
+        );
+        assert!(reply["unit"]["files"][0]["text"].is_string());
     }
 
     #[test]

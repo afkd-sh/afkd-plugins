@@ -39,7 +39,8 @@ afkd downloads the release built for this host's platform — `x86_64-linux` or
 is: the manifest, the `afkd-trello` binary, its `skills/` and the `LICENSE-MIT` and
 `LICENSE-APACHE` texts, nothing else. Nothing is compiled on your host, and no Rust
 toolchain is needed there. Installing by name needs **afkd 0.2.714 or newer**, the first
-whose unit brief is the folder `task/`, where this plugin's `task/README.md` is framed;
+whose unit brief is the folder `task/`, where this plugin's `task/README.md` is framed and
+its files are copied in from a `from` path;
 with it, `afkd update @afkd/trello` also moves a copy an older afkd built from source onto
 the finished release.
 
@@ -349,6 +350,18 @@ develop :: service(trello) {
   }
 }
 ```
+
+**Files on the card.** The files a card holds arrive with the claim, in the run's `task/`
+folder: when the plugin wins the claim it downloads every upload the card carries and every
+file Trello hosts that its description and comments link, each at most 10 MiB, and
+`task/README.md` links each by its relative path, `![shot.png](<shot.png>)`, instead of the
+Trello url. An upload no text links is listed under a closing `## Files` section. The
+handle's `description` is still Trello's own text. A file that cannot be downloaded never
+fails the claim: its README link keeps the Trello url, the service log says why, and the
+agent can fetch it with `download_attachment.py`. The downloads live in the plugin's own state
+directory until the unit finishes or is released, and are deleted then; with no state
+directory nothing is downloaded and every link stays Trello's. The credential is sent only to
+trello.com and the `base_url`'s origin, so a link to anywhere else is never fetched.
 
 **Repeating a call.** The label and member writes are idempotent, so a retried card cannot
 fault on its own slots: `add_label` and `add_member` on a card that carries the label or the

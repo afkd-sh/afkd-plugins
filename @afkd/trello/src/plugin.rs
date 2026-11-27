@@ -319,7 +319,10 @@ impl Armed {
                 return idle();
             }
         };
-        let wire = self.units.wire_unit(&unit);
+        // The files the card holds come down once the claim is won, and ride the reply as
+        // `from` entries afkd copies in.
+        let fetched = self.units.fetch_files(&unit, diag);
+        let wire = self.units.wire_unit(&unit, &fetched);
         let whole = fire_line(&wire);
         let line = if whole.len() <= MAX_REPLY {
             whole
@@ -345,7 +348,8 @@ impl Armed {
         } else {
             // Only a unit whose fields besides the brief overflow the line reaches this:
             // nothing can be handed over, so the claim is taken back before the service
-            // ends.
+            // ends, and the files downloaded for it go with it.
+            self.units.remove_task_files(&wire.key, diag);
             self.units.release_stale(&wire.key, clock.now(), diag);
             return Answer::Fatal(format!(
                 "{} cannot be handed to afkd: even with its brief cut away, the unit is over \
@@ -362,6 +366,7 @@ impl Armed {
     /// straight back, or one whose `on_claim` failed — and forget it.
     fn release(&mut self, key: &str, now: Instant, diag: &dyn Diag) -> Answer {
         self.live.remove(key);
+        self.units.remove_task_files(key, diag);
         let released = self.units.release_stale(key, now, diag);
         Answer::Reply(json!({ "released": released }).to_string())
     }
@@ -469,6 +474,8 @@ impl Armed {
         now: Instant,
         diag: &dyn Diag,
     ) -> Answer {
+        // The run is over: the files downloaded for it go, whatever the finish does next.
+        self.units.remove_task_files(key, diag);
         let Some(live) = self.live.remove(key) else {
             diag.err(&format_args!(
                 "finish for {key}, which this plugin holds no claim on"
@@ -1438,5 +1445,95 @@ mod tests {
         let record = std::fs::read_to_string(dir.path().join("claims/card1.json")).unwrap();
         let record: serde_json::Value = serde_json::from_str(&record).unwrap();
         assert_eq!(record["claim_id"], "c1000");
+    }
+
+    /// A plugin armed with a directory and a board whose `card1` holds an upload, which its
+    /// description embeds.
+    fn armed_with_a_file(dir: &TempDir) -> Fixture {
+        let mut f = Fixture::new();
+        let mut greeting = hello(settings());
+        greeting["state_dir"] = json!(dir.path());
+        assert_eq!(f.call(greeting)["ok"], true);
+        f.board.add_list("Up for Grabs");
+        f.board.add_list("In Progress");
+        let url = crate::board::mock_file_url("card1", "a1", "shot.png");
+        f.board.add_card(
+            "Up for Grabs",
+            "card1",
+            TITLE,
+            &format!("![shot.png]({url})"),
+        );
+        f.board
+            .seed_upload("card1", "a1", "shot.png", b"\x89PNG\0\xff", 10);
+        f.board.set_clock(1000);
+        f
+    }
+
+    /// With a directory, a poll downloads the card's files there and hands each over as a
+    /// `from` entry under `task/`, the brief pointing at it by name; `finish` deletes the
+    /// folder.
+    #[test]
+    fn a_poll_with_a_state_dir_hands_over_the_files_and_finish_deletes_them() {
+        let dir = TempDir::new("files-finish");
+        let mut f = armed_with_a_file(&dir);
+        let unit = f.poll()["unit"].clone();
+        let folder = dir.path().join("task-files/trello-card1");
+        let file = folder.join("shot.png");
+        assert_eq!(
+            unit["files"],
+            json!([
+                {"path": "task/README.md",
+                 "text": format!("{TITLE}\n\n![shot.png](<shot.png>)")},
+                {"path": "task/shot.png", "from": file.to_str().unwrap()},
+            ])
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"\x89PNG\0\xff");
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+
+        assert_eq!(f.finish(&unit["key"], "clean")["ok"], true);
+        assert!(!folder.exists(), "finish deletes the folder");
+        assert!(dir.path().join("task-files").is_dir());
+    }
+
+    /// A `release` of the key deletes the folder too — a unit handed straight back, or a
+    /// crash victim's — and one with no folder is no fault.
+    #[test]
+    fn release_deletes_the_files_of_the_key() {
+        let dir = TempDir::new("files-release");
+        let mut f = armed_with_a_file(&dir);
+        let unit = f.poll()["unit"].clone();
+        let folder = dir.path().join("task-files/trello-card1");
+        assert!(folder.join("shot.png").is_file());
+
+        let reply = f.call(json!({"call": "release", "key": unit["key"]}));
+        assert_eq!(reply, json!({"released": true}));
+        assert!(!folder.exists(), "release deletes the folder");
+
+        let again = f.call(json!({"call": "release", "key": unit["key"]}));
+        assert_eq!(again["released"], true);
+        assert!(f.diag.errs().is_empty(), "{:?}", f.diag.errs());
+    }
+
+    /// A unit that cannot be handed over at all is released, and the files downloaded for
+    /// it go with it.
+    #[test]
+    fn a_unit_over_the_line_takes_its_files_with_it() {
+        let dir = TempDir::new("files-fatal");
+        let mut f = armed_with_a_file(&dir);
+        for i in 0..4_000 {
+            f.board.seed_comment(
+                "card1",
+                &format!("6a4dd5e01234abcd5678{i:04}"),
+                "hi",
+                100 + i,
+            );
+        }
+        let answer = f.plugin.answer(Request::Poll);
+        assert!(
+            matches!(&answer, Answer::Fatal(reason) if reason.contains("cannot be handed to afkd")),
+            "{:?}",
+            f.diag.errs()
+        );
+        assert!(!dir.path().join("task-files/trello-card1").exists());
     }
 }
