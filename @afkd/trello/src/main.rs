@@ -30,6 +30,7 @@ mod card;
 mod claim;
 mod client;
 mod common;
+mod file;
 mod handles;
 mod http;
 #[cfg(test)]
@@ -48,6 +49,10 @@ use crate::plugin::{Answer, Plugin};
 
 /// The brief at the scratch directory's root, which afkd writes framed.
 pub(crate) const TASK_FILE: &str = "task/README.md";
+
+/// The task folder under the scratch directory, where afkd puts the brief and the files
+/// beside it.
+pub(crate) const TASK_DIR: &str = "task";
 
 /// The park marker the trello skill's ask action writes into the attempt's scratch
 /// directory, which `classify` reads.

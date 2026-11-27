@@ -1481,6 +1481,88 @@ fn an_overflowing_thread_is_cut_to_fit_one_line() {
     plugin.finish();
 }
 
+// --- the files a card holds ---
+
+/// A claimed card's files come with it into the task folder: a PNG its description embeds
+/// and a PDF a comment links, both uploads on the card, are downloaded into the plugin's
+/// directory and handed over as `from` entries whose bytes are Trello's own, the README links
+/// each by its name with no Trello url left, the handle's `description` is Trello's text, and
+/// `finish` deletes the folder.
+#[test]
+fn a_claimed_cards_files_come_with_it_in_the_task_folder() {
+    let b = board();
+    let png = b"\x89PNG\r\n\x1a\n\0\xff\xfe--afkd--\r\n".to_vec();
+    let pdf = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\r\n\0\xff--afkd--\r\n1 0 obj\n".to_vec();
+    let shot = b.fake.attachment(&b.card, "screen shot.png", &png, 600);
+    let report = b.fake.attachment(&b.card, "Q3 report.pdf", &pdf, 500);
+    let (shot_url, report_url) = (b.fake.download_url(&shot), b.fake.download_url(&report));
+    let description = format!("{BODY}\n\n![screen shot.png]({shot_url})");
+    b.fake.describe(&b.card, &description);
+    b.fake.comment(
+        &b.card,
+        &b.chen,
+        &format!("The numbers: [Q3 report.pdf]({report_url})"),
+        60,
+    );
+    let state = TempDir::new("task-files");
+    let mut plugin = Plugin::armed_with(DEVELOP, OWNER, Some(state.path()), settings(&b.fake));
+    let unit = claim_one(&mut plugin);
+
+    let files = unit["files"].as_array().unwrap();
+    assert_eq!(files.len(), 3, "{files:?}");
+    assert_eq!(files[0]["path"], "task/README.md");
+    assert_eq!(files[1]["path"], "task/screen shot.png");
+    assert_eq!(files[2]["path"], "task/Q3 report.pdf");
+    for (entry, bytes) in [(&files[1], png), (&files[2], pdf)] {
+        assert_eq!(
+            entry.as_object().unwrap().len(),
+            2,
+            "path and from: {entry}"
+        );
+        let from = std::path::Path::new(entry["from"].as_str().unwrap());
+        assert!(
+            from.is_absolute() && from.starts_with(state.path().join("task-files")),
+            "{from:?}"
+        );
+        assert_eq!(std::fs::read(from).unwrap(), bytes);
+    }
+    let readme = files[0]["text"].as_str().unwrap();
+    assert!(
+        readme.contains("![screen shot.png](<screen shot.png>)"),
+        "{readme}"
+    );
+    assert!(
+        readme.contains("[Q3 report.pdf](<Q3 report.pdf>)"),
+        "{readme}"
+    );
+    assert!(
+        !readme.contains(&shot_url) && !readme.contains(&report_url),
+        "no Trello url is left: {readme}"
+    );
+    assert!(
+        !readme.contains("## Files"),
+        "every file is linked: {readme}"
+    );
+    assert_eq!(unit["fields"]["description"], description);
+    assert!(
+        !plugin.stderr().contains("not downloaded"),
+        "{}",
+        plugin.stderr()
+    );
+
+    let folder = std::path::Path::new(files[1]["from"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(folder.is_dir());
+    assert_eq!(
+        finish(&mut plugin, &unit, "clean", facts("proceed", None)),
+        json!({"ok": true})
+    );
+    assert!(!folder.exists(), "the folder is deleted at finish");
+    plugin.finish();
+}
+
 // --- cards a 0.17 release claimed or parked ---
 
 /// A card a 0.17 release claimed carries its `[afkd-claim] owner=… renewal=N` comment, by the

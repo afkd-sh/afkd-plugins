@@ -1072,6 +1072,33 @@ impl FakeTrello {
         )
     }
 
+    /// Rewrite a card's description, as a person does once the files it will link are on the
+    /// card and their urls known.
+    pub fn describe(&self, card: &str, desc: &str) {
+        let mut s = lock(&self.state);
+        s.cards
+            .iter_mut()
+            .find(|c| c.id == card)
+            .expect("a seeded card")
+            .desc = desc.to_string();
+        s.touch(card);
+    }
+
+    /// The url the fake serves an upload's bytes at — the one its attachments list names,
+    /// which a description or a comment can link as well.
+    pub fn download_url(&self, attachment: &str) -> String {
+        let s = lock(&self.state);
+        let a = s
+            .attachments
+            .iter()
+            .find(|a| a.id == attachment)
+            .expect("a seeded attachment");
+        s.attachment_json(a)["url"]
+            .as_str()
+            .expect("a url")
+            .to_string()
+    }
+
     /// Label a card with the label of its board named `name`, creating it if need be. An
     /// empty `name` is a colour-only label, as Trello sends one, and is green.
     pub fn label(&self, card: &str, name: &str) {

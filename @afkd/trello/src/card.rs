@@ -40,7 +40,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::attachment::write_atomic;
+use crate::attachment::{write_atomic, MAX_ATTACHMENT_BYTES};
 use crate::board::{BoardClient, BoardError, Card, Checklist, Comment};
 use crate::claim::{
     claim_owner, claim_renewal_text, claim_text, is_claim, won_claim, ClaimMarker, CLAIM_LIFETIME,
@@ -50,10 +50,11 @@ use crate::client::ListPosition;
 use crate::common::{
     lock, Clock, Diag, ScanBudget, ENV_API_KEY, ENV_BOARD_ID, ENV_CARD_ID, ENV_TOKEN,
 };
+use crate::file::{brief_with_files, files_linked_by, task_file_name};
 use crate::handles::{parse_read_key, read_key, CardFields};
 use crate::settings::{BoardConfig, DiscussWith, MemberRef};
 use crate::wire::{Facts, UnitOutcome, WireFile, WireUnit};
-use crate::{PARK_FILE, TASK_FILE};
+use crate::{PARK_FILE, TASK_DIR, TASK_FILE};
 
 /// Marker prefix on a failed-attempt comment.
 const ATTEMPT_MARKER: &str = "[afkd-attempt]";
@@ -163,6 +164,17 @@ impl Unit {
             list_id: self.source.as_ref().map(|s| s.id.clone()),
         }
     }
+}
+
+/// A file the card holds, downloaded to be handed over in the task folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FetchedFile {
+    /// Its name in the task folder.
+    pub(crate) name: String,
+    /// The url it was linked or attached at, as Trello wrote it.
+    pub(crate) url: String,
+    /// Where it was written.
+    pub(crate) path: PathBuf,
 }
 
 /// What a release needs of a claim, which the unit's key no longer carries: the card, the
@@ -1216,8 +1228,11 @@ impl TrelloUnits {
     /// - `seen`: the claim-read comment ids, which the brief already carries;
     /// - `self`: afkd's own member id;
     /// - `env`: the credentials and the card id the skill reads;
-    /// - `files`: the brief, unframed — afkd frames `task/README.md` itself.
-    pub(crate) fn wire_unit(&self, unit: &Unit) -> WireUnit {
+    /// - `files`: the brief, unframed — afkd frames `task/README.md` itself — with each link
+    ///   to a file in `fetched` written as its name, and the files no text links listed at
+    ///   its end ([`brief_with_files`]); then each of those files, which afkd copies in from
+    ///   where [`fetch_files`](Self::fetch_files) wrote it.
+    pub(crate) fn wire_unit(&self, unit: &Unit, fetched: &[FetchedFile]) -> WireUnit {
         WireUnit {
             id: sanitize(&unit.card.short_link),
             key: unit.key(),
@@ -1232,10 +1247,135 @@ impl TrelloUnits {
                 (ENV_CARD_ID.to_string(), unit.card.id.clone()),
             ]),
             args: Map::from_iter([("account".to_string(), self.account.clone())]),
-            files: vec![WireFile {
-                path: TASK_FILE.to_string(),
-                text: brief_text(&unit.card, &unit.comments, &unit.self_author),
-            }],
+            files: std::iter::once(WireFile::text(
+                TASK_FILE,
+                brief_with_files(
+                    &brief_text(&unit.card, &unit.comments, &unit.self_author),
+                    fetched,
+                ),
+            ))
+            .chain(fetched.iter().map(|file| {
+                WireFile::from_path(
+                    format!("{TASK_DIR}/{}", file.name),
+                    file.path.to_string_lossy(),
+                )
+            }))
+            .collect(),
+        }
+    }
+
+    /// The folder a claim's files are downloaded into: `<state_dir>/task-files/<key>`, the
+    /// key made a plain name. `None` with no `state_dir`, and then nothing is downloaded.
+    pub(crate) fn task_files_dir(&self, key: &str) -> Option<PathBuf> {
+        Some(
+            self.state_dir
+                .as_ref()?
+                .join("task-files")
+                .join(sanitize(key)),
+        )
+    }
+
+    /// Download every file the card holds into a fresh [`task_files_dir`](Self::task_files_dir),
+    /// and return what landed: the name, the url and the path of each. They are the Trello
+    /// files the description and the claim-read comments link ([`files_linked_by`]), then
+    /// every upload not linked yet, oldest first; a link attachment is no file, and an upload
+    /// over [`MAX_ATTACHMENT_BYTES`] is said and skipped. The card's attachments are read
+    /// here; a read that fails is said and leaves the text's links alone. A file that cannot
+    /// be downloaded or written is said, with the card, its url and why, and left out: the
+    /// brief keeps its Trello url, which the skill's `download_attachment.py` fetches. A
+    /// failure never fails the claim.
+    pub(crate) fn fetch_files(&self, unit: &Unit, diag: &dyn Diag) -> Vec<FetchedFile> {
+        let Some(dir) = self.task_files_dir(&unit.key()) else {
+            return Vec::new();
+        };
+        let card = named(&unit.card);
+        let attachments = self
+            .board
+            .card_attachments(&unit.card.id)
+            .unwrap_or_else(|e| {
+                diag.err(&format_args!(
+                    "{card}: its attachments are not read, so only the files its text links are \
+                     downloaded — {e}"
+                ));
+                Vec::new()
+            });
+        let mut wanted: Vec<(String, String)> =
+            files_linked_by(&unit.card.description, &unit.comments, &|url| {
+                self.board.is_trello_file(url)
+            });
+        for attachment in attachments.iter().filter(|a| a.is_upload) {
+            if !wanted.iter().any(|(_, url)| *url == attachment.url) {
+                wanted.push((attachment.name.clone(), attachment.url.clone()));
+            }
+        }
+        // The size Trello gave, which says before a download that one is over the cap.
+        wanted.retain(|(_, url)| {
+            let over = attachments
+                .iter()
+                .find(|a| a.url == *url)
+                .and_then(|a| a.bytes.map(|size| (a, size)))
+                .filter(|(_, size)| *size > MAX_ATTACHMENT_BYTES);
+            if let Some((attachment, size)) = over {
+                diag.err(&format_args!(
+                    "{card}: the upload {:?} at {url} is {size} bytes, over the {} MiB the plugin \
+                     downloads, and is skipped; a link to it in the brief stays a Trello link",
+                    attachment.name,
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                ));
+            }
+            over.is_none()
+        });
+        // Whatever a crashed child left under this key is not this claim's.
+        self.remove_dir(&dir, diag);
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            diag.err(&format_args!(
+                "{card}: no file it holds is downloaded, {} cannot be made — {e}",
+                dir.display()
+            ));
+            return Vec::new();
+        }
+        let mut fetched: Vec<FetchedFile> = Vec::new();
+        for (text, url) in wanted {
+            let names: Vec<String> = fetched.iter().map(|file| file.name.clone()).collect();
+            let name = task_file_name(&text, &url, &names);
+            let path = dir.join(&name);
+            let written = self
+                .board
+                .download_attachment(&url)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    write_atomic(&path, &bytes)
+                        .map_err(|e| format!("{} cannot be written — {e}", path.display()))
+                });
+            match written {
+                Ok(()) => fetched.push(FetchedFile { name, url, path }),
+                Err(e) => diag.err(&format_args!(
+                    "{card}: the file at {url} is not downloaded, and a link to it in the brief \
+                     stays a Trello link for the skill's download_attachment.py — {e}"
+                )),
+            }
+        }
+        fetched
+    }
+
+    /// Delete the files downloaded for the claim `key`, with their folder. Best-effort: a
+    /// folder that cannot be removed is said.
+    pub(crate) fn remove_task_files(&self, key: &str, diag: &dyn Diag) {
+        if let Some(dir) = self.task_files_dir(key) {
+            self.remove_dir(&dir, diag);
+        }
+    }
+
+    /// Remove `dir` with what it holds, and say so when it cannot be. A folder that is not
+    /// there is already gone.
+    fn remove_dir(&self, dir: &Path, diag: &dyn Diag) {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => diag.err(&format_args!("cannot remove {}: {e}", dir.display())),
         }
     }
 
@@ -1731,7 +1871,7 @@ fn delivered_upto(comments: &[Comment], self_id: &str, feedback: &[Comment]) -> 
 
 /// Whether a comment is one of afkd's bookkeeping **control markers** (claim / attempt /
 /// ran / park), dropped from the brief entirely.
-fn is_control_marker(text: &str) -> bool {
+pub(crate) fn is_control_marker(text: &str) -> bool {
     let t = text.trim_start();
     is_claim(text) || t.starts_with(ATTEMPT_MARKER) || t.starts_with(RAN_MARKER) || is_park(text)
 }
@@ -2875,7 +3015,7 @@ mod tests {
 
         let unit = h.poll().expect("claimed from the second list");
         move_card_to(&h.board, "card1", "In Progress");
-        let key = h.units.wire_unit(&unit).key;
+        let key = h.units.wire_unit(&unit, &[]).key;
         assert_eq!(key, "trello:card1");
         assert_eq!(
             lock(&h.units.records)["card1"],
@@ -2912,7 +3052,7 @@ mod tests {
         h.board.add_card("Ideas 💡", "idea1", "Förslag 💡", "Body");
         h.board.set_clock(2000);
         let unit = h.poll().expect("claimed from the first list");
-        let key = h.units.wire_unit(&unit).key;
+        let key = h.units.wire_unit(&unit, &[]).key;
         assert_eq!(key, "trello:idea1");
         assert_eq!(lock(&h.units.records)["idea1"].list_id, None);
         assert_eq!(h.release(&key), Some(true));
@@ -3162,7 +3302,7 @@ mod tests {
         seed_source_card(&h.board, "card1");
         h.board.set_clock(1000);
         let unit = h.poll().expect("claimed");
-        assert_eq!(h.units.wire_unit(&unit).key, "trello:card1");
+        assert_eq!(h.units.wire_unit(&unit, &[]).key, "trello:card1");
         assert_eq!(
             h.units.record_of("card1", &h.diag),
             Some(ClaimRecord {
@@ -3194,7 +3334,7 @@ mod tests {
         );
         let fields = h.board.card_handle("card1").unwrap();
         assert_eq!(unit.fields, fields);
-        assert_eq!(h.units.wire_unit(&unit).fields, fields);
+        assert_eq!(h.units.wire_unit(&unit, &[]).fields, fields);
         assert_eq!(
             (
                 fields.name.as_str(),
@@ -3224,7 +3364,7 @@ mod tests {
         h.board.set_clock(1000);
         let unit = h.poll().expect("claimed");
 
-        let wire = h.units.wire_unit(&unit);
+        let wire = h.units.wire_unit(&unit, &[]);
         assert_eq!(
             serde_json::Value::Object(wire.args),
             serde_json::json!({"account": {
@@ -3541,6 +3681,347 @@ mod tests {
         let calls = h.board.calls().len();
         assert_eq!(h.release(&unit.key()), Some(true));
         assert_eq!(h.board.calls()[calls..], ["delete comment", "move card"]);
+    }
+
+    // --- The files a card holds ---
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\xff\xfe--end";
+    const PDF: &[u8] = b"%PDF-1.7\n\0\xe2\xe3\r\n%%EOF";
+
+    /// The text of a file the reply carries inline.
+    fn text_of(file: &WireFile) -> &str {
+        match &file.source {
+            crate::wire::FileSource::Text(text) => text,
+            crate::wire::FileSource::From(from) => panic!("{} is copied from {from}", file.path),
+        }
+    }
+
+    /// A harness keeping its state in `dir`, over a board with the two lists a claim needs
+    /// and one card, `card1`, titled `Title` and described `description`.
+    fn files_harness(dir: &TempDir, description: &str) -> Harness {
+        let h = Harness::in_dir(
+            Arc::new(MockBoard::new()),
+            cfg(),
+            identity("me"),
+            Some(dir.path().to_path_buf()),
+        );
+        h.board.add_list("Up for Grabs");
+        h.board.add_list("In Progress");
+        h.board
+            .add_card("Up for Grabs", "card1", "Title", description);
+        h.board.set_clock(1000);
+        h
+    }
+
+    /// The folder `card1`'s files are downloaded into under `dir`.
+    fn files_dir(dir: &TempDir) -> PathBuf {
+        dir.path().join("task-files").join("trello-card1")
+    }
+
+    /// A card whose description embeds a PNG and whose comment links a PDF: both are
+    /// downloaded byte for byte, the brief points each at its relative name with no Trello
+    /// url left, the handle's description stays Trello's own text, and each file rides as a
+    /// `from` entry beside the brief.
+    #[test]
+    fn the_brief_points_at_the_files_and_each_rides_as_a_from_entry() {
+        let dir = TempDir::new("files");
+        let png = crate::board::mock_file_url("card1", "a1", "shot.png");
+        let pdf = crate::board::mock_file_url("card1", "a2", "report.pdf");
+        let description = format!("Crash on start:\n\n![shot.png]({png})");
+        let h = files_harness(&dir, &description);
+        h.board.seed_upload("card1", "a1", "shot.png", PNG, 10);
+        h.board.seed_upload("card1", "a2", "report.pdf", PDF, 20);
+        h.board.seed_comment_by(
+            "card1",
+            "h1",
+            &format!("The spec: [report.pdf]({pdf})"),
+            "alice",
+            100,
+        );
+
+        let unit = h.poll().expect("claimed");
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        let wire = h.units.wire_unit(&unit, &fetched);
+
+        let folder = files_dir(&dir);
+        assert_eq!(
+            text_of(&wire.files[0]),
+            "Title\n\nCrash on start:\n\n![shot.png](<shot.png>)\n\n## New comments\n\n\
+             **alice:** The spec: [report.pdf](<report.pdf>)\n"
+        );
+        assert!(!text_of(&wire.files[0]).contains("mock.trello.test"));
+        assert_eq!(
+            wire.files[1..],
+            [
+                WireFile::from_path("task/shot.png", folder.join("shot.png").to_str().unwrap()),
+                WireFile::from_path(
+                    "task/report.pdf",
+                    folder.join("report.pdf").to_str().unwrap()
+                ),
+            ]
+        );
+        assert_eq!(std::fs::read(folder.join("shot.png")).unwrap(), PNG);
+        assert_eq!(std::fs::read(folder.join("report.pdf")).unwrap(), PDF);
+        assert_eq!(wire.fields.description, description, "Trello's own text");
+        assert!(h.diag.errs().is_empty(), "{:?}", h.diag.errs());
+    }
+
+    /// An upload no text links is downloaded too and listed under `## Files`, an image
+    /// embedded; a link attachment is no file, and nothing is read of it.
+    #[test]
+    fn an_attachment_only_file_is_listed_under_files() {
+        let dir = TempDir::new("files-only");
+        let h = files_harness(&dir, "Body");
+        h.board.seed_upload("card1", "a1", "log.PNG", PNG, 100);
+        h.board
+            .seed_link_attachment("card1", "l1", "docs", "https://example.com/docs", 150);
+        h.board
+            .seed_upload("card1", "a2", "notes.txt", b"n\r\n", 200);
+
+        let unit = h.poll().expect("claimed");
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        let wire = h.units.wire_unit(&unit, &fetched);
+
+        assert_eq!(
+            text_of(&wire.files[0]),
+            "Title\n\nBody\n\n## Files\n\n\
+             These files are attached to the card, and are downloaded beside this brief:\n\n\
+             - ![log.PNG](<log.PNG>)\n\
+             - [notes.txt](<notes.txt>)\n"
+        );
+        assert_eq!(wire.files.len(), 3);
+        let folder = files_dir(&dir);
+        assert_eq!(std::fs::read(folder.join("log.PNG")).unwrap(), PNG);
+        assert_eq!(std::fs::read(folder.join("notes.txt")).unwrap(), b"n\r\n");
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
+        assert!(h.diag.errs().is_empty(), "{:?}", h.diag.errs());
+    }
+
+    /// A file that cannot be downloaded never fails the claim: the one that could be is in
+    /// the folder and linked by name, the one that could not keeps its Trello link, and the
+    /// log says which and why.
+    #[test]
+    fn a_file_that_fails_keeps_its_trello_link_and_is_diagnosed() {
+        let dir = TempDir::new("files-fail");
+        let png = crate::board::mock_file_url("card1", "a1", "shot.png");
+        let gone = crate::board::mock_file_url("card1", "a9", "gone.pdf");
+        let h = files_harness(&dir, &format!("![shot.png]({png}) and [gone.pdf]({gone})"));
+        h.board.seed_upload("card1", "a1", "shot.png", PNG, 10);
+
+        let unit = h.poll().expect("claimed");
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(
+            text_of(&h.units.wire_unit(&unit, &fetched).files[0]),
+            format!("Title\n\n![shot.png](<shot.png>) and [gone.pdf]({gone})")
+        );
+        assert_eq!(
+            h.diag.errs(),
+            [format!(
+                "card \"Title\" (card1): the file at {gone} is not downloaded, and a link to it \
+                 in the brief stays a Trello link for the skill's download_attachment.py — \
+                 trello download attachment: board returned status 404"
+            )]
+        );
+        let folder = files_dir(&dir);
+        assert_eq!(std::fs::read(folder.join("shot.png")).unwrap(), PNG);
+        assert!(!folder.join("gone.pdf").exists());
+    }
+
+    /// Every download failing leaves the claim intact: the unit is handed over with the
+    /// brief as Trello wrote it, one line per file, and an upload only attached is left out.
+    #[test]
+    fn every_download_failing_leaves_the_brief_as_trello_wrote_it() {
+        let dir = TempDir::new("files-down");
+        let png = crate::board::mock_file_url("card1", "a1", "shot.png");
+        let h = files_harness(&dir, &format!("![shot.png]({png})"));
+        h.board.seed_upload("card1", "a1", "shot.png", PNG, 10);
+        let only = h.board.seed_upload("card1", "a2", "only.pdf", PDF, 20);
+        h.board.fail_status("download attachment", 503);
+
+        let unit = h.poll().expect("claimed");
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        assert!(fetched.is_empty());
+        let wire = h.units.wire_unit(&unit, &fetched);
+        assert_eq!(
+            wire.files,
+            [WireFile::text(
+                "task/README.md",
+                format!("Title\n\n![shot.png]({png})")
+            )]
+        );
+        let errs = h.diag.errs();
+        assert_eq!(errs.len(), 2, "{errs:?}");
+        assert!(
+            errs[0].contains(&png) && errs[1].contains(&only),
+            "{errs:?}"
+        );
+        assert!(errs[0].ends_with("trello download attachment: board returned status 503"));
+    }
+
+    /// An attachments read that fails is said, and the claim goes on with the files the text
+    /// links alone: the linked one is downloaded, and the attachment-only one is not.
+    #[test]
+    fn a_failed_attachments_read_leaves_the_text_links_alone() {
+        let dir = TempDir::new("files-read");
+        let png = crate::board::mock_file_url("card1", "a1", "shot.png");
+        let h = files_harness(&dir, &format!("![shot.png]({png})"));
+        h.board.seed_upload("card1", "a1", "shot.png", PNG, 10);
+        h.board.seed_upload("card1", "a2", "only.pdf", PDF, 20);
+        h.board.fail("read attachments");
+
+        let unit = h.poll().expect("claimed");
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        assert_eq!(
+            fetched.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["shot.png"]
+        );
+        assert_eq!(
+            text_of(&h.units.wire_unit(&unit, &fetched).files[0]),
+            "Title\n\n![shot.png](<shot.png>)"
+        );
+        assert_eq!(
+            h.diag.errs(),
+            [
+                "card \"Title\" (card1): its attachments are not read, so only the files its \
+                 text links are downloaded — trello read attachments: no response (mock failure)"
+            ]
+        );
+    }
+
+    /// With no state directory nothing is downloaded, nothing is asked of the board for it,
+    /// and every link stays Trello's.
+    #[test]
+    fn with_no_state_dir_nothing_is_downloaded_and_every_link_stays_trellos() {
+        let png = crate::board::mock_file_url("card1", "a1", "shot.png");
+        let h = Harness::new(cfg(), "me");
+        h.board.add_list("Up for Grabs");
+        h.board.add_card(
+            "Up for Grabs",
+            "card1",
+            "Title",
+            &format!("![shot.png]({png})"),
+        );
+        h.board.seed_upload("card1", "a1", "shot.png", PNG, 10);
+        h.board.seed_upload("card1", "a2", "only.pdf", PDF, 20);
+        h.board.set_clock(1000);
+
+        let unit = h.poll().expect("claimed");
+        let calls = h.board.calls().len();
+        assert_eq!(h.units.task_files_dir(&unit.key()), None);
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        assert!(fetched.is_empty());
+        assert_eq!(h.board.calls().len(), calls, "no request for a file");
+        let wire = h.units.wire_unit(&unit, &fetched);
+        assert_eq!(
+            wire.files,
+            [WireFile::text(
+                "task/README.md",
+                format!("Title\n\n![shot.png]({png})")
+            )]
+        );
+        assert!(h.diag.errs().is_empty());
+    }
+
+    /// Two files of one name are two files: the second is numbered, and neither is
+    /// `README.md`, the file afkd frames.
+    #[test]
+    fn a_duplicate_name_is_numbered_and_readme_is_never_taken() {
+        let dir = TempDir::new("files-names");
+        let h = files_harness(&dir, "Body");
+        h.board.seed_upload("card1", "a1", "shot.png", PNG, 10);
+        h.board.seed_upload("card1", "a2", "shot.png", b"two", 20);
+        h.board
+            .seed_upload("card1", "a3", "README.md", b"# mine", 30);
+
+        let unit = h.poll().expect("claimed");
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        assert_eq!(
+            fetched.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["shot.png", "shot-2.png", "README-2.md"]
+        );
+        let wire = h.units.wire_unit(&unit, &fetched);
+        assert_eq!(
+            wire.files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "task/README.md",
+                "task/shot.png",
+                "task/shot-2.png",
+                "task/README-2.md"
+            ]
+        );
+        let folder = files_dir(&dir);
+        assert_eq!(std::fs::read(folder.join("shot.png")).unwrap(), PNG);
+        assert_eq!(std::fs::read(folder.join("shot-2.png")).unwrap(), b"two");
+        assert_eq!(
+            std::fs::read(folder.join("README-2.md")).unwrap(),
+            b"# mine"
+        );
+    }
+
+    /// An upload over 10 MiB is said and skipped, whether a text links it or not, and the
+    /// rest are downloaded.
+    #[test]
+    fn an_upload_over_the_cap_is_said_and_skipped() {
+        let dir = TempDir::new("files-big");
+        let big = crate::board::mock_file_url("card1", "a1", "big.bin");
+        let h = files_harness(&dir, &format!("[big.bin]({big})"));
+        let size = MAX_ATTACHMENT_BYTES + 1;
+        h.board
+            .seed_upload_sized("card1", "a1", "big.bin", b"x", size, 10);
+        let other = h
+            .board
+            .seed_upload_sized("card1", "a2", "huge.bin", b"x", size, 20);
+        h.board.seed_upload("card1", "a3", "ok.txt", b"ok", 30);
+
+        let unit = h.poll().expect("claimed");
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        assert_eq!(
+            fetched.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["ok.txt"]
+        );
+        let errs = h.diag.errs();
+        assert_eq!(errs.len(), 2, "{errs:?}");
+        assert!(
+            errs[0].contains(&format!("{big} is {size} bytes, over the 10 MiB")),
+            "{errs:?}"
+        );
+        assert!(errs[1].contains(&other), "{errs:?}");
+        assert_eq!(
+            text_of(&h.units.wire_unit(&unit, &fetched).files[0]),
+            format!(
+                "Title\n\n[big.bin]({big})\n\n## Files\n\n\
+                 These files are attached to the card, and are downloaded beside this brief:\n\n\
+                 - [ok.txt](<ok.txt>)\n"
+            )
+        );
+    }
+
+    /// A claim's folder starts empty, and `remove_task_files` takes it away with what it
+    /// holds; removing one that is not there says nothing.
+    #[test]
+    fn the_folder_is_cleared_for_a_claim_and_removed_with_it() {
+        let dir = TempDir::new("files-clear");
+        let h = files_harness(&dir, "Body");
+        h.board.seed_upload("card1", "a1", "shot.png", PNG, 10);
+        let folder = files_dir(&dir);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("stale.txt"), b"a crashed child's").unwrap();
+
+        let unit = h.poll().expect("claimed");
+        assert_eq!(h.units.task_files_dir(&unit.key()), Some(folder.clone()));
+        let fetched = h.units.fetch_files(&unit, &h.diag);
+        assert_eq!(fetched.len(), 1);
+        assert!(!folder.join("stale.txt").exists());
+        assert!(folder.join("shot.png").is_file());
+
+        h.units.remove_task_files(&unit.key(), &h.diag);
+        assert!(!folder.exists());
+        h.units.remove_task_files(&unit.key(), &h.diag);
+        assert!(h.diag.errs().is_empty(), "{:?}", h.diag.errs());
     }
 
     /// An exhausted run's `finish` is delivered too, so its entry is cleared rather than
@@ -5095,7 +5576,7 @@ mod tests {
             vec![comment("h1", "also handle empty input", 100)],
             SELF_ID,
         );
-        let wire = h.units.wire_unit(&unit);
+        let wire = h.units.wire_unit(&unit, &[]);
 
         // One `-` per unsafe CHAR, so the wide glyph and the emoji each fold to one.
         assert_eq!(wire.id, "1Rk-el-ydw----");
@@ -5121,12 +5602,10 @@ mod tests {
         );
         assert_eq!(
             wire.files,
-            [WireFile {
-                path: "task/README.md".into(),
-                text:
-                    "Fix\n\ndo x\n\n## New comments\n\n**Dana Rivera:** also handle empty input\n"
-                        .into(),
-            }]
+            [WireFile::text(
+                "task/README.md",
+                "Fix\n\ndo x\n\n## New comments\n\n**Dana Rivera:** also handle empty input\n"
+            )]
         );
     }
 
@@ -5135,9 +5614,15 @@ mod tests {
     #[test]
     fn the_thread_is_stable_per_card_and_distinct_across_cards() {
         let h = Harness::new(cfg(), "me");
-        let first = h.units.wire_unit(&claimed_unit_with_claim("card1", "c1"));
-        let again = h.units.wire_unit(&claimed_unit_with_claim("card1", "c2"));
-        let other = h.units.wire_unit(&claimed_unit_with_claim("card2", "c1"));
+        let first = h
+            .units
+            .wire_unit(&claimed_unit_with_claim("card1", "c1"), &[]);
+        let again = h
+            .units
+            .wire_unit(&claimed_unit_with_claim("card1", "c2"), &[]);
+        let other = h
+            .units
+            .wire_unit(&claimed_unit_with_claim("card2", "c1"), &[]);
         assert_eq!(first.thread, "sl-card1");
         assert_eq!(again.thread, first.thread);
         assert_eq!(
@@ -5182,7 +5667,8 @@ mod tests {
         h.board.set_clock(1000);
 
         let unit = h.poll().expect("claimed");
-        let brief = &h.units.wire_unit(&unit).files[0].text;
+        let brief = text_of(&h.units.wire_unit(&unit, &[]).files[0]).to_string();
+        let brief = &brief;
         assert_eq!(
             brief,
             "Title\n\nBody\n\n## Earlier conversation\n\
@@ -5723,7 +6209,7 @@ mod tests {
         ));
         assert!(!is_badged(&h.board, "card1"));
 
-        let brief = &h.units.wire_unit(&unit).files[0].text;
+        let brief = text_of(&h.units.wire_unit(&unit, &[]).files[0]).to_string();
         let (earlier, new) = brief
             .split_once("## New comments")
             .expect("the brief has a new-comments section");
@@ -5910,7 +6396,7 @@ mod tests {
         assert_eq!(unit.card.id, "parked");
         assert!(!is_badged(&h.board, "parked"));
 
-        let brief = &h.units.wire_unit(&unit).files[0].text;
+        let brief = text_of(&h.units.wire_unit(&unit, &[]).files[0]).to_string();
         let (earlier, new) = brief
             .split_once("## New comments")
             .expect("the brief has a new-comments section");
@@ -5981,7 +6467,7 @@ mod tests {
         );
 
         let unit = h.poll().expect("the tail passes: a human spoke last");
-        let brief = &h.units.wire_unit(&unit).files[0].text;
+        let brief = text_of(&h.units.wire_unit(&unit, &[]).files[0]).to_string();
         let (earlier, new) = brief
             .split_once("## New comments")
             .expect("the brief has a new-comments section");

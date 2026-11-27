@@ -21,11 +21,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::attachment::{multipart, MAX_ATTACHMENT_BYTES};
-use crate::board::{BoardClient, BoardError, Card, CheckItem, Checklist, Comment};
-use crate::handles::{build_card, CardFields, Lookups};
+use crate::board::{Attachment, BoardClient, BoardError, Card, CheckItem, Checklist, Comment};
+use crate::handles::{build_attachment, build_card, CardFields, Lookups};
 use crate::http::{
     BoardRequest, HttpClient, HttpError, Payload, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT,
 };
+use crate::reads::ATTACHMENT_FIELDS;
 use crate::rfc3339::parse_rfc3339;
 use crate::settings::MemberRef;
 use crate::wire::WireHandle;
@@ -596,6 +597,57 @@ impl BoardClient for TrelloClient {
 
     fn resolve_member(&self, board_id: &str, member: &MemberRef) -> Result<String, BoardError> {
         self.resolve("resolve member", board_id, member)
+    }
+
+    fn card_attachments(&self, card_id: &str) -> Result<Vec<Attachment>, BoardError> {
+        let stage = "read attachments";
+        let listed = self.get_json(
+            stage,
+            &format!("/cards/{card_id}/attachments"),
+            &[("fields", ATTACHMENT_FIELDS)],
+        )?;
+        let mut found: Vec<Attachment> = BoardError::as_array(stage, &listed, "attachments")?
+            .iter()
+            .filter_map(|a| build_attachment(a, card_id, ""))
+            .map(|handle| Attachment {
+                id: handle.id,
+                name: handle.fields.name,
+                url: handle.fields.url,
+                is_upload: handle.fields.is_upload,
+                bytes: handle.fields.bytes,
+                posted_at: UNIX_EPOCH + Duration::from_millis(handle.fields.created_at),
+            })
+            .collect();
+        found.sort_by(|a, b| (a.posted_at, &a.id).cmp(&(b.posted_at, &b.id)));
+        Ok(found)
+    }
+
+    fn download_attachment(&self, url: &str) -> Result<Vec<u8>, BoardError> {
+        TrelloClient::download_attachment(self, url)
+    }
+
+    fn is_trello_file(&self, url: &str) -> bool {
+        let at = origin(url);
+        if at.is_none() || !self.download_origins.contains(&at) {
+            return false;
+        }
+        let Some(path) = url
+            .parse::<ureq::http::Uri>()
+            .ok()
+            .map(|u| u.path().to_string())
+        else {
+            return false;
+        };
+        // `…/cards/<id>/attachments/<id>/download/<name>`, whatever the API root's own path.
+        let segments: Vec<&str> = path.split('/').collect();
+        let Some(tail) = segments.len().checked_sub(6).map(|from| &segments[from..]) else {
+            return false;
+        };
+        matches!(
+            tail,
+            ["cards", card, "attachments", attachment, "download", name]
+                if !card.is_empty() && !attachment.is_empty() && !name.is_empty()
+        )
     }
 
     fn set_call_deadline(&self, deadline: Option<Instant>) {
@@ -2956,6 +3008,104 @@ mod tests {
                 "{url}"
             );
             assert!(matches!(err, BoardError::Refused { .. }), "{url}");
+        }
+    }
+
+    /// A card's attachments are one `GET /cards/{id}/attachments` asking for the fields the
+    /// read needs, and come back oldest first — uploads with their size and link
+    /// attachments alike — whatever order Trello listed them in.
+    #[test]
+    fn card_attachments_reads_the_list_and_orders_it_oldest_first() {
+        let stub = Stub::serve(ok_json(
+            r#"[{"id":"6a7f118d9a663d521d85c646","name":"late.pdf","isUpload":true,"bytes":2048,
+                 "date":"2026-09-02T10:00:00.000Z","mimeType":"application/pdf",
+                 "url":"https://trello.com/1/cards/c1/attachments/6a7f118d9a663d521d85c646/download/late.pdf"},
+                {"id":"6a7f118d9a663d521d85c647","name":"docs","isUpload":false,"bytes":null,
+                 "date":"2026-09-01T12:00:00.000Z","url":"https://example.com/docs"},
+                {"id":"6a7f118d9a663d521d85c645","name":"shot — 修复.png","isUpload":true,
+                 "bytes":12,"date":"2026-09-01T10:00:00.000Z",
+                 "url":"https://trello.com/1/cards/c1/attachments/6a7f118d9a663d521d85c645/download/shot.png"},
+                {"name":"no id"}]"#,
+        ));
+        let client = stub.client("KEY", "TOK");
+        let found = client.card_attachments("c1").unwrap();
+        let req = stub.captured();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path(), "/cards/c1/attachments");
+        assert!(req.has_query("fields", "id,name,date,url,isUpload,bytes,mimeType"));
+        assert!(req.has_query("key", "KEY") && req.has_query("token", "TOK"));
+
+        assert_eq!(
+            found.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["shot — 修复.png", "docs", "late.pdf"]
+        );
+        assert_eq!(
+            found.iter().map(|a| a.is_upload).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        assert_eq!(found[0].bytes, Some(12));
+        assert_eq!(found[1].bytes, None);
+        assert_eq!(found[1].url, "https://example.com/docs");
+        assert_eq!(
+            found[0].posted_at.duration_since(UNIX_EPOCH).unwrap(),
+            Duration::from_secs(1_788_256_800)
+        );
+        assert_eq!(found[2].id, "6a7f118d9a663d521d85c646");
+    }
+
+    /// A read Trello refuses or answers with no list is an error tagged `read attachments`.
+    #[test]
+    fn card_attachments_fails_with_its_stage() {
+        let stub = Stub::serve(ok_json(r#"{"not":"a list"}"#));
+        let err = stub
+            .client("KEY", "TOK")
+            .card_attachments("c1")
+            .unwrap_err();
+        assert!(matches!(err, BoardError::Decode { .. }));
+        assert_eq!(err.stage(), "read attachments");
+        let stub = Stub::serve(status_reply(404, &[]));
+        let err = stub
+            .client("KEY", "TOK")
+            .card_attachments("c1")
+            .unwrap_err();
+        assert!(matches!(err, BoardError::Status { status: 404, .. }));
+        assert_eq!(err.stage(), "read attachments");
+    }
+
+    /// A url is a Trello file when its origin is one the credential goes to and its path ends
+    /// `cards/<id>/attachments/<id>/download/<name>`: Trello's own and the API root's, a query
+    /// or a percent-encoded name allowed. A lookalike host, plain http, a link elsewhere, a
+    /// path that is no download, another port and a bare string are not.
+    #[test]
+    fn is_trello_file_takes_a_card_download_at_a_trusted_origin_only() {
+        let client = TrelloClient::with_base("http://127.0.0.1:9/1", "KEY", "TOK");
+        for yes in [
+            "https://trello.com/1/cards/c1/attachments/a1/download/shot.png",
+            "https://TRELLO.com/1/cards/c1/attachments/a1/download/work%20%E8%A8%88.patch",
+            "https://trello.com/1/cards/c1/attachments/a1/download/shot.png?x=1",
+            "https://trello.com/cards/c1/attachments/a1/download/shot.png",
+            "http://127.0.0.1:9/1/cards/c1/attachments/a1/download/shot.png",
+        ] {
+            assert!(client.is_trello_file(yes), "{yes}");
+        }
+        for no in [
+            "https://trello.com.evil.example/1/cards/c1/attachments/a1/download/shot.png",
+            "https://evil.example/trello.com/1/cards/c1/attachments/a1/download/shot.png",
+            "http://trello.com/1/cards/c1/attachments/a1/download/shot.png",
+            "https://example.com/shot.png",
+            "http://127.0.0.1:10/1/cards/c1/attachments/a1/download/shot.png",
+            "https://127.0.0.1:9/1/cards/c1/attachments/a1/download/shot.png",
+            "https://trello.com/c/Qb7eLy2w/12-retry-storm",
+            "https://trello.com/1/cards/c1/attachments/a1",
+            "https://trello.com/1/cards/c1/attachments/a1/download",
+            "https://trello.com/1/cards/c1/attachments/a1/download/",
+            "https://trello.com/1/boards/c1/attachments/a1/download/shot.png",
+            "https://trello.com/1/cards/c1/attachments/a1/view/shot.png",
+            "https://trello.com/1/cards//attachments/a1/download/shot.png",
+            "/1/cards/c1/attachments/a1/download/shot.png",
+            "",
+        ] {
+            assert!(!client.is_trello_file(no), "{no}");
         }
     }
 
